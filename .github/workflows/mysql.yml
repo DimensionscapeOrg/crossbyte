@@ -1,11 +1,11 @@
 name: CrossByte MySQL
 run-name: CrossByte MySQL | ${{ github.event_name }} | ${{ github.ref_name }}
 
-# The native MySQL client against real servers: MySQL 8.4, whose defaults,
-# caching_sha2_password and TLS with a generated certificate: are what the
-# client could not speak before, and MariaDB 11, whose defaults are the older
-# ones. Everything the driver does is also tested against a fake server in
-# the native suite; this is the check that the fake and a real server agree.
+# The native MySQL client against real servers: MySQL 8.4, whose defaults
+# (caching_sha2_password and TLS with a generated certificate) the client
+# has to speak, and MariaDB 11, whose defaults are the older ones.
+# Everything the driver does is also tested against a fake server in the
+# native suite; this is the check that the fake and a real server agree.
 #
 # It builds against the hxcpp fork's production branch, as ci.yml does, so it
 # needs the fork's MySQL client work (branch fix/mysql-client) merged there.

@@ -247,19 +247,19 @@ class BsonWriter {
 		One field: its type byte, its name and its value.
 
 		Which BSON type a value becomes is decided in this order: `null`; a
-		`String`; a `Bool`; a `haxe.Int64`, as int64, tested before `Int`,
+		`String`; a `Bool`; a `haxe.Int64`, as int64 (tested before `Int`,
 		since on cpp and the jvm an Int64 held in a `Dynamic` also passes
-		`Std.isOfType(v, Int)`; a whole number in the 32-bit range, as int32;
+		`Std.isOfType(v, Int)`); a whole number in the 32-bit range, as int32;
 		any other number, as a double; then the BSON types by class; and last,
-		an anonymous object or `StringMap` as a document. Anything else, an
-		instance of some other class, an enum, a function, is refused rather
+		an anonymous object or `StringMap` as a document. Anything else (an
+		instance of some other class, an enum, a function) is refused rather
 		than guessed at.
 
 		The value's kind is asked once (`__kindOf`), and only an instance of a
-		class goes on to the BSON classes, the common ones first: a chain of
-		`Std.isOfType` per value, up to six for a number and seventeen for a
-		nested object, cost a fifth to a third of encoding a document on
-		hxcpp.
+		class goes on to the BSON classes, the common ones first, rather than
+		a chain of `Std.isOfType` per value: up to six for a number and
+		seventeen for a nested object, a fifth to a third of encoding a
+		document on hxcpp.
 	**/
 	public function value(name:String, value:Dynamic, depth:Int):Void {
 		switch (__kindOf(value)) {
@@ -321,8 +321,8 @@ class BsonWriter {
 		int64(value);
 	}
 
-	// Fields whose type the caller knows, a driver's own: a collection's
-	// name, a batch size, a flag, written without asking `value` what they
+	// Fields whose type the caller knows (a driver's own: a collection's
+	// name, a batch size, a flag), written without asking `value` what they
 	// are, and without boxing them to ask.
 
 	/** A string field; `null` is written as BSON null, as `value` would. **/
@@ -376,7 +376,7 @@ class BsonWriter {
 		since its boxed Int64 converts from one, and an int32 field would go
 		out as an int64; the box's own type code says which it is. Even that
 		cannot see an Int64 from -1 to 255, which hxcpp boxes as the shared
-		`Int` of the same value, see `BsonInt64`.
+		`Int` of the same value; see `BsonInt64`.
 	**/
 	public static inline function isInt64(value:Dynamic):Bool {
 		#if cpp
@@ -422,12 +422,12 @@ class BsonWriter {
 	/**
 		What kind of value `value` is, asked once: null, a string, a bool, an
 		int, a float, an int64, an array, an anonymous object, or something
-		else, a class instance, and on hxcpp also a function or an enum,
+		else (a class instance, and on hxcpp also a function or an enum),
 		which `__rest` sorts out.
 
 		On hxcpp it is the value's own type code, one virtual call. Elsewhere
-		the same order of tests the writer always made for a primitive, an
-		Int64 before an Int, since on the jvm a small one passes as an Int,
+		the order of tests a primitive needs (an Int64 before an Int, since
+		on the jvm a small one passes as an Int), and then one
 		and then one `Type.getClass` for anything else. Not `Type.typeof`
 		throughout: it makes a `TClass` for every class instance, a string
 		included, on most targets.
@@ -675,7 +675,7 @@ class BsonWriter {
 		#else
 		// Room for the worst case, so the loop need not check: three bytes a
 		// UTF-16 unit, since a code point above U+FFFF takes two units for its
-		// four bytes, but on the interpreter one code is a whole code point,
+		// four bytes; but on the interpreter one code is a whole code point,
 		// and can take four.
 		ensure(count * #if eval 4 #else 3 #end);
 		var start:Int = length;

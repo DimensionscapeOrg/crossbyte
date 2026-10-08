@@ -17,7 +17,7 @@ import utest.Assert;
 
 	The peers are given only their relayed candidates, so neither is told any
 	address of the other's it could dial. They bind different loopback
-	addresses, 127.0.0.2 and 127.0.0.3, so that a datagram sent from a peer
+	addresses (127.0.0.2 and 127.0.0.3) so that a datagram sent from a peer
 	directly and one forwarded by the relay do not share a source address. And
 	the relay refuses to forward anything from an address no permission covers,
 	which is what RFC 8656 requires and what turns "the answer went out the
@@ -178,8 +178,8 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			// And the short way round was tried and refused, which is what makes
 			// the connection attributable to the relay. Each peer pairs its host
-			// candidate with the other's relayed address too, that pair has the
-			// higher priority and goes first, and the datagram arrives at the
+			// candidate with the other's relayed address too (that pair has the
+			// higher priority and goes first), and the datagram arrives at the
 			// relay socket from an address no permission covers, so the server
 			// drops it exactly as a real one would. That the connection came up
 			// anyway is the whole claim.
@@ -198,10 +198,10 @@ class PeerConnectionRelayTest extends utest.Test {
 		A relay that goes away takes the connection that ran through it, and
 		says so.
 
-		The allocation failing to refresh set a flag nothing read. `allocated`
-		had resolved long before and could not report it, so a connection
-		whose only path was the relay simply went quiet, until consent gave
-		up on it half a minute later, blaming the peer.
+		A refresh that fails has to reach the connection: `allocated`
+		resolved long before and cannot report it, and a flag nothing reads
+		would leave a connection whose only path was the relay simply quiet,
+		until consent gave up on it half a minute later, blaming the peer.
 	**/
 	public function testLosingTheRelayEndsAConnectionThatRanThroughIt():Void {
 		if (unsupported()) return;
@@ -509,7 +509,7 @@ class PeerConnectionRelayTest extends utest.Test {
 		Told no, the client keeps wrapping every datagram in an indication and
 		the connection is the same one at the old price. It is the relay that
 		says yes and then drops what arrives that has nothing to fall back
-		from, see `TurnClient`, and node-turn, which does exactly that.
+		from: see `TurnClient`, and node-turn, which does exactly that.
 	**/
 	public function testARelayThatRefusesAChannelStillCarriesTheConnection():Void {
 		if (unsupported()) return;
@@ -572,13 +572,13 @@ class PeerConnectionRelayTest extends utest.Test {
 		A relay that refuses one of the peer's addresses still carries the
 		connection.
 
-		The auditor's case, end to end. Alice binds a wildcard, so she records
-		no host candidate and her only way out is her relay. Bob offers his host
-		address and his relayed one, and the relay refuses to forward to the
-		host address, the way a hardened relay refuses a private or loopback one.
-		ICE pairs Alice's relayed candidate with Bob's host address first, and
-		the relay's 403 for it closed her whole allocation, so the relayed pair
-		that would have worked was never tried, and neither peer connected.
+		Alice binds a wildcard, so she records no host candidate and her only
+		way out is her relay. Bob offers his host address and his relayed one,
+		and the relay refuses to forward to the host address, the way a
+		hardened relay refuses a private or loopback one. ICE pairs Alice's
+		relayed candidate with Bob's host address first, and the relay's 403
+		for it must not close her whole allocation, or the relayed pair that
+		would work is never tried, and neither peer connects.
 	**/
 	public function testARelayRefusingOneOfThePeersAddressesStillConnects():Void {
 		if (unsupported()) return;
@@ -633,8 +633,8 @@ class PeerConnectionRelayTest extends utest.Test {
 	/**
 		Closing a connection frees the allocation it made on the relay.
 
-		It did not: the relay held it for its whole lifetime, and a
-		reconnecting application ran into the relay's quota.
+		Otherwise the relay would hold it for its whole lifetime, and a
+		reconnecting application would run into the relay's quota.
 	**/
 	public function testClosingFreesTheRelayAllocation():Void {
 		if (unsupported()) return;
@@ -707,9 +707,9 @@ class PeerConnectionRelayTest extends utest.Test {
 		A relay that refused is not in the way of asking another, and its
 		refusal says why in a form code can read.
 
-		The auditor's case. The first relay's 486 left the connection holding
-		a dead relay for good, asking a second was refused as "already has a
-		relay", and the failure was a sentence with no code in it.
+		A first relay's 486 must not leave the connection holding a dead relay
+		for good, with a second refused as "already has a relay", and the
+		failure carries a code, not only a sentence.
 	**/
 	public function testARelayThatRefusedIsNotInTheWayOfAnother():Void {
 		if (unsupported()) return;
@@ -754,7 +754,8 @@ class PeerConnectionRelayTest extends utest.Test {
 		address announced for the peer to be told of.
 
 		A relay restarting, or a network change moving the 5-tuple it knew the
-		connection by, cost the connection its relayed candidate for good.
+		connection by, must not cost the connection its relayed candidate for
+		good.
 	**/
 	public function testALostRelayIsReplaced():Void {
 		if (unsupported()) return;
@@ -849,11 +850,12 @@ class PeerConnectionRelayTest extends utest.Test {
 
 		Their username carries their expiry, so every renewal is a new one,
 		and a relay refuses a request on an allocation signed by any other
-		(441). `setRelayCredentials` compared the new username with the held
-		allocation's after rewriting the list entry that allocation was made
-		from, comparing it with itself, and handed it over, so the next
-		Refresh was refused and the allocation lost. Called twice, because a
-		fix that read the entry before rewriting it would pass once.
+		(441). `setRelayCredentials` has to compare the new username with the
+		held allocation's before rewriting the list entry that allocation was
+		made from; compared after, it is compared with itself, the allocation
+		is handed over, and the next Refresh is refused and the allocation
+		lost. Called twice, because a fix that read the entry before rewriting
+		it would pass once.
 	**/
 	public function testNewRestCredentialsLeaveTheAllocationHeldAlone():Void {
 		if (unsupported()) return;
@@ -906,9 +908,9 @@ class PeerConnectionRelayTest extends utest.Test {
 		the socket might want it.
 
 		The reflexive query, the relay client, the agent and a restart's agent
-		each decoded it for themselves, four decodes of every datagram, all
-		before any of them checked its integrity, which multiplied what one
-		datagram of junk attributes cost by four.
+		each decoding it for themselves would make four decodes of every
+		datagram, all before any of them checked its integrity, multiplying
+		what one datagram of junk attributes cost by four.
 	**/
 	public function testADatagramIsDecodedOnce():Void {
 		if (unsupported()) return;
@@ -959,11 +961,11 @@ class PeerConnectionRelayTest extends utest.Test {
 	}
 
 	/**
-		Two peers connect through a relay one of them reaches over TCP, the
+		Two peers connect through a relay one of them reaches over TCP: the
 		only way out of a network that lets nothing but TCP out.
 
-		The client framed whole datagrams and nothing else, so the relay a
-		peer behind such a network needed most was one it could not use.
+		A client that framed whole datagrams and nothing else could not use
+		the relay a peer behind such a network needs most.
 	**/
 	public function testTwoPeersConnectThroughARelayReachedOverTcp():Void {
 		if (unsupported()) return;
@@ -1025,8 +1027,8 @@ class PeerConnectionRelayTest extends utest.Test {
 		checked, for a test against one with a throwaway certificate, as
 		`TurnClient.verifyCert` allows, and is checked otherwise.
 
-		`TurnServer` carried `certAuthority` and not this, so through
-		`PeerConnection` the check could not be turned off at all.
+		`TurnServer` carries this as well as `certAuthority`, so through
+		`PeerConnection` the check can be turned off.
 	**/
 	public function testARelaysCertificateCheckCanBeTurnedOffForATest():Void {
 		if (unsupported()) return;
@@ -1079,10 +1081,10 @@ class PeerConnectionRelayTest extends utest.Test {
 		to `gatherRelayedFrom` takes: the authority its certificate chains to,
 		and, for a test, whether to check it at all.
 
-		It took a transport and nothing else, so a relay reached over TLS was
+		Given a transport and nothing else, a relay reached over TLS would be
 		checked against the system's store alone, and one whose authority is
-		its own, a private relay, could not be reached through it. The
-		connection given nothing is refused here, as it was.
+		its own (a private relay) could not be reached through it. The
+		connection given nothing is refused here.
 	**/
 	public function testGatherRelayedTakesARelaysAuthorityOverTls():Void {
 		if (unsupported()) return;

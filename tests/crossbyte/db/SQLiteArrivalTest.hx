@@ -15,12 +15,13 @@ import utest.Assert;
 /**
 	"Copy it to keep it", from the side that is handed the payload: each
 	datagram stored, from inside its `DATA` listener, as a blob through an
-	asynchronous SQLite connection, a server logging what its players send.
+	asynchronous SQLite connection (a server logging what its players send).
 
-	An asynchronous statement keeps its parameters, "the values as they
-	are now, bound on the worker later", in a copy of the map, which holds
-	the payload itself, and binds it on the worker after the listener has
-	returned and the socket has emptied it and filled it with the next.
+	An asynchronous statement keeps its parameters ("the values as they
+	are now, bound on the worker later") in a copy of the map, which must
+	hold a copy of the payload, not the payload itself: that is bound on the
+	worker after the listener has returned and the socket has emptied it
+	and filled it with the next.
 **/
 class SQLiteArrivalTest extends utest.Test {
 	public function testADatagramStoredFromItsListenerIsWhatArrived():Void {

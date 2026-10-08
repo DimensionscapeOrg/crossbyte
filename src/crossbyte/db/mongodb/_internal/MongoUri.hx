@@ -185,8 +185,8 @@ class MongoUri {
 		}
 
 		// NaN as well: it compares false with everything, so a NaN connect
-		// timeout was no limit at all and a NaN socket timeout reached the
-		// socket as given.
+		// timeout would be no limit at all and a NaN socket timeout would
+		// reach the socket as given.
 		if (Math.isNaN(out.connectTimeout) || Math.isNaN(out.socketTimeout) || out.connectTimeout < 0 || out.socketTimeout < 0) {
 			throw new ArgumentError("A timeout cannot be negative, or NaN; 0 is no limit.");
 		}
@@ -216,7 +216,7 @@ class MongoUri {
 	/**
 		A config's host and credentials as a connection string, the user name
 		and password percent-encoded, so one holding `@`, `:` or `/` cannot
-		move the authority, `p@ss` in a password naming a host `ss`. What
+		move the authority (`p@ss` in a password naming a host `ss`). What
 		`settings` reads back is the config it came from.
 	**/
 	public static function format(cfg:MongoConfig):String {
@@ -435,9 +435,9 @@ class MongoUri {
 				}
 			default:
 				// Pool sizes, compression, retries, server selection and
-				// monitoring: options for machinery this client does not have,
-				// a ConnectionPool is configured on its own, recorded for
-				// a warning rather than refused, as the specification asks.
+				// monitoring: options for machinery this client does not have
+				// (a ConnectionPool is configured on its own), recorded for a
+				// warning rather than refused, as the specification asks.
 				out.ignored.push(name);
 		}
 	}

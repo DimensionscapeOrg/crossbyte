@@ -106,12 +106,12 @@ class NodeChannelTest extends utest.Test {
 	/**
 		A link whose peer drops it comes back when it is polled.
 
-		`poll` took the time from its caller and compared it with retries
-		scheduled on `haxe.Timer.stamp()`. Polled with the runtime's uptime,
-		as `crossbyte.Timer.stamp()` gives it, it was always early on Linux
-		native, jvm and eval, where the two clocks are far apart, and a link
-		that dropped once never came back. It takes no time now, and reads
-		the clock its retries are scheduled by.
+		`poll` takes no time from its caller: it reads the clock its retries
+		are scheduled by, `haxe.Timer.stamp()`. Compared with a caller's time
+		such as the runtime's uptime, which `crossbyte.Timer.stamp()` gives,
+		retries would always be early on Linux native, jvm and eval, where the
+		two clocks are far apart, and a link that dropped once would never come
+		back.
 	**/
 	public function testALinkThatDropsComesBackWhateverTheCallersClock():Void {
 		var server = new ServerSocket();
@@ -151,8 +151,8 @@ class NodeChannelTest extends utest.Test {
 
 	/**
 		What is sent in one pass goes when the pass ends, together, and what
-		the pass had written when the link failed waits for it, in order, as a
-		message that failed to go always did.
+		the pass had written when the link failed waits for it, in order, as
+		any message that failed to go does.
 	**/
 	public function testAPassesMessagesGoTogetherOrWaitIfTheLinkFails():Void {
 		var server = new ServerSocket();

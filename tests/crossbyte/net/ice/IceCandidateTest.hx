@@ -15,7 +15,7 @@ class IceCandidateTest extends utest.Test {
 	/**
 		The values a browser puts in its own offers.
 
-		2130706431 and 1694498815 are not arbitrary constants, they are what
+		2130706431 and 1694498815 are not arbitrary constants: they are what
 		the formula gives for a host and a server-reflexive candidate at the
 		default local preference, and they appear verbatim in the SDP of every
 		WebRTC implementation that follows the recommended type preferences. A
@@ -32,8 +32,8 @@ class IceCandidateTest extends utest.Test {
 	/**
 		The formula was built to fit, and this is where that would break first.
 
-		Every target holds an `Int` differently, 32 bits natively, a double on
-		JavaScript, so a priority that overflowed would not fail in the same
+		Every target holds an `Int` differently (32 bits natively, a double on
+		JavaScript), so a priority that overflowed would not fail in the same
 		way everywhere, or necessarily at all. The largest value the formula can
 		produce is below the signed 32-bit ceiling by design.
 	**/
@@ -158,9 +158,9 @@ class IceCandidateTest extends utest.Test {
 
 		Skewed pair ordering is all an out-of-range priority buys, and a peer can
 		order its own candidates however it likes anyway, so this is a
-		conformance check rather than a hole being closed. It is here because the
-		constructor already vets the port and the component, and this was the
-		one field it took on trust.
+		conformance check rather than a hole being closed. It is here because
+		the constructor vets the port and the component, and this field should
+		not be the one it takes on trust.
 	**/
 	public function testAPriorityOutsideTheAllowedRangeIsRefused():Void {
 		Assert.raises(() -> new IceCandidate(HOST, "10.0.0.2", 50000, 1, 0), ArgumentError);
@@ -234,7 +234,7 @@ class IceCandidateTest extends utest.Test {
 		The formula needs more than 32 bits, and this is what proves it.
 
 		The largest pair priority is about 9.15e18 against a signed 64-bit
-		ceiling of about 9.22e18, the RFC chose exponents that fill an
+		ceiling of about 9.22e18: the RFC chose exponents that fill an
 		`Int64` almost exactly. Had this been computed in an `Int`, the value
 		would have wrapped to something small or negative on a target with real
 		32-bit integers, and merely lost precision on one where numbers are
@@ -377,8 +377,8 @@ class IceCandidateTest extends utest.Test {
 	/**
 		A reflexive candidate pairs as the address it was discovered through.
 
-		Nothing sends from a reflexive address, it is where a NAT put this
-		peer, and the datagram still leaves the socket that asked, so RFC 8445
+		Nothing sends from a reflexive address (it is where a NAT put this
+		peer, and the datagram still leaves the socket that asked), so RFC 8445
 		section 6.1.2.2 replaces it with its base when a pair is formed, and
 		6.1.2.4 drops what that leaves redundant. Without it a peer behind NAT
 		sends every check twice, from one socket, to the same place.
@@ -439,8 +439,8 @@ class IceCandidateTest extends utest.Test {
 		A wildcard bind names every interface and so names none, which leaves
 		nothing to record as the base. Collapsing onto a base that was guessed
 		would drop a pair that was not redundant, so an unrecorded one means the
-		candidate is paired as itself, which is what happened before any of
-		this and still works, one socket serving whatever is named.
+		candidate is paired as itself, which still works, one socket serving
+		whatever is named.
 	**/
 	public function testAReflexiveCandidateWithoutABaseIsPairedAsItself():Void {
 		var reflexive = IceCandidate.serverReflexive({address: "203.0.113.7", port: 50000});

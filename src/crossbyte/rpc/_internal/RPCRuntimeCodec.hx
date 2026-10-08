@@ -66,8 +66,8 @@ class RPCRuntimeCodec {
 				output.putByte(TAG_STRING);
 				output.putString(value);
 			case TAG_BYTES:
-				// A subclass of Bytes is bytes all the same, a ByteArray is one
-				// at run time, and goes as its own length, not its buffer's.
+				// A subclass of Bytes is bytes all the same (a ByteArray is one
+				// at run time) and goes as its own length, not its buffer's.
 				output.putByte(TAG_BYTES);
 				output.putBytes(cast value);
 			case _:
@@ -77,12 +77,12 @@ class RPCRuntimeCodec {
 
 	/**
 		The tag `value` goes under, or `NOT_CARRIED`, without allocating:
-		`Type.typeof` made a `TClass` for every String and Bytes it was asked
-		about, on every call.
+		`Type.typeof` would make a `TClass` for every String and Bytes it is
+		asked about, on every call.
 
-		The answer `Type.typeof` gave, on every target. A number is an Int or a
+		The answer `Type.typeof` gives, on every target. A number is an Int or a
 		Float as `Type.typeof` says, which is not the same everywhere: on
-		JavaScript, the jvm and HashLink a whole number held as a Float, 2.0,
+		JavaScript, the jvm and HashLink a whole number held as a Float (2.0)
 		is an Int, natively and on the interpreter and neko a Float; a whole
 		number past an Int's range is a Float on all of them. `null` is
 		`TAG_NULL`, and a `ByteArray` is `TAG_BYTES`.
@@ -107,9 +107,9 @@ class RPCRuntimeCodec {
 				Std.isOfType(value, Bytes) ? TAG_BYTES : NOT_CARRIED;
 		}
 		#else
-		// A String or Bytes was a TClass, the one answer that allocated; a test
-		// of its class answers the same. A number's or a Bool's answer is a
-		// constant, which allocates nothing, and is still Type.typeof's.
+		// A String or Bytes would be a TClass, the one answer that allocates;
+		// a test of its class answers the same. A number's or a Bool's answer
+		// is a constant, which allocates nothing, and is Type.typeof's.
 		if ((value is String)) {
 			return TAG_STRING;
 		}

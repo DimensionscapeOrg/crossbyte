@@ -12,9 +12,9 @@ import haxe.macro.Context;
 	targets each is for.
 
 	- `std/java`, on the java targets: `haxe.ds.IntMap`, whose `lookup` in
-	  Haxe 4.3.7 never stopped at an empty bucket, so every miss read the
-	  whole table, 110us a miss at 100,000 entries, where a hit took
-	  nothing measurable. Every `Map<Int, T>` on the jvm is one.
+	  Haxe 4.3.7 never stops at an empty bucket, so every miss reads the
+	  whole table (110us a miss at 100,000 entries, where a hit takes
+	  nothing measurable). Every `Map<Int, T>` on the jvm is one.
 
 	Run from `extraParams.hxml`, so `-lib crossbyte` gets it, and from the
 	suites' build files, which use `-cp src`. The macro context is left as it

@@ -25,8 +25,8 @@ class WorkerTest extends utest.Test {
 	}
 
 	public function testRunReturnsWhileTheWorkIsStillGoing():Void {
-		// On the jvm and the interpreter run() did the work itself, on the
-		// runtime's thread, and dispatched COMPLETE before returning.
+		// On the jvm and the interpreter too, run() does not do the work itself
+		// on the runtime's thread, nor dispatch COMPLETE before returning.
 		#if target.threaded
 		var worker = new Worker();
 		var caller = new sys.thread.Tls<Bool>();
@@ -165,8 +165,8 @@ class WorkerTest extends utest.Test {
 	}
 
 	public function testAWorkerDeliversToTheRuntimeItRanOnAndHoldsNoTickListener():Void {
-		// A running worker held a tick listener on its runtime and polled its
-		// queue every tick. It posts to the runtime instead, which wakes it.
+		// A running worker posts to the runtime, which wakes it, rather than
+		// holding a tick listener on its runtime and polling its queue every tick.
 		#if target.threaded
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
@@ -219,11 +219,11 @@ class WorkerTest extends utest.Test {
 
 	/**
 		A worker cancelled after its work sent COMPLETE, but before its runtime
-		delivered it, ends cancelled. cancel() decided by `completed`, which
-		sendComplete sets as it sends, and left the state alone; the drain then
-		discarded the completion as cancelled, and nothing set the state again.
-		The worker read RUNNING for good, and run() refused it as already
-		running.
+		delivered it, ends cancelled. Deciding by `completed`, which
+		sendComplete sets as it sends, cancel() would leave the state alone;
+		the drain would then discard the completion as cancelled, nothing would
+		set the state again, the worker would read RUNNING for good, and run()
+		would refuse it as already running.
 	**/
 	public function testAWorkerCancelledBeforeItsCompletionArrivesEndsCancelled():Void {
 		#if target.threaded
@@ -295,8 +295,9 @@ class WorkerTest extends utest.Test {
 
 		CrossByte.current().pump(1 / 60, 0);
 
-		// A tick used to deliver exactly one message, so this took 65 of them,
-		// paced by the runtime's tick rate rather than by how often the host pumps.
+		// A tick delivers more than one message: one a tick would take 65 ticks
+		// here, paced by the runtime's tick rate rather than by how often the
+		// host pumps.
 		Assert.equals(64, progress);
 		Assert.isTrue(completed);
 		#else
@@ -306,8 +307,7 @@ class WorkerTest extends utest.Test {
 
 	/**
 		A worker whose messages have types: what `doWork` is handed, what it
-		reports and what it completes with. Did not compile before: there was
-		no such worker.
+		reports and what it completes with.
 	**/
 	public function testATypedWorkerHandsOverTypedMessages():Void {
 		var worker = new TypedWorker<String, Int, Float>();
@@ -331,8 +331,8 @@ class WorkerTest extends utest.Test {
 
 	/**
 		A backlog far larger than one turn's share is delivered in order and
-		whole. Each turn's share was spliced off the front of the queue,
-		moving everything behind it.
+		whole, without each turn's share spliced off the front of the queue,
+		which would move everything behind it.
 	**/
 	public function testALargeBacklogIsDeliveredInOrder():Void {
 		#if target.threaded

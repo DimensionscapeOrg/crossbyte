@@ -7,8 +7,8 @@ package crossbyte.ds;
  * Handles are automatically invalidated when the slot is reused, protecting against use-after-free errors.
  *
  * Freed slots are reused oldest first, as in `SlotMap`, so a slot's
- * generation comes round, and a handle kept past its entry's death can
- * alias, only after 2048 times as many inserts as there are free slots,
+ * generation comes round (and a handle kept past its entry's death can
+ * alias) only after 2048 times as many inserts as there are free slots,
  * not after 2048 inserts. 
  * @param T The type of values stored in the map.
  */
@@ -39,7 +39,7 @@ final class PackedSlotMap<T> {
 	@:noCompletion private var __values:Array<T> = [];
 	@:noCompletion private var __denseToSlot:Array<Int> = [];
 	// Per slot: where its value sits in the dense arrays, or, for a free
-	// slot, a negative number, -1 for the last free slot, and -2 - next
+	// slot, a negative number: -1 for the last free slot, and -2 - next
 	// for one the next free slot follows. So the free slots queue in the
 	// order they were freed without an array of their own, and a slot is
 	// free exactly when this is negative, as the rest of the class asks.
@@ -201,8 +201,7 @@ final class PackedSlotMap<T> {
 	 * Order is not guaranteed to be stable over time due to compaction on removal.
 	 *
 	 * Removing the entry the loop is on is safe: the entry moved into its
-	 * place is visited next. It was the value array's own iterator, which
-	 * skipped that entry.
+	 * place is visited next.
 	 */
 	public inline function iterator():PackedSlotMapIterator<T> {
 		return new PackedSlotMapIterator<T>(this);
@@ -336,8 +335,8 @@ final class PackedSlotMap<T> {
 /**
  * Walks a `PackedSlotMap`'s values in their current dense order, with the
  * entry just returned free to be removed: if another was moved into its
- * place, that place is visited again. Slots, not values, say whether it was,
- * two entries can hold one value.
+ * place, that place is visited again. Slots, not values, say whether it
+ * was: two entries can hold one value.
  */
 @:noCompletion
 @:access(crossbyte.ds.PackedSlotMap)

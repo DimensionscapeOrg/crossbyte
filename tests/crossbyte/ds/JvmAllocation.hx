@@ -10,8 +10,8 @@ package crossbyte.ds;
 class JvmAllocation {
 	/**
 		What running `f` allocated on this thread, less what reading the
-		counter costs: the least of three runs, so a one-off, a class
-		loading, a JIT deoptimisation, is not counted against it.
+		counter costs: the least of three runs, so a one-off (a class
+		loading, a JIT deoptimisation) is not counted against it.
 	**/
 	public static function bytesBy(f:Void->Void):Float {
 		var bean = java.lang.management.ManagementFactory.getThreadMXBean();

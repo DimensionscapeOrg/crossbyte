@@ -106,10 +106,10 @@ class WebSocketTest extends utest.Test {
 
 	/**
 		A read that drains the socket is the last read of an arrival, as
-		Socket's is. The loop read on until the socket said it would block: a
-		system call that read nothing on every arrival, and an exception hxcpp
-		throws and the loop catches, a third of an echoing server's time,
-		where a plain socket spent a twelfth.
+		Socket's is. Reading on until the socket said it would block would
+		cost a system call that read nothing on every arrival, and an
+		exception hxcpp throws and the loop catches: a third of an echoing
+		server's time, where a plain socket spends a twelfth.
 	**/
 	public function testAReadThatDrainsTheSocketIsTheLastRead():Void {
 		#if cpp
@@ -150,11 +150,11 @@ class WebSocketTest extends utest.Test {
 		A burst of messages is parsed in one sweep, and what is left of it
 		after the last whole frame is moved down once, in place.
 
-		Every 64 KB consumed copied the whole unread rest of the input into a
-		new buffer, so a burst cost the square of its length: a client
-		uploading 64 KB messages was received at 21 MB/s, 48.7 ms of server
-		CPU a megabyte, 82% of it in that copy, and the runtime ran nothing
-		else, for seconds at a time, while it lasted.
+		Copying the whole unread rest of the input into a new buffer for every
+		64 KB consumed would make a burst cost the square of its length: a
+		client uploading 64 KB messages would be received at 21 MB/s, 48.7 ms
+		of server CPU a megabyte, 82% of it in that copy, and the runtime would
+		run nothing else, for seconds at a time, while it lasted.
 	**/
 	public function testABurstIsParsedWithoutCopyingWhatIsLeft():Void {
 		var ws = openParser();
@@ -204,8 +204,8 @@ class WebSocketTest extends utest.Test {
 		A session whose peer keeps every read full reads a megabyte a pass,
 		as a plain socket does, and the rest on the passes after.
 
-		It read for as long as reads came back full, so a client uploading
-		faster than the server parsed held the runtime in that one session,
+		Reading for as long as reads came back full, a client uploading faster
+		than the server parsed would hold the runtime in that one session,
 		every timer and every other socket waiting on it.
 	**/
 	public function testAPeerThatKeepsSendingIsReadAMegabyteAPass():Void {
@@ -258,9 +258,9 @@ class WebSocketTest extends utest.Test {
 
 	/**
 		What a pass of the runtime sends a WebSocket goes out in one write,
-		when the pass ends. Each message was a write of its own, a system
-		call apiece: a server relaying a chat room's messages to everyone in
-		it made one for every message to every member.
+		when the pass ends, rather than a write and a system call for each
+		message, which for a server relaying a chat room's messages to
+		everyone in it would be one for every message to every member.
 	**/
 	public function testWhatOnePassSendsGoesOutInOneWrite():Void {
 		#if cpp
@@ -299,9 +299,8 @@ class WebSocketTest extends utest.Test {
 
 	/**
 		A session closed at once still sends what the pass was holding for it,
-		and its close frame after: an `abort` in the handler that sent a
-		last message used to find both already written, and must not lose
-		them now that they wait for the pass to end.
+		and its close frame after: an `abort` in the handler that sent a last
+		message must not lose them while they wait for the pass to end.
 	**/
 	public function testWhatAPassHeldGoesBeforeAnAbortCloses():Void {
 		#if cpp
@@ -392,10 +391,10 @@ class WebSocketTest extends utest.Test {
 
 	/**
 		A frame longer than 64 KiB, in the 64-bit length form, is taken as a
-		message, as a browser and Node's `ws` send one: every frame was held
-		to 64 KiB, and a browser's message of 100 KB was refused, whatever a
-		message might be. (Just past it: building a frame of a megabyte a
-		byte at a time takes minutes on the interpreter.)
+		message, as a browser and Node's `ws` send one, rather than every
+		frame held to 64 KiB and a browser's message of 100 KB refused,
+		whatever a message might be. (Just past it: building a frame of a
+		megabyte a byte at a time takes minutes on the interpreter.)
 	**/
 	public function testExtendedPayloadLength127DispatchesAFrameLongerThanSixtyFourKilobytes():Void {
 		var ws = openParser();
@@ -617,9 +616,9 @@ class WebSocketTest extends utest.Test {
 	}
 
 	/**
-		A `WebSocket` has no half-close, a session ends both ways at once,
-		with a close frame, and `shutdown()` says so, as a page's `Socket`
-		does, where it returned having done nothing.
+		A `WebSocket` has no half-close (a session ends both ways at once,
+		with a close frame), and `shutdown()` says so, as a page's `Socket`
+		does, rather than returning having done nothing.
 	**/
 	public function testShutdownIsRefused():Void {
 		var socket = new crossbyte.net.WebSocket();
@@ -628,12 +627,12 @@ class WebSocketTest extends utest.Test {
 	}
 
 	/**
-		A URL whose port is too big for an `Int` is refused, on every target.
-		`Std.parseInt` made it the largest Int on Windows, its low 32 bits on
-		Linux, port 80, for this one, nothing at all on eval, so the
-		default port, and an exception of its own on the jvm. Not on eval, hl
-		or neko, which have no secure random to key a client's handshake with,
-		so no client to build.
+		A URL whose port is too big for an `Int` is refused, on every target,
+		rather than left to `Std.parseInt`, which makes it the largest Int on
+		Windows, its low 32 bits on Linux (port 80, for this one), nothing at
+		all on eval, so the default port, and an exception of its own on the
+		jvm. Not on eval, hl or neko, which have no secure random to key a
+		client's handshake with, so no client to build.
 	**/
 	#if !(eval || hl || neko)
 	public function testAUrlPortTooBigForAnIntIsRefused():Void {

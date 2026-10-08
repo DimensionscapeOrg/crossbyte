@@ -15,10 +15,9 @@ class NativeProcessTest extends utest.Test {
 	private static inline var TIMEOUT:Float = 15.0;
 
 	// Every target with processes and threads but the interpreter: cpp, hl,
-	// neko and the jvm, none of which but cpp names an OS when it is built. The
-	// jvm was left out by asking for one, and refused to start a process though
-	// it can. The interpreter's process calls hold every thread while they
-	// wait, so it refuses, and says why.
+	// neko and the jvm, none of which but cpp names an OS when it is built,
+	// so support is not decided by asking for one. The interpreter's process
+	// calls hold every thread while they wait, so it refuses, and says why.
 	public function testSupportFlagMatchesTarget():Void {
 		#if (nodejs || (sys && target.threaded && !eval))
 		Assert.isTrue(NativeProcess.isSupported);
@@ -32,8 +31,8 @@ class NativeProcessTest extends utest.Test {
 		Assert.pass();
 		#else
 		// An IllegalOperationError, which says the target cannot, rather than
-		// the ArgumentError it was, which says the caller passed something
-		// wrong; and on the interpreter, why.
+		// an ArgumentError, which says the caller passed something wrong; and
+		// on the interpreter, why.
 		var proc = new NativeProcess();
 		var thrown:Dynamic = null;
 		try {
@@ -85,9 +84,10 @@ class NativeProcessTest extends utest.Test {
 	/**
 		The child's own id, while it runs and on the event that ends it.
 
-		It read -1 on every target that runs the child on a thread, cpp
-		included: the id was looked up as a `pid` field, by reflection, and no
-		target's `sys.io.Process` has one, they all have `getPid()`.
+		The id is read through `getPid()`, which every target's
+		`sys.io.Process` has, not looked up as a `pid` field by reflection,
+		which none has: that would read -1 on every target that runs the child
+		on a thread, cpp included.
 	**/
 	public function testThePidIsTheChilds():Void {
 		#if (sys && target.threaded && !eval)
@@ -110,7 +110,7 @@ class NativeProcessTest extends utest.Test {
 		#if jvm
 		// The one place there is no id to have: Java 8 on Windows keeps the
 		// child's handle and no way to learn its id, as `pid` documents. The
-		// jvm's own getPid() answered -1 everywhere, Linux and Java 9 included.
+		// jvm's own getPid() answers -1 everywhere, Linux and Java 9 included.
 		if (System.isWindows && Std.parseFloat(java.lang.System.getProperty("java.specification.version")) < 9) {
 			Assert.equals(-1, pid);
 			return;
@@ -125,11 +125,12 @@ class NativeProcessTest extends utest.Test {
 	/**
 		A child with nothing to say does not stop the runtime while it runs.
 
-		On hl its output was read, and its exit waited for, in natives that do
-		not tell the collector the thread is waiting, and the collector stops
-		every thread until each reaches a safe point. The first collection
-		after the start held the whole runtime until the child spoke or ended:
-		5,212 ms between two ticks, for a child quiet for five seconds.
+		On hl a child's output is read, and its exit waited for, in natives that
+		do not tell the collector the thread is waiting, and the collector stops
+		every thread until each reaches a safe point. Unless those waits are
+		marked, the first collection after the start would hold the whole
+		runtime until the child spoke or ended: about five seconds between two
+		ticks, for a child quiet for five seconds.
 	**/
 	public function testAQuietChildDoesNotStopTheRuntime():Void {
 		#if (sys && target.threaded && !eval)
@@ -168,11 +169,11 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	/**
-		A character a read cuts in two arrives whole. Each read of a child's
-		output was decoded on its own, so a UTF-8 character split across two,
-		at a 4096-byte boundary, or wherever the pipe hands back less,
-		came out as two replacement characters. Node decodes across reads
-		already. Here the output arrives a byte per read.
+		A character a read cuts in two arrives whole. Decoding each read of a
+		child's output on its own would turn a UTF-8 character split across two
+		(at a 4096-byte boundary, or wherever the pipe hands back less) into
+		two replacement characters. Node decodes across reads already. Here the
+		output arrives a byte per read.
 	**/
 	@:access(crossbyte.sys.NativeProcess)
 	public function testACharacterSplitBetweenReadsArrivesWhole():Void {
@@ -204,15 +205,12 @@ class NativeProcessTest extends utest.Test {
 		The worker that waited for a child survives the runtime dispatching
 		the child's `EXIT` first, and the child is closed all the same.
 
-		The worker sent its completion and then closed the child through the
-		field `EXIT` clears. A runtime that got there first left the worker
-		closing null: an access violation natively, which the `try` around
-		the close cannot catch, and the child's handles left for the
-		collector to close. The load harness's game server died of it in
-		three runs of four when a thousand clients' processes ended at once.
-		The test hook holds the worker at that moment until the runtime has
-		dispatched `EXIT`; before the fix this test ended the native suite
-		with a segmentation fault.
+		The worker sends its completion and then closes the child, and must
+		not close it through the field `EXIT` clears: a runtime that got there
+		first would leave the worker closing null, an access violation natively
+		that the `try` around the close cannot catch, with the child's handles
+		left for the collector to close. The test hook holds the worker at that
+		moment until the runtime has dispatched `EXIT`.
 	**/
 	public function testAChildWhoseExitIsDispatchedFirstIsStillClosed():Void {
 		#if (sys && target.threaded && !eval)
@@ -255,9 +253,10 @@ class NativeProcessTest extends utest.Test {
 	/**
 		A child writing faster than the runtime dispatches is held to at most
 		`MAX_OUTPUT_AHEAD` bytes ahead of it; past that the child waits on its
-		pipe. Its output was read as fast as it came and queued without limit:
-		here a 2 MB file, every byte of it waiting in this process while the
-		runtime did not pump. All of it still arrives once the runtime does.
+		pipe, rather than its output being read as fast as it comes and queued
+		without limit (here a 2 MB file, every byte of it waiting in this
+		process while the runtime does not pump). All of it still arrives once
+		the runtime does.
 	**/
 	public function testAChattyChildIsHeldToABoundedBacklog():Void {
 		#if (sys && target.threaded && !eval)

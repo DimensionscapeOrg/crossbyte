@@ -18,14 +18,14 @@ import utest.Assert;
  * CrossByte's own client on both ends, so the two sides agree by
  * construction.
  *
- * Between those two gaps sat a server that could not receive a single
- * message from a foreign client: the handshake request stayed in the
- * parse buffer, so the first real frame was read starting at the `G` of
- * `GET`, whose `0x47` has RSV1 set, and every session died with 1002.
- * The parser was correct; the state it inherited was not.
+ * Between those two gaps a server could fail to receive a single message
+ * from a foreign client: a handshake request left in the parse buffer
+ * would have the first real frame read starting at the `G` of `GET`,
+ * whose `0x47` has RSV1 set, and every session would die with 1002, the
+ * parser correct and the state it inherited not.
  *
  * These cases close that gap. They speak the protocol the way a browser
- * does, and, more usefully, the ways a browser must not.
+ * does, and (more usefully) the ways a browser must not.
  */
 @:access(crossbyte.net.WebSocket)
 class WebSocketConformanceTest extends utest.Test {
@@ -74,10 +74,8 @@ class WebSocketConformanceTest extends utest.Test {
 
 		// Closes are dispatched from the runtime loop, not from close()
 		// itself, so they have to be drained here. Left pending, this
-		// test's disconnect surfaces during the next one and is read as
-		// that test's outcome, which is exactly how every case in this
-		// class failed on its first run, one reporting the close code the
-		// case before it had produced.
+		// test's disconnect would surface during the next one and be read as
+		// that test's outcome.
 		var until:Float = haxe.Timer.stamp() + 0.2;
 		while (haxe.Timer.stamp() < until) {
 			RawWebSocketClient.pumpRuntime(runtime);
@@ -93,10 +91,9 @@ class WebSocketConformanceTest extends utest.Test {
 			received.push(data);
 		});
 
-		// Read straight off the public close event. This used to require
-		// reaching through @:access into the session underneath, because
-		// the public layer dispatched a bare Event.CLOSE and dropped the
-		// code, the gap this event closes.
+		// Read straight off the public close event, which carries the
+		// code, with no need to reach through @:access into the session
+		// underneath.
 		session.addEventListener(Event.CLOSE, function(e:Event):Void {
 			var closed = Std.downcast(e, crossbyte.events.WebSocketCloseEvent);
 			if (closed != null) {
@@ -133,8 +130,8 @@ class WebSocketConformanceTest extends utest.Test {
 	// --- delivery ---
 
 	/**
-	 * The regression for the handshake-buffer bug: one ordinary frame,
-	 * sent the way any client sends its first message.
+	 * The first frame after the handshake: one ordinary frame, sent the
+	 * way any client sends its first message.
 	 */
 	public function testFirstFrameAfterHandshakeIsDelivered():Void {
 		var peer = connect();
@@ -234,7 +231,7 @@ class WebSocketConformanceTest extends utest.Test {
 
 	/**
 	 * Unmasking XORs whole 32-bit words and finishes the remainder a byte
-	 * at a time, so every payload length mod 4 has to be exercised, a
+	 * at a time, so every payload length mod 4 has to be exercised: a
 	 * word loop that runs one iteration too far, or a tail that starts at
 	 * the wrong offset, corrupts only some lengths.
 	 *
@@ -263,7 +260,7 @@ class WebSocketConformanceTest extends utest.Test {
 	}
 
 	/**
-	 * Session metrics track real connections, and, the part that matters,
+	 * Session metrics track real connections, and (the part that matters)
 	 * the series count does not grow with them.
 	 *
 	 * A gauge labelled per peer would satisfy every other expectation here
@@ -316,7 +313,7 @@ class WebSocketConformanceTest extends utest.Test {
 
 	/**
 	 * A peer that simply goes away is 1006, and must not be reported as a
-	 * fault, it is what every closed browser tab produces.
+	 * fault: it is what every closed browser tab produces.
 	 */
 	public function testPeerDisconnectReportsAnExpectedClose():Void {
 		var peer = connect();
@@ -497,12 +494,12 @@ class WebSocketConformanceTest extends utest.Test {
 	 * The case above sends all 65537 bytes, so it passes whether the size is
 	 * checked when the header is read or only once the payload has been
 	 * buffered. That distinction is the entire cost. The header below is
-	 * fourteen bytes and promises two gigabytes, and until the check moved
-	 * above the wait for the payload the session simply sat there: the parse
-	 * loop breaks without consuming, so nothing is compacted out of the input
-	 * buffer and every byte the peer sent afterwards was retained. Ten bytes
-	 * of header, and an unauthenticated peer could then charge the server for
-	 * as much memory as it cared to send.
+	 * fourteen bytes and promises two gigabytes; checked only after the wait
+	 * for the payload, the session would simply sit there: the parse loop
+	 * breaks without consuming, so nothing is compacted out of the input
+	 * buffer and every byte the peer sent afterwards would be retained. Ten
+	 * bytes of header, and an unauthenticated peer could then charge the
+	 * server for as much memory as it cared to send.
 	 *
 	 * So the assertion is that the close arrives at all. A limit enforced only
 	 * after the allocation it exists to prevent is not a limit.

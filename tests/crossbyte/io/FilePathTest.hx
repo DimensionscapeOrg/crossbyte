@@ -7,8 +7,8 @@ import utest.Assert;
 	The path arithmetic under `File.resolvePath` and `File.getRelativePath`,
 	for both platforms on whichever one runs it.
 
-	Asked of the strings directly, so the Windows forms, drives, shares,
-	`\\?\`: are checked on the Linux and macOS runners too, which have no
+	Asked of the strings directly, so the Windows forms (drives, shares,
+	`\\?\`) are checked on the Linux and macOS runners too, which have no
 	drive to build a `File` on. `FileTest` checks the same rules through
 	`File` on the platform it runs on.
 **/

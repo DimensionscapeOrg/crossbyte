@@ -23,7 +23,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		// A STUN server of our own, so this needs no network and no third
 		// party. It answers the binding request with an address of its
-		// choosing, which is what a real one does, the point is that the
+		// choosing, which is what a real one does: the point is that the
 		// reply is picked out of ordinary inbound traffic on a socket already
 		// carrying reliable sessions, and matched to the request that asked.
 		var stun = new crossbyte.net.DatagramSocket();
@@ -69,9 +69,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 			Assert.isNull(failure, "discovery failed: " + failure);
 			// Guarded, not just asserted. utest records a failed assertion and
 			// carries on, so on a timeout `discovered` is still null when the
-			// next line reads a field off it, and a null field access on
-			// hxcpp release is a SIGSEGV, not a catchable error, so the whole
-			// process dies and takes the run's results with it.
+			// next line reads a field off it, and a null field access on hxcpp
+			// release is a SIGSEGV, not a catchable error, so the whole process
+			// dies and takes the run's results with it.
 			Assert.notNull(discovered, "no reflexive address was reported");
 
 			if (discovered != null) {
@@ -91,9 +91,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		The listening port's public address is what every peer is told to dial,
 		and the question asking for it goes out over UDP like anything else. Sent
-		once, a single dropped datagram loses the whole query and is reported as
-		a server that is not there, which sends whoever reads it looking at
-		their configuration for a fault that is not in it.
+		once, a single dropped datagram would lose the whole query and be
+		reported as a server that is not there, which sends whoever reads it
+		looking at their configuration for a fault that is not in it.
 	**/
 	public function testADroppedBindingRequestIsAskedAgain():Void {
 		if (!ReliableDatagramSocket.isSupported) {
@@ -244,8 +244,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	/**
 		A discovery timeout of 0 sets no deadline, as it does for a
-		connection: the question is still being asked past the three seconds
-		0 used to mean, and the server closing ends it.
+		connection: the question is still being asked past three seconds, and
+		the server closing ends it.
 	**/
 	public function testADiscoveryTimeoutOfZeroAsksUntilTheServerCloses():Void {
 		if (!requireDatagramSupport()) return;
@@ -271,7 +271,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.listen();
 
 			server.discoverPublicAddress("127.0.0.1", silent.localPort, 0).then(_ -> {}, error -> failure = error);
-			// Past the three seconds 0 meant, and the fourth ask, at 3.5 s.
+			// Past three seconds, and the fourth ask, at 3.5 s.
 			pumpUntil(() -> failure != null, 4.0);
 
 			Assert.isNull(failure, "a question with no deadline was given up: " + failure);
@@ -291,10 +291,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 	/**
 		A session a server dials with a timeout of 0 has no deadline, as a
 		session's own `timeout` of 0 has none: it is still trying a silent
-		peer well past the default. 0 was taken for the default, twenty
-		seconds, so no dialled session could wait longer. A negative timeout
-		is refused, as the session's `timeout` refuses it, and the default is
-		twenty seconds still.
+		peer well past the default, twenty seconds, which 0 is not taken for.
+		A negative timeout is refused, as the session's `timeout` refuses it,
+		and the default is twenty seconds.
 	**/
 	public function testADialTimeoutOfZeroSetsNoDeadline():Void {
 		if (!requireDatagramSupport()) return;
@@ -326,9 +325,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	/**
 		A question the server cannot ask fails the future it returns, its
-		cause an IOError, rather than throwing, which both questions' docs
-		said they did. A caller that caught a throw never saw it; one that
-		watched the future did.
+		cause an IOError, rather than throwing, as both questions' docs say:
+		a caller watching the future sees it.
 	**/
 	public function testTheServersQuestionsFailTheirFutureRatherThanThrow():Void {
 		if (!requireDatagramSupport()) return;
@@ -352,9 +350,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	/**
 		The same over a reliable session: a number written into a new ByteArray
-		reads back as itself from the message that carried it, a game's
-		snapshot header, an input's tick. Messages came big-endian, and every
-		ByteArray an application makes is little-endian.
+		reads back as itself from the message that carried it (a game's
+		snapshot header, an input's tick): messages are little-endian, as every
+		ByteArray an application makes is.
 	**/
 	public function testANumberSentIsTheNumberRead():Void {
 		if (!requireDatagramSupport()) return;
@@ -398,7 +396,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 		// dials the other's reflexive address from the port it listens on; the
 		// outbound datagram opens that peer's own NAT mapping, so the other
 		// side's arrives at something willing to receive it. Neither peer is
-		// the server in the usual sense, both dial, both are dialled.
+		// the server in the usual sense: both dial, both are dialled.
 		//
 		// There is no NAT on loopback, so what this proves is the half that
 		// lives in CrossByte: that two sessions opened toward each other over
@@ -458,10 +456,10 @@ class ReliableDatagramSocketTest extends utest.Test {
 	public function testTwoPeersThatDialEachOtherFallQuietOnceConnected():Void {
 		if (!requireDatagramSupport()) return;
 
-		// Both dial, so both answer. Every HANDSHAKE was answered with one, so
-		// each answer drew the next: two connected peers with nothing to say
-		// passed some forty thousand datagrams a second between them over
-		// loopback, for as long as they stayed connected.
+		// Both dial, so both answer. A HANDSHAKE answered with one every time
+		// would have each answer draw the next: two connected peers with nothing
+		// to say would pass some forty thousand datagrams a second between them
+		// over loopback, for as long as they stayed connected.
 		var alice = new ReliableDatagramServerSocket();
 		var bob = new ReliableDatagramServerSocket();
 		var datagrams = 0;
@@ -496,9 +494,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 		if (!requireDatagramSupport()) return;
 
 		// The client's HANDSHAKE, answering the server's, is the last of the
-		// three, and a server sends its own only when asked. Lost, it left
-		// the client connected and sending and the server not, dropping all
-		// of it, until the server's session timed out.
+		// three, and a server sends its own only when asked. Lost, it would
+		// leave the client connected and sending and the server not, dropping
+		// all of it, until the server's session timed out.
 		var server = new ReliableDatagramServerSocket();
 		var client = new AnswerLosingSocket();
 		var accepted:ReliableDatagramSocket = null;
@@ -630,10 +628,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 		// punching works only when the port a peer dials out from is the port
 		// it is reachable on, because a NAT holds that mapping for one socket.
 		//
-		// Assembling this from outside the class is possible, RTPMP does it
-		// by writing eleven private fields, but it cannot be checked from
-		// outside, and it gets the routing wrong in a way that only shows up
-		// under a second peer.
+		// Assembling this from outside the class would mean writing private
+		// fields, could not be checked from outside, and gets the routing wrong
+		// in a way that only shows up under a second peer.
 		var alice = new ReliableDatagramServerSocket();
 		var bob = new ReliableDatagramServerSocket();
 		var acceptedByBob:ReliableDatagramSocket = null;
@@ -669,10 +666,10 @@ class ReliableDatagramSocketTest extends utest.Test {
 			// listening port, which is what makes Alice reachable there.
 			//
 			// Guarded: the wait above can time out under load, and a failed
-			// `Assert.notNull` does not stop the test, utest records it and
-			// carries on. Reading a field off the null that follows is a
-			// SIGSEGV on hxcpp release, not a catchable error, so it killed the
-			// process and took the whole run's results with it.
+			// `Assert.notNull` does not stop the test (utest records it and
+			// carries on). Reading a field off the null that follows is a
+			// SIGSEGV on hxcpp release, not a catchable error, so it would kill the
+			// process and take the whole run's results with it.
 			if (acceptedByBob != null) {
 				Assert.equals(alice.localPort, acceptedByBob.remotePort,
 					"dialled from port " + acceptedByBob.remotePort + " rather than the server's " + alice.localPort);
@@ -696,9 +693,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 	/**
 		A session a server dials announces itself, with `Event.CONNECT` on the
 		socket the call returned; the server's own CONNECT is for sessions a
-		peer opened. Its documentation said a dialled session was reported
-		through the server's event "exactly as an accepted one is", which it
-		never was: the caller already holds it.
+		peer opened, since the caller of a dial already holds its session.
 	**/
 	public function testADialledSessionAnnouncesItselfAndNotThroughItsServer():Void {
 		if (!requireDatagramSupport()) return;
@@ -747,8 +742,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			// Bound but not listening. The server's pump is what routes replies
 			// to a dialled session, so this would send a handshake and never
-			// hear the answer, a hang rather than an error, which is the
-			// worse of the two.
+			// hear the answer: a hang rather than an error, which is the worse of
+			// the two.
 			Assert.raises(() -> server.connect("127.0.0.1", 9), IOError);
 
 			server.listen();
@@ -812,7 +807,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		if (!DatagramSocket.bufferSizeSupported) {
 			// HashLink and Neko cannot size a socket's buffers: a session opens
-			// without asking, reads 0, not known, and says so if asked to.
+			// without asking, reads 0 (not known) and says so if asked to.
 			var unsized = new ReliableDatagramSocket();
 			Assert.equals(0, unsized.receiveBufferSize);
 			Assert.raises(() -> unsized.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE,
@@ -1109,15 +1104,14 @@ class ReliableDatagramSocketTest extends utest.Test {
 	/**
 		A frame that cannot go out reports why, and takes the connection down.
 
-		`__sendRaw` is the single exit every frame leaves through, data,
-		acks and keep-alives alike, and several of its callers run from
-		timers and from the transport's own receive handler. A throw escaping
-		here would unwind through those rather than fail this connection, so
-		the failure has to leave as an ioError and a close.
+		`__sendRaw` is the single exit every frame leaves through (data, acks
+		and keep-alives alike), and several of its callers run from timers and
+		from the transport's own receive handler. A throw escaping here would
+		unwind through those rather than fail this connection, so the failure
+		has to leave as an ioError and a close.
 
-		The reason has to travel with it. Reporting that a send failed without
-		saying why is the fault that made an unrelated intermittent unreadable
-		for weeks elsewhere in this package.
+		The reason has to travel with it: a failure reported without saying why
+		makes an unrelated intermittent unreadable.
 	**/
 	public function testASendThatCannotGoOutReportsWhyAndCloses():Void {
 		if (!requireDatagramSupport()) return;
@@ -1145,9 +1139,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			@:privateAccess client.__transport.close();
 			client.send(bytesOf("frame"));
 
-			// Gathered rather than sent, so it fails where the runtime's pass
-			// ends, which is the loop itself, and exactly where a throw must
-			// not escape to.
+			// Gathered rather than sent, so it fails where the runtime's pass ends,
+			// which is the loop itself, and exactly where a throw must not escape to.
 			Assert.equals(0, errors.length, "the frame was sent from inside send()");
 			pumpUntil(() -> errors.length > 0, 1.0);
 
@@ -1214,9 +1207,9 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	/**
 		A timeout of zero is no deadline: the attempt goes on until the peer
-		answers or the caller closes it, as it does for a `Socket` on Node.
-		It armed a timer of zero instead, which gave the attempt up at the
-		first pass, by address, and by name once looked up.
+		answers or the caller closes it, as it does for a `Socket` on Node, not
+		a timer of zero, which would give the attempt up at the first pass, by
+		address, and by name once looked up.
 	**/
 	public function testATimeoutOfZeroIsNoDeadline():Void {
 		if (!requireDatagramSupport()) return;
@@ -1532,7 +1525,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 		if (!requireDatagramSupport()) return;
 
 		// Two peers opening a path through NAT both dial, so neither side's
-		// admit is asked, each CONNECT arrives at a session already dialled.
+		// admit is asked: each CONNECT arrives at a session already dialled.
 		// The payload is still what the other side said, and it is kept.
 		var alice = new ReliableDatagramServerSocket();
 		var bob = new ReliableDatagramServerSocket();

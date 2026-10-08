@@ -62,9 +62,8 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	// The runtime's side, touched only on its thread: what a drain took from
 	// the outbox, and how far delivery has come through it. A drain takes
 	// the whole outbox at once, swapping in an empty array, and delivers up
-	// to maxMessagesPerTick of it a turn. It used to splice each turn's share
-	// off the front of the outbox, moving everything behind it: a backlog of
-	// a million messages cost hundreds of billions of moves to deliver.
+	// to maxMessagesPerTick of it a turn, rather than splicing each turn's
+	// share off the front of the outbox and moving everything behind it.
 	@:noCompletion private var __taken:Array<WorkerMessage> = null;
 	@:noCompletion private var __takenAt:Int = 0;
 	#end
@@ -96,8 +95,8 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		canceled = true;
 		// By the state, not by `completed`: sendComplete sets that as the work
 		// sends, and a completion not yet delivered is discarded by the drain
-		// once this is called, which then set nothing, the worker read
-		// RUNNING for good, and run() refused it.
+		// once this is called, which would then set nothing, leaving the
+		// worker RUNNING for good and run() refusing it.
 		if (state != COMPLETED && state != FAILED) {
 			state = CANCELLED;
 		}
@@ -119,7 +118,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		Runs `doWork` with `message`: on a thread of its own where there are
 		threads, and here, holding this thread, on JavaScript.
 
-		A message of bytes, a `ByteArray` or `haxe.io.Bytes`, is copied
+		A message of bytes (a `ByteArray` or `haxe.io.Bytes`) is copied
 		before this returns, from 0 to its `length`, and `doWork` is handed
 		the copy: the thread reads it later, and the caller's bytes are the
 		caller's again at once, as a payload a listener was handed for its
@@ -149,8 +148,8 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		__workerThread = Thread.create(__doWork);
 		#elseif js
 		// Here and now, on the one thread there is. What it sends goes to the
-		// outbox and is delivered in a later turn, as from a thread: it was
-		// dispatched inside run(), before a listener added after it could hear.
+		// outbox and is delivered in a later turn, as from a thread, so a
+		// listener added after run() hears it.
 		__outbox = [];
 		__drainPosted = false;
 		__runCount++;
@@ -163,8 +162,8 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	}
 
 	/**
-		`message` as `run` hands it to the work: bytes copied, a `ByteArray`
-		at the same position, in the same byte order and object encoding,
+		`message` as `run` hands it to the work: bytes copied (a `ByteArray`
+		at the same position, in the same byte order and object encoding),
 		and anything else as it is.
 	**/
 	@:noCompletion private static function __handedOver<T>(message:Null<T>):Null<T> {
@@ -329,7 +328,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 
 	#if (target.threaded || js)
 	// Queues `message` for the owning runtime and posts a drain when this is
-	// the first of a batch, on JavaScript, for a later turn. Called with the
+	// the first of a batch (on JavaScript, for a later turn). Called with the
 	// lock held; releases it.
 	@:noCompletion private function __send(message:WorkerMessage):Void {
 		var outbox:Array<WorkerMessage> = __outbox;
@@ -413,7 +412,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 			// called off", and reading it here says the drain stops because
 			// the producer finished, which is exactly when the last messages
 			// still need delivering. What arrives after the run has completed
-			// or failed is not delivered, as it never was.
+			// or failed is not delivered.
 			if (cancelRequested || __runCount != run || __outbox == null || state != RUNNING) {
 				return;
 			}

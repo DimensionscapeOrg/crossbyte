@@ -12,8 +12,8 @@ import crossbyte.test.Require;
 
 	`TurnClient` owns no socket, so the server here is a function that takes the
 	bytes the client would have sent and answers with the bytes a relay would
-	have sent back. That means the whole exchange, including the refusal the
-	handshake actually begins with, runs deterministically on every target,
+	have sent back. That means the whole exchange (including the refusal the
+	handshake actually begins with) runs deterministically on every target,
 	and the awkward cases a real relay will not produce on demand (an expired
 	nonce, a rejected credential) can simply be asked for.
 **/
@@ -106,7 +106,7 @@ class TurnClientTest extends utest.Test {
 		Credentials the relay will not accept fail once rather than looping.
 
 		A 401 answered by a client that already had credentials means those
-		credentials are wrong, retrying with the same ones forever is how a
+		credentials are wrong: retrying with the same ones forever is how a
 		client turns a rejected password into a flood.
 	**/
 	public function testRejectedCredentialsFailRatherThanLoop():Void {
@@ -200,11 +200,11 @@ class TurnClientTest extends utest.Test {
 		A peer that is not an IPv4 address is refused, and nothing is kept.
 
 		XOR-PEER-ADDRESS is written as IPv4 here, as the allocation is, and its
-		octets were read with `Std.parseInt` and written modulo 256: a peer
-		named 1.2.3.999 was permitted as 1.2.3.231, and an IPv6 one as whatever
-		its first group read as, so the relay forwarded to a host nobody named.
-		A refused permission is not kept either, or every renewal would throw
-		from `poll`.
+		octets must be checked, not read with `Std.parseInt` and written modulo
+		256: a peer named 1.2.3.999 would be permitted as 1.2.3.231, and an
+		IPv6 one as whatever its first group read as, so the relay would
+		forward to a host nobody named. A refused permission is not kept
+		either, or every renewal would throw from `poll`.
 	**/
 	public function testOnlyAnIPv4PeerIsPermitted():Void {
 		if (unsupported()) return;
@@ -238,13 +238,13 @@ class TurnClientTest extends utest.Test {
 	/**
 		A permission asked for while a refresh is outstanding does not lose it.
 
-		Only one request used to be tracked at a time, so a second started
-		underneath the first would have abandoned it, and the one abandoned
-		was whichever was already running, which on a timer is the refresh.
-		That does not fail loudly: the allocation just stops being renewed and
-		the connection dies when it expires. Each request is its own
-		transaction now, so the permission goes out beside the refresh and the
-		refresh's answer is still recognised when it comes.
+		Each request is its own transaction, so a permission goes out beside
+		the refresh and the refresh's answer is still recognised when it comes.
+		With one request tracked at a time, a second started underneath the
+		first would abandon it, and the one abandoned would be whichever was
+		already running, which on a timer is the refresh. That does not fail
+		loudly: the allocation just stops being renewed and the connection
+		dies when it expires.
 	**/
 	public function testARequestStartedDuringAnotherDoesNotAbandonIt():Void {
 		if (unsupported()) return;
@@ -281,12 +281,13 @@ class TurnClientTest extends utest.Test {
 	/**
 		A permission is renewed before the relay forgets it.
 
-		The allocation was refreshed on the tick, and so was every channel. A
-		permission was asked for once and never again, and refreshing an
-		allocation does not renew its permissions (RFC 5766 section 8). Five
-		minutes into a relayed call the relay starts dropping that peer and says
-		nothing, which is the worst shape this can fail in: the connection is up,
-		the allocation is healthy, and the media simply stops.
+		The allocation is refreshed on the tick, and so is every channel and
+		every permission: refreshing an allocation does not renew its
+		permissions (RFC 5766 section 8). A permission asked for once and never
+		again would have the relay drop that peer five minutes into a relayed
+		call and say nothing, which is the worst shape this can fail in: the
+		connection is up, the allocation is healthy, and the media simply
+		stops.
 	**/
 	public function testAPermissionIsRenewedBeforeItLapses():Void {
 		if (unsupported()) return;
@@ -317,9 +318,9 @@ class TurnClientTest extends utest.Test {
 		An allocation that stops being renewed is reported as lost.
 
 		`allocated` resolved when the relay granted it and cannot be settled
-		again, so a refresh the relay never answered only set `active` to
-		false, a flag nothing is obliged to read. A connection whose path ran
-		through the relay went quiet with no reason given.
+		again, so a refresh the relay never answered must do more than set
+		`active` to false, a flag nothing is obliged to read: a connection
+		whose path ran through the relay would go quiet with no reason given.
 	**/
 	public function testAnAllocationThatCannotBeRenewedIsReportedLost():Void {
 		if (unsupported()) return;
@@ -386,9 +387,9 @@ class TurnClientTest extends utest.Test {
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
-		is what stops the handshake, so a caller that closed mid-negotiation
-		was left holding a future that could not settle either way. The same gap
-		existed in every class in this stack that hands one out.
+		is what stops the handshake, so closing has to settle it too: a caller
+		that closed mid-negotiation would otherwise be left holding a future
+		that could not settle either way.
 	**/
 	public function testClosingBeforeTheRelayAnswersTellsWhoeverWaited():Void {
 		if (unsupported()) return;
@@ -442,13 +443,13 @@ class TurnClientTest extends utest.Test {
 		A relay whose first answer takes longer than the first retransmission
 		still grants an allocation, and only one.
 
-		The signed retry after the 401 reused the unsigned request's
-		transaction. The unsigned Allocate had been sent twice by then, the
-		answer was late, so its second 401 arrived after the signed retry had
-		gone and matched it, which read as the relay rejecting the credentials.
-		Meanwhile the relay had granted the signed request, so it held an
-		allocation nobody would use or free: on a satellite link, a mobile
-		network or a first lookup, every allocation failed and leaked one.
+		The signed retry after the 401 has a transaction of its own. Reusing
+		the unsigned request's would let the unsigned Allocate's second 401,
+		sent for a late answer, arrive after the signed retry had gone and
+		match it, reading as the relay rejecting the credentials; meanwhile
+		the relay would have granted the signed request, holding an allocation
+		nobody would use or free. On a satellite link, a mobile network or a
+		first lookup, every allocation would fail and leak one.
 	**/
 	public function testAFirstAnswerSlowerThanTheRetransmissionStillAllocates():Void {
 		if (unsupported()) return;
@@ -474,8 +475,8 @@ class TurnClientTest extends utest.Test {
 
 		Natively a socket holds datagrams to a name until the lookup answers and
 		then sends them all at once, so a slow resolver on a fast path looks,
-		to the relay, like two copies of the unsigned Allocate, and to the old
-		client, like the slow path above.
+		to the relay, like two copies of the unsigned Allocate, and to the
+		client like the slow path above.
 	**/
 	public function testAllocatesWhenTheFirstRequestsAreHeldAndSentTogether():Void {
 		if (unsupported()) return;
@@ -497,9 +498,10 @@ class TurnClientTest extends utest.Test {
 	/**
 		A CreatePermission success nobody asked for does not end an Allocate.
 
-		It cleared whatever request was in flight, whatever that was. If that
-		was the Allocate, nothing was left to retransmit or to time out, and
-		`allocated` never settled either way, from one datagram, from anyone.
+		It must not clear whatever request is in flight: if that is the
+		Allocate, nothing would be left to retransmit or to time out, and
+		`allocated` would never settle either way, from one datagram, from
+		anyone.
 	**/
 	public function testAStrangersPermissionSuccessDoesNotStopTheAllocation():Void {
 		if (unsupported()) return;
@@ -524,10 +526,10 @@ class TurnClientTest extends utest.Test {
 	/**
 		A ChannelBind error nobody asked for does not cancel a bind in flight.
 
-		It did, and the real success then found nothing pending and was
-		dropped: the relay had bound the channel and would forward the peer's
+		Cancelled, the real success would find nothing pending and be
+		dropped: the relay would have bound the channel and forward the peer's
 		traffic over it, while the client never marked it bound, so for the
-		ten minutes the binding lasted it dropped every ChannelData message
+		ten minutes the binding lasted it would drop every ChannelData message
 		from that peer.
 	**/
 	public function testAStrangersChannelBindErrorDoesNotCancelTheBind():Void {
@@ -558,10 +560,9 @@ class TurnClientTest extends utest.Test {
 	/**
 		A second copy of an old success does not clear the request after it.
 
-		The auditor's case: a permission, then a channel, on a path that
-		duplicates. The duplicate success for the permission arrived while the
-		bind was in flight and cleared the bind, which the relay then granted
-		unheard.
+		A permission, then a channel, on a path that duplicates: the duplicate
+		success for the permission arrives while the bind is in flight, and
+		must not clear the bind, which the relay then grants unheard.
 	**/
 	public function testADuplicateSuccessDoesNotClearTheNextRequest():Void {
 		if (unsupported()) return;
@@ -591,7 +592,7 @@ class TurnClientTest extends utest.Test {
 
 		RFC 8489 section 6.2.1: seven transmissions, doubling from half a
 		second, then sixteen times the first timeout for the last one to be
-		answered. This waited another doubling instead and gave up at 63.5.
+		answered, not another doubling, which would give up at 63.5.
 	**/
 	public function testASilentRelayIsGivenUpOnAtThirtyNineAndAHalfSeconds():Void {
 		if (unsupported()) return;
@@ -616,11 +617,11 @@ class TurnClientTest extends utest.Test {
 	/**
 		A relay refusing one peer refuses that peer, and nothing else.
 
-		Any CreatePermission error but 401 and 438 closed the client, so one
-		address the relay would not forward to took every other peer down with
-		it. That is the ordinary case, not an edge: a hardened relay refuses
-		private and loopback addresses, and ICE asks for the peer's host
-		addresses first.
+		A CreatePermission error other than 401 and 438 must not close the
+		client, or one address the relay would not forward to would take every
+		other peer down with it. That is the ordinary case, not an edge: a
+		hardened relay refuses private and loopback addresses, and ICE asks
+		for the peer's host addresses first.
 	**/
 	public function testARefusedPermissionRefusesOnlyThatPeer():Void {
 		if (unsupported()) return;
@@ -679,11 +680,11 @@ class TurnClientTest extends utest.Test {
 		A relay named by hostname is sent to by name once, and after that at
 		the address that answered.
 
-		Every datagram went to the name, which natively is looked up again
-		every minute and on Node for every datagram. Against a round-robin pool
-		each lookup can name another relay, one that knows neither this
-		allocation nor its nonce, so the requests bounced between relays that
-		refused each other's nonces and nothing was ever allocated.
+		Sent to the name every time, a datagram would be looked up again every
+		minute natively and on Node for every datagram. Against a round-robin
+		pool each lookup can name another relay (one that knows neither this
+		allocation nor its nonce), so the requests would bounce between relays
+		that refused each other's nonces and nothing would ever be allocated.
 	**/
 	public function testARelayNamedByHostnameIsAskedWhereItAnswered():Void {
 		if (unsupported()) return;
@@ -718,8 +719,8 @@ class TurnClientTest extends utest.Test {
 		A relay that calls every nonce stale is given up on, not asked forever.
 
 		A 438 is answered by asking again with the new nonce, as it should be,
-		but without a limit, so a relay that refused every nonce it handed
-		out was asked some nine thousand times a second, for good.
+		but within a limit: without one, a relay that refused every nonce it
+		handed out would be asked some nine thousand times a second, for good.
 	**/
 	public function testARelayThatCallsEveryNonceStaleIsGivenUpOn():Void {
 		if (unsupported()) return;
@@ -742,11 +743,11 @@ class TurnClientTest extends utest.Test {
 		Asking for a permission before every datagram does not starve the
 		refresh.
 
-		The auditor's measurement, in memory: thirty datagrams a second, each
-		permitted first, on a path whose round trip the relay answers slower
-		than that. Every call queued another CreatePermission, the refresh was
-		sent only when nothing else was in flight, which was never, and the
-		allocation expired at ten minutes with ten thousand requests queued.
+		Thirty datagrams a second, each permitted first, on a path whose round
+		trip the relay answers slower than that. With every call queueing
+		another CreatePermission and the refresh sent only when nothing else
+		was in flight (which would be never), the allocation would expire at
+		ten minutes with ten thousand requests queued.
 	**/
 	public function testPermittingBeforeEveryDatagramDoesNotStarveTheRefresh():Void {
 		if (unsupported()) return;
@@ -826,8 +827,8 @@ class TurnClientTest extends utest.Test {
 	/**
 		Requests waiting behind those in flight are bounded.
 
-		A caller asking for more than the relay answers grew the queue without
-		limit, by thousands a minute in the auditor's measurement.
+		A caller asking for more than the relay answers would otherwise grow
+		the queue without limit, by thousands a minute.
 	**/
 	public function testTheRequestsWaitingAreBounded():Void {
 		if (unsupported()) return;
@@ -852,11 +853,11 @@ class TurnClientTest extends utest.Test {
 	/**
 		A stale nonce on a channel rebind is retried, and the channel stays up.
 
-		A 438 on a ChannelBind was neither retried nor used to take the new
-		nonce, and the channel stayed marked bound, while the relay, whose
-		binding lapsed at ten minutes, dropped everything sent on it. With a
-		600 second nonce, 58 of 300 simulated two-hour sessions lost their
-		channel that way, the worst for six minutes, with nothing reported.
+		A 438 on a ChannelBind is retried with the new nonce. Left alone, the
+		channel would stay marked bound while the relay, whose binding lapsed
+		at ten minutes, dropped everything sent on it: with a 600 second
+		nonce, 58 of 300 simulated two-hour sessions lost their channel that
+		way, the worst for six minutes, with nothing reported.
 	**/
 	public function testAStaleNonceOnAChannelRebindIsRetried():Void {
 		if (unsupported()) return;
@@ -933,9 +934,9 @@ class TurnClientTest extends utest.Test {
 		With channels on, sending is enough: the first datagram to a peer asks
 		for a channel, and once the relay agrees the rest go as ChannelData.
 
-		The class documentation said so, "once on, it happens on its own",
-		and only callers that asked for the channel themselves ever got one.
-		A client used directly sent every datagram as an indication.
+		The class documentation says so ("once on, it happens on its own"), so
+		a client used directly must not send every datagram as an indication,
+		as it would if only callers that asked for the channel got one.
 	**/
 	public function testWithChannelsOnSendingAsksForOne():Void {
 		if (unsupported()) return;
@@ -970,8 +971,8 @@ class TurnClientTest extends utest.Test {
 	/**
 		A relay that answers 300 Try Alternate is followed to the one it names.
 
-		It was a refusal like any other, so a deployment that balanced load by
-		redirecting turned every client away from all of its relays.
+		It is not a refusal like any other: a deployment that balances load by
+		redirecting would otherwise turn every client away from all its relays.
 	**/
 	public function testATryAlternateIsFollowed():Void {
 		if (unsupported()) return;
@@ -1024,9 +1025,9 @@ class TurnClientTest extends utest.Test {
 	/**
 		A failure carries the relay's code and reason as well as a sentence.
 
-		Only the sentence was there, so deciding what to do next, another
-		relay for a 486 or a 508, new credentials for a 401, meant matching on
-		its wording.
+		Without the code, deciding what to do next (another relay for a 486 or
+		a 508, new credentials for a 401) would mean matching on the
+		sentence's wording.
 	**/
 	public function testAFailureCarriesTheRelaysCode():Void {
 		if (unsupported()) return;
@@ -1052,10 +1053,10 @@ class TurnClientTest extends utest.Test {
 	/**
 		Credentials renewed while an allocation is held are used from then on.
 
-		A credential that expires, the TURN REST convention's hour-long
-		password, or one that is rotated had no way in: every refresh was
-		signed with the credentials the client was made with until the relay
-		refused them and the allocation was lost.
+		A credential that expires (the TURN REST convention's hour-long
+		password) or one that is rotated needs a way in: otherwise every
+		refresh would be signed with the credentials the client was made with
+		until the relay refused them and the allocation was lost.
 	**/
 	public function testRenewedCredentialsAreUsedFromThenOn():Void {
 		if (unsupported()) return;
@@ -1096,9 +1097,9 @@ class TurnClientTest extends utest.Test {
 		it was made with.
 
 		A relay ties an allocation to its username and refuses a request on it
-		signed with another, 441, and TURN REST credentials carry their
-		expiry in the username, so every renewal is a new one. The client took
-		it, the relay refused the next Refresh, and the allocation was lost.
+		signed with another (441), and TURN REST credentials carry their expiry
+		in the username, so every renewal is a new one. Taken, it would have
+		the relay refuse the next Refresh, and the allocation would be lost.
 	**/
 	public function testANewUsernameIsRefusedForTheAllocationHeld():Void {
 		if (unsupported()) return;
@@ -1136,10 +1137,10 @@ class TurnClientTest extends utest.Test {
 	/**
 		An IPv6 relayed address is an allocation, not "nothing".
 
-		The decoder read only the IPv4 family, so a relay granting an IPv6
-		address, XORed with the transaction as RFC 8489 has it, was
-		reported as having allocated nothing, and the allocation it held was
-		never used.
+		A relay granting an IPv6 address (XORed with the transaction, as RFC
+		8489 has it) must not be reported as having allocated nothing, with
+		the allocation it held never used, as a decoder that read only the
+		IPv4 family would.
 	**/
 	public function testAnIPv6RelayedAddressIsTaken():Void {
 		if (unsupported()) return;
@@ -1227,8 +1228,8 @@ class TurnClientTest extends utest.Test {
 		A relay offering RFC 8489's password algorithms is answered with the
 		SHA-256 key it offered first and MESSAGE-INTEGRITY-SHA256 alone.
 
-		Only MD5 and SHA-1 were known, so a relay that required what it offered
-		refused every request.
+		Knowing only MD5 and SHA-1, a client would be refused every request by
+		a relay that required what it offered.
 	**/
 	public function testOfferedPasswordAlgorithmsAreUsed():Void {
 		if (unsupported()) return;
@@ -1266,8 +1267,8 @@ class TurnClientTest extends utest.Test {
 
 	/**
 		A nonce offering password algorithms on an answer that lists none is a
-		downgrade, and is not answered (RFC 8489 section 9.2.5). The client
-		retried with MD5, which is what whoever stripped the list wanted.
+		downgrade, and is not answered (RFC 8489 section 9.2.5): a retry with
+		MD5 is what whoever stripped the list wants.
 	**/
 	public function testAStrippedAlgorithmListIsNotAnswered():Void {
 		if (unsupported()) return;
@@ -1314,13 +1315,13 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
-		Over a stream, messages are read however the bytes arrive, split
-		across reads, several run together, ChannelData is padded both ways,
+		Over a stream, messages are read however the bytes arrive (split
+		across reads, several run together), ChannelData is padded both ways,
 		and nothing is retransmitted.
 
-		The client framed whole datagrams only, so a relay reached over TCP,
-		the one way out of a network that allows nothing else, could not be
-		used at all.
+		A client that framed whole datagrams only could not use a relay
+		reached over TCP at all, and that is the one way out of a network that
+		allows nothing else.
 	**/
 	public function testAStreamIsReadHoweverItArrives():Void {
 		if (unsupported()) return;
@@ -1410,11 +1411,11 @@ class TurnClientTest extends utest.Test {
 	/**
 		Closing a client frees its allocation on the relay.
 
-		No Refresh with a lifetime of zero was sent, so the relay held the
-		allocation and its port for as long as it had been granted, up to an
-		hour on coturn. The next client on the same socket was refused with
-		437, since the 5-tuple still had one, and an application that
-		reconnected ran into the relay's quota.
+		It sends a Refresh with a lifetime of zero. Without it the relay would
+		hold the allocation and its port for as long as it had been granted
+		(up to an hour on coturn): the next client on the same socket would be
+		refused with 437, since the 5-tuple still had one, and an application
+		that reconnected would run into the relay's quota.
 	**/
 	public function testClosingFreesTheAllocation():Void {
 		if (unsupported()) return;
@@ -1474,8 +1475,8 @@ class TurnClientTest extends utest.Test {
 		Relayed data comes from the relay, and nothing else is taken for it.
 
 		Any sender's Data indication, and ChannelData on a bound channel's
-		number, was delivered as the peer: anyone who could reach the socket
-		could put words in the peer's mouth.
+		number, delivered as the peer would let anyone who could reach the
+		socket put words in the peer's mouth.
 	**/
 	public function testRelayedDataFromAnyoneButTheRelayIsIgnored():Void {
 		if (unsupported()) return;
@@ -1584,12 +1585,12 @@ class TurnClientTest extends utest.Test {
 
 	/**
 		Red team. Each datagram a channel carries reaches `onData` in the byte
-		order a `ByteArray` made for it has, `ByteArray.defaultEndian`, as it
-		did when each had one of its own, and as a `DatagramSocket` hands each
-		datagram out in its own `endian`. The client's one payload is filled
-		again for each, and its `endian` was never set again: a handler that
-		read one datagram's big-endian header left every datagram after it
-		big-endian, so the next one's numbers were read byte-swapped.
+		order a `ByteArray` made for it has, `ByteArray.defaultEndian`, as a
+		`DatagramSocket` hands each datagram out in its own `endian`. The
+		client's one payload is filled again for each, so its `endian` has to
+		be set again for each: a handler that read one datagram's big-endian
+		header would otherwise leave every datagram after it big-endian, with
+		the next one's numbers read byte-swapped.
 	**/
 	public function testEachChannelDatagramStartsInTheDefaultByteOrder():Void {
 		if (unsupported()) return;
@@ -1657,11 +1658,11 @@ class TurnClientTest extends utest.Test {
 	/**
 		An answer that fails its integrity check is not believed.
 
-		A signed request's answer was taken without its MESSAGE-INTEGRITY being
-		looked at, so anyone who saw the request go by could answer it, here
-		with a relayed address of the forger's own, which peers would then be
-		told to send to. RFC 8489 has such an answer dropped as though it never
-		came, and the request goes on until a real one does.
+		A signed request's answer is taken only once its MESSAGE-INTEGRITY
+		checks out; otherwise anyone who saw the request go by could answer
+		it, here with a relayed address of the forger's own, which peers would
+		then be told to send to. RFC 8489 has such an answer dropped as though
+		it never came, and the request goes on until a real one does.
 	**/
 	public function testAnAnswerThatFailsItsIntegrityCheckIsNotBelieved():Void {
 		if (unsupported()) return;
@@ -1723,7 +1724,7 @@ class TurnClientTest extends utest.Test {
 	/**
 		A success carrying an attribute the relay requires understood, and this
 		client does not understand, is not an answer to act on (RFC 8489
-		section 7.3.3). It was taken as one.
+		section 7.3.3).
 	**/
 	public function testASuccessCarryingARequiredAttributeNobodyUnderstandsIsRefused():Void {
 		if (unsupported()) return;
@@ -1818,9 +1819,10 @@ class TurnClientTest extends utest.Test {
 /**
 	A relay that exists only as a function from request bytes to reply bytes.
 
-	It behaves the way RFC 8656 says one does, refusing an unsigned request
-	with a realm and nonce, granting an allocation to a signed one, and can be
-	told to misbehave in the specific ways a real relay will not do on request.
+	It behaves the way RFC 8656 says one does (refusing an unsigned request
+	with a realm and nonce, granting an allocation to a signed one), and can
+	be told to misbehave in the specific ways a real relay will not do on
+	request.
 **/
 private class Relay {
 	public var allocateRequests:Int = 0;

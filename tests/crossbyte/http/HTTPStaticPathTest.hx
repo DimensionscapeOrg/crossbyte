@@ -187,13 +187,13 @@ class HTTPStaticPathTest extends utest.Test {
 		A guard on `/private/` sees every spelling that would be served from
 		`private/`.
 
-		The path was only percent-decoded for middleware, while the resolver
-		collapsed slashes and applied dot steps on its own, so the auditor's
-		guard let `//private/report.txt` and `/./private/report.txt` through
-		and the resolver served the file for both. On Windows and macOS
-		`/PRIVATE/report.txt` went the same way, since the filesystem answers
-		to any case: now a file is served only under its own spelling there,
-		as on Linux.
+		The path is settled the same way for middleware and the resolver
+		(slashes collapsed, dot steps applied), so a guard sees what is served:
+		percent-decoding alone for middleware would let a guard pass
+		`//private/report.txt` and `/./private/report.txt` while the resolver
+		served the file for both. On Windows and macOS, where the filesystem
+		answers to any case, a file is served only under its own spelling, as
+		on Linux, so `/PRIVATE/report.txt` does not go the same way.
 	**/
 	public function testAGuardSeesThePathThatIsServed(async:Async):Void {
 		var server:HTTPServer = __serve(config -> config.middleware.push(__guard));
@@ -235,10 +235,10 @@ class HTTPStaticPathTest extends utest.Test {
 		A path naming an environment variable is a name like any other.
 
 		On Windows a `File` reads `%NAME%` in its path from the environment,
-		and the server made one from the request path after the checks a path
-		is held to, dotfiles, the root, had been made on the path as it was
-		written. `/%25X%25` was checked as `/%X%` and served as whatever `X`
-		held: a dotfile, or a file outside the root.
+		so the server must not make one from the request path after the checks
+		a path is held to (dotfiles, the root) have been made on the path as it
+		was written: `/%25X%25` would be checked as `/%X%` and served as
+		whatever `X` held, a dotfile, or a file outside the root.
 	**/
 	public function testAPathNamingAnEnvironmentVariableIsNotExpanded(async:Async):Void {
 		var server:HTTPServer = __serve(null);
@@ -274,9 +274,9 @@ class HTTPStaticPathTest extends utest.Test {
 	}
 
 	/**
-		A `..` inside a segment is part of a name. Any `..` anywhere used to
-		throw out of the resolver, which ran before the router, so a route
-		whose parameter held one answered 500.
+		A `..` inside a segment is part of a name, and reaches the router,
+		rather than throwing out of a resolver run before the router, which
+		would answer a route whose parameter held one 500.
 	**/
 	public function testDotsInsideANameReachTheRouter(async:Async):Void {
 		var router:Router = new Router();
@@ -333,10 +333,10 @@ class HTTPStaticPathTest extends utest.Test {
 	/**
 		A request a route answers never reaches the filesystem.
 
-		The resolver ran before middleware, so every routed request paid for
-		three lookups, the auditor counted 297 for 99 requests, on the
-		runtime's own thread. Counted here by wrapping Node's `fs`, which is
-		the one target where the calls can be seen from inside.
+		The resolver runs after middleware, so a routed request pays for no
+		filesystem lookups on the runtime's own thread. Counted here by
+		wrapping Node's `fs`, which is the one target where the calls can be
+		seen from inside.
 	**/
 	public function testARoutedRequestDoesNotTouchTheFilesystem(async:Async):Void {
 		var router:Router = new Router();

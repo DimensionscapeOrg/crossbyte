@@ -35,8 +35,8 @@ class URLLoaderHttpTest extends utest.Test {
 	}
 
 	public function testTheResponseReachesTheLoaderWithItsHeaders():Void {
-		// HTTP_RESPONSE_STATUS was never dispatched, so Retry-After, ETag and
-		// Location could not be read at all.
+		// HTTP_RESPONSE_STATUS is dispatched, so Retry-After, ETag and Location
+		// can be read.
 		var fixture = serveRequests(_ -> response(200, "OK", [
 			"Content-Length: 2", "ETag: \"abc\"", "Retry-After: 120", "Set-Cookie: a=1; Path=/", "Set-Cookie: b=2; Expires=Wed, 09 Jun 2100 10:18:14 GMT"
 		], "ok"), 1);
@@ -103,9 +103,8 @@ class URLLoaderHttpTest extends utest.Test {
 
 	public function testTheDecodedSizeLimitIsTheRequests():Void {
 		// 100 KB of one letter is a few hundred bytes of gzip. The client's
-		// ceiling on what a body may decode to was an internal static of the
-		// native client, the same 64 MB for every request, and could not be
-		// set per request at all.
+		// ceiling on what a body may decode to is set per request, not one
+		// internal 64 MB for every request.
 		var plain:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
 		for (_ in 0...100 * 1024) {
 			plain.writeByte("a".code);
@@ -136,8 +135,7 @@ class URLLoaderHttpTest extends utest.Test {
 	/**
 		A `deflate` response is read as zlib, which is what the name means
 		(RFC 9110 8.4.1.2), and as raw DEFLATE too, which servers commonly
-		send under it. It was read as raw only, so a server following the
-		standard could not be read.
+		send under it, so a server following the standard can be read.
 	**/
 	public function testADeflateResponseIsReadAsZlibOrRaw():Void {
 		var text:String = "a deflate body, coded both ways";
@@ -199,7 +197,7 @@ Content-Length: ${body.length}
 		fixture.waitDone();
 
 		Assert.equals("hello world", result.data);
-		// 0 for a length nobody declared, as on JavaScript; -1 reached
+		// 0 for a length nobody declared, as on JavaScript; -1 would reach
 		// ProgressEvent's UInt as 4294967295.
 		Assert.equals(0, result.progress[0].total);
 		Assert.equals(11, result.progress[result.progress.length - 1].loaded);
@@ -239,7 +237,7 @@ Content-Length: ${body.length}
 
 		Assert.equals("ok", result.data);
 		// The interim 100 is not a status the load ends with, and the client
-		// contract says it is not reported. It was, as HTTP_STATUS.
+		// contract says it is not reported, as HTTP_STATUS or otherwise.
 		Assert.same([200], result.statuses);
 		Assert.isNull(result.error);
 	}
@@ -280,10 +278,10 @@ Content-Length: ${body.length}
 
 	/**
 		Form data reaches the server over HTTP/2 as it does over HTTP/1.1: a
-		GET's as its query, a POST's as a form body. The HTTP/2 backend never
-		read `requestData`, so a `URLVariables` or an object went nowhere,
-		a POST with an empty body and no Content-Type, a GET with no query,
-		though setting `httpVersion` is all a request is told to change.
+		GET's as its query, a POST's as a form body. The HTTP/2 backend reads
+		`requestData`, so a `URLVariables` or an object does not go nowhere (a
+		POST with an empty body and no Content-Type, a GET with no query), since
+		setting `httpVersion` is all a request is told to change.
 	**/
 	public function testFormDataGoesOutOverHttp2AsOverHttp11():Void {
 		var config = new crossbyte.http.HTTPServerConfig("127.0.0.1", 0);
@@ -470,9 +468,9 @@ Content-Length: ${body.length}
 
 		fixture.waitDone();
 
-		// The cause travels with the message now. It used to be dropped, so a
-		// bad chunk size, a truncated chunk and a missing terminator all
-		// reached the caller as the same four words.
+		// The cause travels with the message, so a bad chunk size, a truncated
+		// chunk and a missing terminator do not all reach the caller as the
+		// same four words.
 		var error:String = Require.notNull(result.error);
 		Assert.equals(0, error.indexOf("Download failed"), error);
 		Assert.isTrue(error.indexOf("Invalid chunk terminator") > 0, error);
@@ -491,9 +489,9 @@ Content-Length: ${body.length}
 	}
 
 	public function testTheNextLoadCanStartFromComplete():Void {
-		// The loader was still busy while COMPLETE was dispatched, it was
-		// freed after the listeners ran, so a listener starting the next
-		// load on it was refused with "URLLoader is already loading".
+		// The loader is free while COMPLETE is dispatched, not freed after the
+		// listeners run, so a listener starting the next load on it is not
+		// refused with "URLLoader is already loading".
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 2);
 		var loader = new URLLoader();
 		var events:Array<String> = [];
@@ -518,9 +516,9 @@ Content-Length: ${body.length}
 
 	/**
 		A backend is handed the request's headers as `HTTPRequestContext`
-		says, each `"Name: value"`. They came as `URLRequestHeader.toString()`
-		wrote them, `"Name:value"`, so a backend splitting at ": " as told
-		found no value.
+		says, each `"Name: value"`, not as `URLRequestHeader.toString()` writes
+		them, `"Name:value"`, where a backend splitting at ": " as told would
+		find no value.
 	**/
 	public function testABackendIsHandedHeaderLinesAsItsContractSays():Void {
 		var backend = new HeaderRecordingBackend();
@@ -537,11 +535,11 @@ Content-Length: ${body.length}
 
 	#if target.threaded
 	public function testLoadsReuseTheirThreadsAndStayOffTheRuntime():Void {
-		// Every load started a thread of its own and let it end: a hundred
-		// loads a second were a hundred thread starts, and on the jvm each
-		// thread's selector, never closed, left two sockets open per load.
-		// A backend of the test's own, on HTTP/3, which nothing else serves,
-		// says which thread each load ran on.
+		// Loads share a pool of threads. A thread of its own for every load
+		// would make a hundred loads a second a hundred thread starts, and on
+		// the jvm each thread's selector, never closed, would leave two sockets
+		// open per load. A backend of the test's own, on HTTP/3, which nothing
+		// else serves, says which thread each load ran on.
 		var backend = new ThreadRecordingBackend();
 		HTTPBackendRegistry.register(backend);
 		var loader = new URLLoader();
@@ -564,8 +562,8 @@ Content-Length: ${body.length}
 		HTTPBackendRegistry.unregister(backend);
 
 		Assert.equals(12, completed, failures.join("; "));
-		// And off the runtime's thread, where a blocking request, or the
-		// name lookup at its start, would stop every socket and timer.
+		// And off the runtime's thread, where a blocking request (or the name
+		// lookup at its start) would stop every socket and timer.
 		Assert.equals(0, backend.onRuntime(), "a load ran on the runtime's thread");
 		// One thread, or two when the next load is queued in the moment
 		// before the thread that finished the last one is waiting again.
@@ -582,9 +580,9 @@ Content-Length: ${body.length}
 		var finished = new Lock();
 		// Strings, not Bools. On the jvm a Deque of a basic type answers
 		// `pop(false)` on an empty queue with false or 0 rather than null, so
-		// a Deque<Bool> here said the request had arrived before it was sent:
-		// the loader was closed before its load began, and the server waited
-		// in accept() for a client that never came.
+		// a Deque<Bool> here would say the request had arrived before it was
+		// sent: the loader would be closed before its load began, and the
+		// server would wait in accept() for a client that never came.
 		var arrived = new sys.thread.Deque<String>();
 		var ended:String = null;
 		var port = 0;
@@ -639,19 +637,19 @@ Content-Length: ${body.length}
 		}
 
 		// The worker thread is blocked reading. Closing ends that read, and
-		// what the thread reports next it reported through the loader's
-		// worker field, which close() had just cleared: an access violation
-		// on native.
+		// what the thread reports next must not go through the loader's worker
+		// field, which close() has just cleared: natively that would be an
+		// access violation.
 		loader.close();
 		var settle = haxe.Timer.stamp() + 0.5;
 		pumpUntil(() -> haxe.Timer.stamp() >= settle);
 
 		Assert.same([], events);
 		// And the server hears of it now, not when its own wait runs out. The
-		// client used to close its socket from the closing thread: on eval
-		// that killed the worker with an error nothing could catch, and the
-		// reset it caused killed the server's reader too; on Linux a close
-		// does not wake the read, so the server waited out the idle timeout.
+		// client's socket is not closed from the closing thread: on eval that
+		// would kill the worker with an error nothing could catch, and the reset
+		// it caused would kill the server's reader too; on Linux a close does
+		// not wake the read, so the server would wait out the idle timeout.
 		Assert.isTrue(finished.wait(2.0), "the server never saw the client go");
 		Assert.equals("the client went", ended);
 
@@ -669,9 +667,8 @@ Content-Length: ${body.length}
 
 	/**
 		A body trickled a byte at a time ends at the request's `totalTimeout`.
-		Each byte reset the idle timeout, and nothing else bounded a load, so
-		this one, five seconds of body, ran to the end of it: measured,
-		5.6 s for a body sent a byte every 700 ms.
+		Each byte resets the idle timeout, so without a total bound this one
+		(five seconds of body) would run to the end of it.
 	**/
 	public function testATrickledBodyEndsAtTheTotalTimeout():Void {
 		var fixture = serveTrickled("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\n", StringTools.rpad("", "t", 100), 0.05);
@@ -703,9 +700,9 @@ Content-Length: ${body.length}
 
 	/**
 		Progress the runtime has not yet told is folded into the latest. The
-		client reports it per chunk, so 5,000 chunks arriving while the
-		runtime was busy queued 5,000 messages, and 5,000 events followed;
-		measured, about 300,000 were queued in two seconds for one load.
+		client reports it per chunk, so without folding, 5,000 chunks arriving
+		while the runtime was busy would queue 5,000 messages, and 5,000 events
+		would follow.
 	**/
 	public function testProgressNotYetToldIsFoldedIntoTheLatest():Void {
 		var chunks:StringBuf = new StringBuf();
@@ -724,7 +721,7 @@ Content-Length: ${body.length}
 		loader.addEventListener(IOErrorEvent.IO_ERROR, _ -> done = true);
 		loader.load(request);
 
-		// The runtime busy, not pumped, while the whole body arrives.
+		// The runtime busy (not pumped) while the whole body arrives.
 		fixture.waitDone();
 		crossbyte.sys.System.sleep(0.5);
 		pumpUntil(() -> done, 5.0);
@@ -750,9 +747,9 @@ Content-Length: ${body.length}
 
 	/**
 		A load waiting for a thread waits its `idleTimeout` at most. With
-		every thread taken by loads whose servers held them, it waited for as
-		long as they did, measured, 3.0 s past its own 500 ms limit, and a
-		load whose server trickles holds its thread for good.
+		every thread taken by loads whose servers hold them, it would otherwise
+		wait for as long as they do, and a load whose server trickles holds its
+		thread for good.
 	**/
 	public function testALoadWaitingForAThreadEndsAtItsIdleTimeout():Void {
 		var saved:Int = URLLoader.maxConcurrentLoads;
@@ -790,8 +787,8 @@ Content-Length: ${body.length}
 	}
 
 	/**
-		Takes one request, holds it unanswered until its client goes, five
-		seconds at most, and refuses anything after it.
+		Takes one request, holds it unanswered until its client goes (five
+		seconds at most), and refuses anything after it.
 	**/
 	private static function holdOne():URLLoaderHttpFixture {
 		var fixture = new URLLoaderHttpFixture(1);
@@ -825,8 +822,8 @@ Content-Length: ${body.length}
 
 	/**
 		Takes one request and answers `prompt` at once, then `trickled` a byte
-		every `gap` seconds, each byte enough to reset an idle timeout,
-		until the client goes.
+		every `gap` seconds (each byte enough to reset an idle timeout) until
+		the client goes.
 	**/
 	private static function serveTrickled(prompt:String, trickled:String, gap:Float):URLLoaderHttpFixture {
 		var fixture = new URLLoaderHttpFixture(1);
@@ -984,8 +981,8 @@ Content-Length: ${body.length}
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			// Not Sys.sleep, which on eval now and then never returned: this
-			// loop was where testClosingALoadInFlightEndsItQuietly hung.
+			// Not Sys.sleep, which on eval now and then never returns, and which
+			// would hang testClosingALoadInFlightEndsItQuietly in this loop.
 			crossbyte.http.HTTPTestSupport.nap(0.001);
 		}
 	}

@@ -14,13 +14,14 @@ import utest.Assert;
  * listening for events, because `AsyncDatabase.transaction` and
  * `SchemaMigrator` do not listen.
  *
- * PostgreSQL and MySQL `begin`, `commit` and `rollback` caught every failure
- * and dispatched an `SQLErrorEvent` instead: a failed COMMIT completed the
- * transaction task as success, and the migrator recorded a migration that had
- * been rolled back. SQLite always threw.
+ * PostgreSQL and MySQL `begin`, `commit` and `rollback` throw, as SQLite's
+ * do, rather than catching every failure and dispatching an `SQLErrorEvent`
+ * instead, where a failed COMMIT would complete the transaction task as
+ * success and the migrator would record a migration that had been rolled
+ * back.
  *
- * Only the wire is fake here, the drivers, pool, facade and migrator are the
- * real ones, so this runs without a server. On cpp the Postgres driver talks
+ * Only the wire is fake here (the drivers, pool, facade and migrator are the
+ * real ones), so this runs without a server. On cpp the Postgres driver talks
  * to libpq instead, and the same cases run against a stand-in for it in
  * `NativePostgresBridgeTest`, along with the COMMIT answered by ROLLBACK that
  * only libpq's command tag reveals.
@@ -95,9 +96,9 @@ class TransactionFailureTest extends utest.Test {
 
 	public function testAPoolResetRollsBackWhatAFailedBodyLeftOpen():Void {
 		// A body that begins, writes and throws. The pool's validate() passes
-		// the connection, because an open transaction answers a ping, and the
-		// next borrower's "autocommit" insert joined the abandoned
-		// transaction.
+		// the connection, because an open transaction answers a ping, so without
+		// the pool's rollback the next borrower's "autocommit" insert would join
+		// the abandoned transaction.
 		var connection = __postgres("never");
 		var pool = new ConnectionPool<PostgresConnection>({
 			factory: () -> connection,
@@ -136,7 +137,7 @@ class TransactionFailureTest extends utest.Test {
 
 		migrator.add(Migration.ofSql(1, "accounts", "CREATE TABLE accounts (id serial PRIMARY KEY);"));
 
-		// It returned a report listing migration 1 as applied, when nothing
+		// Thrown, not a report listing migration 1 as applied when nothing
 		// had been.
 		Assert.raises(() -> migrator.migrate(connection), SQLError);
 	}

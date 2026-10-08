@@ -11,10 +11,9 @@ import crossbyte.rpc._internal.RPCDeadlines;
 /**
  * The eventual result of a request/response RPC invocation.
  *
- * Everything about waiting for a value now lives in `crossbyte.Future`, which
- * this was before it was promoted: `then`, the event pair, `completed`,
- * `succeeded`, `result`, `error`. What is left here is the part that is
- * genuinely about RPC, which request this was, and which operation, and
+ * Waiting for a value is `crossbyte.Future`'s: `then`, the event pair,
+ * `completed`, `succeeded`, `result`, `error`. What is here is the part that
+ * is genuinely about RPC (which request this was, and which operation) and
  * how long it may wait.
  */
 class RPCResponse<T> extends Future<T> {
@@ -43,7 +42,7 @@ class RPCResponse<T> extends Future<T> {
 	// The deadline: TimerHandle.INVALID while there is none; the handle of a
 	// timer of its own, on the thread the call was made on; or, below
 	// INVALID, its place in its session's queue of the deadlines its
-	// `callTimeout` gives, see RPCDeadlines.
+	// `callTimeout` gives (see RPCDeadlines).
 	@:noCompletion private var __deadline:Int = TimerHandle.INVALID;
 
 	// The responder bound now, which `respond` replaces, under the future's
@@ -66,11 +65,10 @@ class RPCResponse<T> extends Future<T> {
 
 	/**
 		Binds the responder that receives the outcome, replacing any bound
-		before, the one passed to the constructor included: only the last
+		before (the one passed to the constructor included): only the last
 		one bound hears it. One bound after the call has been answered is told
 		at once, as `then` tells a handler added late. `null` changes nothing.
 
-		It added one each time, so a responder replaced was told as well.
 		`then` is the way to add: every handler added with it runs, beside
 		whichever responder is bound.
 	**/
@@ -129,8 +127,8 @@ class RPCResponse<T> extends Future<T> {
 
 	/**
 		Gives the call until `milliseconds` from now to be answered, in place
-		of any deadline it had, the session's `callTimeout`, or one set
-		here before. `0` leaves it none, to wait for as long as the connection
+		of any deadline it had (the session's `callTimeout`, or one set
+		here before). `0` leaves it none, to wait for as long as the connection
 		lasts.
 
 		Past it, the call fails with an `RPCTimeoutError` as its `cause`, and

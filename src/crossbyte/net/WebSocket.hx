@@ -41,21 +41,21 @@ import haxe.io.Error;
 	`wss://` server, or a session a `ServerWebSocket` accepted.
 
 	It is a `Socket`. What is written and then flushed goes as one binary
-	message, and what arrives is read as a stream, or, with a listener for
+	message, and what arrives is read as a stream or, with a listener for
 	`WebSocketMessageEvent.MESSAGE`, delivered a whole message at a time.
 	`sendText` and `sendBinary` send a message at once.
 
 	Where it differs from a plain socket it follows the browser's WebSocket:
 
-	- A connect that fails, refused, unreachable, a TLS handshake or a
+	- A connect that fails (refused, unreachable, a TLS handshake or a
 	  certificate refused, an upgrade the server declined or never answered,
-	  `timeout` passed, dispatches `ioError` saying why, and then `close`
+	  `timeout` passed) dispatches `ioError` saying why, and then `close`
 	  with code 1006. `connect` is never dispatched. A plain `Socket`
 	  dispatches `ioError` alone.
 	- `close` is a `WebSocketCloseEvent` carrying the code and reason, and is
 	  dispatched however the session ends, `close()` included.
 	- There is no half-close: a session ends both ways at once, with a close
-	  frame. `shutdown()` throws, and `peerShutdownPolicy` is not consulted,
+	  frame. `shutdown()` throws, and `peerShutdownPolicy` is not consulted:
 	  a peer that shuts its side ends the session, as 1006.
 
 	**What a message costs.** Receiving one allocates nothing, text or
@@ -64,8 +64,8 @@ import haxe.io.Error;
 	listener's call. Its `text` is a `String` made when asked for, and is
 	the one allocation left on a message: a string cannot change, so it
 	cannot be a view of a buffer filled again with the next, and it is safe
-	to keep, as a map key or in a log. A listener reading `data`, a
-	protocol of its own, a command matched by its bytes, allocates
+	to keep, as a map key or in a log. A listener reading `data` (a
+	protocol of its own, a command matched by its bytes) allocates
 	nothing. Sending allocates nothing either, natively, for `sendText` (up
 	to a frame, 64 KiB), `sendBinary` and `sendPrepared`; on the jvm a text
 	of more than 256 characters is encoded by the platform, into a buffer
@@ -79,7 +79,7 @@ import haxe.io.Error;
 	@event close    Dispatched when the session ends, as a
 	                `WebSocketCloseEvent`.
 	@event ioError  Dispatched when a connect fails, ahead of `close`; and
-	                ahead of `close` when an open session is given up on,
+	                ahead of `close` when an open session is given up on:
 	                its peer silent past `idleTimeout`, say.
 	@author Christopher Speciale
 **/
@@ -104,8 +104,7 @@ class WebSocket extends Socket {
 		// session a secure server accepted read false.
 		webSocket.secure = server != null ? server.secure : @:privateAccess webSocket.__webSocket.__tls;
 		if (server != null) {
-			// The server's, from the start: it was applied once the session
-			// opened, and only when the server's was not 0.
+			// The server's, from the start, 0 included.
 			webSocket.__maxOutputBufferSize = server.maxOutputBufferSize;
 			webSocket.__maxMessageSize = server.maxMessageSize;
 			webSocket.__closeTimeout = server.closeTimeout;
@@ -152,7 +151,7 @@ class WebSocket extends Socket {
 	/**
 		The subprotocol this session speaks, or `null` for none: on a client,
 		the one the server chose from `protocols`; on a session a server
-		accepted, the one it accepted, see `ServerWebSocket.upgrade`.
+		accepted, the one it accepted (see `ServerWebSocket.upgrade`).
 	**/
 	public var protocol(get, never):Null<String>;
 
@@ -164,35 +163,35 @@ class WebSocket extends Socket {
 		Kept as the head it arrived as once the session has opened and its
 		`connect` listeners have run: its headers are read from that again
 		the first time they are asked for afterwards, and kept from then on.
-		The parsed headers were a third of what an idle session held.
+		Kept parsed, the headers would be a third of what an idle session holds.
 	**/
 	public var request(get, never):Null<WebSocketRequest>;
 
 	/**
 		How often, in seconds, a session that has heard nothing from its peer
-		pings it; zero for never. Thirty by default, often enough that a
-		proxy between the two does not close the connection as idle, or, on
+		pings it; zero for never. Thirty by default (often enough that a
+		proxy between the two does not close the connection as idle) or, on
 		a server's sessions, the server's `pingInterval`. Can be changed at any
 		time.
 
 		The same beat lets a quiet session go of its memory: one that has
 		heard nothing and sent nothing since the last beat lets go of the
 		storage its buffers held for the messages before, and holds its
-		objects alone, about 4 KB natively, where it kept the largest each
-		buffer had needed, some 95 KB after one 16 KB message each way. With
+		objects alone (about 4 KB natively) rather than the largest each
+		buffer has needed, some 95 KB after one 16 KB message each way. With
 		this and `idleTimeout` both zero there is no beat, and it keeps them.
 	**/
 	public var pingInterval(get, set):Float;
 
 	/**
-		How long, in seconds, a session hears nothing from its peer, no
-		message, no pong, before it takes the peer for gone, dispatching
+		How long, in seconds, a session hears nothing from its peer (no
+		message, no pong) before it takes the peer for gone, dispatching
 		`ioError` and then `close` with 1006. Sixty by default, or the server's
 		`idleTimeout`; zero for never.
 
-		There was none. A peer that vanished without closing, a phone gone
-		out of range, a machine switched off, was held for good, and
-		everything written to it piled up.
+		Without one, a peer that vanished without closing (a phone gone out
+		of range, a machine switched off) would be held for good, and
+		everything written to it would pile up.
 	**/
 	public var idleTimeout(get, set):Float;
 
@@ -210,10 +209,8 @@ class WebSocket extends Socket {
 
 		1 MiB by default, or on a server's sessions the server's
 		`maxMessageSize`. Each session has its own, and changing it holds
-		from the next frame. It was process-wide, with a limit on each frame
-		of 64 KiB besides that refused a browser's message of more than that,
-		a browser sends one of 100 KB as one frame, however large a
-		message was allowed.
+		from the next frame. Frames are not limited on their own: a browser
+		sends a message of 100 KB as one frame.
 
 		What a peer can make a session hold while a message arrives is about
 		this much: set it to the largest message the application takes.
@@ -223,8 +220,8 @@ class WebSocket extends Socket {
 	@:noCompletion private var __maxMessageSize:Int = InternalWS.DEFAULT_MAX_MESSAGE_SIZE;
 
 	/**
-		How long a closing handshake is given, in seconds, `closeWith()`'s,
-		or one the peer began: for the peer to answer the close frame, and
+		How long a closing handshake is given, in seconds (`closeWith()`'s,
+		or one the peer began): for the peer to answer the close frame, and
 		for what was sent before it to drain. Past it the connection is
 		closed regardless, as 1006 if the peer never answered. Five by
 		default, or the server's `closeTimeout`. 0 is refused rather than
@@ -242,12 +239,12 @@ class WebSocket extends Socket {
 		each message of `compressionThreshold` bytes or more sent compressed,
 		and compressed messages accepted. Off by default; read when
 		`connect()` is called. The server may decline, and the session then
-		goes on without, see `compressed`. A session a `ServerWebSocket`
+		goes on without (see `compressed`). A session a `ServerWebSocket`
 		accepted takes the server's setting instead.
 
 		Each message is compressed on its own, in both directions: a message
 		costs a compressor's setup, and saves most on the larger, repetitive
-		ones, an 18 KB JSON snapshot goes as about 3 KB. A server that
+		ones: an 18 KB JSON snapshot goes as about 3 KB. A server that
 		agrees but does not also say `client_no_context_takeover` may inflate
 		this side's messages as one stream, which a message compressed on its
 		own ends; this side then sends uncompressed, and still inflates what
@@ -283,7 +280,7 @@ class WebSocket extends Socket {
 		`IOError` from the send that left it past the limit, and keeps the
 		session.
 
-		A peer that stops reading, a slept phone, a half-open connection,
+		A peer that stops reading (a slept phone, a half-open connection)
 		leaves everything sent to it buffered with nothing to reclaim it.
 		Frames are never dropped to stay under the limit.
 
@@ -339,10 +336,8 @@ class WebSocket extends Socket {
 
 		It may be called from any thread, as `Socket.close()` may: from one
 		that is not the session's runtime's, it is handed to the runtime and
-		happens there after this returns. It threw part way through there,
-		the close frame sent, the connection left open, the heartbeat left
-		running and `close` never dispatched, since the session's timers
-		were taken from the calling thread.
+		happens there after this returns, since the session's timers belong
+		to the runtime's thread.
 
 		@throws IOError The session is not open.
 	**/
@@ -373,20 +368,16 @@ class WebSocket extends Socket {
 	 * network failure and reconnect sensibly. Used by
 	 * `ServerWebSocket.drain()`, which sends 1001 ("going away").
 	 *
-	 * The session stays up for the peer's answer, anything written before
-	 * this still goes out first, and closes once that arrives, or after a
+	 * The session stays up for the peer's answer (anything written before
+	 * this still goes out first) and closes once that arrives, or after a
 	 * few seconds regardless. The `close` event then reports the code and
 	 * reason the peer answered with, usually the ones sent, or 1006 if it
 	 * never answered.
 	 *
-	 * This used to send a close frame with nothing in it, so the peer saw
-	 * 1005 or 1000 whatever the code, and closed at once, which on a native
-	 * target could drop both the frame and whatever was queued before it.
-	 *
 	 * It may be called from any thread, as `close()` may: from one that is
 	 * not the session's runtime's, the close is handed to the runtime and
-	 * begins there after this returns. It threw there, from the timer that
-	 * bounds the peer's answer, which was taken from the calling thread.
+	 * begins there after this returns, where the timer that
+	 * bounds the peer's answer belongs.
 	 *
 	 * @param code WebSocket close code: 1000 (normal), 1001 (going away), a
 	 *        code 1002-1014 names, or one of the ranges left to libraries,
@@ -421,7 +412,7 @@ class WebSocket extends Socket {
 		Sends `text` as one text message: a browser receives it as a string.
 
 		Everything written and flushed goes as a binary message, which a
-		browser hands its page as a `Blob` or an `ArrayBuffer`, the wrong
+		browser hands its page as a `Blob` or an `ArrayBuffer`: the wrong
 		shape for the JSON most pages expect.
 
 		@throws IOError if the session is not open, or, under the `THROW`
@@ -438,8 +429,8 @@ class WebSocket extends Socket {
 		Sends `length` bytes of `bytes` from `offset` as one binary message, at
 		once rather than when the socket is next flushed. A `length` of 0 sends
 		everything from `offset`. The bytes are framed from where they lie and
-		copied before this returns, so the buffer is the caller's again, a
-		message event's payload included, and, uncompressed, nothing is
+		copied before this returns, so the buffer is the caller's again (a
+		message event's payload included) and, uncompressed, nothing is
 		allocated for them.
 
 		@throws IOError if the session is not open, or, under the `THROW`
@@ -457,14 +448,14 @@ class WebSocket extends Socket {
 		}
 
 		// Framed from where the bytes lie, which copies them before this
-		// returns. They were copied into a ByteArray of their own first, and
-		// framed from that: a buffer and its storage every message.
+		// returns, rather than copied into a ByteArray of their own first: a
+		// buffer and its storage every message.
 		__webSocket.sendRange(bytes, offset, length);
 		__checkOutputLimit();
 	}
 
 	/**
-		Sends a message made ready for many sessions, see `PreparedMessage`,
+		Sends a message made ready for many sessions (see `PreparedMessage`)
 		at once rather than when the socket is next flushed. A session a
 		server accepted copies the message's frames as they were made into
 		what its pass sends, and is sent its compressed form where it agreed
@@ -493,9 +484,6 @@ class WebSocket extends Socket {
 		`maxOutputBufferSize` is still waiting an `IOError` is thrown and the
 		session kept. `CLOSE`'s half is the session's own, at the write that
 		left it past the limit; see `__overflowCloses`.
-
-		Both were missing: whatever the policy, the session closed with 1011
-		and said nothing.
 	**/
 	@:noCompletion private inline function __checkOutputLimit():Void {
 		if (__maxOutputBufferSize > 0 && outputOverflowPolicy == OutputOverflowPolicy.THROW) {
@@ -523,12 +511,11 @@ class WebSocket extends Socket {
 
 	/**
 		Not for a `WebSocket`: a session ends both ways at once, with a close
-		frame, `closeWith()` or `close()`, and RFC 6455 has no half-close
+		frame (`closeWith()` or `close()`), and RFC 6455 has no half-close
 		for `shutdown(false, true)` to stand for. `peerShutdownPolicy` is not
 		consulted either: a peer that shuts its side ends the session, as 1006.
 
-		@throws IllegalOperationError Always. It returned, having done
-			nothing.
+		@throws IllegalOperationError Always.
 	**/
 	override public function shutdown(read:Bool, write:Bool):Void {
 		throw new IllegalOperationError("A WebSocket has no half-close: a session ends both ways at once, with closeWith() or close().");
@@ -665,8 +652,8 @@ class WebSocket extends Socket {
 		__input.endian = __endian;
 
 		var schema = secure ? "wss" : "ws";
-		// An IPv6 literal, bracketed or bare, as well as a name or an IPv4
-		// address: the pattern this used took only the last two, and refused
+		// address, so `::1` is not refused as an invalid host before a socket
+		// exists.
 		// `::1` as an invalid host before a socket existed.
 		var target = crossbyte._internal.websocket.WebSocketHost.split(__host);
 		if (target == null) {
@@ -682,8 +669,7 @@ class WebSocket extends Socket {
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
 			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
 		// `timeout` bounds the connection and the upgrade after it, as one
-		// deadline from here; see connect's doc. The session used a fixed ten
-		// seconds of its own and never waited on the upgrade at all.
+		// deadline from here; see connect's doc.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
 		__webSocket.maxMessageSize = __maxMessageSize;
@@ -704,7 +690,7 @@ class WebSocket extends Socket {
 		Sends what has been written as one binary message.
 
 		Written while the session is still connecting, it waits and goes once
-		the session opens, where it threw; see `sendText` for a text message.
+		the session opens; see `sendText` for a text message.
 
 		@throws IOError if the session is closing or closed, or, under the
 			`THROW` `outputOverflowPolicy`, if more than `maxOutputBufferSize`
@@ -867,9 +853,8 @@ class WebSocket extends Socket {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		// As a ByteArray reads one, in every encoding a ByteArray can, JSON
-		// always, AMF with -lib format, and one this build cannot do throws.
-		// Only HXSF was read: anything else read null, and said nothing.
+		// As a ByteArray reads one, in every encoding a ByteArray can (JSON
+		// always, AMF with -lib format), and one this build cannot do throws.
 		__input.objectEncoding = objectEncoding;
 		return __input.readObject();
 	}
@@ -1230,8 +1215,7 @@ class WebSocket extends Socket {
 			@:privateAccess counted.__releaseSession();
 		}
 		// And off the server's list of open sessions, before anything that
-		// listens for the close below runs, as it was when the server heard
-		// of it through a close listener of its own added first.
+		// listens for the close below runs.
 		if (__trackedBy != null) {
 			var tracker:ServerWebSocket = __trackedBy;
 			__trackedBy = null;
@@ -1246,11 +1230,11 @@ class WebSocket extends Socket {
 			@:privateAccess server.__upgradeEnded(this);
 		}
 
-		// The session underneath knows why it ended; this used to drop that
-		// on the floor and dispatch a bare Event.CLOSE, so an application
-		// could not tell a peer disconnecting from a peer being dropped for
-		// a protocol violation. Dispatched under the Event.CLOSE type, so
-		// listeners that only care *that* it closed are unaffected.
+		// The session underneath knows why it ended, and the event carries
+		// it, so an application can tell a peer disconnecting from a peer
+		// being dropped for a protocol violation. Dispatched under the
+		// Event.CLOSE type, so listeners that only care *that* it closed are
+		// unaffected.
 		dispatchEvent(new WebSocketCloseEvent(Event.CLOSE, code, reason));
 	}
 
@@ -1261,10 +1245,9 @@ class WebSocket extends Socket {
 
 	/** The session underneath has failed, saying `text`. **/
 	@:noCompletion private function __framingFailed(text:Null<String>, errorID:Int):Void {
-		// An IOErrorEvent carrying what went wrong. This dispatched a bare
-		// Event of the ioError type, so a listener typed for IOErrorEvent got
-		// something else, and a refused certificate or a connect that failed
-		// arrived with no account of which it was.
+		// An IOErrorEvent carrying what went wrong, so a listener typed for
+		// IOErrorEvent gets one, and a refused certificate or a connect that
+		// failed arrives with an account of which it was.
 		//
 		// A deadline that passed says so with its id, which a NetConnection
 		// over this socket reports as Reason.Timeout.
@@ -1292,13 +1275,12 @@ class WebSocket extends Socket {
 	@:noCompletion private function __messageArrived(newData:ByteArray, isText:Bool):Void {
 		// One message, whole, to whoever asked for messages, and then not
 		// into the stream as well, which nobody would be reading and which
-		// would only grow. Every message used to go into the stream, so where
-		// one ended and the next began was lost.
+		// would only grow.
 		if (hasEventListener(WebSocketMessageEvent.MESSAGE)) {
 			newData.position = 0;
 			// In this socket's byte order, as its stream is read. The buffer
 			// the frame parser filled is big-endian, for the frame's own
-			// fields, and a message used to arrive so whatever `endian` said.
+			// fields.
 			newData.endian = endian;
 			var pooled:Bool = Arrivals.REUSE && !__messageEventOut;
 			var event:WebSocketMessageEvent;
@@ -1330,10 +1312,10 @@ class WebSocket extends Socket {
 		var arrived:Int = newData.length;
 		newData.readBytes(__input, __input.length);
 
-		// What has just arrived, as a plain socket reports it on every target;
-		// this reported everything unread, so a reader that had left one
-		// message in the stream was told the next was both together. In the
-		// event a plain socket hands out too, filled again for each.
+		// What has just arrived, as a plain socket reports it on every
+		// target, not everything unread: a reader that left one message in
+		// the stream is not told the next was both together. In the event a
+		// plain socket hands out too, filled again for each.
 		if (arrived > 0) {
 			__dispatchPooledSocketData(arrived, 0);
 		}
@@ -1394,8 +1376,7 @@ class WebSocket extends Socket {
 		__webSocket.binaryType = "arraybuffer";
 		// The session tells this of its opening, its messages, its errors,
 		// its close and its overflow by typed calls, with no event between
-		// the layers. It was given a closure for each, six a session, kept
-		// for as long as it lasted.
+		// the layers and no closure kept for each.
 		__webSocket.__owner = this;
 		__syncProgressHook();
 

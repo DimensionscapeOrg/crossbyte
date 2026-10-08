@@ -12,21 +12,20 @@ import utest.Async;
 /**
  * The router in front of a real server.
  *
- * Every case here is asynchronous, which it did not need to be while these ran
- * only on the native targets: a `while` loop pumping the runtime delivers
- * socket I/O there perfectly well. It delivers nothing on Node, where I/O
- * arrives by returning to the event loop, so a synchronous round trip cannot
- * observe a response at all, and does not fail saying so, it times out
- * looking like a slow test. `HTTPTestSupport.pumpUntilAsync` keeps the native
- * path synchronous underneath and calls back inline, so nothing here got
- * slower or harder to debug; what changed is that the same case now means
- * something on both.
+ * Every case here is asynchronous: a `while` loop pumping the runtime
+ * delivers socket I/O on the native targets perfectly well, but nothing on
+ * Node, where I/O arrives by returning to the event loop, so a synchronous
+ * round trip there cannot observe a response at all, and does not fail
+ * saying so: it times out looking like a slow test.
+ * `HTTPTestSupport.pumpUntilAsync` keeps the native path synchronous
+ * underneath and calls back inline, so nothing is slower or harder to
+ * debug, and the same case means something on both.
  */
 // Every case here waits on a socket, and some wait on a server-side timeout
-// deliberately, an idle keep-alive connection closing, an incomplete request
-// answering 408. utest allows an asynchronous case 250ms by default, which is
-// shorter than the behaviour under test, so four of them reported "async is
-// timed out" rather than what they measured. The budget is a ceiling on a hang,
+// deliberately (an idle keep-alive connection closing, an incomplete request
+// answering 408). utest allows an asynchronous case 250ms by default, which is
+// shorter than the behaviour under test, so such a case would report "async is
+// timed out" rather than what it measured. The budget is a ceiling on a hang,
 // not a target: a healthy run spends nowhere near it.
 @:timeout(20000)
 class RouterServerTest extends utest.Test {
@@ -55,9 +54,8 @@ class RouterServerTest extends utest.Test {
 	}
 
 	public function testAHeadRouteStatesTheLengthOfWhatItWouldSend(async:Async):Void {
-		// head()'s doc said respond() frames a HEAD as zero-length, so a route
-		// could not state its GET's size. It states the length of the body it
-		// is given, and sends none of it.
+		// A route states the length of the body it is given for a HEAD, as
+		// head()'s doc says, so it can state its GET's size, and sends none of it.
 		var router = new Router();
 		router.head("/report", ctx -> ctx.handler.respond(200, "text/plain", "the report's text"));
 
@@ -113,8 +111,8 @@ class RouterServerTest extends utest.Test {
 				Assert.equals(204, response.status);
 				Assert.equals("", response.body);
 				Assert.equals("*", response.headers.get("access-control-allow-origin"));
-				// The configured methods, which include POST; a preflight no
-				// longer echoes back what it asked for.
+				// The configured methods, which include POST: a preflight does not echo
+				// back what it asked for.
 				Assert.equals("GET, POST, OPTIONS", response.headers.get("access-control-allow-methods"));
 				async.done();
 			}, false, config -> config.corsEnabled = true);
@@ -221,7 +219,7 @@ class RouterServerTest extends utest.Test {
 
 	/**
 	 * Adapts the shared parser to this suite's result, which additionally
-	 * carries whether the connection closed, the router's 405 and its
+	 * carries whether the connection closed: the router's 405 and its
 	 * throwing-handler 500 differ from a routed 200 in exactly that.
 	 */
 	private static function __parse(raw:String, closed:Bool):RouterRoundTrip {

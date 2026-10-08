@@ -10,13 +10,14 @@ import utest.Assert;
 	Calls the other side cannot take: none of them may end the connection
 	or leave a caller waiting on one that is up.
 
-	A runtime call to a session with no runtime handlers ended that
-	session's connection, the reader for a compiled handler took the frame
-	for garbage, where the guide promised an error answer. A compiled
-	request to a session with no handler was dropped, and its caller waited
-	on a connection that stayed up. A frame over the 8 MiB limit went out
-	without complaint and ended the connection on the other side, failing
-	every call waiting on it; and the limit was a constant.
+	A runtime call to a session with no runtime handlers gets the error
+	answer the guide promises, rather than ending that session's connection
+	with the frame taken for garbage by the reader for a compiled handler.
+	A compiled request to a session with no handler is answered, not
+	dropped with its caller left waiting on a connection that stays up. A
+	frame over the limit is refused as it is sent, not sent to end the
+	connection on the other side and fail every call waiting on it; and the
+	limit is a setting.
 **/
 class RPCUnhandledCallTest extends utest.Test {
 	public function testARuntimeCallToASessionWithNoRuntimeHandlersIsAnswered():Void {
@@ -94,7 +95,8 @@ class RPCUnhandledCallTest extends utest.Test {
 	}
 
 	public function testAnAnswerOverTheFrameLimitIsNotSent():Void {
-		// It was sent, and the caller's side ended its connection over it.
+		// Refused as it is sent, not sent for the receiving side to end its
+		// connection over.
 		var fixture = new Fixture();
 		var reported:Array<String> = [];
 		fixture.server.onHandlerError = (op, method, error) -> reported.push(method);
@@ -122,9 +124,9 @@ class RPCUnhandledCallTest extends utest.Test {
 	}
 
 	public function testAFrameWithFlagsNoFrameHasIsPassedOver():Void {
-		// Flags that are neither a call nor an answer, an error that answers
-		// nothing, were taken for a one-way call, and the method ran; then
-		// they ended the connection. A kind of frame a later release adds is
+		// Flags that are neither a call nor an answer (an error that answers
+		// nothing) are not taken for a one-way call with the method run, and do
+		// not end the connection. A kind of frame a later release adds is
 		// passed over, the session told.
 		var fixture = new Fixture();
 		var passed:Array<String> = [];
@@ -147,8 +149,8 @@ class RPCUnhandledCallTest extends utest.Test {
 	public function testACallForAMethodThisSideHasNotGotIsAnsweredAndTheConnectionStays():Void {
 		// A rolling deploy: a client built with a method its server does not
 		// have yet. The request is answered saying so and the one-way call is
-		// dropped, the server told of both; they ended the connection, and
-		// every call waiting on it failed.
+		// dropped, the server told of both; neither ends the connection, nor
+		// fails every call waiting on it.
 		var fixture = new Fixture();
 		var passed:Array<String> = [];
 		fixture.server.onUnreadableFrame = (op, requestId, reason) -> passed.push(requestId + " " + reason);

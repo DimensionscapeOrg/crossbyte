@@ -87,7 +87,7 @@ class WindowsServiceSample extends ServerApplication {
 
 			// Reported before tearing the runtime down, not after: the SCM is
 			// entitled to kill the process the moment it sees this, and by here
-			// the drain, the part worth protecting, has already finished.
+			// the drain (the part worth protecting) has already finished.
 			// Leaving it until after shutdown() risks the process ending first,
 			// which the SCM records as "terminated unexpectedly".
 			ProcessLifecycle.reportServiceStopped(0);

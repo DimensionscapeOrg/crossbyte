@@ -11,10 +11,10 @@ import crossbyte.errors.ArgumentError;
 	Every field is optional, so an object literal of the ones wanted is
 	enough: `connection.find("events", filter, {batchSize: 500, limit: 10})`.
 	It is a class, not an anonymous structure, so each field is read
-	directly; an object made at run time, parsed from JSON, say, has to
+	directly; an object made at run time (parsed from JSON, say) has to
 	be copied into one.
 
-	Where the order of fields matters, `sort`, and `hint` given as keys,
+	Where the order of fields matters (`sort`, and `hint` given as keys),
 	pass a `BsonDocument`, or an object of one field: an anonymous object's
 	fields are not kept in order on most targets, and one with several is
 	refused rather than sorted by chance.
@@ -129,7 +129,7 @@ final class MongoIndex {
 
 	/**
 		Seconds after the date in the indexed field at which the server
-		deletes the document, a TTL index. The field must hold a BSON date:
+		deletes the document: a TTL index. The field must hold a BSON date:
 		a `Date` or `BsonDateTime`, not text.
 	**/
 	public var expireAfterSeconds:Null<Int> = null;
@@ -139,9 +139,9 @@ final class MongoIndex {
 }
 
 /**
-	The index a query is to use: its name, or its keys, a `BsonDocument`,
+	The index a query is to use: its name, or its keys (a `BsonDocument`,
 	or an object of one field, since an anonymous object's fields are not
-	kept in order on most targets.
+	kept in order on most targets).
 
 	```haxe
 	// Given connection:MongoConnection.

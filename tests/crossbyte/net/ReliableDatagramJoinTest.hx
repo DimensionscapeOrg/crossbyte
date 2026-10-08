@@ -26,8 +26,8 @@ class ReliableDatagramJoinTest extends utest.Test {
 	// ------------------------------------------------------------- joins
 
 	/**
-		A few CONNECTs a second from forged addresses kept every pending
-		slot full, and no real client could join. Past the threshold each is
+		A few CONNECTs a second from forged addresses could keep every pending
+		slot full, so that no real client could join. Past the threshold each is
 		answered with a cookie that never reaches anyone, and holds nothing;
 		a real client returns its cookie and joins, a round trip later.
 	**/
@@ -39,8 +39,8 @@ class ReliableDatagramJoinTest extends utest.Test {
 		var accepted:ReliableDatagramSocket = null;
 		// Where the forged CONNECTs say they are from: bound and never read,
 		// so what the server sends there goes quietly nowhere, as it does to
-		// an address that never asked, where a port nobody holds would
-		// answer with an ICMP error that ends the session at once.
+		// an address that never asked, where a port nobody holds would answer
+		// with an ICMP error that ends the session at once.
 		var sinks:Array<DatagramSocket> = [];
 
 		try {
@@ -64,9 +64,9 @@ class ReliableDatagramJoinTest extends utest.Test {
 
 			// And from a thousand addresses more, at once: none holds a slot.
 			// Most as peers from before 1.0, which are sent nothing; fifty as
-			// 1.0 peers, each sent a cookie to a port nobody holds, no more,
+			// 1.0 peers, each sent a cookie to a port nobody holds, and no more,
 			// since Windows reports each one's ICMP error on a later read, and
-			// 64 of those in a row stop a socket receiving.
+			// many of those in a row could stop a socket receiving.
 			for (i in 0...1000) {
 				var forged = i % 20 == 0 ? ReliableDatagramProtocol.encodeConnect(0x1000 + i) : ReliableDatagramProtocol.encode(CONNECT, 0x1000 + i);
 				inject(server, forged, "127.0.0." + (2 + i % 200), 20000 + i);
@@ -191,7 +191,7 @@ class ReliableDatagramJoinTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
-	/** `NEVER` is the server as it was: every CONNECT taken at its word, up to the ceiling. **/
+	/** `NEVER`: every CONNECT taken at its word, up to the ceiling. **/
 	public function testNeverTakesEveryConnectAtItsWordAsBefore():Void {
 		if (!requireDatagramSupport()) return;
 
@@ -277,8 +277,8 @@ class ReliableDatagramJoinTest extends utest.Test {
 	}
 
 	/**
-		Whatever a server sends back to a CONNECT, a cookie, or the
-		HANDSHAKE that opens a session, is never larger than the CONNECT:
+		Whatever a server sends back to a CONNECT (a cookie, or the
+		HANDSHAKE that opens a session) is never larger than the CONNECT:
 		every size of payload a 1.0 peer may send. A CONNECT from before 1.0
 		is too short to be sent a cookie, and is sent nothing while joins are
 		validated.
@@ -405,8 +405,8 @@ class ReliableDatagramJoinTest extends utest.Test {
 	}
 
 	/**
-		Two servers dialling each other, each CONNECT finding the session
-		its server dialled, need no cookie, whatever `joinValidation` says.
+		Two servers dialling each other (each CONNECT finding the session
+		its server dialled) need no cookie, whatever `joinValidation` says.
 	**/
 	public function testPeersThatBothDialAreNotAskedForACookie():Void {
 		if (!requireDatagramSupport()) return;
@@ -438,12 +438,11 @@ class ReliableDatagramJoinTest extends utest.Test {
 	}
 
 	/**
-		A session the server opens takes the server's socket. Its
-		constructor made a socket of its own all the same, a system socket,
-		its buffers asked for, a 64 KB read buffer, which the server closed
-		at once: every join paid for one, and a flood below the threshold
-		paid for one a CONNECT. Natively and on the jvm, where allocation can
-		be counted.
+		A session the server opens takes the server's socket, and makes no
+		socket of its own (a system socket, its buffers asked for, a 64 KB read
+		buffer) only for the server to close it at once, which would make every
+		join pay for one, and a flood below the threshold pay for one a CONNECT.
+		Natively and on the jvm, where allocation can be counted.
 	**/
 	public function testAnAcceptedSessionMakesNoSocketOfItsOwn():Void {
 		if (!requireDatagramSupport()) return;
@@ -515,10 +514,10 @@ class ReliableDatagramJoinTest extends utest.Test {
 	// ------------------------------------------------------------- resets
 
 	/**
-		A frame from an address with no session draws a FIN. One was sent for
-		every such frame, however many came: a sender naming someone else's
-		address could have the server send that address a datagram for each
-		it sent. Now the process holds them to `maxResetsPerSecond`.
+		A frame from an address with no session draws a FIN, held to the
+		process's `maxResetsPerSecond`: one for every such frame, however many
+		came, would let a sender naming someone else's address have the server
+		send that address a datagram for each it sent.
 	**/
 	public function testResetsToStrangersAreHeldToTheProcessAllowance():Void {
 		if (!requireDatagramSupport()) return;
@@ -584,7 +583,9 @@ class ReliableDatagramJoinTest extends utest.Test {
 	/** Negative lifts the limit, and 0 sends none. **/
 	public function testTheAllowanceCanBeLiftedOrClosed():Void {
 		var before:Int = ReliableDatagramServerSocket.maxResetsPerSecond;
-		var now:Float = haxe.Timer.stamp();
+		// A round base, so the half second below is exactly 0.5 apart: with
+		// a large stamp (macOS's) the difference rounds just under it.
+		var now:Float = 1000.0;
 
 		ResetBudget.refill();
 		var taken:Int = 0;
@@ -702,7 +703,7 @@ private typedef Cookie = {id:Int, high:Int, low:Int};
 
 /**
 	A plain datagram socket standing in for a peer: it sends frames as
-	written, and keeps what comes back, the size of every datagram, the
+	written, and keeps what comes back: the size of every datagram, the
 	cookies, how many HANDSHAKEs, and each FIN's sequence field.
 **/
 private class RawPeer {

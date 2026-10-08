@@ -23,8 +23,8 @@ import haxe.io.Output;
  * client, which runs on a worker thread under `URLLoader`, and it keeps the
  * state machine free of an event loop it would otherwise have to own.
  *
- * Multiplexing is supported by the data structures, streams are a map and
- * flow control is tracked per stream, but nothing here schedules across
+ * Multiplexing is supported by the data structures (streams are a map and
+ * flow control is tracked per stream), but nothing here schedules across
  * them; a caller drives whichever streams it opened.
  */
 class H2Connection {
@@ -43,9 +43,8 @@ class H2Connection {
 	 * frames, past which the connection is ended with ENHANCE_YOUR_CALM.
 	 * Negative disables the check.
 	 *
-	 * The server has held a client to this since it was shown that a HEADERS
-	 * with no END_HEADERS, and CONTINUATION frames after it for ever, grew a
-	 * buffer without end; a server could do the same to this client.
+	 * A HEADERS with no END_HEADERS, and CONTINUATION frames after it for
+	 * ever, would otherwise grow a buffer without end.
 	 */
 	public var maxHeaderBlockSize:Int = 256 * 1024;
 
@@ -62,9 +61,9 @@ class H2Connection {
 		with CANCEL, its body let go and `failure` saying why, and the
 		connection carries on.
 
-		Flow control did not bound it: the stream's window is opened again as
-		each half of it arrives, so the client can never fall behind, and a
-		server sending without end grew the body without end.
+		Flow control does not bound it: the stream's window is opened again
+		as each half of it arrives, so the client can never fall behind, and
+		a server sending without end would grow the body without end.
 	**/
 	public var maxResponseBodySize:Int = DEFAULT_MAX_RESPONSE_BODY_SIZE;
 
@@ -98,8 +97,8 @@ class H2Connection {
 
 	/**
 	 * Called when a request body cannot proceed because a flow-control window
-	 * is closed, or, with `deferWrites`, because `MAX_QUEUED_DATA` of it
-	 * waits to be written (`windowOpen` tells the two apart), with the
+	 * is closed (or, with `deferWrites`, because `MAX_QUEUED_DATA` of it
+	 * waits to be written; `windowOpen` tells the two apart), with the
 	 * stream it is for and how many seconds this stall has lasted. Returns
 	 * `false` to abandon the write. Called again after every return while
 	 * the body still cannot proceed, and the stall's clock only starts over
@@ -107,7 +106,7 @@ class H2Connection {
 	 *
 	 * The default reads a frame here, which is right when the caller owns the
 	 * connection outright. It is wrong the moment a reader thread owns the
-	 * reads instead, two readers on one socket lose frames, so an owner
+	 * reads instead (two readers on one socket lose frames), so an owner
 	 * that has one replaces this with a wait.
 	 *
 	 * Resetting the stream from here, or from anywhere while this waits, ends
@@ -118,9 +117,9 @@ class H2Connection {
 	/**
 		Whether frames are queued rather than written: set by an owner with a
 		thread of its own for the writes, which takes them with `takeOutbox`.
-		Every write here used to be made where the frame was made, under the
-		owner's lock, by whichever thread held it, so a peer that stopped
-		reading held that thread in the write, and the lock with it.
+		A write made where the frame was made, under the owner's lock, would
+		let a peer that stopped reading hold that thread in the write, and
+		the lock with it.
 
 		While set, a request body waits (`onWindowBlocked`) whenever
 		`MAX_QUEUED_DATA` of it waits to go out, as it waits on a window.
@@ -179,17 +178,15 @@ class H2Connection {
 		localSettings = settings != null ? settings : new H2Settings();
 		// Nothing here can take a pushed stream, and a PUSH_PROMISE is a
 		// connection error below, which 8.4 allows only once push has been
-		// refused. H2Settings allows it unless told otherwise, so a client
-		// given settings of its own invited pushes and then failed the
-		// connection over the first.
+		// refused. H2Settings allows push unless told otherwise, so it is
+		// refused here whatever settings the client was given.
 		localSettings.enablePush = false;
 		remoteSettings = new H2Settings();
 		__streams = new Map();
 
 		__encoder = new HpackEncoder(remoteSettings.headerTableSize);
-		// Settings that name no limit get the HTTP/1.1 client's: the decoder
-		// used to allow eight megabytes, under which a server could send a
-		// header section that took seconds to join.
+		// Settings that name no limit get the HTTP/1.1 client's, so a server
+		// cannot send a header section that takes seconds to join.
 		__decoder = new HpackDecoder(localSettings.headerTableSize,
 			localSettings.maxHeaderListSize >= 0 ? localSettings.maxHeaderListSize : DEFAULT_MAX_HEADER_LIST_SIZE);
 
@@ -270,8 +267,8 @@ class H2Connection {
 	 * The first half of `request`: opens a stream and sends its header
 	 * block, ending the request there unless `hasBody`.
 	 *
-	 * Separate so an owner can take note of the stream, register whoever
-	 * waits on it, and whatever would cancel it, before `sendBody`, which
+	 * Separate so an owner can take note of the stream (register whoever
+	 * waits on it, and whatever would cancel it) before `sendBody`, which
 	 * may wait on a window for as long as the peer likes.
 	 */
 	public function openStream(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, hasBody:Bool):H2Stream {
@@ -309,8 +306,8 @@ class H2Connection {
 	 * The second half of `request`: sends the body of a stream `openStream`
 	 * left open, and with it the end of the request.
 	 *
-	 * Stops early, the rest unsent, once the stream closes, answered or
-	 * reset by the peer, or reset here, by a cancel or a timeout, and sends
+	 * Stops early, the rest unsent, once the stream closes (answered or
+	 * reset by the peer, or reset here, by a cancel or a timeout), and sends
 	 * nothing at all for a stream closed before it began.
 	 */
 	public function sendBody(target:H2Stream, body:Bytes):Void {
@@ -319,9 +316,9 @@ class H2Connection {
 		}
 
 		__writeData(target, body);
-		// Unless the stream ended while the body was going out. Reopening it
-		// hid that from the caller, who then waited out its whole timeout for
-		// a stream that was already over.
+		// Unless the stream ended while the body was going out: reopening it
+		// would hide that from the caller, who would then wait out its whole
+		// timeout for a stream that was already over.
 		if (!target.isClosed()) {
 			target.state = H2StreamState.HALF_CLOSED_LOCAL;
 		}
@@ -383,7 +380,7 @@ class H2Connection {
 			if (e == haxe.io.Error.Blocked) {
 				throw e;
 			}
-			// Anything else is an abnormal termination, a reset, typically.
+			// Anything else is an abnormal termination, a reset typically.
 			// Reporting it as a clean close would surface downstream as
 			// "the response had no status", blaming the peer's message for
 			// what was actually a dead socket.
@@ -466,8 +463,8 @@ class H2Connection {
 
 		target.close();
 		// Forgotten as it closes. A pooled connection carries requests for as
-		// long as it is used, and keeping every stream it had opened grew it
-		// by one stream and its header list per request, and made every
+		// long as it is used, and keeping every stream it opened would grow it
+		// by one stream and its header list per request, and make every
 		// SETTINGS walk all of them. Nothing needs a closed stream by id:
 		// whoever waits on it holds the stream itself, and a frame arriving
 		// for it later is discarded as one for an unknown id, which is what
@@ -598,13 +595,12 @@ class H2Connection {
 
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target == null) {
-			// A response for a stream we already finished with, closed
+			// A response for a stream we already finished with: closed
 			// streams are forgotten as they close. Discarding is correct; the
-			// peer may simply not have seen our RST_STREAM yet. Filling it in
-			// instead let a response arriving after a cancel complete the
-			// request it was for. The block is still decoded above: 5.1
-			// requires the HPACK state to advance even for a frame that is
-			// then dropped.
+			// peer may simply not have seen our RST_STREAM yet, and a response
+			// arriving after a cancel must not complete the request it was for.
+			// The block is still decoded above: 5.1 requires the HPACK state to
+			// advance even for a frame that is then dropped.
 			return;
 		}
 		target.framesIn++;
@@ -621,9 +617,10 @@ class H2Connection {
 
 		// RFC 9113 8.2.1 holds a response to the rules a request is held to:
 		// a CR, LF or NUL in a value, or a name that is not visible lowercase
-		// ASCII, is a malformed response, a stream error (8.1.1). It reached
-		// the caller's headers, and a program passing them on over HTTP/1.1
-		// wrote the line break with them. Checked before any field is kept.
+		// ASCII, is a malformed response, a stream error (8.1.1). It must not
+		// reach the caller's headers, where a program passing them on over
+		// HTTP/1.1 would write the line break with them. Checked before any
+		// field is kept.
 		for (header in decoded) {
 			var problem:Null<String> = H2FieldRules.violation(header.name, header.value);
 			if (problem != null) {
@@ -636,11 +633,11 @@ class H2Connection {
 		if (target.headerSectionReceived) {
 			// After the final response's header block, a HEADERS is the
 			// trailer section (RFC 9113 8.1): it ends the stream and carries
-			// no pseudo-header. Any other was taken as more of the response,
-			// its fields added, its status over the last, so a server that
-			// repeated a block grew the stream by a block's fields each time,
-			// for as long as it went on. Each is held to the limit on its own,
-			// as the HTTP/1.1 client holds trailers apart from the header.
+			// no pseudo-header. Any other is refused rather than taken as more
+			// of the response, which would let a server that repeated a block
+			// grow the stream by a block's fields each time. Each is held to the
+			// limit on its own, as the HTTP/1.1 client holds trailers apart from
+			// the header.
 			var problem:Null<String> = !endStream ? "a header block after the response's did not end the stream" : null;
 			for (header in decoded) {
 				if (problem == null && StringTools.startsWith(header.name, ":")) {
@@ -661,10 +658,9 @@ class H2Connection {
 		}
 
 		// The response's header section is one allowance, its interim
-		// responses included, as the HTTP/1.1 client's is: each 1xx was held
-		// to the limit on its own and dropped, so 103s could come for as long
-		// as a server liked, each a frame of the stream that kept it from its
-		// idle timeout.
+		// responses included, as the HTTP/1.1 client's is, so 103s cannot
+		// come for as long as a server likes, each a frame of the stream
+		// that keeps it from its idle timeout.
 		target.sectionBytes += __decoder.listSize;
 		if (target.sectionBytes > __decoder.maxHeaderListSize) {
 			target.failure = 'Response header section exceeded the ${__decoder.maxHeaderListSize} byte limit';
@@ -672,13 +668,11 @@ class H2Connection {
 			return;
 		}
 
-		// An interim response, 100 Continue, 103 Early Hints, is a header
+		// An interim response (100 Continue, 103 Early Hints) is a header
 		// block of its own ahead of the final one (RFC 9113 8.1). Its fields
 		// are not the response's and its status is not the response's, so the
-		// block is dropped and the final one waited for. Every block's fields
-		// were added to the stream's, so a 200 after a 103 carried the 103's
-		// link. One that ends the stream is malformed: the response it
-		// promises cannot follow.
+		// block is dropped and the final one waited for. One that ends the
+		// stream is malformed: the response it promises cannot follow.
 		for (header in decoded) {
 			if (header.name == ":status") {
 				if (__informational(header.value)) {
@@ -694,8 +688,8 @@ class H2Connection {
 
 		for (header in decoded) {
 			if (header.name == ":status") {
-				// Three digits (§8.3.2), read the same on every target. Past
-				// an Int, Std.parseInt made "4294967496" a 200 on Linux native.
+				// Three digits (§8.3.2), read the same on every target: past an
+				// Int, Std.parseInt reads "4294967496" as 200 on Linux native.
 				var parsed:Int = header.value.length == 3 ? IntParse.decimal(header.value) : -1;
 				target.status = parsed < 100 ? -1 : parsed;
 			} else {
@@ -716,7 +710,7 @@ class H2Connection {
 		}
 
 		// Flow control counts the whole payload, padding included (§6.9.1),
-		// even for a stream we have already discarded, otherwise the
+		// even for a stream we have already discarded; otherwise the
 		// connection window drifts and eventually stalls every other stream.
 		var counted:Int = frame.payload.length;
 		__connectionRecvWindow -= counted;
@@ -796,11 +790,11 @@ class H2Connection {
 		}
 
 		// The peer's HEADER_TABLE_SIZE is the most its decoder holds, and an
-		// encoder may use less (RFC 7541 4.2). This one held whatever it was
-		// told, so a server saying a megabyte, or 2^31 - 1, kept every
-		// distinct field this side sent in this side's memory for the
-		// connection's life, each searched for every field after. Held to
-		// the default, as Go's and nghttp2's clients hold theirs.
+		// encoder may use less (RFC 7541 4.2). Held to the default, as Go's
+		// and nghttp2's clients hold theirs: a server saying a megabyte, or
+		// 2^31 - 1, would otherwise have every distinct field this side sent
+		// kept in this side's memory for the connection's life, each searched
+		// for every field after.
 		var capacity:Int = remoteSettings.headerTableSize;
 		if (capacity < 0 || capacity > MAX_ENCODER_TABLE_SIZE) {
 			// Past 2^31 - 1 a setting reads negative.
@@ -975,14 +969,14 @@ class H2Connection {
 
 				// The peer may end the stream while the body waits here: with
 				// a response sent before it read the whole request (RFC 9113,
-				// 8.1), or with a reset, and so may a cancel or a timeout,
+				// 8.1), or with a reset; and so may a cancel or a timeout,
 				// which reset it here. Frames are processed, and a cancel can
 				// take the lock, only while this waits, so this is the one
-				// place to notice. The rest of the
-				// body has nowhere to go, and a closed stream's window never
-				// reopens, a WINDOW_UPDATE for it is discarded, so waiting
-				// on went on until the connection was quiet long enough to be
-				// given up on, and every other request on it went too.
+				// place to notice. The rest of the body has nowhere to go, and
+				// a closed stream's window never reopens (a WINDOW_UPDATE for
+				// it is discarded), so waiting on would last until the
+				// connection was quiet long enough to be given up on, and
+				// every other request on it would go too.
 				//
 				// Tested before `proceed`, so a stream that ended keeps its
 				// outcome even when the connection fails straight after.
@@ -1019,8 +1013,8 @@ class H2Connection {
 			}
 
 			var last:Bool = (offset + chunk) >= body.length;
-			// Framed straight from the body: a sub() of it first was a second
-			// copy of every byte.
+			// Framed straight from the body, with no sub() copy of every byte
+			// first.
 			__write(H2Frame.encode(H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, target.id, body, offset, chunk));
 
 			target.sendWindow -= chunk;
@@ -1050,9 +1044,9 @@ class H2Connection {
 		}
 		// Full, not writeBytes, which may write only part and says how much.
 		// Over TLS it takes at most one 16 KB record, and a DATA frame of the
-		// default largest size is 16 KB and nine: the frame's last nine bytes
-		// were dropped, and the peer read the next frame's header out of the
-		// middle of this one's payload.
+		// default largest size is 16 KB and nine: a partial write would drop
+		// the frame's last nine bytes, and the peer would read the next
+		// frame's header out of the middle of this one's payload.
 		__output.writeFullBytes(bytes, 0, bytes.length);
 		__output.flush();
 	}

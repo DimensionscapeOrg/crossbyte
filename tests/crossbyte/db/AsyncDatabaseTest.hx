@@ -15,10 +15,10 @@ private class IdleConnection {
 /**
  * The backlog in front of `AsyncDatabase`'s workers.
  *
- * With a worker per pooled connection, what `AsyncDatabase.of` builds, a
+ * With a worker per pooled connection (what `AsyncDatabase.of` builds) a
  * job never waits for a connection, so the pool's acquire timeout and wait
  * metrics never fire: the waiting all happens in the worker pool's queue,
- * which had no bound, no deadline and nothing measuring it.
+ * which therefore needs a bound, a deadline and its own measuring.
  *
  * On every target with threads, which the worker pool has everywhere but
  * JavaScript; there each job runs as it is submitted, and nothing queues.
@@ -44,8 +44,8 @@ class AsyncDatabaseTest extends utest.Test {
 	}
 
 	public function testAJobThatWaitedPastQueueTimeoutFailsWithoutRunning():Void {
-		// A caller long gone, a request that timed out, no longer gets its
-		// query run anyway, holding a connection that live requests want.
+		// A caller long gone (a request that timed out) does not get its query
+		// run anyway, holding a connection that live requests want.
 		var db = AsyncDatabase.of(__pool());
 		db.queueTimeout = 0.1;
 
@@ -98,8 +98,8 @@ class AsyncDatabaseTest extends utest.Test {
 	}
 
 	/**
-		The queue is bounded by default, in time and in number. It waited for
-		ever, and held as many jobs as were submitted.
+		The queue is bounded by default, in time and in number, rather than
+		waiting for ever and holding as many jobs as were submitted.
 	**/
 	public function testTheQueueIsBoundedByDefault():Void {
 		var db = AsyncDatabase.of(__pool());
@@ -119,9 +119,9 @@ class AsyncDatabaseTest extends utest.Test {
 	}
 
 	/**
-		A job fails at its deadline while every worker is still busy. It
-		failed only when a worker reached it, with every worker held by a
-		database that had stopped answering, never.
+		A job fails at its deadline while every worker is still busy, not only
+		when a worker reaches it, which with every worker held by a database
+		that has stopped answering would be never.
 	**/
 	public function testAJobFailsAtItsDeadlineWhileTheWorkersAreBusy():Void {
 		var db = AsyncDatabase.of(__pool());
@@ -156,7 +156,7 @@ class AsyncDatabaseTest extends utest.Test {
 		db.shutdown();
 	}
 
-	/** A queue timeout of 0 is none: a job waits as long as the workers are busy. It failed at once. **/
+	/** A queue timeout of 0 is none: a job waits as long as the workers are busy, rather than failing at once. **/
 	public function testAQueueTimeoutOfZeroIsNone():Void {
 		var db = AsyncDatabase.of(__pool());
 		db.queueTimeout = 0;
@@ -198,9 +198,10 @@ class AsyncDatabaseTest extends utest.Test {
 	}
 
 	/**
-		Limits that are not limits are refused. A negative maxQueued read as
-		no limit; a NaN queueTimeout as no limit, and a negative one as "fail
-		every job"; and acquireTimeout passed either to the pool unchecked.
+		Limits that are not limits are refused: a negative maxQueued, which
+		would read as no limit; a NaN queueTimeout, no limit, and a negative
+		one, "fail every job"; and an acquireTimeout of either, passed to the
+		pool unchecked.
 	**/
 	public function testNaNAndNegativeLimitsAreRefused():Void {
 		var db = AsyncDatabase.of(__pool());
@@ -211,7 +212,7 @@ class AsyncDatabaseTest extends utest.Test {
 		Assert.raises(() -> db.acquireTimeout = -0.5, ArgumentError);
 		Assert.raises(() -> db.maxQueued = -1, ArgumentError);
 
-		// Each refused value left the setting as it was.
+		// Each refused value leaves the setting as it was.
 		Assert.equals(30.0, db.queueTimeout);
 		Assert.isNull(db.acquireTimeout);
 		Assert.equals(100000, db.maxQueued);

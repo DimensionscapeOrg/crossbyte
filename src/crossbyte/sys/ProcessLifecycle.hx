@@ -17,39 +17,39 @@ import crossbyte.sys._internal.JvmSignals.JvmSignalHandler;
 /**
  * Cooperative process-shutdown coordination.
  *
- * `installDefaultHandlers()` arms the platform shutdown source, natively the
+ * `installDefaultHandlers()` arms the platform shutdown source: natively the
  * console control handler on Windows (`Ctrl+C`, console close, logoff, system
  * shutdown) and `SIGINT`, `SIGTERM` and `SIGHUP` on POSIX; listeners for the
  * same three on Node; the JVM's own signal hook for `INT`, `TERM` and `HUP` on
  * the jvm. The handler only records the request, and asks the watching runtime
  * to look; nothing else runs on the handler's thread.
  *
- * `SIGHUP`: the terminal a server was started from going away, ends a
+ * `SIGHUP` (the terminal a server was started from going away) ends a
  * process at once by default, with no callbacks; it runs the same graceful
  * shutdown as `SIGTERM` instead. A server here does not reload, which is the
  * other thing `SIGHUP` is used for. It is left alone when it was ignored as
- * the process started, `nohup`, which asks for the process to outlive its
- * terminal, or when something else already handles it: natively, on the
+ * the process started (`nohup`, which asks for the process to outlive its
+ * terminal) or when something else already handles it: natively, on the
  * jvm (whose own hook leaves an ignored `HUP` ignored), and on Node on Linux.
  * On Node on macOS, which cannot see that it was ignored, it is left to its
  * default. On Node on Windows it is how a console window closing arrives.
  *
  * For a console window closing, a logoff or a system shutdown, Windows ends
  * the process as soon as the console handler returns. The handler therefore
- * holds the event while the runtime runs the callbacks and exits, the
- * process ending on its own lets it go, for as long as Windows allows:
+ * holds the event while the runtime runs the callbacks and exits (the
+ * process ending on its own lets it go) for as long as Windows allows:
  * about five seconds for a closed console window, and at most 20 seconds.
  * Ctrl+C and Ctrl+Break do not end the process, and are not held.
  *
- * Windows tells a process that has loaded user32.dll, any window, a GUI
- * toolkit, a Shell function that calls into it, of a logoff or a shutdown
+ * Windows tells a process that has loaded user32.dll (any window, a GUI
+ * toolkit, a Shell function that calls into it) of a logoff or a shutdown
  * through its windows instead of its console. Natively,
  * `installDefaultHandlers()` gives such a process a hidden window that runs
  * the same shutdown and holds the session's end the same way. CrossByte
  * loads none of user32 itself, so call it after whatever does: each call
  * looks again.
  *
- * A process in session 0, a service, or one a service started, is sent a
+ * A process in session 0 (a service, or one a service started) is sent a
  * logoff whenever anyone signs out, and Windows does not end it then. It
  * ignores the logoff and keeps serving.
  *
@@ -106,8 +106,8 @@ final class ProcessLifecycle {
 	 * When `true`, `poll()` stops reporting `SERVICE_STOPPED` for you and the
 	 * application takes that on with `reportServiceStopped()`.
 	 *
-	 * Set this from a shutdown callback that finishes asynchronously,
-	 * `HTTPServer.drain(timeout, onComplete)` being the case that matters,
+	 * Set this from a shutdown callback that finishes asynchronously
+	 * (`HTTPServer.drain(timeout, onComplete)` being the case that matters),
 	 * because `poll()` returns as soon as the callbacks have been *started*,
 	 * and reporting the service stopped there would tell the SCM the drain was
 	 * finished while connections were still being served.
@@ -145,7 +145,7 @@ final class ProcessLifecycle {
 	 * callbacks automatically.
 	 *
 	 * Idempotent. Returns `true` when handlers are armed: natively, on Node
-	 * and on the jvm. Elsewhere, the interpreter, hl, neko, a browser, it
+	 * and on the jvm. Elsewhere (the interpreter, hl, neko, a browser) it
 	 * returns `false`, and shutdown remains fully usable through
 	 * `requestShutdown()`/`poll()`.
 	 *
@@ -205,7 +205,7 @@ final class ProcessLifecycle {
 	/**
 		Whether SIGHUP is Node's to end the process with, as it does unless
 		something listens: no listener of the application's, and not ignored
-		when Node started (nohup), which only Linux shows, the process's
+		when Node started (nohup), which only Linux shows: the process's
 		ignored signals are in /proc/self/status. On Windows it is a console
 		window closing, which nothing ignores; on macOS it is left alone.
 	**/
@@ -256,7 +256,7 @@ final class ProcessLifecycle {
 
 		// HUP, which the JVM also answers by halting. Asked for on its own: a
 		// JVM on Windows has no such signal and refuses the name. The JVM's
-		// hook installs nothing for a HUP ignored as it started, nohup,
+		// hook installs nothing for a HUP ignored as it started (nohup),
 		// and it stays ignored.
 		if (__jvmHandlersInstalled) {
 			try {
@@ -275,7 +275,7 @@ final class ProcessLifecycle {
 	 * and running from a console during development.
 	 *
 	 * Returns `true` only when this process really was started by the SCM.
-	 * A console run returns `false` and is fully functional, that is the
+	 * A console run returns `false` and is fully functional: that is the
 	 * expected answer in development, not a failure.
 	 *
 	 * The SCM is told the service is stopping as soon as the control arrives,
@@ -295,8 +295,7 @@ final class ProcessLifecycle {
 	 *        5000 by default, or 0 for no limit. Reaching it means neither
 	 *        outcome was reported, which should not happen; it is a bound,
 	 *        not a delay, and both outcomes normally arrive in a few
-	 *        milliseconds. It was read as "do not wait" at 0, so a real
-	 *        service could be reported as a console run.
+	 *        milliseconds.
 	 * @throws ArgumentError For a negative `connectTimeoutMs`, on every
 	 *         target.
 	 */
@@ -508,9 +507,8 @@ final class ProcessLifecycle {
 		} catch (error:Dynamic) {
 			// A failing shutdown callback must not block the remaining
 			// callbacks or the exit path. It is logged, as the runtime logs
-			// any other callback's failure: this was swallowed without a
-			// word, so a drain that never flushed left nothing behind to say
-			// why.
+			// any other callback's failure, so a drain that never flushed
+			// leaves something behind to say why.
 			Logger.log(LogLevel.ERROR, "A shutdown callback threw: " + Std.string(error), null, "runtime");
 		}
 	}

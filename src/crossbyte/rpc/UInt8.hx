@@ -7,10 +7,10 @@ package crossbyte.rpc;
 
 	Held as an `Int`, and an `Int` wherever one is wanted: arithmetic on it is
 	`Int` arithmetic. An `Int` assigned to one keeps its low eight bits, as a
-	cast to a byte does in C or Java, 256 is 0 and -1 is 255, so what a
+	cast to a byte does in C or Java (256 is 0 and -1 is 255), so what a
 	value holds is what is sent and what arrives. The narrowing is a mask, the
-	only cost. Operators and comparisons, with an Int or a Float on the other
-	side, work on the `Int` it holds, so `value < 300` compares 300 itself.
+	only cost. Operators and comparisons (with an Int or a Float on the other
+	side) work on the `Int` it holds, so `value < 300` compares 300 itself.
 	From another compact type, convert through `Int`: `var wide:UInt16 = (small
 	: Int)`.
 
@@ -39,7 +39,7 @@ abstract UInt8(Int) to Int {
 	}
 
 	// Every operator works on the Int a value holds, the other side an Int
-	// or anything that is one, another compact number, an Int literal,
+	// or anything that is one (another compact number, an Int literal),
 	// so `level < 300` compares 300, not 300 narrowed to this type.
 
 	@:op(A + B) @:commutative static inline function add(a:UInt8, b:Int):Int {

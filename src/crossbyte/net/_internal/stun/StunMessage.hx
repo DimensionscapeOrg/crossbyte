@@ -19,15 +19,15 @@ import haxe.io.Bytes;
 
 	The point of STUN, for CrossByte, is one question: what address does the
 	rest of the world see this socket as? A peer behind NAT cannot answer that
-	from anything local, `localAddress` is the private side of the mapping,
+	from anything local (`localAddress` is the private side of the mapping)
 	and it has to be able to, because the address it tells other peers to dial
 	is the public one. That answer is the first thing ICE needs, and ICE is the
 	first thing a peer-to-peer transport needs.
 
 	The wire format is deliberately small: a twenty byte header and a list of
-	type/length/value attributes. What follows is that and nothing more, no
-	authentication, no fingerprint, no TURN. Those are separate RFCs and are not
-	needed to ask a public STUN server for a reflexive address.
+	type/length/value attributes. The class also carries what ICE and TURN
+	add to it: MESSAGE-INTEGRITY, FINGERPRINT, and TURN's methods and
+	attributes.
 
 	```
 	 0                   1                   2                   3
@@ -113,7 +113,7 @@ class StunMessage {
 
 	/**
 		What a NONCE starting with `NONCE_COOKIE` says a server supports: the
-		first two of the 24 bits after it, the first the most significant,
+		first two of the 24 bits after it, the first the most significant:
 		PASSWORD-ALGORITHMS, and USERHASH in place of USERNAME.
 	**/
 	public static inline var FEATURE_PASSWORD_ALGORITHMS:Int = 0x800000;
@@ -144,14 +144,14 @@ class StunMessage {
 
 	/**
 		`ALTERNATE-SERVER`: where a 300 points. An address in the MAPPED-ADDRESS
-		format, not XORed, RFC 8489 section 14.15.
+		format, not XORed (RFC 8489 section 14.15).
 	**/
 	public static inline var ATTR_ALTERNATE_SERVER:Int = 0x8023;
 
 	/**
 		`ALTERNATE-DOMAIN`: the name the server a 300 points at is checked
 		against when it is reached over TLS, since ALTERNATE-SERVER gives only
-		its address, RFC 8489 section 14.16.
+		its address (RFC 8489 section 14.16).
 	**/
 	public static inline var ATTR_ALTERNATE_DOMAIN:Int = 0x8003;
 
@@ -174,7 +174,7 @@ class StunMessage {
 	/**
 		The most attributes a message may carry and still be read.
 
-		Every attribute read costs an allocation and a copy, and the count was
+		Every attribute read costs an allocation and a copy, and the count is
 		the sender's to choose: a 64 KB datagram of empty attributes is sixteen
 		thousand of them, 527 microseconds to decode on cpp and 4.4 ms on Node
 		against 24 and 39 for the same bytes as one attribute, sent by anyone,
@@ -213,7 +213,7 @@ class StunMessage {
 		be checked against a re-encoding.
 
 		Attribute padding is not specified: RFC 5389 says the padding bytes are
-		ignored, and implementations differ on what they put there, the test
+		ignored, and implementations differ on what they put there: the test
 		vectors in RFC 5769 pad a username with spaces where this encoder writes
 		zeros. Both are correct on the wire and they hash differently, so a
 		receiver that re-encodes a message to verify it would reject perfectly
@@ -221,7 +221,7 @@ class StunMessage {
 		Null for a message built locally, which has no received bytes to check.
 
 		The very bytes `decode` was handed, not a copy: a datagram's, valid
-		only as long as they are, during the call that handed the datagram
+		only as long as they are: during the call that handed the datagram
 		over. A message kept longer holds its own, through `__keep()`.
 	**/
 	public var raw(default, null):Null<ByteArray>;
@@ -235,7 +235,7 @@ class StunMessage {
 	/**
 		This message, kept past the call that decoded it: `raw` is the bytes
 		it was decoded from, which a socket hands out valid only during that
-		call, so a message remembered for later, an answer, holds a copy
+		call, so a message remembered for later (an answer) holds a copy
 		of them instead.
 	**/
 	@:noCompletion public function __keep():StunMessage {
@@ -406,9 +406,9 @@ class StunMessage {
 		A named address attribute, XOR-decoded, or null.
 
 		`mappedAddress` answers the one question a binding response is asked;
-		TURN carries three more of the same shape, the relayed address an
+		TURN carries three more of the same shape (the relayed address an
 		allocation was granted, and the peer an indication came from or is bound
-		for, and they are read identically.
+		for), and they are read identically.
 	**/
 	public function addressOf(attributeType:Int):Null<ReflexiveAddress> {
 		for (attribute in attributes) {
@@ -444,7 +444,7 @@ class StunMessage {
 
 	/**
 		`CHANGE-REQUEST`: asks a server to answer from its other address, its
-		other port, or both, how RFC 5780 tells what a NAT lets back in.
+		other port, or both: how RFC 5780 tells what a NAT lets back in.
 	**/
 	public static function changeRequest(changeAddress:Bool, changePort:Bool):StunAttribute {
 		var bytes = new ByteArray();
@@ -539,9 +539,7 @@ class StunMessage {
 		var family:Int = value.readUnsignedByte();
 
 		// IPv6: sixteen bytes, XORed against the cookie and then the
-		// transaction id. It was read as no address at all, so a server
-		// answering over IPv6 reported "no mapped address" and a relay that
-		// allocated an IPv6 address "allocated nothing".
+		// transaction id.
 		if (family == FAMILY_IPV6) {
 			return __readIPv6(value, xored);
 		}
@@ -600,9 +598,9 @@ class StunMessage {
 	}
 
 	/**
-		The sixteen bytes of an IPv6 address written the usual way, up to
+		The sixteen bytes of an IPv6 address written the usual way (up to
 		eight groups of up to four hex digits, one `::` for a run of zeros, an
-		IPv4 tail allowed, or null for anything else: a name, a zone suffix,
+		IPv4 tail allowed), or null for anything else: a name, a zone suffix,
 		brackets, an IPv4 address.
 	**/
 	public static function ipv6Bytes(address:String):Null<Bytes> {
@@ -650,8 +648,8 @@ class StunMessage {
 	}
 
 	/**
-		An IPv6 address in RFC 5952's canonical form, lowercase, no leading
-		zeros, the longest run of zero groups as `::`, or null when it is not
+		An IPv6 address in RFC 5952's canonical form (lowercase, no leading
+		zeros, the longest run of zero groups as `::`), or null when it is not
 		one. The form a socket and a relay report an address in, so one peer
 		is one string however it was written.
 	**/
@@ -733,15 +731,15 @@ class StunMessage {
 
 	/**
 		The four octets of an IPv4 address written the one way every reader
-		agrees on, four decimal numbers up to 255, dot-separated, none with
-		a leading zero, or null for anything else: an IPv6 address, a name,
+		agrees on (four decimal numbers up to 255, dot-separated, none with
+		a leading zero), or null for anything else: an IPv6 address, a name,
 		or something that only looks like an address.
 
-		The octets were read with `Std.parseInt`, which answers four different
-		ways past 32 bits by target and throws on the jvm, and written modulo
-		256, so a peer naming 1.2.3.999 had a relay permit 1.2.3.231. The
-		leading zero matters because `inet_addr` reads 010 as octal: that is
-		8.1.1.1 to the socket and would be 10.1.1.1 here.
+		The octets are not read with `Std.parseInt`, which answers four
+		different ways past 32 bits by target and throws on the jvm, nor
+		written modulo 256, which would have a peer naming 1.2.3.999 permitted
+		as 1.2.3.231. The leading zero matters because `inet_addr` reads 010
+		as octal: that is 8.1.1.1 to the socket and would be 10.1.1.1 here.
 	**/
 	public static function ipv4Octets(address:String):Null<Array<Int>> {
 		if (address == null) {
@@ -1065,7 +1063,7 @@ class StunMessage {
 		Not the password. TURN hashes the username, realm and password together,
 		so a server can hold the digest rather than the password itself and a
 		credential is bound to the realm it was issued for. MD5 is what RFC 8656
-		specifies here, and it is specified for exactly this, the digest is a
+		specifies here, and it is specified for exactly this: the digest is a
 		key derivation over values the server already knows, not a signature
 		anybody is asked to trust on its own; the signature over the message is
 		HMAC-SHA1, the same as everywhere else.
@@ -1278,7 +1276,7 @@ class StunMessage {
 		Both are computed over the message *as if they were already in it*: the
 		header's length field is rewritten to cover the attribute about to be
 		appended, and only then is the hash taken over everything before it.
-		That is not an implementation quirk to work around, it is what RFC
+		That is not an implementation quirk to work around: it is what RFC
 		5389 sections 15.4 and 15.5 specify, and getting it wrong produces a
 		message that verifies perfectly against your own code and against
 		nobody else's. It is the reason the tests here are pinned to RFC 5769's
@@ -1397,7 +1395,7 @@ class StunMessage {
 		Whether this message carries a `MESSAGE-INTEGRITY` that `password`
 		produces.
 
-		Checked against `raw`, the bytes that actually arrived, for the
+		Checked against `raw` (the bytes that actually arrived) for the
 		reason that field exists. Returns false rather than throwing when there
 		is no integrity attribute at all, because an unauthenticated message is
 		not a malformed one; it is simply not one this can accept.
@@ -1508,8 +1506,8 @@ class StunMessage {
 		than searching for the tag.
 
 		Searching would find the same four bytes occurring inside some other
-		attribute's value, a transaction id or a software name can contain
-		anything, and hash the wrong span.
+		attribute's value (a transaction id or a software name can contain
+		anything) and hash the wrong span.
 	**/
 	@:noCompletion private static function __attributeOffset(bytes:ByteArray, type:Int):Int {
 		if (bytes == null || bytes.length < HEADER_LENGTH) {
@@ -1546,23 +1544,10 @@ class StunMessage {
 	}
 
 	/**
-		A copy of the first `length` bytes.
-
-		Byte by byte rather than through the underlying storage, because that
-		route differs per target, and one of them, hl, is where reaching for
-		it has already broken a build. A STUN message is a hundred bytes; the
-		loop costs nothing worth counting.
-	**/
-	/**
-		The span a hash covers, with the length field it must state.
-
-		One call rather than a copy followed by a rewrite. Those were two calls
-		once, and the rewrite took a `ByteArray` where the copy produced a
-		`Bytes`: so it silently went through an implicit conversion, edited a
-		temporary, and left the bytes being hashed carrying the original length.
-		Signing was unaffected, because there the real message had already been
-		rewritten before being copied, so the two paths disagreed and only one
-		of them was wrong.
+		The span a hash covers, with the length field it must state, made in
+		one call rather than a copy followed by a rewrite of the length: a
+		rewrite applied to a converted copy would edit a temporary and leave
+		the bytes being hashed carrying the original length.
 	**/
 	@:noCompletion private static function __covered(bytes:ByteArray, upTo:Int, statedLength:Int):Bytes {
 		var out = __copy(bytes, upTo);
@@ -1573,8 +1558,8 @@ class StunMessage {
 
 	@:noCompletion private static function __copy(bytes:ByteArray, length:Int):Bytes {
 		// One blit, not a byte loop with a bounds check per byte. This runs
-		// once for every signed message that arrives, each connectivity
-		// check, each relay response, and it neither needs nor touches the
+		// once for every signed message that arrives (each connectivity
+		// check, each relay response), and it neither needs nor touches the
 		// stream position.
 		var out = Bytes.alloc(length);
 		out.blit(0, bytes, 0, length);

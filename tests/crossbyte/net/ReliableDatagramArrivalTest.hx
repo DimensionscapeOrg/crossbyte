@@ -21,14 +21,14 @@ import utest.Assert;
 	Every datagram goes in through the transport's own delivery, as the
 	socket hands one over: released, in the socket's own payload, filled
 	again for each datagram and emptied after it. So a session that kept
-	any of a datagram by reference, a frame held past a gap, a fragment,
-	a CONNECT's payload, reads the wrong bytes here in every mode, not
+	any of a datagram by reference (a frame held past a gap, a fragment,
+	a CONNECT's payload) reads the wrong bytes here in every mode, not
 	only under `-D crossbyte_check_events`, where each datagram's own
 	payload is killed once its call returns.
 
-	And what the session hands out again for each message, its event,
+	And what the session hands out again for each message (its event,
 	the buffer a fragmented message is put back together in, the payload a
-	bundle's frame is copied into, is right for every message, emptied
+	bundle's frame is copied into) is right for every message, emptied
 	after each, and taken afresh for a message arriving inside a listener's
 	call.
 
@@ -96,8 +96,8 @@ class ReliableDatagramArrivalTest extends utest.Test {
 		link.sender.send(text("last"));
 		var sent = link.sender.take();
 		// The two small ones bundled, and the second fragment, all held past
-		// the gap the first fragment leaves, a full frame, which no bundle
-		// has room for, until it arrives, last.
+		// the gap the first fragment leaves (a full frame, which no bundle has
+		// room for) until it arrives, last.
 		link.deliver([bundle([sent[2], sent[3]]), bundle([sent[1]]), sent[0]]);
 
 		Assert.equals(3, link.received.length);
@@ -127,9 +127,8 @@ class ReliableDatagramArrivalTest extends utest.Test {
 
 		// The commonest thing a server does: send what arrived straight back,
 		// from inside the listener. The session keeps that until it is
-		// acknowledged, so it must have kept a copy, and not the event's
-		// bytes, which belong to the next datagram by the time it is sent
-		// again.
+		// acknowledged, so it must have kept a copy, and not the event's bytes,
+		// which belong to the next datagram by the time it is sent again.
 		link.receiver.addEventListener(DatagramSocketDataEvent.DATA, e -> link.receiver.send(e.data));
 		link.sender.send(numbered(500));
 		link.deliver(link.sender.take());
@@ -364,9 +363,9 @@ class ReliableDatagramArrivalTest extends utest.Test {
 	}
 
 	/**
-		A message arriving inside a listener's call, the listener pumps, and
-		the next datagram is delivered, gets an event and a buffer of its
-		own, and the one being handled is left as it was.
+		A message arriving inside a listener's call (the listener pumps, and
+		the next datagram is delivered) gets an event and a buffer of its own,
+		and the one being handled is left as it was.
 	**/
 	public function testAMessageArrivingInsideAListenersCallHasItsOwnEventAndBytes():Void {
 		var link = Link.make();
@@ -419,12 +418,12 @@ class ReliableDatagramArrivalTest extends utest.Test {
 	}
 
 	/**
-		A payload made for one message, not the session's own, here a
-		message whose first fragment arrived inside another message's call,
-		so it is put back together in a buffer of its own, handed out in
-		the session's reused event, is emptied once its call returns, and
-		its storage let go: the event does not go on holding it until the
-		next message, which could be a whole `maxMessageSize`.
+		A payload made for one message, not the session's own (here a message
+		whose first fragment arrived inside another message's call, so it is
+		put back together in a buffer of its own), handed out in the session's
+		reused event, is emptied once its call returns, and its storage let
+		go: the event does not go on holding it until the next message, which
+		could be a whole `maxMessageSize`.
 	**/
 	public function testAMessageOfItsOwnHandedOutInTheReusedEventIsLetGo():Void {
 		var link = Link.make();
@@ -705,8 +704,8 @@ private class Link {
 	/**
 		Each datagram to the receiver, in the order given, through the
 		transport's own delivery, as the socket hands them over: in its own
-		payload, filled again for each, where it reuses one, or with
-		`fresh`, in a payload of its own each.
+		payload, filled again for each, where it reuses one, or with `fresh`,
+		in a payload of its own each.
 	**/
 	public function deliver(datagrams:Array<ByteArray>, fresh:Bool = false):Void {
 		var transport = receiver.__transport;

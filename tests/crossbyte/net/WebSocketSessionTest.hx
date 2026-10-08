@@ -17,15 +17,15 @@ import utest.Async;
 	A WebSocket session end to end: how it is let in, how it knows its peer is
 	still there, and how it ends.
 
-	- The upgrade request was parsed and thrown away, so a server could not
-	  authenticate a session, check where a page came from, or accept a
-	  subprotocol, and a browser that offered one could not connect at all.
-	  Accepted sessions reported no address, every message was binary, and
-	  messages ran together into one stream.
-	- There was no heartbeat and no idle timeout, and every session was read
-	  on every tick whether or not anything had arrived.
-	- A close frame carried no code, and the connection closed straight after
-	  queueing it, taking it and anything before it along.
+	- The upgrade request is kept, so a server can authenticate a
+	  session, check where a page came from, and accept a subprotocol
+	  (without which a browser that offered one could not connect at all).
+	  Accepted sessions report their address, text arrives as text, and
+	  messages stay apart rather than running together into one stream.
+	- There is a heartbeat and an idle timeout, and a session is read only
+	  when something has arrived, not on every tick.
+	- A close frame carries its code, and the connection closes only once
+	  it has been sent, with anything queued before it.
 **/
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
@@ -34,9 +34,9 @@ import utest.Async;
 class WebSocketSessionTest extends utest.Test {
 	/**
 		What one turn of Node's event loop sends a session goes to its socket
-		in one write when the turn ends. Each frame was a `write` of its own,
-		and a server relaying a chat room's messages to everyone in it made one
-		for every message to every member.
+		in one write when the turn ends, rather than a `write` for each frame,
+		which for a server relaying a chat room's messages to everyone in it
+		would be one for every message to every member.
 	**/
 	public function testWhatOneTurnSendsGoesToTheSocketInOneWrite():Void {
 		#if nodejs
@@ -259,9 +259,9 @@ class WebSocketSessionTest extends utest.Test {
 
 	/**
 		A number written into a new ByteArray reads back as itself from the
-		message that carried it. A message came big-endian, the byte order of
-		the buffer the frame parser filled, whatever the session's own
-		`endian` said, and a ByteArray an application makes is little-endian.
+		message that carried it: a message comes in the session's own
+		`endian`, not big-endian (the byte order of the buffer the frame
+		parser fills), and a ByteArray an application makes is little-endian.
 	**/
 	@:timeout(15000)
 	public function testANumberSentIsTheNumberRead(async:Async):Void {
@@ -301,8 +301,7 @@ class WebSocketSessionTest extends utest.Test {
 
 	/**
 		A WebSocket tells its writer as what it sent reaches the network,
-		down to nothing left waiting, as a Socket does: it is one, and the
-		event was never dispatched for either.
+		down to nothing left waiting, as a Socket does: it is one.
 	**/
 	@:timeout(15000)
 	public function testAWriterIsToldAsWhatItSentReachesTheNetwork(async:Async):Void {
@@ -400,9 +399,9 @@ class WebSocketSessionTest extends utest.Test {
 		Text arrives as it was sent, whichever way it was framed: natively a
 		string held a byte a character, and on the jvm short ASCII, goes into
 		the frame without being encoded into a buffer of its own first, and
-		everything else, other characters, longer text, a message to be
-		fragmented, is encoded as before. Each is sent by the client, masked,
-		and sent back by the session, unmasked.
+		everything else (other characters, longer text, a message to be
+		fragmented) is encoded first. Each is sent by the client, masked, and
+		sent back by the session, unmasked.
 	**/
 	@:timeout(30000)
 	public function testTextArrivesAsSentWhicheverWayItIsFramed(async:Async):Void {
@@ -465,9 +464,9 @@ class WebSocketSessionTest extends utest.Test {
 
 	/**
 		`socketData`'s `bytesLoaded` is what has just arrived, as a plain
-		socket reports it now on every target. A WebSocket reported
-		everything unread, so a reader that left the first message in the
-		stream was told the second was both together.
+		socket reports it on every target, not everything unread, which would
+		tell a reader that left the first message in the stream that the
+		second was both together.
 	**/
 	@:timeout(15000)
 	public function testSocketDataReportsTheBytesThatJustArrived(async:Async):Void {
@@ -598,9 +597,9 @@ class WebSocketSessionTest extends utest.Test {
 			}
 
 			NetPump.until(() -> sessions.length == 4 && Lambda.count(clients, c -> c.connected) == 4, 5.0, function(_) {
-				// Every open session, either end, used to add a tick listener
-				// of its own and be read on every tick. What is left is the
-				// server's accept loop.
+				// No open session, at either end, adds a tick listener of its own
+				// or is read on every tick. What is left is the server's accept
+				// loop.
 				Assert.isTrue(__tickListeners() - before <= 1, 'eight open sessions add ${__tickListeners() - before} tick listeners');
 				for (client in clients) {
 					try client.close() catch (_:Dynamic) {}
@@ -693,8 +692,8 @@ class WebSocketSessionTest extends utest.Test {
 	@:timeout(30000)
 	public function testWhatWasQueuedBeforeACloseStillArrives(async:Async):Void {
 		// More than a loopback socket's buffers hold, so most of it is still
-		// queued here when the close is asked for, which is what the close
-		// used to throw away, along with its own frame.
+		// queued here when the close is asked for, and must not be thrown
+		// away, along with the close's own frame.
 		var size:Int = 8 * 1024 * 1024;
 
 		__serve(null, function(server, sessions, finish) {
@@ -805,10 +804,10 @@ class WebSocketSessionTest extends utest.Test {
 		A session whose peer has stopped reading is closed at its output
 		limit, and counts what is waiting on the way there.
 
-		On Node what waits is in Node's own queue, which the session never
-		looked at: its backlog read 0 however much was waiting, and the limit
-		was checked after a return that path always took, so a session to a
-		peer that had stopped reading grew without bound.
+		On Node what waits is in Node's own queue, so the session has to look
+		at it: its backlog read without it would be 0 however much was
+		waiting, and a session to a peer that had stopped reading would grow
+		without bound.
 	**/
 	@:timeout(60000)
 	public function testASessionPastItsOutputLimitIsClosed(async:Async):Void {
@@ -863,8 +862,8 @@ class WebSocketSessionTest extends utest.Test {
 
 	/**
 		`writeBytes` refuses a range outside `bytes`, as its doc promises and
-		as `DatagramSocket.send` does, where it wrote whatever part of the
-		range fell inside and said nothing. `sendBinary` likewise.
+		as `DatagramSocket.send` does, rather than writing whatever part of
+		the range falls inside and saying nothing. `sendBinary` likewise.
 	**/
 	@:timeout(15000)
 	public function testARangeOutsideTheBytesIsRefused(async:Async):Void {
@@ -910,7 +909,7 @@ class WebSocketSessionTest extends utest.Test {
 	/**
 		The output limit honours `outputOverflowPolicy`, as `Socket`'s does.
 		`CLOSE`, the default, says why before it closes: an `ioError`, then
-		`close` with 1011. The session closed without a word.
+		`close` with 1011.
 	**/
 	@:timeout(60000)
 	public function testAnOverflowIsReportedBeforeTheSessionCloses(async:Async):Void {
@@ -923,9 +922,8 @@ class WebSocketSessionTest extends utest.Test {
 
 	/**
 		`THROW` throws an `IOError` from the send that leaves the session past
-		its limit, and keeps the session, for a writer that would rather
-		shed what it sends than lose the peer. It was ignored, and the session
-		closed with 1011 regardless.
+		its limit, and keeps the session, for a writer that would rather shed
+		what it sends than lose the peer.
 	**/
 	@:timeout(60000)
 	public function testTheThrowPolicyThrowsAndKeepsTheSession(async:Async):Void {

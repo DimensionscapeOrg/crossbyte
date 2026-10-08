@@ -93,9 +93,9 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A client trusts every authority of a bundle it is given, as its own CA
-		or as the default every socket falls back to. The first entry alone
-		was trusted, so a certificate from any other authority in the file was
-		refused.
+		or as the default every socket falls back to, not the first entry
+		alone, which would refuse a certificate from any other authority in
+		the file.
 	**/
 	public function testAClientTrustsEveryAuthorityOfABundle():Void {
 		var chain = TLSChainFixture.get();
@@ -156,8 +156,8 @@ class JvmTlsTest extends utest.Test {
 	}
 
 	/**
-		A client presents its certificate to a server that asks for one, the
-		whole chain from its file, from a context of its own. What an HTTPS or
+		A client presents its certificate to a server that asks for one (the
+		whole chain from its file, from a context of its own): what an HTTPS or
 		wss client needs to reach a server requiring mutual TLS.
 	**/
 	public function testAClientPresentsItsCertificateToAServerThatAsks():Void {
@@ -214,11 +214,11 @@ class JvmTlsTest extends utest.Test {
 	// ------------------------------------------------ a handshake that fails
 
 	/**
-		A client's handshake gives up at its timeout. Its loop caught every
-		error, a read that timed out among them, slept 2 ms and tried again,
-		ten thousand times: a server that accepted and said nothing held an
-		https request for ten thousand times its timeout, and one of the HTTP
-		client's pool threads with it.
+		A client's handshake gives up at its timeout. A loop catching every
+		error (a read that timed out among them), sleeping 2 ms and trying again
+		ten thousand times would let a server that accepted and said nothing
+		hold an https request for ten thousand times its timeout, and one of
+		the HTTP client's pool threads with it.
 	**/
 	public function testAStalledHandshakeGivesUpAtItsTimeout():Void {
 		// Accepts nothing and sends nothing: the system completes each TCP
@@ -241,8 +241,8 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A connection reset mid-handshake fails the connect at once, with the
-		reset as its reason. It was caught and retried like a stall, for 25
-		seconds or so, and then reported as a handshake that "did not
+		reset as its reason, rather than being caught and retried like a stall,
+		for 25 seconds or so, and then reported as a handshake that "did not
 		complete".
 	**/
 	public function testAResetMidHandshakeFailsAtOnceWithItsCause():Void {
@@ -278,9 +278,9 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A record larger than the buffer it is read into is still read. The
-		buffer fills, the engine answers "underflow", not a whole record yet,
-		and a read into a full buffer takes nothing, so without growing it
-		the handshake waited on a record that could never complete. The engine
+		buffer fills, the engine answers "underflow" (not a whole record yet),
+		and a read into a full buffer takes nothing, so without growing it the
+		handshake would wait on a record that could never complete. The engine
 		keeps records to the size its session states, so the buffer is shrunk
 		here to make one larger than it.
 	**/
@@ -330,10 +330,10 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A read takes every record that has already arrived, as far as the
-		caller's buffer goes. It stopped after one, 16 KB, so the runtime
-		read a large upload one record per pump, and paid a select over every
-		connection it held for each: a 10 MB upload took 2.4 s beside 2,000
-		idle connections.
+		caller's buffer goes, not one (16 KB), which would have the runtime read
+		a large upload one record per pump, and pay a select over every
+		connection it held for each: a 10 MB upload would take seconds beside
+		2,000 idle connections.
 	**/
 	public function testATlsReadTakesEveryRecordAlreadyReceived():Void {
 		var fixture = TLSTestFixture.selfSigned();
@@ -385,10 +385,10 @@ class JvmTlsTest extends utest.Test {
 	}
 
 	/**
-		An idle connection holds no engine buffers. Each held three for its
-		whole life, a record's worth of ciphertext each way and one of
+		An idle connection holds no engine buffers, rather than three for its
+		whole life (a record's worth of ciphertext each way and one of
 		plaintext, some 50 KB a connection, half a gigabyte at 10,000 idle
-		HTTPS connections. They are taken from the thread's pool when a read
+		HTTPS connections). They are taken from the thread's pool when a read
 		or write needs one and given back when it empties.
 	**/
 	public function testAnIdleTlsConnectionHoldsNoEngineBuffers():Void {
@@ -440,10 +440,10 @@ class JvmTlsTest extends utest.Test {
 	// ------------------------------------------------------------- sessions
 
 	/**
-		A listener resumes the sessions it issued. Every connection it accepted
-		was given a context of its own, and a context is where a server keeps
-		its sessions, so a client offering one back was never recognised: 0 of
-		900 resumed, each paying a full handshake. One context per listener now.
+		A listener resumes the sessions it issued. One context per listener,
+		not one per accepted connection: a context is where a server keeps its
+		sessions, so with a context each a client offering one back would never
+		be recognised, each paying a full handshake.
 	**/
 	public function testAListenerResumesTheSessionsItIssued():Void {
 		var chain = TLSChainFixture.get();
@@ -471,9 +471,9 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A client resumes its session with a server it has connected to before.
-		Each connection built a context of its own, which is where a client
-		keeps the sessions it can offer back, so every one paid a full
-		handshake, and read the JDK's trust store again to make it.
+		A context of its own for each connection, where a client keeps the
+		sessions it can offer back, would make every one pay a full handshake,
+		and read the JDK's trust store again to make it.
 	**/
 	public function testAClientResumesItsSessionWithAServer():Void {
 		var chain = TLSChainFixture.get();
@@ -525,11 +525,11 @@ class JvmTlsTest extends utest.Test {
 	// ----------------------------------------------- after the first handshake
 
 	/**
-		A TLS 1.2 renegotiation is carried through. After the first handshake
-		no delegated task ran and no handshake record was wrapped, so a peer
-		that renegotiated, a server asking for a client certificate part way
-		through, or a client that asks for new keys, waited on an answer that
-		never came, and neither side was told.
+		A TLS 1.2 renegotiation is carried through: after the first handshake
+		delegated tasks still run and handshake records are still wrapped, so a
+		peer that renegotiates (a server asking for a client certificate part
+		way through, or a client that asks for new keys) does not wait on an
+		answer that never comes, with neither side told.
 	**/
 	public function testATls12RenegotiationIsCarriedThrough():Void {
 		var chain = TLSChainFixture.get();
@@ -571,10 +571,10 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		A server carries a client's renegotiations through only so many times.
-		Each is a full handshake the server pays for, a private-key
-		operation, on a connection already admitted, so a client able to ask
-		without limit has the server's CPU for the price of a record. Node
-		allows three, and so does this; the next closes the connection.
+		Each is a full handshake the server pays for (a private-key operation)
+		on a connection already admitted, so a client able to ask without limit
+		has the server's CPU for the price of a record. Node allows three, and
+		so does this; the next closes the connection.
 	**/
 	public function testAServerRefusesRenegotiationsPastItsLimit():Void {
 		var chain = TLSChainFixture.get();
@@ -609,10 +609,10 @@ class JvmTlsTest extends utest.Test {
 	}
 
 	/**
-		A handshake the server refuses tells the client why. It closed with
-		nothing said, and the client reported the server as having hung up,
-		"Remote host terminated the handshake", rather than the certificate
-		it had not presented.
+		A handshake the server refuses tells the client why, rather than
+		closing with nothing said, which the client would report as the server
+		having hung up ("Remote host terminated the handshake") rather than the
+		certificate it had not presented.
 	**/
 	public function testARefusedHandshakeSendsItsAlert():Void {
 		var chain = TLSChainFixture.get();
@@ -646,13 +646,12 @@ class JvmTlsTest extends utest.Test {
 		A connection refused in its handshake ends in an orderly close, not a
 		reset, even when the peer is still writing.
 
-		The server closed a refused connection at once, and whatever the peer
-		sent after that drew a reset. A reset throws away what the peer has
-		not read yet, the alert saying why included. On Linux CI the JDK's
-		client, still writing its half of the handshake when the reset came,
-		failed that write and reported "readHandshakeRecord" in place of the
-		alert; on Windows the alert was simply discarded. Here the late write
-		is made to happen.
+		Closing a refused connection at once, whatever the peer sent after
+		that would draw a reset, and a reset throws away what the peer has not
+		read yet, the alert saying why included: a JDK client still writing its
+		half of the handshake when the reset came would fail that write and
+		report "readHandshakeRecord" in place of the alert, or the alert would
+		simply be discarded. Here the late write is made to happen.
 	**/
 	public function testARefusedConnectionClosesRatherThanResets():Void {
 		var chain = TLSChainFixture.get();
@@ -747,8 +746,8 @@ class JvmTlsTest extends utest.Test {
 		}
 		// Closed only once the server is done with it. Closed at once, with the
 		// rest of the server's flight still arriving, the client's kernel
-		// answers that with a reset, and under load the server met it writing,
-		// "Software caused connection abort", before reading the alert
+		// answers that with a reset, and under load the server can meet it
+		// writing ("Software caused connection abort") before reading the alert
 		// that had already gone. That race is TCP's, not the alert's.
 		done.wait(10);
 		try {

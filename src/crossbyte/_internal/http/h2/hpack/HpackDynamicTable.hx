@@ -7,8 +7,8 @@ package crossbyte._internal.http.h2.hpack;
  * where the static table stops: wire index 62 is the newest entry. Insertion
  * evicts from the old end until the new entry fits.
  *
- * Both peers maintain a copy and they must agree exactly. Any divergence, a
- * missed eviction, a size counted differently, makes every later block
+ * Both peers maintain a copy and they must agree exactly. Any divergence (a
+ * missed eviction, a size counted differently) makes every later block
  * decode into the wrong headers rather than fail cleanly, which is why the
  * decoder treats every table error as fatal to the connection.
  */
@@ -45,7 +45,7 @@ class HpackDynamicTable {
 		var entrySize:Int = header.tableSize;
 
 		// §4.4: an entry larger than the whole table is not an error. It
-		// empties the table and is then simply not added, a peer may
+		// empties the table and is then simply not added; a peer may
 		// reference it in the same block, which is why this must not throw.
 		if (entrySize > capacity) {
 			clear();
@@ -66,9 +66,9 @@ class HpackDynamicTable {
 	 * caller checks that bound, because only it knows the setting.
 	 */
 	public function resize(newCapacity:Int):Void {
-		// Below nothing is nothing. A negative capacity, a setting of 2^31
-		// or more, read as an Int, left the loop below evicting forever: an
-		// empty table's size is 0, and 0 is still more than -1.
+		// Below nothing is nothing. A negative capacity (a setting of 2^31
+		// or more, read as an Int) would leave the loop below evicting
+		// forever: an empty table's size is 0, and 0 is still more than -1.
 		capacity = newCapacity < 0 ? 0 : newCapacity;
 		while (size > capacity) {
 			__evictOldest();

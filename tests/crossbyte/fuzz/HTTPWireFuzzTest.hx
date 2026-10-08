@@ -31,7 +31,7 @@ import utest.Async;
  * is for the server to be unable to serve a perfectly ordinary GET afterwards.
  * That one assertion catches a crash, a hung accept loop, a handler wedged
  * mid-parse, a connection never reclaimed, and a buffer left holding the last
- * peer's bytes, none of which a per-round assertion would notice, because
+ * peer's bytes: none of which a per-round assertion would notice, because
  * each round is allowed to fail.
  */
 @:timeout(120000)
@@ -48,13 +48,10 @@ class HTTPWireFuzzTest extends utest.Test {
 	/**
 		Rounds the rate limiter answered instead of the parser.
 
-		The first run of this test spent a hundred and ten of its hundred and
-		twenty rounds here without saying so. `HTTPServerConfig` fits a
-		`RateLimiter` by default, ten requests a minute, so every round
-		past the tenth was refused before `__parseRequest` was reached, and the
-		fuzzer was exercising the limiter. It only showed because the closing
-		request came back 429 as well. Counting them is cheaper than finding
-		out that way twice.
+		`HTTPServerConfig` fits a `RateLimiter` by default, and a round it
+		refuses never reaches `__parseRequest`: the fuzzer would be exercising
+		the limiter, and nothing but the closing request coming back 429 would
+		say so. Counting these says so directly.
 	**/
 	private var __rateLimited:Int = 0;
 
@@ -104,12 +101,10 @@ class HTTPWireFuzzTest extends utest.Test {
 					// answers, it still serves the body, and it grows by one
 					// connection per malformed visitor until it dies.
 					//
-					// The drain and metrics cases do catch a break in
-					// cleanupSocket itself, measured, they go red alongside
-					// this one when it is disabled. What they cannot reach is
-					// retention that only adversarial traffic produces, which
-					// is the shape the SCTP and WebSocket growth bugs had:
-					// those passed the entire suite green.
+					// The drain and metrics cases do catch a break in cleanupSocket itself
+					// (measured, they go red alongside this one when it is disabled). What
+					// they cannot reach is retention that only adversarial traffic produces,
+					// the kind a whole suite can pass green with.
 					HTTPTestSupport.pumpMoreAsync(30, function():Void {
 						var retained:Int = @:privateAccess server.__connections;
 
@@ -233,8 +228,8 @@ class HTTPWireFuzzTest extends utest.Test {
 
 		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
 
-		// Wide enough that every round reaches the parser. The default is ten
-		// a minute, which is a sensible thing for a server to ship and the
+		// Wide enough that every round reaches the parser, whatever the default
+		// allows. The default is a sensible thing for a server to ship and the
 		// wrong thing to fuzz through: a refusal before `__parseRequest` tests
 		// the limiter and nothing else.
 		config.rateLimiter = new RateLimiter(ROUNDS * 10, 60.0);

@@ -24,8 +24,8 @@ import haxe.io.FPHelper;
  *
  * **Layout.** Bits fill 32-bit words from the lowest bit up, and each word is
  * stored little-endian, so the first value written is in the low bits of the
- * first byte. The result is trimmed to whole bytes, `length` is the bits
- * written rounded up to the next eight, and is the same bytes on every
+ * first byte. The result is trimmed to whole bytes (`length` is the bits
+ * written rounded up to the next eight) and is the same bytes on every
  * target.
  *
  * **Speed.** Values gather in one 32-bit word and go into the buffer a word at
@@ -166,7 +166,7 @@ final class BitWriter {
 		}
 		var t:Float = value <= min ? 0.0 : (value >= max ? 1.0 : (value - min) / (max - min));
 		// Rounded as floor(x + 0.5), which is the same arithmetic on every
-		// target, Math.round is not specified identically for halves.
+		// target; Math.round is not specified identically for halves.
 		__put(Std.int(t * steps + 0.5), bits);
 	}
 
@@ -238,8 +238,8 @@ final class BitWriter {
 	 */
 	public static function bitsFor(min:Int, max:Int):Int {
 		// `| 0` because JavaScript does not wrap Int arithmetic: the full Int
-		// range there comes out as 4294967295 rather than negative, and was
-		// taken for 32 bits where every other target refuses it.
+		// range there comes out as 4294967295 rather than negative, and would
+		// be taken for 32 bits where every other target refuses it.
 		var span:Int = (max - min) | 0;
 		// Negative when max is below min, or when the subtraction overflowed.
 		if (max < min || span < 0) {

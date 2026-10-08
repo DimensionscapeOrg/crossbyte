@@ -12,15 +12,13 @@ import crossbyte._internal.system.timer.TimerNode;
  * writes. A timer node can carry its own index, so the same algorithm does two
  * field writes instead.
  *
- * Measured at thirty thousand live timers, firing and re-arming: 372ms through
- * the mapped queue against 39ms through this one, for identical ordering and
- * identical complexity. Nine and a half times, all of it hashing. For a
- * runtime carrying a timer per entity that is the difference between the
- * scheduler taking half a frame at sixty ticks a second and taking a
- * rounding error.
+ * At thirty thousand live timers, firing and re-arming, that is 372ms
+ * through the mapped queue against 39ms through this one, for identical
+ * ordering and identical complexity. For a runtime carrying a timer per
+ * entity that is the difference between the scheduler taking half a frame
+ * at sixty ticks a second and taking a rounding error.
  *
- * `PriorityQueue` is unchanged and still right for callers that cannot make
- * this trade.
+ * `PriorityQueue` is still right for callers that cannot make this trade.
  */
 class TimerQueue {
 	@:noCompletion private var __heap:Array<TimerNode> = [];
@@ -44,8 +42,8 @@ class TimerQueue {
 	}
 
 	/**
-	 * Adds a node, or repositions it when it is already held, matching what
-	 * the generic queue did for an element enqueued twice.
+	 * Adds a node, or repositions it when it is already held, as the generic
+	 * queue does for an element enqueued twice.
 	 */
 	public function enqueue(node:TimerNode):Void {
 		if (node.heapIndex >= 0) {

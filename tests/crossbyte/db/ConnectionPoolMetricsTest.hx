@@ -211,7 +211,7 @@ class ConnectionPoolMetricsTest extends utest.Test {
 
 	/**
 	 * A transaction left open on a released connection is a bug in the
-	 * caller that the pool now repairs, and a repair nobody can see hides the
+	 * caller that the pool repairs, and a repair nobody can see hides the
 	 * bug for good: the count is how an operator finds out it is happening.
 	 */
 	public function testTransactionsRolledBackOnReleaseAreCounted():Void {

@@ -13,8 +13,8 @@ import crossbyte.test.Require;
  * Every case here is a way a store can lie rather than fail: a value that does
  * not survive a reopen, a missing key that reads as empty, a failed write that
  * leaves half a value, or bytes that differ between the target that wrote them
- * and the one that reads them. A store is trusted by definition, nobody
- * checks that their save worked, so quiet wrongness is the only kind that
+ * and the one that reads them. A store is trusted by definition (nobody
+ * checks that their save worked), so quiet wrongness is the only kind that
  * matters.
  *
  * The browser runs these too, against IndexedDB, through the headless job.
@@ -23,15 +23,13 @@ import crossbyte.test.Require;
  *
  * ## Chained rather than nested
  *
- * These were written before `Future` could compose, so each step nested inside
- * the one before it, five levels deep in places, with a failure handler
- * repeated at every level. The repetition was the real cost, not the
- * indentation: six copies of `failWith(async)` in one case is six places to
- * forget one, and a forgotten one turns a failing store into a case that hangs
- * until utest times it out and reports something unrelated to what broke.
- *
- * `flatMap` carries a failure down the whole chain, so each case has one
- * handler at its end and no intermediate one to omit.
+ * Each case is one chain: `flatMap` carries a failure down the whole of it,
+ * so each case has one handler at its end and no intermediate one to omit.
+ * Nesting each step inside the one before would repeat a failure handler at
+ * every level, and six copies of `failWith(async)` in one case is six places
+ * to forget one: a forgotten one turns a failing store into a case that
+ * hangs until utest times it out and reports something unrelated to what
+ * broke.
  */
 class StoreTest extends utest.Test {
 	private static var counter:Int = 0;
@@ -60,13 +58,12 @@ class StoreTest extends utest.Test {
 	 * Removes every store this run created.
 	 *
 	 * Fresh names are the right design and litter is their cost: each case
-	 * leaves a store the next run will never look at, and 462 of them had
-	 * piled up under a roaming profile before anyone counted. The pile is
-	 * paid for here rather than by sharing names, which would buy back the
-	 * flakiness the naming exists to prevent.
+	 * leaves a store the next run will never look at, and runs pile them up
+	 * under a roaming profile. The pile is paid for here rather than by sharing
+	 * names, which would buy back the flakiness the naming exists to prevent.
 	 *
 	 * One name at a time rather than `Future.all`, so the run cannot end out
-	 * from under the sweep, and the failure arm walks on exactly like the
+	 * from under the sweep; and the failure arm walks on exactly like the
 	 * success arm, because utest carries on after a failed case and one store
 	 * that will not clear must not strand every store behind it.
 	 */
@@ -115,7 +112,7 @@ class StoreTest extends utest.Test {
 	/**
 	 * Removes what `clear()` leaves behind: the container itself.
 	 *
-	 * Clearing empties a store without removing it, the file backend keeps
+	 * Clearing empties a store without removing it: the file backend keeps
 	 * the now-empty directory and IndexedDB keeps the database. Here the
 	 * directory is within reach of the same filesystem the backend uses, so
 	 * the sweep finishes the job; the browser offers no handle on the
@@ -152,11 +149,11 @@ class StoreTest extends utest.Test {
 	/**
 	 * Opens a fresh store, runs `body` against it, then clears and closes it.
 	 *
-	 * The open, the clear and the close were spelled out in every case, which
-	 * is three chances per case to leave a store behind, and a store left
-	 * behind is a name the next run inherits, on backends that outlive the
-	 * process. The single failure handler is here for the same reason: a case
-	 * that chains through this cannot forget one, because there is only one.
+	 * Opening, clearing and closing in one place leaves no case three chances
+	 * to leave a store behind, and a store left behind is a name the next run
+	 * inherits, on backends that outlive the process. The single failure
+	 * handler is here for the same reason: a case that chains through this
+	 * cannot forget one, because there is only one.
 	 */
 	private function withStore<T>(async:Async, body:Store->Future<T>):Void {
 		var store:Store = null;
@@ -264,9 +261,8 @@ class StoreTest extends utest.Test {
 		var awkward = ["a/b", "..", "CON", "Token", "token", "with space", "unicode-éè"];
 
 		// `Future.all` rather than a countdown counter closed over by every
-		// callback, which is what this was, and the counter version had to
-		// nest the whole tail of the case inside the last write for it to run
-		// at all.
+		// callback, which would have to nest the whole tail of the case inside
+		// the last write for it to run at all.
 		withStore(async, store -> Future.all([for (i in 0...awkward.length) store.put(awkward[i], bytesOf("value-" + i))])
 			.flatMap(_ -> Future.all([for (key in awkward) store.get(key)]))
 			.flatMap(function(values:Array<Null<ByteArray>>):Future<Array<String>> {
@@ -297,9 +293,9 @@ class StoreTest extends utest.Test {
 				var mismatch = -1;
 				value.position = 0;
 				for (i in 0...256) {
-					// Unsigned, because readByte() sign-extends by design,
-					// Flash semantics, so byte 128 reads as -128 and the
-					// first draft of this test blamed the store for it.
+					// Unsigned, because readByte() sign-extends by design (Flash
+					// semantics), so byte 128 reads as -128, which is not the store's
+					// doing.
 					if (value.readUnsignedByte() != i) {
 						mismatch = i;
 						break;
@@ -319,10 +315,9 @@ class StoreTest extends utest.Test {
 		withStore(async, store -> store.put("k", buffer)
 			.flatMap(function(_):Future<Null<ByteArray>> {
 				// The store copies on the way in, so this cannot reach back and
-				// change what was stored. Handing a backend a live view of a
-				// caller's buffer is how one write ends up holding another's
-				// bytes, the same hazard the Node socket and the WebSocket
-				// output both had to be fixed for.
+				// change what was stored. Handing a backend a live view of a caller's
+				// buffer is how one write ends up holding another's bytes, the same
+				// hazard the Node socket and the WebSocket output guard against.
 				buffer.clear();
 				buffer.writeUTFBytes("changed");
 				return store.get("k");
@@ -335,7 +330,7 @@ class StoreTest extends utest.Test {
 
 	public function testAClosedStoreRefusesRatherThanIgnoring(async:Async):Void {
 		// Deliberately not chained. `flatMap` exists to carry a failure past
-		// everything downstream, and here the failures are the result, a case
+		// everything downstream, and here the failures are the result: a case
 		// whose subject is the failure has to catch each one where it happens.
 		Store.open(freshName()).then(store -> {
 			store.close();
@@ -512,11 +507,11 @@ class StoreTest extends utest.Test {
 
 	#if !(js && !nodejs)
 	public function testAKeyTheOldWriterOrphanedIsRecoveredOnOpen(async:Async):Void {
-		// The file backend used to overwrite by deleting the old value and then
-		// renaming `<key>.value.writing` into place. A process that died
-		// between the two left exactly this on disk: no value, and a complete
-		// temporary file holding the new one, which the next open deleted as
-		// debris, losing the key outright.
+		// The file backend overwrites by renaming `<key>.value.writing` into
+		// place over the old value, not by deleting the old value and then
+		// renaming: a process that died between those two would leave exactly
+		// this on disk, no value and a complete temporary file holding the new
+		// one, which the next open must not delete as debris, losing the key.
 		var name = freshName();
 		var reopened:Store = null;
 
@@ -577,10 +572,10 @@ class StoreTest extends utest.Test {
 	#if cpp
 	public function testAnOverwriteNeverLeavesTheKeyAbsent():Void {
 		// Two runtimes over one store, one overwriting a key while the other
-		// reads it. Deleting and then renaming left a window in which the key
-		// did not exist, a reader there saw null, a value never written,
-		// and on Windows a reader holding the file made the delete itself fail
-		// the write.
+		// reads it. Deleting and then renaming would leave a window in which the
+		// key did not exist (a reader there would see null, a value never
+		// written), and on Windows a reader holding the file would make the
+		// delete itself fail the write.
 		var name = freshName();
 		var writer = new crossbyte.io._internal.store.FileStore(name);
 		var reader = new crossbyte.io._internal.store.FileStore(name);

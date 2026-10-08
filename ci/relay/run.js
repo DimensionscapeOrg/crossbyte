@@ -4,9 +4,9 @@
 // repository wrote. That is worth having and cannot answer one question: a
 // server that verifies a request with the very code that produced it agrees
 // perfectly about anything both ends are wrong about. Long-term credentials
-// are the obvious place for that, the key is MD5 of username, realm and
+// are the obvious place for that (the key is MD5 of username, realm and
 // password rather than the password itself, and an implementation can have
-// every byte of the integrity right and still derive the wrong key, but the
+// every byte of the integrity right and still derive the wrong key), but the
 // same applies to permissions, Send indications and the wrapping of relayed
 // data.
 //
@@ -42,8 +42,8 @@ try {
 // A retransmitted Allocate, answered as RFC 5766 section 6.2 has it.
 //
 // node-turn (0.0.6) never finds the allocation a 5-tuple already has when an
-// Allocate arrives, the server attaches it to every other request, but not
-// to that one, so its branch for a retransmission is never taken, and each
+// Allocate arrives (the server attaches it to every other request, but not
+// to that one), so its branch for a retransmission is never taken, and each
 // one makes a second allocation and files it over the first. The client keeps
 // the address the first answer gave it, the one its peer is told about; the
 // server then installs permissions on, and sends from, the second. Data the
@@ -51,12 +51,12 @@ try {
 // end sends arrives from an address the peer was never told: "permission
 // fail" at each relayed address, from the other's, for as long as the run
 // lasts. An Allocate is retransmitted when its answer takes more than half a
-// second (RFC 8489's first RTO), which a loaded runner manages: under 64
-// spinning processes on this machine 16 runs in 30 failed so, every one with
-// four allocations granted for two clients, and none with this in place.
+// second (RFC 8489's first RTO), which a loaded runner manages, so without
+// this a busy machine fails runs that way, each with four allocations
+// granted for two clients.
 //
 // So a retransmission is answered from the allocation the first made, or,
-// while that is still being made, dropped, the answer to the first answers
+// while that is still being made, dropped: the answer to the first answers
 // it. Its own branch for this is not used either: it refreshes the allocation
 // with an undefined lifetime, which expires it at once.
 let retransmittedAllocates = 0;

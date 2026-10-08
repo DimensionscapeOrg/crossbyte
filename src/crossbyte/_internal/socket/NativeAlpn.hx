@@ -8,9 +8,9 @@ package crossbyte._internal.socket;
  * ALPN (RFC 7301) for the TLS sockets hxcpp already provides.
  *
  * `sys.ssl.Socket` exposes no way to advertise a protocol list, which is what
- * TLS needs before an `h2` connection can be negotiated at all. mbedTLS has
- * carried the support all along, hxcpp ships it with `MBEDTLS_SSL_ALPN`
- * enabled, so this only reaches what was already linked.
+ * TLS needs before an `h2` connection can be negotiated at all. mbedTLS
+ * carries the support (hxcpp ships it with `MBEDTLS_SSL_ALPN` enabled), so
+ * this only reaches what is already linked.
  *
  * Implemented here rather than as a patch to hxcpp's `SSL.cpp`. A patch would
  * mean every CrossByte build needed a forked hxcpp, and would fail to *link*

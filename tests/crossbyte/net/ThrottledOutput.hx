@@ -10,7 +10,7 @@ import haxe.io.BytesBuffer;
 	it takes it keeps, in order, so what was sent can be checked.
 
 	A real kernel is no use for this on Windows, which takes a whole write or
-	none of it, so a partial write, the case being tested, never happens
+	none of it, so a partial write (the case being tested) never happens
 	over loopback there. A TLS socket makes one every 16 KB record, which is
 	what `perCall` imitates.
 **/

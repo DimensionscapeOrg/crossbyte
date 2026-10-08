@@ -13,7 +13,7 @@ import utest.Assert;
 	`Wire` carries datagrams from one to the other, a counter stands in for the
 	clock, and the whole exchange runs to completion deterministically on every
 	target. What is being tested is the thing that is hardest to test over a
-	real network and easiest to get wrong, that two peers, each seeing only
+	real network and easiest to get wrong: that two peers, each seeing only
 	its own half, converge on the same pair.
 
 	A real network would make these slower, flakier, and no more convincing.
@@ -87,12 +87,12 @@ class IceAgentTest extends utest.Test {
 	/**
 		Closing an agent tells whoever was waiting on a path.
 
-		`connected` had exactly one failure path, __settleIfFinished, which
-		decides by looking at the checks, and close() empties them, so after a
-		close it could never conclude anything. An agent closed mid-negotiation
-		therefore left its caller holding a future that could not settle either
-		way, and PeerConnection is one such caller: it wires agent.connected to
-		its own failure path in the constructor.
+		`connected` has exactly one failure path from the checks,
+		__settleIfFinished, which decides by looking at them, and close()
+		empties them, so a close has to settle it itself. Otherwise an agent
+		closed mid-negotiation would leave its caller holding a future that
+		could not settle either way, and PeerConnection is one such caller: it
+		wires agent.connected to its own failure path in the constructor.
 	**/
 	public function testClosingAnAgentTellsWhoeverWaitedForAPath():Void {
 		if (unsupported()) return;
@@ -120,8 +120,8 @@ class IceAgentTest extends utest.Test {
 
 		Every remote candidate pairs with every local one, and __rebuild scans
 		the whole checklist for each pair, so the cost grows faster than the
-		list, and the list is the peer's to choose. Nothing bounded it, and the
-		candidates arrive in the description a peer sends.
+		list, and the list is the peer's to choose: the candidates arrive in
+		the description a peer sends.
 	**/
 	public function testAnAgentBoundsHowManyRemoteCandidatesItWillHold():Void {
 		if (unsupported()) return;
@@ -145,11 +145,11 @@ class IceAgentTest extends utest.Test {
 		And a peer cannot get round that by checking from new places rather
 		than advertising them.
 
-		Each check from an address the agent had not heard of became a
-		peer-reflexive candidate, paired and checked back, with nothing
-		bounding how many: the cap applied to what a description carried and
-		not to this, so checks from 192 ports left 192 candidates and drew 384
-		datagrams. Past the cap a check from a new place goes unanswered.
+		Each check from an address the agent had not heard of becomes a
+		peer-reflexive candidate, paired and checked back, so the cap applies
+		to these as well as to what a description carries: unbounded, checks
+		from 192 ports would leave 192 candidates and draw 384 datagrams. Past
+		the cap a check from a new place goes unanswered.
 	**/
 	public function testChecksFromNewPlacesAreBoundedLikeAdvertisedCandidates():Void {
 		if (unsupported()) return;
@@ -184,11 +184,12 @@ class IceAgentTest extends utest.Test {
 		A candidate that is a name rather than an address is not dialled.
 
 		Browsers publish their host candidates as random .local mDNS names by
-		default, and a name reaching the socket went through `sys.net.Host`,
-		which resolves synchronously on the event loop on every send, a
-		second's block and a throw for a .local name nothing answers, per
-		check. Against a real browser that made connecting take 15.8 seconds
-		with CrossByte controlling, the whole loop frozen meanwhile.
+		default, and a name reaching the socket would go through
+		`sys.net.Host`, which resolves synchronously on the event loop on
+		every send: a second's block and a throw for a .local name nothing
+		answers, per check. Against a real browser that made connecting take
+		15.8 seconds with CrossByte controlling, the whole loop frozen
+		meanwhile.
 
 		The addresses are real and the names are not, so the names are what
 		must be missing afterwards: an agent that kept them would pair them
@@ -214,11 +215,11 @@ class IceAgentTest extends utest.Test {
 	/**
 		Nor is an address that only looks like one.
 
-		Four runs of digits was the whole test, so 1.2.3.999 passed as numeric.
-		It is not an address to the socket: hxcpp's resolver finds no literal
-		in it and looks it up as a name, blocking the loop per check just as a
-		name does. And 010.1.1.1 is 8.1.1.1 to `inet_addr`, which reads a
-		leading zero as octal, but ten to anything reading decimal.
+		Four runs of digits is not the whole test, or 1.2.3.999 would pass as
+		numeric. It is not an address to the socket: hxcpp's resolver finds no
+		literal in it and looks it up as a name, blocking the loop per check
+		just as a name does. And 010.1.1.1 is 8.1.1.1 to `inet_addr`, which
+		reads a leading zero as octal, but ten to anything reading decimal.
 	**/
 	public function testAnAddressThatOnlyLooksLikeOneIsNotDialled():Void {
 		if (unsupported()) return;
@@ -248,10 +249,10 @@ class IceAgentTest extends utest.Test {
 		Two agents on IPv6 connect without either inventing an address.
 
 		The answer to a check names where it came from, and the attribute says
-		IPv4 alone. An IPv6 source was split on dots and read as numbers, so
-		every answer named 0.0.0.0, and the agent that asked took that for a
-		reflexive view of itself, a local candidate that does not exist.
-		Answered without it, the check succeeds and nothing is learned.
+		IPv4 alone. An IPv6 source split on dots and read as numbers would
+		make every answer name 0.0.0.0, and the agent that asked would take
+		that for a reflexive view of itself, a local candidate that does not
+		exist. Answered without it, the check succeeds and nothing is learned.
 	**/
 	public function testAgentsOnIPv6InventNoAddress():Void {
 		if (unsupported()) return;
@@ -283,11 +284,11 @@ class IceAgentTest extends utest.Test {
 		each answer, and teaches it no more than `MAX_LEARNED_LOCAL_CANDIDATES`.
 
 		Each answer to a check says where the peer saw it arrive from, and one
-		naming a place the agent had no candidate for made a peer-reflexive
-		candidate of it, with no bound, and with the whole candidate list
-		paired again for each, so every answer cost more than the one before:
-		5.7 ms an answer on the jvm by the 2,000th, 137 seconds for answers
-		1,000 to 2,000 on the interpreter, the runtime serving nothing else
+		naming a place the agent had no candidate for makes a peer-reflexive
+		candidate of it. Unbounded, and with the whole candidate list paired
+		again for each, every answer would cost more than the one before: 5.7
+		ms an answer on the jvm by the 2,000th, 137 seconds for answers 1,000
+		to 2,000 on the interpreter, the runtime serving nothing else
 		meanwhile. A role conflict after each answer is what lets the peer
 		have the check sent again, and answer it again.
 
@@ -391,7 +392,7 @@ class IceAgentTest extends utest.Test {
 		var checks = @:privateAccess agent.__checks;
 		var made:Array<String> = [for (check in checks) check.pair.toString()];
 
-		// Pairs of equal priority, an IPv4 host pair and an IPv6 one, may
+		// Pairs of equal priority (an IPv4 host pair and an IPv6 one) may
 		// sort either way round, so the lists are compared as sets and the
 		// order by priority alone.
 		Assert.equals(expected.length, made.length, "pairing as they arrived made " + made.length + " pairs, pairing the lists " + expected.length);
@@ -413,7 +414,7 @@ class IceAgentTest extends utest.Test {
 		the selected pair is re-confirmed on a timer.
 
 		This case is the half that must not fire. A peer answering throughout
-		is kept, and it would not be if the checks were never sent, nothing
+		is kept, and it would not be if the checks were never sent: nothing
 		else refreshes the timer, so silence on this side expires the path just
 		as surely as silence on the other.
 	**/
@@ -454,9 +455,9 @@ class IceAgentTest extends utest.Test {
 	/**
 		Every change of state is told, the consent failure included.
 
-		Losing consent set `state` and called nothing, so a caller holding a
-		raw agent, a reliable datagram server with one attached, had to
-		poll `state` every tick to learn the path had gone.
+		Losing consent calls the listener too, so a caller holding a raw
+		agent (a reliable datagram server with one attached) need not poll
+		`state` every tick to learn the path had gone.
 	**/
 	public function testAnAgentSaysWhenItsStateChanges():Void {
 		if (unsupported()) return;
@@ -486,9 +487,9 @@ class IceAgentTest extends utest.Test {
 	/**
 		A failed agent stays failed.
 
-		A nomination reaching an agent whose consent had run out went through
-		the branch meant for the first selection: CONNECTED again, with no
-		`onSelectedPairChanged`, on a path RFC 7675 had it stop using.
+		A nomination reaching an agent whose consent has run out must not go
+		through the branch meant for the first selection: CONNECTED again,
+		with no `onSelectedPairChanged`, on a path RFC 7675 had it stop using.
 	**/
 	public function testAFailedAgentStaysFailed():Void {
 		if (unsupported()) return;
@@ -538,11 +539,12 @@ class IceAgentTest extends utest.Test {
 		A peer that moves and nominates the pair from its new address is followed.
 
 		What a browser does when its network changes: the controlling agent
+		What a browser does when its network changes: the controlling agent
 		checks from where it now is and nominates that pair. The controlled
-		agent answered the nomination and kept the pair it had, so it went on
-		sending to an address that no longer answered until consent to it ran
-		out half a minute later. Here Bob is the controlled end, CrossByte
-		answering a browser, and Alice moves.
+		agent has to switch to it, not answer the nomination and keep the
+		pair it had, sending to an address that no longer answers until
+		consent to it runs out half a minute later. Here Bob is the controlled
+		end (CrossByte answering a browser) and Alice moves.
 	**/
 	public function testAPeerThatMovesAndNominatesAgainIsFollowed():Void {
 		if (unsupported()) return;
@@ -588,9 +590,9 @@ class IceAgentTest extends utest.Test {
 	/**
 		A candidate trickled after the path was found is still checked.
 
-		`__rebuild` returned unless the agent was checking, so a candidate that
-		arrived once it had connected went into the list and was never paired
-		or tried, and a peer reachable only there could never be followed.
+		A candidate that arrives once the agent has connected is paired and
+		tried, not only put into the list: a peer reachable only there could
+		otherwise never be followed.
 	**/
 	public function testACandidateTrickledAfterConnectingIsChecked():Void {
 		if (unsupported()) return;
@@ -738,7 +740,7 @@ class IceAgentTest extends utest.Test {
 		]);
 
 		// Nor taken: it is not this agent's, and whatever else shares the
-		// socket is entitled to see it. It was reported taken.
+		// socket is entitled to see it.
 		Assert.isFalse(bob.receive(backwards.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, PORT, 0),
 			"a check addressed to another session was reported as taken");
 		Assert.equals(0, sent.length, "a check addressed to another session was answered");
@@ -758,8 +760,8 @@ class IceAgentTest extends utest.Test {
 		Only what is this agent's is reported taken.
 
 		`receive` says whether the datagram was the agent's, so whatever else
-		shares the socket can have the rest, and it answered yes to every
-		binding message there was: a check signed with someone else's
+		shares the socket can have the rest, and it must not answer yes to
+		every binding message there is: a check signed with someone else's
 		password, an answer to a transaction it never sent, a refusal of one.
 	**/
 	public function testOnlyItsOwnTrafficIsReportedTaken():Void {
@@ -856,9 +858,9 @@ class IceAgentTest extends utest.Test {
 		An agent with no pair to check gives up at its deadline, and says why.
 
 		`__settleIfFinished` waits for every pair to fail, and with none there
-		is nothing to fail: an agent whose peer offered only names, and from
-		which no check came, was still CHECKING ten minutes on, and so was
-		whatever waited on `connected`.
+		is nothing to fail: without a deadline, an agent whose peer offered
+		only names, and from which no check came, would still be CHECKING ten
+		minutes on, and so would whatever waited on `connected`.
 	**/
 	public function testAnAgentWithNothingToCheckGivesUpAtItsDeadline():Void {
 		if (unsupported()) return;
@@ -896,8 +898,8 @@ class IceAgentTest extends utest.Test {
 
 		Its own checks succeeding keep `__settleIfFinished` from concluding
 		anything, and only the controlling peer can select a pair. With the
-		nominations lost on the way, or a peer that never sends one, it
-		waited for good.
+		nominations lost on the way (or a peer that never sends one) it would
+		wait for good.
 	**/
 	public function testAControlledAgentNeverNominatedGivesUpAtItsDeadline():Void {
 		if (unsupported()) return;
@@ -935,10 +937,10 @@ class IceAgentTest extends utest.Test {
 		A nomination that goes unanswered moves on to another pair that
 		answered.
 
-		`__nominating` was set as a nomination went out and cleared by nothing
-		but a change of role, so a controlling agent whose first choice went
-		quiet after it was proved never nominated again, while another pair
-		that had answered sat unused. The deadline is off here, so what is
+		`__nominating` is cleared when a nomination goes unanswered, not only
+		by a change of role, so a controlling agent whose first choice went
+		quiet after it was proved nominates again, rather than leaving another
+		pair that had answered unused. The deadline is off here, so what is
 		measured is the agent moving on rather than giving up.
 	**/
 	public function testAnUnansweredNominationMovesToAnotherPair():Void {
@@ -982,10 +984,11 @@ class IceAgentTest extends utest.Test {
 		retransmission three and a half seconds in.
 
 		A nomination is a check, given up on 39.5 seconds after it goes out,
-		and the default deadline was 40 seconds from `start`: a moment past
-		one check's schedule, so the agent gave up just before its unanswered
-		nomination would have been, and the move to another pair this class
-		promises happened only on a path that answered within half a second.
+		so the default deadline has to leave room past one check's schedule:
+		40 seconds from `start` would have the agent give up just before its
+		unanswered nomination would have been, and the move to another pair
+		this class promises would happen only on a path that answered within
+		half a second.
 	**/
 	public function testANominationLostAfterASlowStartMovesOnWithinTheDefaultDeadline():Void {
 		if (unsupported()) return;
@@ -1035,10 +1038,11 @@ class IceAgentTest extends utest.Test {
 		A late copy of the answer that proved a pair is not taken for the
 		answer to its nomination.
 
-		The nomination went out under the transaction of the check that had
-		proved the pair, so the peer's answer to a retransmission of that
-		check, arriving after the nomination left, selected the pair, though
-		the peer had never been sent USE-CANDIDATE, and would wait for one.
+		The nomination goes out under a transaction of its own, not that of
+		the check that proved the pair: otherwise the peer's answer to a
+		retransmission of that check, arriving after the nomination left,
+		would select the pair, though the peer had never been sent
+		USE-CANDIDATE, and would wait for one.
 	**/
 	public function testALateAnswerIsNotTakenForTheNominations():Void {
 		if (unsupported()) return;
@@ -1073,8 +1077,8 @@ class IceAgentTest extends utest.Test {
 		a transaction given up on: seven transmissions over 31.5 seconds, and
 		sixteen times the first timeout for the last to be answered.
 
-		It waited one more doubling after the last, thirty-two seconds, and
-		gave up at 63.5, while this class said half a minute.
+		One more doubling after the last (thirty-two seconds) would give up
+		at 63.5.
 	**/
 	public function testAPairNothingAnswersIsGivenUpOnAtThirtyNineAndAHalfSeconds():Void {
 		if (unsupported()) return;
@@ -1105,9 +1109,9 @@ class IceAgentTest extends utest.Test {
 		STUN that is not a connectivity check is left for whatever else shares
 		the socket.
 
-		The agent took every STUN message there was. On a socket it shares
-		with a TURN client, a reliable datagram server with an agent attached
-		and a relay allocated, that swallowed the relay's answers, so the
+		On a socket it shares with a TURN client (a reliable datagram server
+		with an agent attached and a relay allocated) an agent that took every
+		STUN message there was would swallow the relay's answers, so the
 		allocation could never complete.
 	**/
 	public function testStunThatIsNotACheckIsLeftForOthers():Void {
@@ -1137,10 +1141,10 @@ class IceAgentTest extends utest.Test {
 		Pairs a relay refused to carry fail when it says so, not half a minute
 		later.
 
-		A relay drops what it has no permission for without a word, so a check
-		it refused to forward looked like one still in flight: seven of them
-		over thirty seconds, and an agent whose every other pair had failed
-		waited that long to say so.
+		A relay drops what it has no permission for without a word, so a
+		check it refused to forward would look like one still in flight: seven
+		of them over thirty seconds, and an agent whose every other pair had
+		failed would wait that long to say so.
 	**/
 	public function testPairsARelayRefusedFailWhenItSaysSo():Void {
 		if (unsupported()) return;
@@ -1225,9 +1229,9 @@ class IceAgentTest extends utest.Test {
 	/**
 		Both peers claiming to be in charge, which is not an exotic case.
 
-		Roles are agreed out of band, and any exchange that can be raced, both
+		Roles are agreed out of band, and any exchange that can be raced (both
 		sides offering at once, a restart, a signalling path that reordered two
-		messages, leaves both convinced they are controlling. Nothing detects
+		messages) leaves both convinced they are controlling. Nothing detects
 		it until a check arrives, because until then each side is perfectly
 		consistent with itself.
 

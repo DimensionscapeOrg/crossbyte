@@ -11,7 +11,7 @@ class URLRequestDefaults {
 	public static var followRedirects:Bool = true;
 
 	/**
-		The default `idleTimeout` for new URLRequest objects, in milliseconds,
+		The default `idleTimeout` for new URLRequest objects, in milliseconds:
 		how long the client waits for a response after the connection is
 		established before abandoning the request. Setting the property on a
 		request overrides this.

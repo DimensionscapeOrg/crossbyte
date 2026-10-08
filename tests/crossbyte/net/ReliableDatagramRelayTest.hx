@@ -15,18 +15,17 @@ import utest.Assert;
 	Reliable datagram sessions between two servers that can reach each other
 	only through a TURN relay.
 
-	The README offers hole punching on these sockets, and for the peers it
-	cannot help, a symmetric NAT or a carrier's CGNAT at either end, there
-	was no relay to fall back to. The auditor's attempt to wire one in needed
-	two private accesses and had two steps that could not be written at all:
-	the relay's answers went to the reliable decoder, and a session could only
-	send straight at its peer.
+	These sockets offer hole punching, and for the peers it cannot help (a
+	symmetric NAT or a carrier's CGNAT at either end) the relay is the path
+	left, wired in without private access: the relay's answers go to the
+	relay client, not the reliable decoder, and a session can send through
+	the relay rather than only straight at its peer.
 
 	As in `PeerConnectionRelayTest`, loopback always has a path, so three
 	things keep these honest. The servers bind 127.0.0.2 and 127.0.0.3, so a
 	datagram one sent itself and one the relay forwarded do not share a
-	source. Each is told only the other's relayed address. And the relay,
-	`FakeTurnRelay` on real sockets, forwards nothing from an address no
+	source. Each is told only the other's relayed address. And the relay
+	(`FakeTurnRelay` on real sockets) forwards nothing from an address no
 	permission covers, as RFC 8656 requires.
 
 	Linux answers on all of 127/8. macOS has only 127.0.0.1 until told:
@@ -197,9 +196,8 @@ class ReliableDatagramRelayTest extends utest.Test {
 
 	/**
 		One side reaching the relay over TLS, as a network that lets out only
-		what looks like HTTPS needs. TurnStream refused a TLS relay while a
-		client Socket could not start TLS; the relay's certificate is checked
-		like any other, here against the fixture's own authority.
+		what looks like HTTPS needs. The relay's certificate is checked like
+		any other, here against the fixture's own authority.
 	**/
 	public function testOneSideReachesTheRelayOverTls():Void {
 		if (unsupported()) return;
@@ -293,9 +291,9 @@ class ReliableDatagramRelayTest extends utest.Test {
 
 	/**
 		The same relay is used once the server is told not to check its
-		certificate, as a test against a throwaway one needs. The server let
-		an authority through to its relay client and not `verifyCert`, so a
-		relay like this could be reached only by naming its authority.
+		certificate, as a test against a throwaway one needs: the server passes
+		`verifyCert` through to its relay client as well as an authority, so a
+		relay like this can be reached without naming its authority.
 	**/
 	public function testARelayOverTlsCanBeReachedWithItsCertificateUnchecked():Void {
 		if (unsupported()) return;
@@ -449,8 +447,9 @@ class ReliableDatagramRelayTest extends utest.Test {
 		An attached agent does not take the relay's answers, and checks from
 		the relayed candidate the relay lends.
 
-		The agent took every STUN message on the socket, a relay's answers
-		included, so on a server with one attached no allocation could complete.
+		The agent must not take every STUN message on the socket, a relay's
+		answers included, or on a server with one attached no allocation could
+		complete.
 	**/
 	public function testAnAttachedAgentLeavesTheRelayItsAnswers():Void {
 		if (unsupported()) return;

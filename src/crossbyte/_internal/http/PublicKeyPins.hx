@@ -8,7 +8,7 @@ import haxe.io.Bytes;
 	with or without a `sha256/` in front.
 
 	A pin names the key, not the certificate, so it survives the certificate
-	being renewed over the same key, the reason HPKP and every pinning
+	being renewed over the same key: the reason HPKP and every pinning
 	library since pin keys. Reading the key's bytes out of a certificate is a
 	walk of the first few elements of its DER, done here so every target reads
 	them the same way from the certificate its TLS stack hands back.
@@ -30,8 +30,8 @@ class PublicKeyPins {
 	/**
 		The DER of the SubjectPublicKeyInfo inside the certificate `der`, or
 		null when `der` is not an X.509 certificate laid out as RFC 5280 has
-		it: a sequence holding a TBSCertificate, whose seventh element,
-		sixth without the optional version, is the key.
+		it: a sequence holding a TBSCertificate, whose seventh element
+		(sixth without the optional version) is the key.
 	**/
 	public static function subjectPublicKeyInfo(der:Bytes):Null<Bytes> {
 		if (der == null) {
@@ -73,7 +73,7 @@ class PublicKeyPins {
 
 	/**
 		The element starting at `at` and ending by `limit`, or null when its
-		header or its length runs past `limit`, the bytes are the peer's.
+		header or its length runs past `limit`: the bytes are the peer's.
 	**/
 	private static function __element(der:Bytes, at:Int, limit:Int):Null<DerElement> {
 		if (at < 0 || at + 2 > limit) {

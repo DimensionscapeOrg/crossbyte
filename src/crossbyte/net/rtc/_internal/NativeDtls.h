@@ -12,7 +12,7 @@
 //
 // Nothing here reaches into hxcpp's own SSL objects the way the ALPN bridge
 // does. hxcpp creates mbedTLS contexts for TLS over TCP and never for DTLS, so
-// there is nothing to borrow, this owns what it makes.
+// there is nothing to borrow: this owns what it makes.
 //
 // Symbols are named `crossbyte_*` so they cannot collide if hxcpp later grows
 // its own, which is the same rule the ALPN bridge follows.
@@ -23,7 +23,7 @@
 // and the first thing on the include path is hxcpp's own __pch directory,
 // which holds hxcpp.h.gch rather than hxcpp.h, so the build stops at
 // "fatal error: .../__pch/haxe/hxcpp.h: No such file or directory". MSVC
-// resolves it differently, which is why this only ever broke on Linux.
+// resolves it differently, so only GCC builds need the guard.
 #ifndef HXCPP_H
 #include <hxcpp.h>
 #endif

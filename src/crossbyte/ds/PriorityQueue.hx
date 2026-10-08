@@ -17,9 +17,9 @@ import haxe.ds.Vector;
  * carries the order it was enqueued in, and that breaks every tie. A heap on
  * its own does not: dequeuing moves the newest element to the root, and a
  * strict comparison never sinks it past an equal, so a matchmaker holding
- * one priority served its newest ticket next, 29 of the first 30 tickets
- * were still waiting 20,000 ticks later. `update` keeps an element's place
- * in that order; only `dequeue` and `remove` give it up.
+ * one priority would serve its newest ticket next and leave the oldest
+ * waiting. `update` keeps an element's place in that order; only `dequeue`
+ * and `remove` give it up.
  *
  * Elements are objects, held once each and told apart by identity: enqueuing
  * one already held updates it. A queue of plain `Int` ids is an
@@ -49,9 +49,8 @@ final class PriorityQueue<T:{}> {
 	// Each element held has a slot, fixed for as long as it is held, and the
 	// heap orders slot numbers. The map from element to slot is written once
 	// when an element comes in and once when it goes; sifting moves slot
-	// numbers through plain arrays. It was written twice for every level an
-	// element moved, which is where the time went, TimerQueue measured the
-	// same shape at nine and a half times the cost.
+	// numbers through plain arrays, rather than writing the map for every
+	// level an element moves.
 	@:noCompletion private var __slotOf:ObjectMap<T, Int>;
 	@:noCompletion private var __items:Vector<T>;
 	// The order each slot's element was enqueued in, the tie-break. A Float

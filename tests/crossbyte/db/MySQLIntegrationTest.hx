@@ -19,11 +19,11 @@ import sys.thread.Thread;
  * The native MySQL driver against a real MySQL or MariaDB server.
  *
  * The native suite covers the client against a fake server that logs every
- * byte (`MySQLNativeWireTest` and its siblings), which is where each fix is
- * proved; this is the check that the fake agrees with a real server,
- * caching_sha2_password against MySQL 8's own, TLS against its generated
- * certificate, a result paged as it arrives, KILL QUERY interrupting a
- * statement.
+ * byte (`MySQLNativeWireTest` and its siblings), which is where each
+ * behaviour is proved; this is the check that the fake agrees with a real
+ * server: caching_sha2_password against MySQL 8's own, TLS against its
+ * generated certificate, a result paged as it arrives, KILL QUERY
+ * interrupting a statement.
  *
  * `@:suiteExempt` because it needs a live server. The `Data | MySQL` CI job
  * (`.github/workflows/mysql.yml`) runs it against MySQL 8.4 and MariaDB 11,
@@ -103,7 +103,7 @@ class MySQLIntegrationTest extends utest.Test {
 			connection.request('INSERT INTO $table (email, name) VALUES (\'user$i@example.com\', \'user $i\')');
 		}
 
-		// Sent short by one byte per extra UTF-8 byte, this was WHERE id = 1.
+		// Sent short by one byte per extra UTF-8 byte, this would be WHERE id = 1.
 		connection.request('UPDATE $table SET name = \'Z\u00FCrich \u{1F680}\' WHERE id = 12');
 		Assert.equals(1, connection.affectedRows);
 

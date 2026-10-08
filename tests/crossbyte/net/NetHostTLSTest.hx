@@ -11,10 +11,10 @@ import utest.Async;
 /**
 	A `wss://` `NetHost` serves with the certificate it is given.
 
-	It could not be given one. The constructor bound its `ServerWebSocket`
-	itself, with no way to reach `cert` first, and a TLS server's material
-	has to be in place before it binds: every handshake failed, and nothing
-	said why.
+	It can be given one before it binds: a TLS server's material has to be
+	in place before it binds, so a constructor binding its
+	`ServerWebSocket` itself, with no way to reach `cert` first, would fail
+	every handshake with nothing to say why.
 **/
 class NetHostTLSTest extends utest.Test {
 	// An address that is not this machine's, from a block kept for
@@ -46,9 +46,9 @@ class NetHostTLSTest extends utest.Test {
 			return;
 		}
 
-		// Port 0: wherever the system has one free. A URI host could not be
-		// given it, so this took a port from a listener it had just closed,
-		// assuming nothing had taken the port since.
+		// Port 0: wherever the system has one free, rather than a port taken
+		// from a listener just closed on the assumption that nothing has taken
+		// it since.
 		var host = new NetHost('wss://127.0.0.1:0', function(connection:INetConnection) {
 			connection.onData = input -> {
 				var answer = new ByteArray();

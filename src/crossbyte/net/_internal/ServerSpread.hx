@@ -11,9 +11,9 @@ import sys.net.Socket;
 import sys.thread.Mutex;
 
 /**
-	A server spread over several runtimes: what its front, the server the
+	A server spread over several runtimes: what its front (the server the
 	application made, whose listener stays on the runtime that called
-	`listen()`: shares with the replicas it made, one per runtime, that
+	`listen()`) shares with the replicas it made, one per runtime, that
 	serve the connections handed to them.
 
 	A replica is an instance of the server's own class, made without a
@@ -81,8 +81,8 @@ class ServerSpread {
 		The most connections one runtime may have handed to it and not yet
 		taken up, past which the next in turn is tried: four wakes' worth of
 		`maxAcceptsPerTick`. A runtime takes up what it is handed at its
-		next pass, so only one that is stalled, a handler that blocks, a
-		long collection, comes near it. A variable only so a test can
+		next pass, so only one that is stalled (a handler that blocks, a
+		long collection) comes near it. A variable only so a test can
 		make it small.
 	**/
 	@:noCompletion public static var MAX_WAITING:Int = 256;
@@ -116,14 +116,14 @@ class ServerSpread {
 		Hands `socket`, just accepted on the front's runtime, to the runtime
 		`selectRuntime` names or to the next live one in turn, passing over
 		one with `MAX_WAITING` handed to it and not yet taken up. `HANDED`,
-		or why not, `NO_RUNTIME` when none is live, `ALL_FULL` when every
-		live one is that far behind, which leaves the socket to the caller
+		or why not (`NO_RUNTIME` when none is live, `ALL_FULL` when every
+		live one is that far behind), which leaves the socket to the caller
 		to close. A `selectRuntime` that throws refuses the connection, as
 		`admit` does, and answers `NO_RUNTIME`.
 
-		Without the bound a runtime that stalled was handed every connection
-		that came its way in turn, each a socket and its descriptor held in
-		its post queue, for as long as the stall lasted.
+		Without the bound a runtime that stalled would be handed every
+		connection that came its way in turn, each a socket and its
+		descriptor held in its post queue, for as long as the stall lasted.
 	**/
 	public function handOff(socket:Socket, peer:{host:Host, port:Int}, address:String):Int {
 		var chosen:Int = -1;
@@ -287,10 +287,11 @@ class ServerSpread {
 	/**
 		Watches each runtime's EXIT, on its own thread, while the server is
 		open: a runtime that exits under a replica settles what the replica
-		holds of the server's counts, handshakes and upgrades under way,
+		holds of the server's counts: handshakes and upgrades under way,
 		which will never finish there, are dropped and their sockets closed,
-		and its open connections' places given back. They stayed counted in
-		`inFlight` and against `maxConnections` for as long as the server ran.
+		and its open connections' places given back, rather than staying
+		counted in `inFlight` and against `maxConnections` for as long as the
+		server runs.
 	**/
 	public function watchExits():Void {
 		if (__exitWatches != null) {

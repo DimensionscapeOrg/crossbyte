@@ -198,16 +198,16 @@ class Config {
 
 		var raw:String = StringTools.trim(getString(key));
 		// Std.parseInt stops at the first non-digit, so "80a80" would yield
-		// 80, a typo would silently become a different port. Require the
+		// 80: a typo would silently become a different port. Require the
 		// whole value to be numeric.
 		if (!__integerPattern().match(raw)) {
 			throw new ArgumentError('Config value for "$key" is not an integer: "$raw"');
 		}
 
 		// Read by IntParse rather than Std.parseInt, whose answer for a value
-		// too big for an Int depends on the target: 4294967296 read as 0 on
-		// Linux native, as 2147483647 on Windows native, threw on the jvm and
-		// came back wider than an Int on JavaScript. A configured limit that
+		// too big for an Int depends on the target: 4294967296 reads as 0 on
+		// Linux native, as 2147483647 on Windows native, throws on the jvm and
+		// comes back wider than an Int on JavaScript. A configured limit that
 		// silently became 0 is worse than one refused.
 		var negative:Bool = StringTools.startsWith(raw, "-");
 		var digits:String = (negative || StringTools.startsWith(raw, "+")) ? raw.substr(1) : raw;

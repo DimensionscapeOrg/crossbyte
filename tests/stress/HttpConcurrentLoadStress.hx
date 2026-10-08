@@ -12,12 +12,12 @@ import sys.thread.Thread;
 /**
  * Many real clients against one server, over connections they keep open.
  *
- * Every other measurement of the HTTP and socket work was taken one
- * connection at a time, which cannot see the thing most likely to be wrong:
- * the read buffer is now shared per thread, poll owns the frame budget,
- * connections survive their responses, and a sweep walks every live handler
- * four times a second. Each of those is sound alone. This is whether they are
- * sound together, with a few hundred connections doing it at once.
+ * Other measurements of the HTTP and socket work take one connection at a
+ * time, which cannot see the thing most likely to be wrong: the read buffer
+ * is shared per thread, poll owns the frame budget, connections survive
+ * their responses, and a sweep walks every live handler four times a
+ * second. Each of those is sound alone. This is whether they are sound
+ * together, with a few hundred connections doing it at once.
  *
  * Clients are plain blocking `sys.net.Socket`s on their own threads, which
  * makes them stand in for arbitrary HTTP clients rather than for CrossByte
@@ -63,12 +63,12 @@ class HttpConcurrentLoadStress implements StressCase {
 		fixture.writeUTFBytes(BODY);
 		root.resolvePath("index.html").save(fixture);
 
-		// Every client here comes from 127.0.0.1, so the default limiter, ten
-		// requests a minute per address, sees one very busy client and starts
-		// answering 429 after the tenth. That is the limiter working, and it is
-		// what the first run of this case measured. Real load arrives from many
-		// addresses; a loopback test cannot, so it is raised out of the way to
-		// leave the server itself as the thing under test.
+		// Every client here comes from 127.0.0.1, so the default limiter, a
+		// budget of requests a minute per address, sees one very busy client
+		// and starts answering 429. That is the limiter working; real load
+		// arrives from many addresses, and a loopback test cannot, so it is
+		// raised out of the way to leave the server itself as the thing under
+		// test.
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, null,
 			new RateLimiter(1000000, 1.0));
 		var server = new HTTPServer(config);

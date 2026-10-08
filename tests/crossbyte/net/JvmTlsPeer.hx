@@ -112,7 +112,7 @@ class JvmTlsPeer {
 
 		// TLS 1.3 sends the client's certificate after the server's Finished,
 		// so a client that closes the instant startHandshake returns can pull
-		// the connection down before that flight lands, the server then sees
+		// the connection down before that flight lands: the server then sees
 		// an end-of-file rather than the certificate it asked for. A real
 		// client goes on to send a request; this one just waits a moment.
 		crossbyte.sys.System.sleep(0.25);
@@ -123,9 +123,9 @@ class JvmTlsPeer {
 	/**
 	 * Connects, handshakes, sends `send`, and returns what came back.
 	 *
-	 * The handshake cases above stop at the handshake, which turned out to be
-	 * exactly the wrong place to stop: TLS can be negotiated perfectly and then
-	 * carry nothing, and for a while on jvm that is precisely what it did.
+	 * The handshake cases above stop at the handshake, which is exactly the
+	 * wrong place to stop: TLS can be negotiated perfectly and then carry
+	 * nothing.
 	 *
 	 * @return The bytes read back as a string, or null if the peer sent none.
 	 */

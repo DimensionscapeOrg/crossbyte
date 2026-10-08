@@ -8,10 +8,10 @@ import haxe.zip.FlushMode;
 /**
 	`DeflateStream` through hxcpp's own zlib, on native: raw DEFLATE written a
 	piece at a time, each piece ending on a sync flush, and `finish` ending the
-	stream. The same contract as `DeflateStream`, whose Haxe deflater took
-	about 90 microseconds an 8 KB piece where zlib takes about 25.
+	stream. The same contract as `DeflateStream`, at about 25 microseconds an
+	8 KB piece where the Haxe deflater takes about 90.
 
-	zlib writes a zlib stream, a 2-byte header first, an Adler-32 last, so
+	zlib writes a zlib stream (a 2-byte header first, an Adler-32 last), so
 	the header comes off the first piece and the checksum off the end; what is
 	left between is the raw DEFLATE `DeflateStream` writes.
 **/
@@ -73,8 +73,8 @@ class NativeDeflateStream {
 
 	/**
 		`input` from `pos` to `end` through zlib until it has taken all of it
-		and given back all it will, for a sync flush, until a pass leaves
-		room in the output; for the end, until zlib says it is done, less
+		and given back all it will (for a sync flush, until a pass leaves
+		room in the output; for the end, until zlib says it is done), less
 		the first `header` bytes, and the Adler-32 at the end.
 	**/
 	private function __run(input:Bytes, pos:Int, end:Int, last:Bool, header:Int):Bytes {

@@ -8,23 +8,22 @@ import utest.Assert;
 import crossbyte.test.Require;
 
 /**
- * The types the JWT, auth and crypto values have, decided for 1.0.
+ * The types the JWT, auth and crypto values have.
  *
- * A token's times were `Dynamic`, so a time that was not a number compiled
- * and failed only when the token was made, and every read of one tested its
- * type; its audience was `Dynamic` too, a string or an array to be told apart
- * at each use. The secrets, key pairs and header and key records were
- * anonymous structures. A time is a `Float` now, the audience a
- * `JWTAudience`, and the records `@:structInit` classes, which object
- * literals still build.
+ * A token's times are `Float`, so a time that is not a number does not
+ * compile, rather than failing only when the token is made with every read
+ * of one testing its type. Its audience is a `JWTAudience`, not a string or
+ * an array to be told apart at each use. The secrets, key pairs and header
+ * and key records are `@:structInit` classes, which object literals still
+ * build.
  */
 class JWTTypesTest extends utest.Test {
 	static inline final SECRET:String = "0123456789abcdef0123456789abcdef";
 
 	public function testTimesAreFloats():Void {
-		// Not a number: refused by the compiler, where it was refused only
-		// when the token was made. The error is asked about, so a test that
-		// fails to compile for some other reason does not pass for this one.
+		// Not a number: refused by the compiler, not only when the token is
+		// made. The error is asked about, so a test that fails to compile for
+		// some other reason does not pass for this one.
 		__refusedFor("Float", TypeCheck.errorOf(JWTPayload.ofData({sub: "a", exp: "tomorrow"})), "a String time compiled");
 		__refusedFor("String", TypeCheck.errorOf({
 			var data:crossbyte.auth.jwt.JWTPayload.JWTPayloadData = {exp: 1.0};

@@ -11,7 +11,7 @@ import utest.Assert;
 /**
 	Channels over an association: opening them, naming them, carrying messages.
 
-	The top of the stack, tested the way everything under it is, two peers
+	The top of the stack, tested the way everything under it is: two peers
 	handed each other's packets with no network between them. What that reaches
 	is everything except the wire itself: DCEP over SCTP over the framing, all
 	of it running for real.
@@ -55,8 +55,9 @@ class DataChannelTest extends utest.Test {
 		Closing before the peer acknowledges tells whoever was waiting.
 
 		`opened` resolves only from __acknowledge, which a closed channel can
-		never reach. The class doc tells a caller to wait on it before sending,
-		and a channel closed in between left them waiting forever.
+		never reach, so a close settles it too: the class doc tells a caller to
+		wait on it before sending, and a channel closed in between would leave
+		them waiting forever.
 	**/
 	public function testClosingBeforeTheAcknowledgementTellsWhoeverWaited():Void {
 		if (unsupported()) return;
@@ -78,10 +79,10 @@ class DataChannelTest extends utest.Test {
 	/**
 		Closing a channel closes the peer's end of it.
 
-		RFC 8831 section 6.7 closes a data channel by resetting its streams,
-		RFC 6525, and there was no stream reset here: `close()` was local
-		state, the peer was never told, and went on sending into a channel
-		nothing read. A browser's channel stayed open for good.
+		RFC 8831 section 6.7 closes a data channel by resetting its streams
+		(RFC 6525), so `close()` tells the peer rather than changing local
+		state alone, which would leave the peer sending into a channel nothing
+		read, and a browser's channel open for good.
 	**/
 	public function testClosingAChannelClosesThePeersEnd():Void {
 		if (unsupported()) return;
@@ -111,7 +112,7 @@ class DataChannelTest extends utest.Test {
 		And the peer closing its end is heard here.
 
 		The other half: a browser's `channel.close()` resets the stream it
-		sends on, and with nothing reading RE-CONFIG, `onClose` never ran.
+		sends on, and RE-CONFIG has to be read for `onClose` to run.
 	**/
 	public function testThePeerClosingAChannelIsHeard():Void {
 		if (unsupported()) return;
@@ -138,8 +139,8 @@ class DataChannelTest extends utest.Test {
 	/**
 		What was sent before a close arrives before it, all of it.
 
-		Most of it is still queued when `close()` is called, far more than
-		the congestion window lets out at once, and the reset waits behind
+		Most of it is still queued when `close()` is called (far more than
+		the congestion window lets out at once), and the reset waits behind
 		it: the peer hears every message, in order, and then the close.
 	**/
 	public function testWhatWasSentBeforeACloseArrivesFirst():Void {
@@ -183,10 +184,10 @@ class DataChannelTest extends utest.Test {
 		When the association goes, every channel on it goes too, and says so.
 
 		This is what `PeerConnection` does with an ABORT, a close_notify, lost
-		consent or its own `close()`. Before it, a channel outlived the
-		association under it: `open` stayed true, `onClose` never ran, a channel
-		still waiting for its acknowledgement left `opened` pending forever, and
-		the first sign of any of it was a `send` that threw.
+		consent or its own `close()`. A channel must not outlive the
+		association under it, with `open` still true, `onClose` never run, a
+		channel still waiting for its acknowledgement leaving `opened` pending
+		forever, and the first sign of any of it a `send` that threw.
 	**/
 	public function testEveryChannelClosesWhenTheSetIsClosed():Void {
 		if (unsupported()) return;
@@ -226,11 +227,11 @@ class DataChannelTest extends utest.Test {
 	/**
 		A channel's reliability crosses to the peer, both ways.
 
-		`createDataChannel` had no way to ask for it, and a browser's
-		`{ordered: false, maxRetransmits: 0}` arrived as a channel type and a
-		reliability parameter that DCEP read and dropped, the accepting end
-		made it reliable, and retransmitted what it sent on it like everything
-		else. The main reason a game picks a data channel was not available.
+		`createDataChannel` takes it, and a browser's `{ordered: false,
+		maxRetransmits: 0}` arrives as a channel type and a reliability
+		parameter that DCEP reads and keeps, rather than the accepting end
+		making the channel reliable and retransmitting what it sent on it like
+		everything else. That is the main reason a game picks a data channel.
 	**/
 	public function testAChannelsReliabilityCrossesToThePeer():Void {
 		if (unsupported()) return;
@@ -270,7 +271,7 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
-		No limit is -1, an `Int`, where it was the WebRTC API's null: a
+		No limit is -1, an `Int`, rather than the WebRTC API's null: a
 		`Null<Int>`, which a native build holds as an object, made and unboxed
 		to read. -1 may be passed for no limit; nothing below it may.
 	**/
@@ -293,8 +294,8 @@ class DataChannelTest extends utest.Test {
 
 	/**
 		The transfer a `DataChannelSet` runs over is its connection's own, and
-		not part of what it offers: it was a public field, through which an
-		application could send on a stream behind its channel's back.
+		not part of what it offers: as a public field, it would let an
+		application send on a stream behind its channel's back.
 	**/
 	public function testTheSetsTransferIsNotOffered():Void {
 		Assert.equals(-1, Type.getInstanceFields(DataChannelSet).indexOf("transfer"), "DataChannelSet.transfer is public");
@@ -354,10 +355,10 @@ class DataChannelTest extends utest.Test {
 	/**
 		A peer may open a channel on a stream whose last channel closed.
 
-		Nothing removed a closed channel from the set, so the collision guard in
-		__onControl went on seeing the stream as taken and refused the peer's
-		OPEN, silently, because a DCEP OPEN that is ignored looks exactly like
-		one that was lost.
+		A closed channel is removed from the set, or the collision guard in
+		__onControl would go on seeing the stream as taken and refuse the
+		peer's OPEN, silently, because a DCEP OPEN that is ignored looks
+		exactly like one that was lost.
 
 		Asserted as the peer's channel arriving, not as the map shrinking: a set
 		that merely forgot the channel would satisfy the latter just as well.
@@ -399,10 +400,10 @@ class DataChannelTest extends utest.Test {
 	/**
 		Running out of stream numbers is reported, not wrapped.
 
-		The counter ran past 65535 and kept going, while SctpDataChunk writes the
-		number into a sixteen-bit field, so after 32768 channels it wrapped on
-		the wire and collided with a live stream while this side went on keying
-		by the untruncated value. Two channels, one stream, no complaint.
+		SctpDataChunk writes the number into a sixteen-bit field, so a counter
+		allowed past 65535 would wrap on the wire after 32768 channels and
+		collide with a live stream while this side went on keying by the
+		untruncated value: two channels, one stream, no complaint.
 	**/
 	public function testRunningOutOfStreamNumbersIsReportedNotWrapped():Void {
 		if (unsupported()) return;
@@ -565,12 +566,13 @@ class DataChannelTest extends utest.Test {
 		Assert.equals("", text);
 
 		// And the binary flavour, which has an identifier of its own. Both
-		// travel as one byte of zero, RFC 8831 section 6.6, since SCTP cannot
-		// carry a message of no bytes, and this pair being two ends of the
-		// same code, it cannot referee that wire shape: both ends once omitted
-		// the byte, agreed with each other perfectly, and were discarded
-		// without a word by a real browser. `ci/interop/run.js` is the referee;
-		// what this holds is that an empty binary message is delivered empty.
+		// travel as one byte of zero (RFC 8831 section 6.6, since SCTP cannot
+		// carry a message of no bytes), and this pair being two ends of the
+		// same code, it cannot referee that wire shape: two ends that both
+		// omitted the byte would agree with each other perfectly and be
+		// discarded without a word by a real browser. `ci/interop/run.js` is
+		// the referee; what this holds is that an empty binary message is
+		// delivered empty.
 		var bytesSeen:Int = 0;
 		var bytesLength:Int = -1;
 		accepted.onBytes = payload -> {
@@ -705,11 +707,11 @@ class DataChannelTest extends utest.Test {
 	/**
 		A peer opens no more than `maxPeerChannels` at once.
 
-		There was no bound but the stream numbers: 3,000 OPENs with 1 KB
-		labels left 3,000 channels and 3 MB of labels. One past the bound is
-		refused as RFC 8832 has a channel refused, no acknowledgement, and
-		the stream reset, which closes the peer's end, and once one of the
-		peer's channels closes, the next is taken.
+		Without a bound other than the stream numbers, 3,000 OPENs with 1 KB
+		labels would leave 3,000 channels and 3 MB of labels. One past the
+		bound is refused as RFC 8832 has a channel refused (no acknowledgement,
+		and the stream reset, which closes the peer's end), and once one of
+		the peer's channels closes, the next is taken.
 	**/
 	public function testAPeerOpensNoMoreThanMaxPeerChannels():Void {
 		if (unsupported()) return;
@@ -794,9 +796,9 @@ class DataChannelTest extends utest.Test {
 
 	/**
 		A label or protocol too long for the OPEN's sixteen-bit length is
-		refused here, as the W3C API refuses one: it was written cut to its
-		low bits, so the peer read the label short and the protocol out of
-		its bytes.
+		refused here, as the W3C API refuses one, rather than written cut to
+		its low bits, which would have the peer read the label short and the
+		protocol out of its bytes.
 	**/
 	public function testALabelTooLongForTheWireIsRefused():Void {
 		if (unsupported()) return;

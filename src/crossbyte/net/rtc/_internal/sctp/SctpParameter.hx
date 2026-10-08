@@ -11,7 +11,7 @@ import crossbyte.io.Endian;
 	while the next parameter still begins on a four byte boundary. STUN
 	attributes work this way, SCTP chunks work this way, and so do these.
 
-	Reusing the rule is not an accident of the protocols, it is what lets a
+	Reusing the rule is not an accident of the protocols: it is what lets a
 	receiver skip something it does not recognise and carry on, which is the
 	only reason either protocol can be extended without breaking every existing
 	implementation.

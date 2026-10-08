@@ -16,8 +16,8 @@ import haxe.io.Bytes;
 	The performance suite: what the critical paths cost, measured rather than
 	assumed.
 
-	Each case is one operation the framework performs per unit of real work,
-	per datagram, per connectivity check, per event, per message, so a
+	Each case is one operation the framework performs per unit of real work
+	(per datagram, per connectivity check, per event, per message), so a
 	regression here is a regression multiplied by traffic. The harness reports
 	the best of several samples; see `Bench` for why.
 
@@ -26,16 +26,15 @@ import haxe.io.Bytes;
 	question but usually not. CI runs it so it cannot rot, and ignores the
 	numbers, because a shared runner's timings gate nothing honestly.
 
-	It found real waste on its first run: the DTLS transport was copying every
-	record byte-at-a-time, seven times the cost of the blit that replaced it,
-	on every datagram of every connection.
+	What it catches is waste of that kind: a DTLS record copied a byte at a
+	time costs seven times a blit, on every datagram of every connection.
 **/
 @:access(crossbyte.core.CrossByte)
 class BenchMain {
 	static function main():Void {
 		new CrossByte(true, DEFAULT, true);
 
-		Sys.println("CrossByte performance suite, best of 5 samples, calibrated reps");
+		Sys.println("CrossByte performance suite: best of 5 samples, calibrated reps");
 		Bench.header();
 
 		byteArray();
@@ -117,7 +116,7 @@ class BenchMain {
 	/**
 		A snapshot of 64 view slots, the shape the arena sample sends every
 		step: a 10-bit slot, a 4-bit generation, x and y to 12 bits each and a
-		flag, 39 bits a record packed, against the same values written
+		flag: 39 bits a record packed, against the same values written
 		byte-aligned at 8 bytes a record, which is what the arena does.
 	**/
 	static function bitPacking():Void {
@@ -244,7 +243,7 @@ class BenchMain {
 
 		// The portable backend unless `crossbyte-lz4` is installed and
 		// `-D crossbyte_lz4_native` is set, in which case this measures that
-		// instead, worth knowing before reading the number as the ceiling.
+		// instead, which is worth knowing before reading the number as the ceiling.
 		Bench.run("LZ4 round trip 64KB", function():Void {
 			var work = new ByteArray();
 			work.writeBytes(chunk, 0, chunk.length);

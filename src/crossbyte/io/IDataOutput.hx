@@ -10,7 +10,7 @@ import crossbyte.net.ObjectEncoding;
 
 	Multi-byte values are written in the implementing object's `endian`. A `ByteArray`
 	and the sockets start in `ByteArray.defaultEndian`, which is little-endian on every
-	target unless you change it, not big-endian, as in AIR. Set `endian` to
+	target unless you change it, not big-endian as in AIR. Set `endian` to
 	`Endian.BIG_ENDIAN` for network byte order.
 	Sign extension matters only when you read data, not when you write it. Therefore, you
 	do not need separate write methods to work with `IDataInput.readUnsignedByte()` and `IDataInput.readUnsignedShort()`. In other words:
@@ -28,7 +28,7 @@ interface IDataOutput {
 
 	/**
 		Which format `writeObject()` writes, a constant from the ObjectEncoding class. It is
-		`HXSF` unless changed, not AMF, as in AIR; a `ByteArray` starts in
+		`HXSF` unless changed, not AMF as in AIR; a `ByteArray` starts in
 		`ByteArray.defaultObjectEncoding`. `JSON` is always available. `AMF0` and `AMF3`
 		need the optional `format` haxelib (`-lib format`), and asking for one without it
 		throws.

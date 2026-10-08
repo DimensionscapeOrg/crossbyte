@@ -17,7 +17,7 @@ import utest.Assert;
 	arrived in order for up to 25 milliseconds, for a frame of its own to
 	carry it, as QUIC holds one for its `max_ack_delay`.
 
-	It goes at once, when the pass ends, as every acknowledgement went,
+	It goes at once (when the pass ends, as an unheld acknowledgement does)
 	for a frame out of order, a duplicate or one that fills a gap; for the
 	second frame it would otherwise hold; for a peer from before 1.0, which
 	cannot be told how long one was held; and with `ackDelay` 0. One that
@@ -238,9 +238,9 @@ class ReliableDatagramAckDelayTest extends utest.Test {
 		receiver.send(text("answer"));
 		receiver.flush();
 
-		// Answered at once, as it always was: one datagram, its frame's
-		// header carrying the acknowledgement, and an ACK ahead of it only
-		// on a target slow enough that a millisecond passed in between.
+		// Answered at once: one datagram, its frame's header carrying the
+		// acknowledgement, and an ACK ahead of it only on a target slow enough
+		// that a millisecond passed in between.
 		Assert.equals(1, receiver.datagrams.length);
 		var frames = receiver.frames();
 		var answer = frames[frames.length - 1];
@@ -342,8 +342,8 @@ class ReliableDatagramAckDelayTest extends utest.Test {
 		sender.__acceptFrame(delayedAck(1001, 0));
 		Assert.isTrue(sender.__baseRto() >= 0.1, "the retransmission timeout did not count the peer's hold: " + sender.__baseRto());
 
-		// A tail waits out the peer's hold, twice over, the peer answers on
-		// the first pass of its loop after it, before it is probed.
+		// A tail waits out the peer's hold, twice over (the peer answers on
+		// the first pass of its loop after it), before it is probed.
 		sender.send(text("two"));
 		sender.flush();
 		sender.datagrams = [];

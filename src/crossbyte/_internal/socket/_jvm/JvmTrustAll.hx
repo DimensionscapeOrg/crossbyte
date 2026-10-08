@@ -23,8 +23,8 @@ import crossbyte._internal.socket._jvm.JvmSslExterns.X509ExtendedTrustManager;
 	All six overloads are implemented, not just the two-argument pair. An
 	`SSLEngine` handshake calls the three-argument `SSLEngine` forms, and a
 	subclass that leaves those to the abstract base fails with
-	`AbstractMethodError` at the moment the certificate would have been checked,
-	which is to say, only ever in the branch this class exists for.
+	`AbstractMethodError` at the moment the certificate would have been
+	checked, which is to say, only ever in the branch this class exists for.
 
 	Every body is empty on purpose: to a trust manager, "trusted" is the absence
 	of a thrown exception.

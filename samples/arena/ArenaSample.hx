@@ -275,8 +275,8 @@ class ArenaSample extends HostApplication {
 
 	/**
 		A new thing under an old id. Every client that could see the old one
-		loses it now, and the id is forgotten, so that the newcomer, a new
-		generation in the same slot of the world, is reported as entering
+		loses it now, and the id is forgotten, so that the newcomer (a new
+		generation in the same slot of the world) is reported as entering
 		rather than as having been there all along.
 	**/
 	static function respawnOne():Void {

@@ -312,8 +312,8 @@ class FileStreamTest extends utest.Test {
 		Bytes written to a stream opened for asynchronous writing are the
 		caller's again once `writeBytes` returns: the file holds what they
 		were at the call, though the write goes out on another thread later
-		and the caller, or a socket refilling a listener's payload,
-		writes over them at once.
+		and the caller (or a socket refilling a listener's payload) writes over
+		them at once.
 	**/
 	public function testAnAsyncWriteIsWhatTheBytesWereAtTheCall():Void {
 		#if !target.threaded
@@ -381,9 +381,8 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testAShortReadThrowsEOFErrorAndConsumesNothing():Void {
-		// The documented contract, which the synchronous read broke: a read
-		// past the end padded the rest with zeros and returned as though it
-		// had succeeded.
+		// The documented contract: a read past the end throws, rather than
+		// padding the rest with zeros and returning as though it had succeeded.
 		var file = File.createTempFile();
 		var output = new FileStream();
 		var input = new FileStream();
@@ -426,7 +425,7 @@ class FileStreamTest extends utest.Test {
 	public function testAChunkedCopyIsExact():Void {
 		// Copying a file in chunks, the way AIR code does: read a chunk until
 		// EOFError, then take what is left. With short reads padded, a 1 MB
-		// copy came out 65,436 bytes longer, the extra all zeros.
+		// copy would come out 65,436 bytes longer, the extra all zeros.
 		var chunk:Int = 65536;
 		var total:Int = 1048576 + 100;
 		var source = File.createTempFile();
@@ -486,9 +485,9 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testWriteUTFTakesEveryLengthItsPrefixCanStateAndRefusesMore():Void {
-		// The prefix is an unsigned 16-bit length. The synchronous stream
-		// wrote it with writeInt16, which threw Overflow from 32768 up, a
-		// string ByteArray took, and past 65535 nothing checked at all.
+		// The prefix is an unsigned 16-bit length: not written with writeInt16,
+		// which throws Overflow from 32768 up (a string ByteArray takes), and
+		// checked past 65535.
 		var file = File.createTempFile();
 		var output = new FileStream();
 		var input = new FileStream();
@@ -528,11 +527,10 @@ class FileStreamTest extends utest.Test {
 
 	public function testAnAsyncReadHandsOutOnlyWhatHasBeenLoaded():Void {
 		// Reading what bytesAvailable says from a progress handler, as the
-		// class documentation describes. The buffer was allocated at the
-		// file's full size before anything was read, so bytesAvailable
-		// counted the whole file from the first event and the read handed
-		// out zeros for everything not loaded yet: 6.4 MB of them from a
-		// 10 MB file that has none.
+		// class documentation describes. A buffer allocated at the file's full
+		// size before anything was read would make bytesAvailable count the
+		// whole file from the first event, and the read hand out zeros for
+		// everything not loaded yet.
 		//
 		// Small pages rather than a big file, so it loads in several steps
 		// without writing megabytes on the interpreter.
@@ -586,8 +584,8 @@ class FileStreamTest extends utest.Test {
 
 	#if target.threaded
 	public function testReadAheadBoundsWhatAnAsyncReadHolds():Void {
-		// readAhead is how much to load beyond the reader. The whole file was
-		// loaded, and kept, whatever it said.
+		// readAhead is how much to load beyond the reader, and no more is
+		// loaded, or kept.
 		//
 		// A quarter the size on eval, where checking every byte below is
 		// interpreted: four megabytes took the whole deadline there under load.
@@ -703,8 +701,8 @@ class FileStreamTest extends utest.Test {
 	#end
 
 	public function testTruncateRefusesAStreamOpenToRead():Void {
-		// It checked only that the stream was open, so a stream opened to read
-		// cut the file it was reading: "0123456789" became "0123".
+		// A stream opened to read must not cut the file it is reading, as a
+		// check only that the stream is open would allow: "0123456789" to "0123".
 		var file = __textFile("0123456789");
 
 		for (async in [false, true]) {
@@ -720,8 +718,8 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testTruncateKeepsTheStreamOpenWhereItWas():Void {
-		// In place now, rather than by closing, rewriting the file from memory
-		// and opening it again.
+		// In place, rather than by closing, rewriting the file from memory and
+		// opening it again.
 		var file = __textFile("0123456789");
 		var stream = new FileStream();
 
@@ -747,8 +745,8 @@ class FileStreamTest extends utest.Test {
 
 	#if target.threaded
 	public function testAnAsynchronousTruncateComesAfterThePendingWrites():Void {
-		// It closed the stream, which an asynchronous one with writes pending
-		// only defers, and read the file before they had reached it.
+		// Without closing the stream (which an asynchronous one with writes
+		// pending only defers) and reading the file before they reach it.
 		var file = File.createTempFile();
 		var stream = new FileStream();
 
@@ -769,9 +767,9 @@ class FileStreamTest extends utest.Test {
 	#end
 
 	public function testOpeningAnOpenStreamClosesItFirst():Void {
-		// openAsync made its worker and then closed the open stream, which
-		// disposed of that worker: a Null Access, whether the stream had been
-		// opened with open() or openAsync().
+		// openAsync must not close the open stream after making its worker,
+		// which would dispose of that worker: a Null Access, whether the stream
+		// had been opened with open() or openAsync().
 		var file = __textFile("abc");
 		var stream = new FileStream();
 		var closes:Int = 0;
@@ -824,7 +822,7 @@ class FileStreamTest extends utest.Test {
 	#end
 
 	public function testOpenAsyncReportsAMissingFileAsAnIoErrorEvent():Void {
-		// As documented. It threw, synchronously.
+		// As documented, not thrown synchronously.
 		var directory = File.createTempDirectory();
 		var missing = directory.resolvePath("missing.bin");
 		var stream = new FileStream();
@@ -853,9 +851,9 @@ class FileStreamTest extends utest.Test {
 
 	#if target.threaded
 	public function testOpenAsyncInUpdateModeReadsAndWrites():Void {
-		// UPDATE took the writer's branch: no progress, no complete, and every
-		// read threw. Now it loads as READ does, and a write lands in the file
-		// and in what is read back.
+		// UPDATE loads as READ does, and a write lands in the file and in what
+		// is read back, rather than taking the writer's branch with no progress,
+		// no complete, and every read throwing.
 		var file = __textFile("hello world");
 		var stream = new FileStream();
 		var progress:Int = 0;
@@ -886,8 +884,8 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testAWriteFailureIsAnIoErrorEvent():Void {
-		// The worker's failures were dispatched as the Worker's own "error"
-		// event, which no ioError listener hears.
+		// The worker's failures are dispatched as ioError, not as the Worker's
+		// own "error" event, which no ioError listener hears.
 		var file = File.createTempFile();
 		var stream = new FileStream();
 		var error:IOErrorEvent = null;
@@ -910,9 +908,9 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testClosingWhileReadingDispatchesCloseAndNoComplete():Void {
-		// The loader answered close() by reporting itself complete, so a file
-		// closed half read dispatched complete and then close. readAhead keeps
-		// it from reaching the end before close() is called.
+		// close() is not answered by the loader reporting itself complete,
+		// which would make a file closed half read dispatch complete and then
+		// close. readAhead keeps it from reaching the end before close() is called.
 		var file = __fileOf(1024 * 1024);
 		var stream = new FileStream();
 		var events:Array<String> = [];
@@ -931,8 +929,8 @@ class FileStreamTest extends utest.Test {
 	#end
 
 	public function testAsynchronousEventsComeFromTheStream():Void {
-		// The worker's events were dispatched as they were: ThreadEvents, their
-		// target the stream's private Worker.
+		// The worker's events are not dispatched as they come (ThreadEvents,
+		// their target the stream's private Worker).
 		var file = __textFile("payload");
 		var stream = new FileStream();
 		var complete:Event = null;
@@ -1014,8 +1012,8 @@ class FileStreamTest extends utest.Test {
 
 		// An async stream's close waits for its worker to notice, and the handle
 		// is let go on the runtime's thread after that: on a loaded machine
-		// eval took longer than five seconds, and the file could not then be
-		// deleted. This returns as soon as it is closed.
+		// eval can take longer than five seconds, and the file cannot be
+		// deleted until then. This returns as soon as it is closed.
 		var deadline:Float = haxe.Timer.stamp() + 30;
 
 		while (@:privateAccess stream.__isOpen && haxe.Timer.stamp() < deadline) {

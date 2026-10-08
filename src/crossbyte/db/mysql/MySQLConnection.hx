@@ -27,12 +27,12 @@ import sys.db.Mysql;
  * as untrusted, since under the default `sslMode` whoever answers in the
  * server's place writes them. A result has from 1 to 65,535 columns, counted
  * before anything is allocated; every length is checked against the packet
- * it is in; and an answer no server sends, a count or length past those,
+ * it is in; and an answer no server sends (a count or length past those,
  * a column without a name, a row that does not match its columns, a
- * request for a file of the client's, fails the statement with a
+ * request for a file of the client's) fails the statement with a
  * `MySQLError` of code 2027 (`CR_MALFORMED_PACKET`) and closes the
- * connection, which cannot be followed past it. Each of those ended the
- * process, or allocated a gigabyte, from a packet of a few bytes. What the
+ * connection, which cannot be followed past it. None of them can end the
+ * process, or allocate a gigabyte, from a packet of a few bytes. What the
  * client holds is then what the server sends: `request()` reads a result
  * whole, so a result without end is held without end, where
  * `MySQLStatement` reads rows as they are asked for. Other targets use
@@ -40,8 +40,7 @@ import sys.db.Mysql;
  */
 class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	// The client character sets MySQL accepts that the escaping here is safe
-	// for. ucs2, utf16 and utf32 were listed too, and MySQL refuses them as a
-	// client character set, so SET NAMES failed on the server.
+	// for. MySQL refuses ucs2, utf16 and utf32 as a client character set.
 	private static final ALLOWED_CHARSETS = ["utf8mb4", "utf8mb3", "utf8", "latin1", "ascii"];
 
 	public var connected(get, null):Bool;
@@ -49,18 +48,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	/**
 		Whether a transaction is open. On cpp this is the server's own
 		account, from the status flags of its last reply, so a transaction
-		begun as SQL text, `request("START TRANSACTION")`, counts as
+		begun as SQL text (`request("START TRANSACTION")`) counts as
 		surely as one begun with `begin()`. So does a session with autocommit
 		turned off, which MySQL documents as always having a transaction
 		open: every statement joins it until a COMMIT or ROLLBACK, after
 		which the next one starts.
 
-		The flag used to change only in `begin()`, `commit()` and
-		`rollback()`. A connection handed back to a `ConnectionPool` after
-		`autocommit = false` or a `START TRANSACTION` sent as SQL read as idle,
-		was not rolled back, and the next borrower's `begin()` committed the
-		abandoned work, MySQL commits an open transaction implicitly when a
-		new one starts.
+		So a connection handed back to a `ConnectionPool` after
+		`autocommit = false` or a `START TRANSACTION` sent as SQL does not
+		read as idle: it is rolled back, rather than the next borrower's
+		`begin()` committing the abandoned work (MySQL commits an open
+		transaction implicitly when a new one starts).
 
 		Where the driver cannot read the server's flags (a target other than
 		cpp) it follows `begin()`, `commit()`, `rollback()`, the `autocommit`
@@ -71,29 +69,21 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	/**
 		The AUTO_INCREMENT id the last statement generated: a `Float`, exact
 		to 2^53 on every target. Natively it comes with the statement's
-		answer; each read used to be a `SELECT LAST_INSERT_ID()`.
+		answer.
 
 		Elsewhere it comes from Haxe's driver, which holds an `Int`: one that
-		cannot be right there, negative, or 2^31 and past, is asked for
-		in SQL, as text, as the SQLite driver does. On hl and neko, whose
-		drivers read it in 32 bits, it is asked for so every time, which is
-		the round trip their own read made: one past 2^32 wrapped back into
-		range there, and was taken as it was.
-
-		It was an `Int`, held at 2^31 - 1.
+		cannot be right there (negative, or 2^31 and past) is asked for in
+		SQL, as text, as the SQLite driver does. On hl and neko, whose drivers
+		read it in 32 bits and wrap one past 2^32 back into range, it is asked
+		for so every time, the same round trip their own read makes.
 	**/
 	public var lastInsertRowID(get, null):Float;
 
 	/**
 		The rows the last statement changed, as the server counts them: a
-		`Float`, exact to 2^53. Natively from the statement's answer, where a
-		`SELECT ROW_COUNT()` used to be sent for each read, and read after
-		`getResult()`, which sent a statement of its own, it answered -1.
-		Elsewhere `ROW_COUNT()` is asked as text: -1 after a statement that
-		changes no rows, as MySQL counts it.
-
-		It was an `Int`, held at 2^31 - 1 natively, and elsewhere read with
-		`Std.parseInt`, which past 2^31 answers differently on every target.
+		`Float`, exact to 2^53. Natively from the statement's answer, so it
+		is right after `getResult()` too. Elsewhere `ROW_COUNT()` is asked as
+		text: -1 after a statement that changes no rows, as MySQL counts it.
 	**/
 	public var affectedRows(get, null):Float;
 	public var serverVersion(get, null):String;
@@ -140,16 +130,13 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	/**
 		Connects and sets the session up: the character set, time zone and
 		SQL mode `cfg` names. Throws an `ArgumentError` for a charset it will
-		not send, before connecting, and an `IOError`, a
-		`MySQLConnectionError`, with the error number and SQLSTATE, when the
+		not send, before connecting, and an `IOError` (a
+		`MySQLConnectionError`, with the error number and SQLSTATE) when the
 		server refuses the connection or any of the settings.
 
-		A connection whose setup failed is closed before the error leaves.
-		It was left open, for the collector, or for good, so a pool
-		factory retrying an open that could never succeed piled up server
-		connections. And `timeZone` and `sqlMode` could never succeed: their
-		values were escaped into a buffer that was then thrown away, and the
-		server was sent `SET time_zone = :tz;`.
+		A connection whose setup failed is closed before the error leaves, so
+		a pool factory retrying an open that can never succeed does not pile
+		up server connections.
 
 		On hl the server is first tried with a plain connection of the
 		client's own, closed at once, and one that cannot be reached is
@@ -181,7 +168,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		#if !cpp
 		// The client here has no TLS. A mode that insists on it fails as the
 		// native client fails against a server offering none, before anything
-		// is sent, where it used to connect in the clear, password and all.
+		// is sent, rather than connecting in the clear, password and all.
 		if (cfg.sslMode != null && cfg.sslMode.toCode() >= MySQLSSLMode.REQUIRED.toCode()) {
 			throw new MySQLConnectionError("sslMode " + cfg.sslMode + " needs TLS, and only the native client has it", 2026);
 		}
@@ -266,9 +253,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	/**
-		A timeout of `MySQLConfig`, unset or a number of seconds, 0 for no
-		limit, or an `ArgumentError`. NaN reached the native client as no
-		limit at all, and a negative one as the old 50 seconds or five hours.
+		A timeout of `MySQLConfig`, unset or a number of seconds (0 for no
+		limit), or an `ArgumentError` for NaN or a negative one.
 	**/
 	@:noCompletion private static function __checkSeconds(setting:String, value:Null<Float>):Void {
 		if (value != null && (Math.isNaN(value) || value < 0)) {
@@ -304,8 +290,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		frees the connection it made and leaves the collector a finalizer
 		that frees it again: a double free, often into memory the heap has
 		since given to someone else, and the process dies of heap corruption
-		at some later allocation. So a server that cannot be reached, what
-		a pool retrying against a restarting database meets again and again,
+		at some later allocation. So a server that cannot be reached (what
+		a pool retrying against a restarting database meets again and again)
 		is found here with a connection of its own, which is closed
 		before the library opens one, and a Unix socket, which the library
 		refuses outright, is refused here.
@@ -394,8 +380,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		purpose.
 
 		Safe to call from any thread, which is the point: the thread that sent
-		the statement is blocked waiting for its answer, so it is another one,
-		a watchdog, a request that was abandoned, a shutdown, that decides
+		the statement is blocked waiting for its answer, so it is another one
+		(a watchdog, a request that was abandoned, a shutdown) that decides
 		to stop it. The statement then fails on its own thread with a
 		`MySQLError` 1317, "Query execution was interrupted", and this
 		connection stays usable.
@@ -453,10 +439,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	// Transactions. Each throws an `SQLError` when the server refuses, after
-	// dispatching it as an `SQLErrorEvent` as well. They used to dispatch and
-	// return, so a failed COMMIT read as a committed one to every caller that
-	// was not listening, `AsyncDatabase.transaction` and `SchemaMigrator`
-	// among them, the way SQLiteConnection, which throws, never did.
+	// dispatching it as an `SQLErrorEvent` as well, so a failed COMMIT cannot
+	// read as a committed one to a caller that is not listening
+	// (`AsyncDatabase.transaction` and `SchemaMigrator` among them).
 	public function begin():Void {
 		try {
 			request("START TRANSACTION;");
@@ -514,9 +499,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	/**
 		Creates a savepoint and returns its name, so one created without a
-		name can still be released or rolled back to. It returned nothing, and
-		the name it made came from the clock, identical for two made within
-		a microsecond, and past `Int` about 36 minutes into a process.
+		name can still be released or rolled back to. A name made here is
+		`sp_` and a counter, unique on the connection.
 	**/
 	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
@@ -538,8 +522,6 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		Rolls back to a savepoint, which stays active afterwards as MySQL
 		leaves it. With no name, rolls back to the innermost savepoint this
 		connection holds, and only to a full `rollback()` when it holds none.
-		Omitting the name rolled the whole transaction back, so a caller asking
-		to return to a savepoint lost everything before it instead.
 	**/
 	public function rollbackToSavepoint(name:String = null):Void {
 		if ((name == null || name == "") && __savepoints.length == 0) {
@@ -560,9 +542,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	/**
 		Releases a savepoint, discarding it and any nested inside it. With no
-		name, releases the innermost this connection holds; it used to invent a
-		fresh name and ask the server to release a savepoint that had never
-		existed.
+		name, releases the innermost this connection holds.
 	**/
 	public function releaseSavepoint(name:String = null):Void {
 		var sp:String = __takeSavepoint(name, false);
@@ -697,8 +677,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	/**
-		Runs `sql` and returns its result. Throws a `MySQLError`, with the
-		error number and SQLSTATE where the driver reports them, when the
+		Runs `sql` and returns its result. Throws a `MySQLError` (with the
+		error number and SQLSTATE where the driver reports them) when the
 		server refuses it or the connection fails.
 	**/
 	public function request(sql:String):ResultSet {
@@ -744,10 +724,10 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		Whether `e` is Haxe's JDBC binding failing to read an insert's
 		generated key as an `Int`: it reads a single insert's key with
 		`getInt`, after the insert has run, and Connector/J refuses a value
-		past 2^31 with SQLSTATE 22003 and no error number, so an insert
-		that had committed was reported as failed. The server's own 22003, a
-		value out of range for its column, carries MySQL's error number
-		(1264) and is a failure as before.
+		past 2^31 with SQLSTATE 22003 and no error number, so an insert that
+		has committed would read as failed. The server's own 22003, a value
+		out of range for its column, carries MySQL's error number (1264) and
+		is a failure.
 	**/
 	@:noCompletion private static function __generatedKeyOverflowed(e:Dynamic, sql:String):Bool {
 		if (!Std.isOfType(e, java.sql.SQLException)) {
@@ -786,9 +766,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			} catch (_:Dynamic) {}
 		}
 		#elseif java
-		// JDBC's failure carries both, and was passed on whole where a String
-		// was expected: every MySQL failure on the jvm surfaced as a
-		// ClassCastException instead, and a listener never ran.
+		// JDBC's failure carries both, and is read here rather than passed on
+		// whole where a String is expected, which would surface every MySQL
+		// failure on the jvm as a ClassCastException, with no listener run.
 		if (Std.isOfType(e, java.sql.SQLException)) {
 			var failure:java.sql.SQLException = cast e;
 			code = failure.getErrorCode();
@@ -933,9 +913,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		statement replaces the count: a `Float`, exact to 2^53, and 0 for a
 		statement that returns rows, as AIR's `SQLResult.rowsAffected` has
 		it. Natively from the statement's own answer, at no cost. Elsewhere
-		the driver's count, an `Int`, where it can be right, and otherwise,
-		negative, held at 2^31 - 1, or none at all, as Haxe's JDBC binding
-		keeps none, asked in SQL as text. On hl and neko, whose drivers read
+		the driver's count, an `Int`, where it can be right, and otherwise
+		(negative, held at 2^31 - 1, or none at all, as Haxe's JDBC binding
+		keeps none) asked in SQL as text. On hl and neko, whose drivers read
 		it in 32 bits, a count past 2^32 wraps back into range there and is
 		taken as it is.
 	**/
@@ -964,7 +944,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return count >= 0 && count < 0x7FFFFFFF ? count : get_affectedRows();
 	}
 
-	/** A count or id the native client gives, an `Int`, or an `Int64` past 2^31, as a `Float`, exact to 2^53. **/
+	/** A count or id the native client gives (an `Int`, or an `Int64` past 2^31) as a `Float`, exact to 2^53. **/
 	@:noCompletion private static function __whole(value:Dynamic):Float {
 		if (value == null) {
 			return 0;
@@ -1057,8 +1037,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	/**
 		`LAST_INSERT_ID()`, asked as text so no driver narrows it on the way:
-		exact to 2^53. It was the driver's `Int`, wrapped past 2^31 on hl and
-		neko, and on the jvm thrown for, after the insert had run.
+		exact to 2^53.
 	**/
 	@:noCompletion private function __lastInsertIdBySQL():Float {
 		var rows:ResultSet = request("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id");
@@ -1072,8 +1051,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	/**
 		`request()`, with the rows read as they are asked for where the driver
-		can: natively a result is no longer read whole before its first row
-		is returned. Used by `MySQLStatement`.
+		can: natively a result is not read whole before its first row is
+		returned. Used by `MySQLStatement`.
 	**/
 	@:noCompletion private function __requestStream(sql:String):ResultSet {
 		#if cpp
@@ -1145,8 +1124,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	/**
 		Sets the level of the session's transactions from the next one on.
 		Throws the `MySQLError` the server refused it with, as every other
-		statement does: it went round `request()`, so what the driver threw
-		escaped as itself, on the jvm a `java.sql.SQLException`.
+		statement does.
 	**/
 	private function set_isolationLevel(v:IsolationLevel):IsolationLevel {
 		if (__connection != null) {
@@ -1157,10 +1135,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	@:noCompletion private function __sanitizeSavePoint(name:String):String {
-		// A counter, not a timestamp: haxe.Timer.stamp() in microseconds
-		// through Std.int collided for names made back to back, and passed
-		// Int about 36 minutes into a process. Two savepoints sharing a name
-		// make RELEASE and ROLLBACK TO act on the wrong one.
+		// A counter, not a timestamp, so names made back to back never collide:
+		// two savepoints sharing a name make RELEASE and ROLLBACK TO act on the
+		// wrong one.
 		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 		return ~/[^\w]/g.replace(n, "_");
 	}
@@ -1175,9 +1152,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	/**
-		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
-		always was, and as the `SQLError` it now throws, a `MySQLError`,
-		carrying the error number and SQLSTATE of what failed.
+		Reports a failed transaction step both ways: as the `SQLErrorEvent`,
+		and as the `SQLError` it throws, a `MySQLError` carrying the error
+		number and SQLSTATE of what failed.
 	**/
 	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
 		var cause:MySQLError = __error(op, e);

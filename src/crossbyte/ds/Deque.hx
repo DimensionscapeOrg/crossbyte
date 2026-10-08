@@ -11,8 +11,8 @@ import haxe.ds.Vector;
  * the back, each in constant time.
  *
  * The items sit in a ring that doubles when it fills, so adding one allocates
- * nothing once the ring has grown to fit; it was a linked list, which made a
- * node for every item added. The ring keeps its size when emptied.
+ * nothing once the ring has grown to fit. The ring keeps its size when
+ * emptied.
  *
  * `for (item in deque)` walks from the front to the back.
  */

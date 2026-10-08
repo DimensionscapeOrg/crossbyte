@@ -21,10 +21,10 @@ import sys.ssl.Key as NativeKey;
  * places. See `Certificate` for why neither names a `sys.ssl` type.
  *
  * A key is the one piece of TLS material worth being careful about in an API.
- * It is never read back out, never logged, and never converted to a string,
+ * It is never read back out, never logged, and never converted to a string:
  * the only thing that can be done with one is hand it to a server that is
- * about to present it. Printed, traced, logged, put in a string or, on
- * Node, given to `JSON.stringify` or `console.log`, it shows that it is a
+ * about to present it. Printed (traced, logged, put in a string or, on
+ * Node, given to `JSON.stringify` or `console.log`), it shows that it is a
  * key and nothing of it.
  */
 final class Key {
@@ -45,10 +45,10 @@ final class Key {
 	private function new() {
 		#if nodejs
 		// Kept out of what Node lists of an object. On Node a key holds its
-		// PEM text and passphrase as they are, in two plain fields, and
-		// JSON.stringify, console.log and a for-in, Std.string's fallback,
-		// each listed both: one debugging line put the key, and the password
-		// protecting it, in a log. Not enumerable, none of them sees either.
+		// PEM text and passphrase as they are, in two plain fields, which
+		// JSON.stringify, console.log and a for-in (Std.string's fallback)
+		// would each list, putting the key and the password protecting it
+		// in a log. Not enumerable, none of them sees either.
 		js.lib.Object.defineProperty(this, "__pem", {value: null, writable: true, enumerable: false});
 		js.lib.Object.defineProperty(this, "__passphrase", {value: null, writable: true, enumerable: false});
 		#end
@@ -105,9 +105,9 @@ final class Key {
 	}
 
 	/**
-	 * Takes a PEM private key that is already in hand rather than one on disk,
-	 * which is how a key arrives from a secret manager, and is the reason
-	 * not to force every deployment to write one to a file first.
+	 * Takes a PEM private key that is already in hand rather than one on disk
+	 * (which is how a key arrives from a secret manager, and is the reason
+	 * not to force every deployment to write one to a file first).
 	 *
 	 * It takes the forms `fromFile` does.
 	 *
@@ -145,8 +145,8 @@ final class Key {
 
 	#if !(nodejs || java || jvm)
 	/**
-		An encrypted PKCS#8 key the way OpenSSL encrypts one, PBES2 with
-		AES, decrypted, since mbedTLS 2, which upstream hxcpp, hl, neko and
+		An encrypted PKCS#8 key the way OpenSSL encrypts one (PBES2 with
+		AES), decrypted, since mbedTLS 2, which upstream hxcpp, hl, neko and
 		eval carry, decrypts PBES2 with DES alone; null for any other key,
 		which mbedTLS reads itself. See `EncryptedKey`.
 	**/
@@ -157,10 +157,11 @@ final class Key {
 
 	#if eval
 	/**
-		eval's own `readPEM` hands mbedTLS no password whatever it is given,
-		its `loadFile` passes one, its `readPEM` passes `null`, so an
+		eval's own `readPEM` hands mbedTLS no password whatever it is given
+		(its `loadFile` passes one, its `readPEM` passes `null`), so an
 		encrypted key could not be read from text there at all, and the
-		error blamed the password. This is that call with the password in it.
+		error would blame the password. This is that call with the password
+		in it.
 	**/
 	private static function __evalReadPem(pem:String, password:Null<String>):NativeKey {
 		var native:NativeKey = @:privateAccess new NativeKey();

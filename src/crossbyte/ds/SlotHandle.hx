@@ -10,21 +10,18 @@ package crossbyte.ds;
  * - the sign bit is never set, so a handle is never negative and never
  *   `INVALID`
  *
- * The generation was eight bits, so a handle kept after its entry died, a
- * missile's target, a last attacker, resolved to whatever took its slot 256
- * reuses later, and with a free list that handed the same slot back first,
- * 256 reuses came in seconds. It is eleven now, as `TimerHandle`'s was widened
- * for exactly this: a stale handle has to outlive 2048 reuses of its slot to
- * alias, and the maps now reuse the slot freed longest ago. The index gives up the bits, so a map holds at most 1,048,576
- * entries.
+ * The generation is eleven bits, so a handle kept after its entry died (a
+ * missile's target, a last attacker) has to outlive 2048 reuses of its slot
+ * to alias, and the maps reuse the slot freed longest ago. The index gives
+ * up the bits, so a map holds at most 1,048,576 entries.
  *
- * A handle is not an `Int` of its own accord. It converted to one silently,
- * so a handle passed where an id belongs, `grid.set(entity.handle, x, y)`
- * for `grid.set(entity.slot, ...)`, compiled, and worked until the slot's
- * first reuse made the handle 1,048,576 or more, when `SpatialGrid` and
- * `InterestSet` grew their arrays to fit it: 117 MB by the third reuse. The
- * slot is `index()`; the whole handle, to write down and read back, is
- * `toInt()`, and an `Int` still becomes a handle when assigned to one.
+ * A handle is not an `Int` of its own accord, so a handle passed where an
+ * id belongs (`grid.set(entity.handle, x, y)` for `grid.set(entity.slot,
+ * ...)`) does not compile: such a handle reaches 1,048,576 or more at its
+ * slot's first reuse, and `SpatialGrid` and `InterestSet` would grow their
+ * arrays to fit it. The slot is `index()`; the whole handle, to write down
+ * and read back, is `toInt()`, and an `Int` still becomes a handle when
+ * assigned to one.
  */
 @:forward
 abstract SlotHandle(Int) from Int {

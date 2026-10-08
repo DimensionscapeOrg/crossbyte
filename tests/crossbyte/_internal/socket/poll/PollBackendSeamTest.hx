@@ -16,15 +16,15 @@ import crossbyte.net.Socket;
 /**
 	What the registry tells a poll backend, and when.
 
-	A backend that holds each descriptor with the system, libuv's, has to
-	be told a socket is leaving while the socket is still open: `Socket`
-	closed its descriptor and only then queued its deregistration, and libuv
-	forbids closing a descriptor it is polling. The registry also skips
-	`prepare` once its set is empty, so a backend never heard that the last
-	socket left. A backend that failed kept failing every pass, polling
-	nothing; one whose factory threw left the runtime with none; and growing
-	disposed of the backend before making the next, with whatever factory was
-	installed by then.
+	A backend that holds each descriptor with the system (libuv's) has to
+	be told a socket is leaving while the socket is still open: libuv forbids
+	closing a descriptor it is polling, so `Socket` queues its
+	deregistration before closing its descriptor. The registry tells a
+	backend when the last socket leaves, though it skips `prepare` once its
+	set is empty. A backend that fails is replaced rather than failing every
+	pass, polling nothing; one whose factory throws does not leave the
+	runtime with none; and growing makes the next backend, with the factory
+	installed then, before disposing of the last.
 **/
 @:access(crossbyte._internal.socket.NativeSocketRegistry)
 class PollBackendSeamTest extends utest.Test {

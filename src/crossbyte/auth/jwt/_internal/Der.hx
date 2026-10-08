@@ -6,20 +6,20 @@ import haxe.io.BytesBuffer;
 /**
  * The sliver of DER needed to turn a JWK into a public key document.
  *
- * A JWK publishes a key as raw numbers, an RSA modulus and exponent, or
- * a pair of EC coordinates. mbedTLS, like every other library that parses
+ * A JWK publishes a key as raw numbers (an RSA modulus and exponent, or
+ * a pair of EC coordinates). mbedTLS, like every other library that parses
  * keys, wants a SubjectPublicKeyInfo. Nothing here is a general ASN.1
  * encoder; it emits exactly the structures `SubjectPublicKeyInfo`
  * requires and nothing else.
  */
 class Der {
-	/** OID 1.2.840.113549.1.1.1, rsaEncryption. */
+	/** OID 1.2.840.113549.1.1.1: rsaEncryption. */
 	public static final OID_RSA_ENCRYPTION:Array<Int> = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
 
-	/** OID 1.2.840.10045.2.1, id-ecPublicKey. */
+	/** OID 1.2.840.10045.2.1: id-ecPublicKey. */
 	public static final OID_EC_PUBLIC_KEY:Array<Int> = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
 
-	/** OID 1.2.840.10045.3.1.7, prime256v1, the curve `ES256` uses. */
+	/** OID 1.2.840.10045.3.1.7: prime256v1, the curve `ES256` uses. */
 	public static final OID_PRIME256V1:Array<Int> = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 
 	private static inline var TAG_INTEGER:Int = 0x02;

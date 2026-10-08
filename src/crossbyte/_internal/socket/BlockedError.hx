@@ -12,11 +12,11 @@ import haxe.io.Error;
  * hxcpp debugger; and as the bare strings `"Blocking"` or `"Blocked"`
  * from the TLS layer, which throws before the error is mapped to a type.
  *
- * That mattered because the check was written out by hand at every call
- * site, each covering some subset of the spellings. Missing one is not a
- * cosmetic bug: a would-block mistaken for a fatal error closes a healthy
- * connection, and a would-block mistaken for success silently discards
- * whatever was being written. Both have shipped here.
+ * Written out by hand at every call site, each covering some subset of the
+ * spellings, the check would miss one somewhere. That is not a cosmetic bug:
+ * a would-block mistaken for a fatal error closes a healthy connection, and a
+ * would-block mistaken for success silently discards whatever was being
+ * written.
  */
 class BlockedError {
 	/**

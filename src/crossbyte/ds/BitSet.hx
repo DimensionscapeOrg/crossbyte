@@ -28,8 +28,8 @@ import haxe.ds.Vector;
  * the other way round.
  *
  * The words are a `haxe.ds.Vector<Int>`, which is unboxed on every target.
- * They were an `Array<Int>`, which the jvm holds as boxed `Integer`s, so
- * every `set` or `clear` that left a word outside -128 to 127 allocated one.
+ * The jvm holds an `Array<Int>` as boxed `Integer`s, where every `set` or
+ * `clear` that left a word outside -128 to 127 would allocate one.
  */
 class BitSet {
 	// Every bit at `__size` or past it is zero, in the last word used and in

@@ -6,8 +6,8 @@ import haxe.ds.StringMap;
 /**
 	Which nodes are alive, from how recently each was heard from.
 
-	Knows nothing about how a heartbeat arrives, a datagram, a `NetHost`
-	broadcast, a row in a table someone else writes. Tell it what was heard
+	Knows nothing about how a heartbeat arrives (a datagram, a `NetHost`
+	broadcast, a row in a table someone else writes). Tell it what was heard
 	and when, sweep it on the tick, and it says who is there and reports the
 	changes. That is deliberately all it does: who should be sent what is a
 	policy written against this, and `Rendezvous` is where it usually goes.
@@ -42,8 +42,8 @@ class Membership {
 		The longest a name may be: 255 characters. A longer one is refused,
 		as a name past `maxNodes` is.
 
-		`maxNodes` bounded how many names were held but not how long each
-		was, so a peer could make each of its 1,024 a megabyte.
+		`maxNodes` bounds how many names are held and this how long each
+		is, so a peer cannot make each of its 1,024 a megabyte.
 	**/
 	public static inline var MAX_NAME_LENGTH:Int = 255;
 
@@ -61,7 +61,7 @@ class Membership {
 		from an invented one, so a peer that makes them up would otherwise
 		grow this without limit. Past the bound a name that is not already
 		known is refused rather than admitted. Each name held costs its
-		characters, at most `MAX_NAME_LENGTH`, and a small record.
+		characters (at most `MAX_NAME_LENGTH`) and a small record.
 	**/
 	public var maxNodes(default, null):Int;
 
@@ -76,8 +76,7 @@ class Membership {
 
 	// Each node once, in a list the sweep walks by index and a map from its
 	// name: the sweep asks no map anything, and makes nothing while no one
-	// leaves. It walked the map's keys, which natively are copied into an
-	// array first, and looked each one up again for its time.
+	// leaves.
 	private var __heard:StringMap<HeardNode>;
 	private var __order:Array<HeardNode> = [];
 	// No node was last heard from before this: the sweep looks at none of
@@ -94,9 +93,7 @@ class Membership {
 		       safe when the names come from somewhere trusted.
 		@param clock Where the time comes from. Supply one in a test.
 		@throws ArgumentError For a negative or NaN `timeout`, and a negative
-		        `maxNodes`. A timeout of 0 was refused, against the rule that
-		        0 is no limit; NaN was taken, and no node ever left; and a
-		        negative `maxNodes` was read as no limit.
+		        `maxNodes`.
 	**/
 	public function new(timeout:Float, maxNodes:Int = 1024, ?clock:Void->Float) {
 		if (Math.isNaN(timeout) || timeout < 0) {
@@ -119,11 +116,11 @@ class Membership {
 		@param now When, by the clock this was made with; left out, or
 		       negative, it asks that clock.
 		@return Whether this is the first time it has been heard from since
-		        it was last alive, which is when `onJoin` fires. Returns
-		        false for a name refused by `maxNodes` or longer than
-		        `MAX_NAME_LENGTH`.
-		@throws ArgumentError For a null or empty name, and a `now` of NaN,
-		        which made the node one that never timed out.
+		        @return Whether this is the first time it has been heard from since
+		                it was last alive, which is when `onJoin` fires. Returns
+		                false for a name refused by `maxNodes` or longer than
+		                `MAX_NAME_LENGTH`.
+		@throws ArgumentError For a null or empty name, and a `now` of NaN.
 	**/
 	public function heard(node:String, now:Float = -1):Bool {
 		if (node == null || node == "") {
@@ -213,7 +210,7 @@ class Membership {
 	/**
 		When a node was last heard from, or -1 for one that is not alive.
 
-		For anything wanting to decide about a node before `timeout` does,
+		For anything wanting to decide about a node before `timeout` does:
 		how long it has been quiet is the measurement that decision is made
 		from.
 	**/

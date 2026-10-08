@@ -16,9 +16,9 @@ import utest.Assert;
  * weaker thing to check than what the heap actually does.
  *
  * Fires are compared as counts per timer, not as a sequence. Timers due in
- * the same tick have no defined order in either scheduler, a heap does not
- * order equal keys any more than a bucket does, so comparing sequences would
- * fail on a difference neither one promises.
+ * the same tick have no defined order in either scheduler (a heap does not
+ * order equal keys any more than a bucket does), so comparing sequences
+ * would fail on a difference neither one promises.
  */
 class TimerWheelTest extends utest.Test {
 	function __runBoth(build:(ITimerScheduler, Array<String>) -> Void, steps:Int, dt:Float):Void {
@@ -178,8 +178,8 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testAPassStoppedPartwayThroughABucketFinishesItNext():Void {
-		// A cap that ran out inside a bucket left the rest of it behind the
-		// cursor, where they waited a whole revolution: half a second.
+		// A cap that runs out inside a bucket must not leave the rest of it
+		// behind the cursor, where they would wait a whole revolution: half a second.
 		var wheel = new TimerWheel();
 		var fired = 0;
 		for (_ in 0...100) {
@@ -218,8 +218,8 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testASetTimeoutOfZeroFiresOnTheNextFrame():Void {
-		// It was placed in the bucket the cursor had just left and fired a
-		// revolution later: 517ms at sixty frames a second.
+		// Not placed in the bucket the cursor has just left, where it would fire
+		// a revolution later: 517ms at sixty frames a second.
 		var wheel = new TimerWheel();
 		var frame = 1 / 60;
 		wheel.advanceTime(frame);
@@ -236,8 +236,9 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testATimerArmedInACallbackIsNotEarly():Void {
-		// Its bucket was counted from the end of the frame and reached from
-		// the start of it: a 5ms timer fired in the same frame it was armed.
+		// Its bucket is counted from where it is reached: counted from the end of
+		// the frame and reached from the start, a 5ms timer would fire in the
+		// same frame it was armed.
 		var wheel = new TimerWheel();
 		var frame = 1 / 60;
 		var armedAt = -1.0;
@@ -255,8 +256,8 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testAnIntervalShorterThanAFrameKeepsItsRate():Void {
-		// Re-armed behind the cursor, a 5ms interval fired twice a second at
-		// sixty frames a second rather than 200 times.
+		// Re-armed behind the cursor, a 5ms interval would fire twice a second
+		// at sixty frames a second rather than 200 times.
 		var wheel = new TimerWheel();
 		var frame = 1 / 60;
 		var fired = 0;
@@ -269,7 +270,7 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testATimerDaysAwayDoesNotFireAtOnce():Void {
-		// Its distance in ticks overflowed an Int.
+		// Its distance in ticks overflows an Int.
 		var wheel = new TimerWheel();
 		var fired = false;
 		wheel.setTimeoutVoid(30 * 24 * 3600, () -> fired = true);
@@ -375,9 +376,9 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testATimerRescheduledFromItsCallbackAfterANestedPass():Void {
-		// A pass run from inside a callback cleared which timer was firing:
-		// the callback's reschedule afterwards linked the timer into a bucket
-		// and the settle then freed it there, still linked.
+		// A pass run from inside a callback must not clear which timer is
+		// firing: the callback's reschedule afterwards would link the timer into
+		// a bucket, and the settle then free it there, still linked.
 		var wheel = new TimerWheel();
 		var runs = 0;
 		var nested = 0;
@@ -420,7 +421,7 @@ class TimerWheelTest extends utest.Test {
 	}
 
 	public function testAHandleKeptAcrossThousandsOfTimersStaysCleared():Void {
-		// See the heap's: a handle was a slot and a twelve-bit generation.
+		// See the heap's: a handle that is a slot and a twelve-bit generation.
 		var wheel = new TimerWheel();
 		var kept = wheel.setTimeoutVoid(0.010, () -> Assert.fail("a cleared timer fired"));
 		Assert.isTrue(wheel.clear(kept));

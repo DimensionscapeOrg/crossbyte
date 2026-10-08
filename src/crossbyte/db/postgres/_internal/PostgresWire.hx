@@ -6,9 +6,8 @@ import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 
 /**
- * Where `PostgresRawResult` was declared before it became a class of its
- * own, `crossbyte.db.postgres.PostgresRawResult`; kept so the old import
- * still names it.
+ * An alias of `crossbyte.db.postgres.PostgresRawResult`, so code importing
+ * it from here still compiles.
  */
 typedef PostgresRawResult = crossbyte.db.postgres.PostgresRawResult;
 
@@ -17,16 +16,13 @@ typedef PostgresRawResult = crossbyte.db.postgres.PostgresRawResult;
  *
  * Both directions are length-prefixed rather than delimited or escaped, so a
  * value carrying NUL bytes, invalid UTF-8 or an embedded quote is just bytes
- * with a length in front of it. That is the property the previous path lacked:
- * parameters went into SQL text through an escape that stops at the first NUL,
- * and results came back as JSON strings that cannot represent a byte sequence
- * which is not valid UTF-8.
+ * with a length in front of it: no escape that stops at the first NUL, and no
+ * JSON string that cannot represent a byte sequence which is not valid UTF-8.
  *
  * Every integer is a signed little-endian 32-bit value, written and read a byte
  * at a time so neither side depends on the host's endianness, but for
  * `affectedRows`, unsigned 64 bits as two halves, low first, and
- * `lastInsertRowID`, unsigned 32. The count was 32 bits, read with `atoi`,
- * and past 2^31 was clamped or wrapped.
+ * `lastInsertRowID`, unsigned 32.
  *
  * Parameter block:
  * ```
@@ -129,10 +125,6 @@ class PostgresWire {
 		with fixed slots, from the builder `shapes` keeps for the columns
 		(see `AnonBuilder`). Each value is decoded once, from the block, with
 		no `Bytes` made for it.
-
-		The bridge rendered `request()`'s rows as JSON, column names repeated
-		in every row, and Haxe parsed it: 2.3-3.1 µs a row of 8 columns, where
-		this block took 0.38-0.63 (the audit's PostgresPerf).
 	**/
 	public static function decodeRows(data:Bytes, shapes:Array<crossbyte._internal.AnonBuilder>):PostgresRows {
 		var cursor:Cursor = new Cursor(data);
@@ -161,8 +153,8 @@ class PostgresWire {
 	}
 
 	/**
-		Reads what the bridge returned row by row, as `row`, an `SQLRow`
-		over the block itself, moved on to each row in turn, handing each to
+		Reads what the bridge returned row by row, as `row` (an `SQLRow`
+		over the block itself, moved on to each row in turn), handing each to
 		`each`: `PostgresStatement.executeEach`. Nothing is made for a row or
 		a value until it is asked for. Answers the rows the statement changed
 		or returned.
@@ -232,11 +224,11 @@ class PostgresWire {
 		}
 
 		// A row of no columns reads nothing, so with `fieldCount` at zero the
-		// loop below is bounded by the row count alone and not by the block
-		// holding anything: 20 bytes claiming twenty million rows allocated
-		// twenty million of them, and the count could have said two billion.
-		// Every other shape is self-limiting, because each column costs at
-		// least its four-byte length and the cursor runs out.
+		// loop below would be bounded by the row count alone and not by the
+		// block holding anything: 20 bytes claiming twenty million rows would
+		// allocate twenty million of them. Every other shape is self-limiting,
+		// because each column costs at least its four-byte length and the
+		// cursor runs out.
 		//
 		// It is also not a result Postgres produces. A statement returning no
 		// columns returns no rows.
@@ -420,10 +412,8 @@ private class Cursor {
 		// Measured against what is left, rather than by adding to the position.
 		// `__position + count` overflows Int for a large count and wraps
 		// negative, and a negative is not greater than the length, so the test
-		// passed and handed `Bytes.sub` a span running off the end of the
-		// buffer. A 20-byte block claiming a field name of 2147483647 bytes
-		// segfaulted the process, the exact failure this class exists to
-		// turn into an exception.
+		// would pass and hand `Bytes.sub` a span running off the end of the
+		// buffer.
 		//
 		// The subtraction cannot overflow: `__position` never passes
 		// `__data.length`, because it only advances after this check succeeds.

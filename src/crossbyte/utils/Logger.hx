@@ -4,8 +4,7 @@ package crossbyte.utils;
  * Process-wide logging with severity levels, structured fields, categories,
  * and a replaceable sink.
  *
- * The original `info`/`error`/`separator` helpers keep their exact
- * behavior, so existing code needs no changes. Beyond them:
+ * Beyond the `info`, `error` and `separator` helpers:
  *
  * ```haxe
  * Logger.level = DEBUG;
@@ -27,11 +26,12 @@ package crossbyte.utils;
  * ```
  *
  * **One record, one line.** In text mode control characters in the message
- * and the fields, a line feed, a carriage return, the Unicode line
- * separators, are written as escapes, never as themselves. A request path
- * is text a client chose, and one carrying `%0A` used to start a line of its
- * own, indistinguishable from the server's: a client could forge an ERROR
- * record in the access log. JSON mode escapes by construction.
+ * and the fields (a line feed, a carriage return, the Unicode line
+ * separators) are written as escapes, never as themselves. A request path
+ * is text a client chose, and one carrying `%0A` would otherwise start a
+ * line of its own, indistinguishable from the server's: a client could
+ * forge an ERROR record in the access log. JSON mode escapes by
+ * construction.
  *
  * **Logging and sensitive data.** A sink receives whatever a caller passes.
  * Services handling private content should log identifiers and outcomes
@@ -110,8 +110,8 @@ class Logger {
 	}
 
 	/**
-	 * Sets the minimum level for `category` and everything under it,
-	 * `http` covers `http.access`, unless something under it has a level
+	 * Sets the minimum level for `category` and everything under it
+	 * (`http` covers `http.access`) unless something under it has a level
 	 * of its own. `null` clears the category's level, so it follows the one
 	 * above it again.
 	 */
@@ -228,8 +228,8 @@ class Logger {
 	//
 	// Not on Node. Sys.println there is process.stdout.write, which holds
 	// nothing back, and Sys.stdout().flush() is fs.fsyncSync: refused for a
-	// pipe on Linux, so a warning threw from inside whatever reported it, and
-	// a disk sync a frame to a file.
+	// pipe on Linux, so a warning would throw from inside whatever reported
+	// it, and a file would take a disk sync a frame.
 	@:noCompletion private static var __unflushed:Bool = false;
 	#end
 
@@ -260,7 +260,7 @@ class Logger {
 		calls this once a frame, and as it exits; a warning or an error is
 		flushed as it is written.
 
-		hxcpp flushes `Sys.println` only to a console now: to a pipe or a file
+		hxcpp flushes `Sys.println` only to a console: to a pipe or a file
 		a flush per line is a syscall per line. Records to stdout are flushed
 		here instead, once for however many a frame wrote.
 	**/
@@ -308,10 +308,10 @@ class Logger {
 	/**
 		One JSON object, written straight out: `level`, `message`, then `time`
 		and `category` when there are any, then the fields in the map's order.
-		It was built as an anonymous object with `Reflect.setField` per field
-		and handed to the reflective `haxe.Json.stringify`, 1.1 us a record
-		where text took 0.7, and the keys came out in whatever order the
-		target's reflection gave.
+		Built this way rather than as an anonymous object with
+		`Reflect.setField` per field handed to the reflective
+		`haxe.Json.stringify` (1.1 us a record where text takes 0.7), whose
+		keys would come out in whatever order the target's reflection gives.
 	**/
 	@:noCompletion private static function __formatJson(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var buffer = new StringBuf();
@@ -430,15 +430,15 @@ class Logger {
 
 	#if !target.unicode
 	/**
-		Where a string is its UTF-8 bytes, neko's are, how many bytes at
+		Where a string is its UTF-8 bytes (neko's are), how many bytes at
 		`i` start a character that is written as an escape, or 0.
 
 		Read a byte at a time as characters, a C1 control's second byte and
 		the separators' last two all fall in 0x80 to 0x9F, as does the second
-		or third byte of hundreds of ordinary characters, the euro sign, most
-		of Cyrillic. Every one of those was escaped and the byte before it left
-		alone, which wrote a broken character followed by an escape; the
-		controls this is for went out half raw.
+		or third byte of hundreds of ordinary characters (the euro sign, most
+		of Cyrillic). Escaping each of those and leaving the byte before it
+		alone would write a broken character followed by an escape, and the
+		controls this is for would go out half raw.
 	**/
 	@:noCompletion private static function __escapedWidth(text:String, i:Int):Int {
 		var code:Int = StringTools.fastCodeAt(text, i);
@@ -543,8 +543,8 @@ class Logger {
 	 * `time` as ISO-8601 in UTC with milliseconds: `2026-09-25T09:00:00.123Z`.
 	 *
 	 * Computed from the epoch seconds rather than through `Date`, which
-	 * formats in local time, the stamps carried no zone and read as UTC,
-	 * so every record on a machine not on UTC was off by its offset, and
+	 * formats in local time (the stamps carry no zone and read as UTC, so
+	 * every record on a machine not on UTC would be off by its offset) and
 	 * whose resolution differs by target.
 	 */
 	@:noCompletion private static function __timestamp(time:Float):String {
@@ -587,14 +587,14 @@ class Logger {
 
 		#if (js && !nodejs)
 		// A browser has no stdout. The console is the equivalent sink, and a
-		// log line that vanished would be worse here than anywhere else,
+		// log line that vanished would be worse here than anywhere else:
 		// this is the thing that reports everything else going wrong.
 		js.Browser.console.log(line);
 		#elseif nodejs
 		// One write a turn of Node's loop, not two a record: Sys.println there
 		// writes the line and then its newline, and to a file each is a
-		// synchronous system call, the access log's line a request cost a
-		// server 15% of its time. Held records go when the turn ends, when
+		// synchronous system call (the access log's line a request would cost a
+		// server 15% of its time). Held records go when the turn ends, when
 		// the runtime flushes, or as the process exits; a warning or an error
 		// goes at once, after them, so the order holds.
 		__held += line + "\n";

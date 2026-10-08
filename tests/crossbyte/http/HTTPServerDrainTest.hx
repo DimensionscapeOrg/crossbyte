@@ -13,9 +13,9 @@ import utest.Async;
  * Graceful shutdown of `HTTPServer`.
  *
  * The three cases that touch no socket stay synchronous, because they mean the
- * same thing on every target without help. The two that do, and the one that
- * needs the assigned port, which Node hands over a turn later, go through the
- * asynchronous pump.
+ * same thing on every target without help. The two that do (and the one
+ * that needs the assigned port, which Node hands over a turn later) go
+ * through the asynchronous pump.
  */
 @:timeout(20000)
 class HTTPServerDrainTest extends utest.Test {
@@ -89,11 +89,11 @@ class HTTPServerDrainTest extends utest.Test {
 	/**
 		A connection that has not sent a byte has nothing in flight.
 
-		A browser opens one ahead of need, a preconnect, and drain() waited
-		for it to time out: the auditor's drain(4) with one such connection and
-		nothing else ran its whole four seconds. With HTTP/2 on cleartext it was
-		worse: a connection still deciding its protocol was not even known to
-		drain(), and survived it.
+		A browser opens one ahead of need (a preconnect), and drain() must not
+		wait for it to time out: a drain(4) with one such connection and
+		nothing else would run its whole four seconds. With HTTP/2 on cleartext,
+		a connection still deciding its protocol is known to drain() too, and
+		does not survive it.
 	**/
 	public function testDrainClosesConnectionsThatNeverSpoke(async:Async):Void {
 		var cases:Array<Bool> = [false, true];

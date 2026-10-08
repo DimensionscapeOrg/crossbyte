@@ -3,19 +3,17 @@ package crossbyte.db.postgres;
 /**
  * Connection settings for `PostgresConnection`.
  *
- * A server that has stopped answering altogether, a partition, a host that
- * died without closing, is found by TCP keepalive, on by default with
+ * A server that has stopped answering altogether (a partition, a host that
+ * died without closing) is found by TCP keepalive, on by default with
  * MySQL's timings: a probe after 60 idle seconds, then one every 10, and the
- * connection dropped after 6 unanswered, so about two minutes. libpq left the
- * timings to the system, two hours before the first probe, which is how long
- * a query waiting on such a server held its connection and the worker using
- * it. Keepalive probes only a connection with nothing unacknowledged in
- * flight; `tcpUserTimeout` covers a query sent to a host that then vanished,
- * which otherwise waits for the system's retransmission limit (about fifteen
- * minutes on Linux).
+ * connection dropped after 6 unanswered, so about two minutes, rather than
+ * the system's two hours before the first probe. Keepalive probes only a
+ * connection with nothing unacknowledged in flight; `tcpUserTimeout` covers
+ * a query sent to a host that then vanished, which otherwise waits for the
+ * system's retransmission limit (about fifteen minutes on Linux).
  *
- * Nothing bounds a server that is up but slow, a long statement, a lock
- * wait, by default: `statementTimeout` does that, and
+ * Nothing bounds a server that is up but slow (a long statement, a lock
+ * wait) by default: `statementTimeout` does that, and
  * `PostgresConnection.cancel()` stops one statement on demand.
  *
  * The timeouts and keepalive settings apply to the native driver, which
@@ -32,7 +30,7 @@ typedef PostgresConfig = {
 	/**
 	 * Seconds libpq may take to connect, per address it tries (libpq
 	 * `connect_timeout`): 5 when unset, 0 for no limit. A negative one is
-	 * refused with an `ArgumentError`, where it was taken for no limit.
+	 * refused with an `ArgumentError`.
 	 */
 	@:optional var connectTimeout:Int;
 
@@ -56,7 +54,6 @@ typedef PostgresConfig = {
 	 *   (`/Applications/Postgres.app/Contents/Versions/latest/lib`), in the
 	 *   PostgreSQL installer's `/Library/PostgreSQL/<version>/lib` and in
 	 *   MacPorts' `/opt/local/lib/postgresql<version>`, the newest first.
-	 *   It looked for `libpq.so` alone, and could not load libpq on a Mac.
 	 * - Linux and other systems: `libpq.so.5`, then `libpq.so`, where the
 	 *   dynamic loader looks (`LD_LIBRARY_PATH`, `/etc/ld.so.cache`).
 	 *
@@ -86,8 +83,7 @@ typedef PostgresConfig = {
 	/**
 	 * Seconds a connection may sit idle before TCP keepalive probes start
 	 * (libpq `keepalives_idle`): 60 when unset, 0 for the operating system's
-	 * own, which is usually two hours, how long a pooled connection to a
-	 * host that has gone away looked alive before this had a default.
+	 * own, which is usually two hours.
 	 */
 	@:optional var keepAliveIdle:Int;
 

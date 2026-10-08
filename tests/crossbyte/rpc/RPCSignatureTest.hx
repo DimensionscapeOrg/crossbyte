@@ -11,14 +11,14 @@ private typedef Count = Int;
 private typedef MaybeInt = Null<Int>;
 
 /**
-	A compiled method's op is the hash of its signature, its name and the
-	kinds of its arguments and answer, not of its name alone.
+	A compiled method's op is the hash of its signature (its name and the
+	kinds of its arguments and answer), not of its name alone.
 
-	A client and a server built from two versions of one method read each
-	other's bytes as their own: `(x:Int, y:Int)` sent to `(v:Float)`, both
-	eight bytes, ran the handler on a Float made of two Ints, and an answer
-	of one kind was read as another. Now the two have different ops, and the
-	call finds no method.
+	Otherwise a client and a server built from two versions of one method
+	would read each other's bytes as their own: `(x:Int, y:Int)` sent to
+	`(v:Float)`, both eight bytes, would run the handler on a Float made of
+	two Ints, and an answer of one kind would be read as another. The two
+	have different ops, and the call finds no method.
 **/
 class RPCSignatureTest extends utest.Test {
 	public function testAnOpIsTheHashOfTheMethodsSignature():Void {

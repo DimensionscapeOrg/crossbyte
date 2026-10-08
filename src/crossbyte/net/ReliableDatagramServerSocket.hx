@@ -53,20 +53,20 @@ import sys.net.Host;
 	its session. To use more cores, run a server per runtime, each on a port
 	of its own, and send each client to one of them.
 
-	**Resuming a player.** A player whose address changes, a NAT that
-	hands it a new port, a phone moving from Wi-Fi to a mobile network,
+	**Resuming a player.** A player whose address changes (a NAT that
+	hands it a new port, a phone moving from Wi-Fi to a mobile network)
 	sends from an address with no session, and is reset. `allowRebind`
 	moves the session instead, where the server allows it and both ends are
-	on 1.0. Where that cannot be, a peer from before 1.0, a server that
+	on 1.0. Where that cannot be (a peer from before 1.0, a server that
 	leaves it off, and every TCP and WebSocket connection, which no change
-	of address survives, the game resumes the player itself:
+	of address survives), the game resumes the player itself:
 
 	- the server hands each player a resume token over its session, and
 	  keeps the player's state under it;
 	- a client that is reset, or times out, connects again with the token
 	  as its `connect` payload;
-	- `admit` checks the token, a lookup, since it is asked for every
-	  CONNECT, and the handler of the new session puts the player's state
+	- `admit` checks the token (a lookup, since it is asked for every
+	  CONNECT), and the handler of the new session puts the player's state
 	  back on it, ending the session it left behind, which the server would
 	  otherwise notice only at its `idleTimeout`.
 
@@ -193,7 +193,7 @@ import sys.net.Host;
 	(`ReliableDatagramSocket.encryptionKey` on the client,
 	`encryptionKeyFor` here): netcode.io's model, with QUIC's and DTLS
 	1.3's nonce and replay window. CrossByte exchanges no keys and checks
-	no certificates, for that, use DTLS (`crossbyte.net.rtc`) or TLS. The
+	no certificates; for that, use DTLS (`crossbyte.net.rtc`) or TLS. The
 	usual shape is a login service, reached over HTTPS, that signs the
 	player in and answers with a connect token and a key; the client sends
 	the token as its `connect` payload, and every game server derives the
@@ -257,8 +257,8 @@ import sys.net.Host;
 	}
 	```
 
-	The login service, once the player has signed in, over HTTPS, since
-	the key in its answer is the session's secret:
+	The login service, once the player has signed in (over HTTPS, since
+	the key in its answer is the session's secret):
 
 	```haxe
 	// Given secret:haxe.io.Bytes, player:String.
@@ -266,7 +266,7 @@ import sys.net.Host;
 	var answer:String = haxe.Json.stringify({token: grant.token.toHex(), key: grant.key.toHex()});
 	```
 
-	A game server, `admit` drops a bad token without a word, and
+	A game server: `admit` drops a bad token without a word, and
 	`encryptionKeyFor` gives a good one's session its key:
 
 	```haxe
@@ -306,8 +306,8 @@ import sys.net.Host;
 	every acknowledgement, keepalive and FIN, is confidential and cannot be
 	changed, replayed or forged undetected; the rebind proof is keyed with
 	a key that is never sent (`allowRebind`). It does not hide who talks to
-	whom, when, how often or how much, datagram sizes, timing, counts and
-	packet numbers, nor the CONNECT and its token, which go in the clear;
+	whom, when, how often or how much (datagram sizes, timing, counts and
+	packet numbers), nor the CONNECT and its token, which go in the clear;
 	and there is no forward secrecy in this mode: whoever learns a key, or
 	the servers' secret, can open what they recorded of the sessions it
 	keyed. A reset from a server is not authenticated, so it does not end
@@ -366,7 +366,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		`ReliableDatagramSocket.ackDelay` for each session this server
-		accepts or dials, in seconds, 25 milliseconds unless changed, as
+		accepts or dials, in seconds (25 milliseconds unless changed), as
 		`keepAliveInterval` is.
 
 		@throws RangeError If set below zero or above
@@ -420,12 +420,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		to finish their handshakes; or `ALWAYS`, or `NEVER`.
 
 		A session waiting for its handshake is held for the CONNECT's word
-		alone, an address and port UDP lets a sender write for itself,
-		so a few CONNECTs a second from forged addresses kept all
+		alone (an address and port UDP lets a sender write for itself),
+		so a few CONNECTs a second from forged addresses could keep all
 		`maxPendingConnections` slots full, at about 13 a second for the
 		default 256 held 20 seconds each, and no real player could join; an
 		`admit` that checks tokens bound to the player's address stops that,
-		and a server without them had nothing. A join that must show where
+		and a server without them would have nothing. A join that must show where
 		it came from is answered with a cookie instead, as a TCP stack
 		answers with a SYN cookie: the server's keyed hash of the address,
 		the port, the CONNECT's connection id and the time, for which it
@@ -436,16 +436,16 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		more round trip. `maxPendingConnections` still bounds the sessions
 		such joins open, and `admit` still decides on each.
 
-		A cookie is no larger than the CONNECT it answers, a 1.0 peer pads
-		its CONNECT to whatever may be sent back, so it gives a sender who
+		A cookie is no larger than the CONNECT it answers (a 1.0 peer pads
+		its CONNECT to whatever may be sent back), so it gives a sender who
 		names someone else's address nothing it could not send itself.
 
 		While joins are validated, every CONNECT is answered with a cookie,
 		without a limit, as SYN cookies, QUIC's Retry and DTLS's
 		HelloVerifyRequest answer every attempt. So what a flood past the
-		threshold costs the server is a keyed hash and a send per datagram,
-		about 14 microseconds on Windows, where a CONNECT past
-		`maxPendingConnections` was dropped for about 0.1, and that is the
+		threshold costs the server is a keyed hash and a send per datagram
+		(about 14 microseconds on Windows, where a CONNECT past
+		`maxPendingConnections` is dropped for about 0.1), and that is the
 		price of real players still joining during the flood. It
 		is good for 10 to 20 seconds: the key it is made with is new every
 		10 seconds, and the one before is still accepted. Within that time
@@ -456,8 +456,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		before 1.0 cannot: while joins are validated its CONNECTs are
 		dropped, and it joins once fewer than the threshold are waiting
 		(under `UNDER_PRESSURE`), or never (under `ALWAYS`). The keys come
-		from the secure random source; on a target without one, neko,
-		HashLink, from the ordinary one, which someone able to predict it
+		from the secure random source; on a target without one (neko,
+		HashLink) from the ordinary one, which someone able to predict it
 		could forge cookies with: hardening there, as the sequence numbers
 		are, rather than a boundary.
 
@@ -479,24 +479,24 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	/**
 		Whether a session follows its peer to a new address: off unless set.
 
-		A session is found by its peer's address and port, so a player whose
-		address changed was lost: a NAT that gave it a new port, a phone
-		that moved from Wi-Fi to a mobile network. Its frames came from an
-		address with no session, were answered with a reset, and the player
-		was cut off and had to join again (or resume, as the class doc's
-		"Resuming a player" shows).
+		A session is found by its peer's address and port, so without this a
+		player whose address changes is lost: a NAT that gives it a new port,
+		a phone that moves from Wi-Fi to a mobile network. Its frames come
+		from an address with no session, are answered with a reset, and the
+		player is cut off and has to join again (or resume, as the class
+		doc's "Resuming a player" shows).
 
 		With this on, each session a peer on 1.0 or later opens is given a
-		rebind key, 16 random bytes, in the server's HANDSHAKE, or, for an
+		rebind key, 16 random bytes, in the server's HANDSHAKE (or, for an
 		encrypted session, has one derived at both ends with its keys, which
-		never crosses the network. When that
+		never crosses the network). When that
 		peer's frames then arrive from an address with no session, the reset
 		sent back carries a challenge: the server's keyed hash of the new
 		address and port and the time, made like a join cookie, for which it
 		keeps nothing. The peer's session, if it is live, does not close on
-		it: it answers from its new address with a REBIND, its connection
+		it: it answers from its new address with a REBIND (its connection
 		id, the challenge, and its keyed hash of the two with the session's
-		key, and the server, finding all three right, moves the session
+		key), and the server, finding all three right, moves the session
 		there: in every map it is filed in, its relay path if it reached the
 		peer through `relay`, and `remoteAddress` and `remotePort`, which
 		read the new address from then on. The same session object goes on;
@@ -522,12 +522,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		session began can later move it to an address of their own, taking
 		over what the server sends the player. Turn this on with encryption
 		(`ReliableDatagramSocket.encryptionKey`), where the proof is keyed
-		with the session's own rebind key, derived with HKDF from the
+		with the session's own rebind key (derived with HKDF from the
 		application's key and both ends' randoms, sent by neither side, so
-		someone who saw the whole handshake still cannot make it, or for a
+		someone who saw the whole handshake still cannot make it), or for a
 		game whose players' paths nobody hostile shares. Encrypted, the
 		session's datagrams are sealed wherever it moves; the REBIND, the
-		REBOUND and the reset's challenge stay in the clear, as before, and
+		REBOUND and the reset's challenge stay in the clear, as they are without it, and
 		say nothing a sealed datagram would hide. And every reset carries a
 		challenge while this is on, made per reset within
 		`maxResetsPerSecond`.
@@ -541,7 +541,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		It costs nothing while off, and no session accepted while it was off
 		gets a key; set it before `listen`. On, a session holds its 16-byte
 		key and an entry in a map by connection id; nothing per packet. On a
-		target with no secure random source, neko, HashLink, no session
+		target with no secure random source (neko, HashLink) no session
 		is given a key, since one guessed would let anyone move it.
 	**/
 	public var allowRebind(default, set):Bool = false;
@@ -580,13 +580,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		limit, and 0 sends none.
 
 		A reset is the FIN a server answers a frame with when it holds no
-		session for the address the frame came from, a peer whose session
-		it closed, a server that restarted, a player whose address changed.
+		session for the address the frame came from (a peer whose session
+		it closed, a server that restarted, a player whose address changed).
 		Each is a datagram to an address that has proved
 		nothing, since UDP lets a sender write whatever it likes in the
 		source field; it is no larger than the frame that drew it, but one
-		was sent for every such frame however many came, so a server could be
-		made to send as many datagrams as it was sent to whoever an attacker
+		for every such frame, however many came, would let a server be made
+		to send as many datagrams as it was sent to whoever an attacker
 		named. Past the allowance a frame is dropped unanswered, and its
 		sender, if it is a real peer, hears at its next frame, or at its own
 		`idleTimeout`.
@@ -650,19 +650,19 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Copy what you need; the admitted session keeps a copy of its own as
 		`connectPayload`. See `Event`.
 
-		Neither is proof of anything yet. The address is only a claim, UDP
-		lets a sender write whatever it likes in the source field, so use it
+		Neither is proof of anything yet. The address is only a claim (UDP
+		lets a sender write whatever it likes in the source field), so use it
 		to drop traffic, not to accuse anyone: a block list or a `RateLimiter`
 		keyed by address protects this side, but an address refused here may
 		belong to someone who never sent a thing. And the payload crossed the
 		network in the clear, so anyone who saw it can send it again: a token
 		this checks should be one only this side could have issued, and short
 		lived, or bound to the address it was issued to. This runs for every
-		CONNECT from a new address, while joins are validated (see
-		`joinValidation`), only for one that has returned its cookie, and so
-		shown it receives at that address, which is the packet a flood is
-		made of, so keep it cheap, or put a `RateLimiter` in front of
-		anything that is not, such as checking a signature.
+		CONNECT from a new address, which is the packet a flood is made of
+		(while joins are validated, see `joinValidation`, only for one that
+		has returned its cookie, and so shown it receives at that address),
+		so keep it cheap, or put a `RateLimiter` in front of anything that is
+		not, such as checking a signature.
 
 		A hook that throws refuses the CONNECT.
 	**/
@@ -672,7 +672,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		The 32-byte key a session this server accepts is encrypted with, or
-		null, the default, for a session in the clear: asked once for each
+		null (the default) for a session in the clear: asked once for each
 		CONNECT `admit` lets in, with the same address, port and payload, the
 		payload read from its start again. See
 		`ReliableDatagramSocket.encryptionKey` for what encryption protects,
@@ -682,8 +682,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		session's key and gives the client the same one, typically through a
 		login service that hands the client a key and a connect token over
 		HTTPS. The token is the client's `connect` payload, and this derives
-		the key from it, with `crossbyte.crypto.HKDF` and a secret only the
-		servers hold, or unwraps it (`crossbyte.crypto.Aead`). "Encrypted
+		the key from it (with `crossbyte.crypto.HKDF` and a secret only the
+		servers hold), or unwraps it (`crossbyte.crypto.Aead`). "Encrypted
 		sessions", in the class doc above, shows the login service, the
 		server and the client.
 
@@ -691,7 +691,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		that this answers with null, and one asking for none that this gives
 		a key, open no session: the peer is told why with a refusal, which a
 		peer on this version reports as an `ioError` naming the reason, and
-		one from before encryption was added times out. Return a key for
+		an older one times out. Return a key for
 		every session of a server that only takes encrypted ones.
 
 		Like `admit`, this runs for every CONNECT from a new address that
@@ -713,7 +713,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		The congestion policy for a session this server accepts or dials,
 		given the peer's address and port: a new `CongestionControl` each,
 		which is TCP's Reno, unless this is replaced. A server that knows some
-		of its peers are on lossy links, a mobile network, say, can give
+		of its peers are on lossy links (a mobile network, say) can give
 		those a `LossTolerantCongestionControl` and everyone else the default.
 		`null` means the default.
 
@@ -721,11 +721,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		each time: a policy keeps the state of the one session it serves. For
 		an accepted session a hook that throws refuses the CONNECT, as `admit`
 		does; for one dialled by address the throw reaches the caller of
-		`connect`, and for one dialled by name, asked about once the name is
-		looked up, it is reported as that session's `ioError`, and the
+		`connect`, and for one dialled by name (asked about once the name is
+		looked up), it is reported as that session's `ioError`, and the
 		session closed.
 		A session's policy can also be changed later, through
-		`ReliableDatagramSocket.congestionControl`: once the peer has said
+		`ReliableDatagramSocket.congestionControl`, once the peer has said
 		in its `connectPayload` what kind of link it is on, for instance.
 	**/
 	public dynamic function congestionControlFor(address:String, port:Int):CongestionControl {
@@ -764,11 +764,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private var __ice:IceAgent;
 
 	/**
-		The runtime this server's ticks run on, an attached agent's, a
-		relay's, a waiting question's, which its socket took when it began
-		receiving, as each of them needs it to have. They were added to and
-		taken off whichever runtime was current, so a close from another
-		thread could not take them off at all.
+		The runtime this server's ticks run on (an attached agent's, a
+		relay's, a waiting question's), which its socket took when it began
+		receiving, as each of them needs it to have, rather than whichever
+		runtime is current, so a close from another thread can take them
+		off.
 	**/
 	@:noCompletion private function __tickRuntime():CrossByte {
 		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
@@ -798,15 +798,15 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		it, with where it came from; return `true` to take it, and nothing else
 		sees it. Null by default, which costs nothing.
 
-		For a protocol of the application's own sharing this port, a relay
-		client it drives itself, a probe, a second framing, which had no way
-		in: every datagram went to the reliable decoder, and anything that was
-		not a reliable frame was dropped as noise. `sendDatagram` is the way out.
+		For a protocol of the application's own sharing this port (a relay
+		client it drives itself, a probe, a second framing), whose datagrams
+		would otherwise go to the reliable decoder and be dropped as noise.
+		`sendDatagram` is the way out.
 
 		`data` is valid only during the call, as an event's payload is,
 		whether the hook takes the datagram or not: the socket fills the same
-		`ByteArray` with the next one. To handle it later, copy the bytes out,
-		`data.readBytes(mine)`: before returning. See `Event`.
+		`ByteArray` with the next one. To handle it later, copy the bytes out
+		(`data.readBytes(mine)`) before returning. See `Event`.
 
 		A hook that throws drops the datagram.
 	**/
@@ -828,7 +828,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	#if !(macro || (js && !nodejs))
 	/**
 		For a relay `allocateRelay` reaches over TLS: the authority its
-		certificate must chain to, where that is not one the system trusts,
+		certificate must chain to, where that is not one the system trusts:
 		a private relay's own. Read when `allocateRelay` is called. See
 		`TurnClient.certAuthority`.
 	**/
@@ -892,11 +892,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		It may be called from any thread: from one that is not the server's
 		runtime's, it is handed to the runtime, as `CrossByte.post` hands work
-		over, and happens there after this returns. Made there, it took the
-		runtime its ticks are on from the calling thread, which had none: the
-		throw was swallowed, an attached agent's, a relay's or a waiting
-		question's tick stayed on the runtime for good, and the question was
-		failed on the closing thread.
+		over, and happens there after this returns, so the ticks it ran
+		come off the runtime they were on.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -938,11 +935,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		__pendingCount = 0;
 		__byConnectionId = null;
 
-		// Aborted, not just disposed: abort() tells the peer, which disposing
-		// did not, so every client of a server that shut down went on
-		// sending into a closed port until its own timeout said the session
-		// was gone. And not closed gracefully, which would wait on the
-		// socket this call is about to close.
+		// Aborted, not just disposed: abort() tells the peer, so a client of
+		// a server that shuts down hears at once rather than sending into a
+		// closed port until its own timeout. And not closed gracefully,
+		// which would wait on the socket this call is about to close.
 		for (connection in connections) {
 			try {
 				connection.abort();
@@ -1003,7 +999,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		arrive through the same data pump that feeds accepted sessions, and it
 		takes `socketMode` as an accepted one does. It is not announced with
 		`ReliableDatagramSocketConnectEvent.CONNECT`, which is for sessions a
-		peer opened, the caller holds this one already, and dispatches
+		peer opened (the caller holds this one already), and dispatches
 		`Event.CONNECT` itself when the handshake completes, as a
 		`ReliableDatagramSocket` that called `connect()` does. Listen for that
 		on the returned session.
@@ -1020,15 +1016,14 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		such a session instead, as an `ioError` event followed by the
 		session's close: a name that does not resolve, an endpoint that has a
 		session here already, and a `congestionControlFor` that throws. On a
-		thread with no CrossByte runtime a name is looked up in the call, as
-		it always was.
+		thread with no CrossByte runtime a name is looked up in the call.
 
 		@param address The peer's address, or a name.
 		@param timeoutMs The session's `timeout`, in milliseconds: how long
 		       the handshake may take. 20 seconds unless given; 0 sets no
 		       deadline, as it does for the session's own `timeout`, and the
 		       attempt goes on until the peer answers or the session is
-		       closed. 0 meant the default.
+		       closed.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
 		       sends it: copied now, and at most one frame
 		       (`ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE` with a key).
@@ -1077,7 +1072,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		resolved = address;
 		#else
 		// Without a runtime on this thread there is nothing to hand an answer
-		// back to, so a name is looked up here, as it always was.
+		// back to, so a name is looked up here.
 		if (Resolver.needsLookup(address) && Resolver.runtimeHere() != null) {
 			return __dialByName(address, port, timeoutMs, outgoing, encryptionKey);
 		}
@@ -1085,7 +1080,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		try {
 			// Compressed, as the address arrives from the socket and as a dial
 			// by name files it: the jvm spells ::1 as 0:0:0:0:0:0:0:1, and a
-			// session filed that way was never found by the peer's replies.
+			// session filed that way would never be found by the peer's replies.
 			resolved = IPv6.compress(new Host(address).toString());
 		} catch (_:Dynamic) {
 			throw new ArgumentError("One of the parameters is invalid");
@@ -1108,19 +1103,19 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
-		Sends `message` to every session this server has connected, those
-		peers opened and those it dialled, or, given `sessions`, to each of
+		Sends `message` to every session this server has connected (those
+		peers opened and those it dialled) or, given `sessions`, to each of
 		those that is connected: one message made ready once (see
 		`PreparedDatagram`), which each session frames, paces, bundles and
 		sends again as `ReliableDatagramSocket.sendPrepared` would, from the
-		same bytes, holding no copy of its own. Who receives, a room, a
-		team, an area of interest, is the application's to say with
+		same bytes, holding no copy of its own. Who receives (a room, a
+		team, an area of interest) is the application's to say with
 		`sessions`.
 
 		Nothing is thrown for one session. One not connected, closing, or in
 		`STREAM` mode is passed over; one the message takes past its
 		`maxOutputBufferSize` under the `THROW` `outputOverflowPolicy` is
-		sent it and not thrown for, its `bufferedAmount` says what waits,
+		sent it and not thrown for (its `bufferedAmount` says what waits),
 		and one under `CLOSE` is ended, as `send` would end it. A session
 		that closes during the broadcast is passed over, and the others are
 		each sent the message once.
@@ -1139,7 +1134,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		@throws ArgumentError If `message` is `null`.
 		@throws RangeError If `delivery` is unreliable or sequenced and the
 		        message is larger than one frame of a session it would go
-		        to, 1,200 bytes, 1,179 for an encrypted one, before it is
+		        to (1,200 bytes, 1,179 for an encrypted one), before it is
 		        sent to any.
 	**/
 	public function broadcast(message:PreparedDatagram, ?sessions:Array<ReliableDatagramSocket>, delivery:DeliveryMode = DeliveryMode.RELIABLE):Void {
@@ -1153,14 +1148,14 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			for (i in 0...count) {
 				var session:ReliableDatagramSocket = source[i];
 				if (__takesPrepared(session) && message.length > session.maxPayloadSize) {
-					throw new RangeError('An unreliable message must fit one frame of each session it goes to, ${session.maxPayloadSize} bytes for '
+					throw new RangeError('An unreliable message must fit one frame of each session it goes to: ${session.maxPayloadSize} bytes for '
 						+ '${session.encrypted ? "an encrypted" : "a"} session, and this one is ${message.length}; split it, or send it RELIABLE.');
 				}
 			}
 		}
 
-		// From a list of this call's own: a session closing as it is sent to,
-		// past its output limit, or a close listener closing another,
+		// From a list of this call's own: a session closing as it is sent to
+		// (past its output limit, or a close listener closing another)
 		// comes off the server's list, whose last session takes its place,
 		// and would be sent to twice or passed over. The list is kept for the
 		// next broadcast; one inside another, from a close listener, takes a
@@ -1208,9 +1203,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	// Every session filed here, each at the index it holds
-	// (`ReliableDatagramSocket.__listedAt`): what a broadcast walks, which
-	// walking the map would have it build a list of the keys for, natively
-	// a copy of all of them, every broadcast. And the list a broadcast walks,
+	// (`ReliableDatagramSocket.__listedAt`): what a broadcast walks, rather
+	// than the map, which would have it build a list of the keys (natively
+	// a copy of all of them) every broadcast. And the list a broadcast walks,
 	// kept from one to the next, and whether one is walking it.
 	@:noCompletion private var __sessionList:Array<ReliableDatagramSocket> = [];
 	@:noCompletion private var __broadcastList:Array<ReliableDatagramSocket> = [];
@@ -1264,10 +1259,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		is filed under the address it resolves to, and its handshake begun,
 		when the answer comes.
 
-		It used to be looked up in the call, on the runtime's thread, so every
-		session this server carries waited on the resolver, a second, for a
-		name that does not exist. What the call refused by throwing it now
-		reports on the session, which it has already handed over: a name that
+		Not looked up in the call, where every session this server carries
+		would wait on the resolver (a second, for a name that does not
+		exist). What the call would refuse by throwing it reports on the
+		session, which it has already handed over: a name that
 		does not resolve, an endpoint with a session here already, and a
 		`congestionControlFor` that throws, each asked about only once the
 		address is known.
@@ -1280,8 +1275,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		__dialling.push(socket);
 
 		Resolver.resolve(name, function(host:Null<Host>, failure:Null<String>):Void {
-			// Closed meanwhile, the session, the server with it, or the
-			// attempt at its deadline, and taken off the list then.
+			// Closed meanwhile (the session, the server with it, or the
+			// attempt at its deadline), and taken off the list then.
 			if (__dialling == null || !__dialling.remove(socket)) {
 				return;
 			}
@@ -1354,7 +1349,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`timeoutMs` is how long to keep asking. 0 or less sets no deadline, as
 		it does for a connection's `timeout`: the question is asked until it
 		is answered or this server closes, since nothing else ends a question
-		over UDP that nobody answers. It meant three seconds.
+		over UDP that nobody answers.
 
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
@@ -1385,8 +1380,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// The transaction id is what the reply will be believed by, and a weak
 		// one would let an off-path party who can guess it answer with an
 		// address of its choosing. Refusing beats falling back: this target
-		// still runs the reliable protocol, its sequence seeds degrade
-		// deliberately, being hardening rather than the security boundary,
+		// still runs the reliable protocol (its sequence seeds degrade
+		// deliberately, being hardening rather than the security boundary)
 		// but discovery's answer is only worth having if it cannot be forged.
 		if (!crossbyte.crypto.SecureRandom.isSupported) {
 			@:privateAccess future.__fail("Discovering a public address needs a cryptographically secure random source for the "
@@ -1401,11 +1396,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		var runtime:CrossByte = __tickRuntime();
 
 		// Where the question goes: `server`, or for a name the address it
-		// resolves to, null until then. The send used to be given the name,
-		// and looked it up off the runtime's thread, but a name that did not
-		// resolve then failed as an ioError on the socket every session
-		// shares, which told this question nothing, so it waited out its whole
-		// deadline. Looked up here, the failure is this question's.
+		// resolves to, null until then. Looked up here rather than by the
+		// send, so a name that does not resolve fails this question at once,
+		// not as an ioError on the socket every session shares, which tells
+		// this question nothing.
 		var target:Null<String> = server;
 		#if !nodejs
 		if (Resolver.needsLookup(server)) {
@@ -1451,7 +1445,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		#if !nodejs
 		if (target == null) {
 			Resolver.resolve(server, function(host:Null<Host>, failure:Null<String>):Void {
-				// Settled meanwhile, at its deadline, or with the server,
+				// Settled meanwhile (at its deadline, or with the server),
 				// or a later question asked since.
 				if (__stunQuery != query) {
 					return;
@@ -1489,7 +1483,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		The other candidate a peer can offer, and the one `discoverPublicAddress`
 		cannot produce. Two peers behind the same NAT discover reflexive
 		addresses on its outside, and dialling those means asking the NAT to
-		route a packet back in to the network it came from, hairpinning, which
+		route a packet back in to the network it came from (hairpinning), which
 		plenty of consumer equipment does not do. They are usually sitting on the
 		same subnet, one hop apart, and the address that works is the local one.
 
@@ -1506,8 +1500,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		a peer on this subnet and a peer across the internet are reached on
 		different interfaces, and this answers for the one named.
 		@return The local address, or a failure. For a server closed, unbound
-		or not listening, whose `localPort` is not settled, so the answer
-		would have nothing to pair with, the future is returned failed
+		or not listening (whose `localPort` is not settled, so the answer
+		would have nothing to pair with), the future is returned failed
 		already, its `cause` an `IOError`, rather than this throwing.
 	**/
 	public function localAddressFor(destination:String):Future<String> {
@@ -1537,7 +1531,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		Checks are separated from ordinary traffic before the reliable decode,
 		because a STUN message is not a reliable frame and would otherwise be
-		dropped as noise, and, in the other direction, anything the agent does
+		dropped as noise; and, in the other direction, anything the agent does
 		not recognise is passed straight on, since a peer keeps checking while
 		its session is already carrying data.
 
@@ -1558,11 +1552,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		The agent still needs its candidates and the peer's credentials, and
 		`start`, as `IceAgent` describes. `connected` fails when every pair
 		has, and when no pair has been selected `agent.timeout` seconds after
-		`start`: `IceAgent.DEFAULT_TIMEOUT`, 80, unless set, so code that
+		`start` (`IceAgent.DEFAULT_TIMEOUT`, 80, unless set), so code that
 		dials on it hears when it never will.
 
 		@param agent The agent to run. Its `onSend` is replaced.
-		@throws IOError if this server is closed, unbound, or not listening,
+		@throws IOError if this server is closed, unbound, or not listening:
 		the socket has to exist before anything can be sent from it.
 		@throws ArgumentError if an agent is already attached. Two agents on one
 		socket would each answer the other's checks.
@@ -1637,11 +1631,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
-		Sends one datagram from the port this server listens on, as it is,
+		Sends one datagram from the port this server listens on, as it is:
 		not a reliable frame, not through the relay.
 
 		For whatever `onDatagram` takes in: a protocol of the application's own
-		on this port has to answer from it, and the socket was not reachable.
+		on this port has to answer from it.
 
 		@throws IOError If the server is closed or not bound, or the send fails.
 	**/
@@ -1657,15 +1651,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Asks a TURN relay for an address, through the port this server listens
 		on, and reaches through it the peers hole punching cannot.
 
-		The README offers hole punching on these sockets, and for most pairs of
-		peers it works. For a peer behind a symmetric NAT or a carrier's CGNAT,
-		a fresh mapping per destination, so the address one peer learns of the
-		other is never the one it would reach, it does not, and there was no
-		relay to fall back to: wiring a `TurnClient` in meant reaching into this
-		class, and two steps could not be written at all, since the relay's
-		answers went to the reliable decoder (or to an attached agent, which
-		took every STUN message) and a session could only send straight to its
-		peer.
+		For most pairs of peers hole punching on these sockets works. For a
+		peer behind a symmetric NAT or a carrier's CGNAT (a fresh mapping
+		per destination, so the address one peer learns of the other is
+		never the one it would reach) it does not, and this is the relay to
+		fall back to: its answers reach the client rather than the reliable
+		decoder or an attached agent, and a session can send through it.
 
 		Once the relay lends an address:
 		- `relayedCandidate` is that address, for the peer to be told of;
@@ -1673,7 +1664,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		  relay, and a peer's CONNECT that arrives through it opens one that
 		  answers the same way;
 		- an attached `IceAgent` checks from the relayed candidate too, so a
-		  pair through the relay is found like any other, dial the peer with
+		  pair through the relay is found like any other: dial the peer with
 		  `connectRelayed` when the pair ICE chose is the relayed one;
 		- the relay's requests, refreshes and permissions run on the runtime's
 		  tick, and a relay that goes away closes the sessions that ran through
@@ -1685,7 +1676,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		@param useChannels See `TurnClient.useChannels`.
 		@param transport How the relay is reached: UDP when left out, or TCP
-		or TLS for a network that lets nothing else out, what it relays is
+		or TLS for a network that lets nothing else out: what it relays is
 		UDP either way, and a session's datagrams are the same datagrams. A
 		TLS relay's certificate is checked; see `relayCertAuthority` and
 		`relayVerifyCert`.
@@ -1805,8 +1796,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Lets a peer at `address` reach this server through the relay.
 
 		A relay forwards nothing from a peer it has not been told to expect. A
-		peer this server sends to, a session dialled with `connectRelayed`, a
-		check the agent sent, is permitted on the way; one that is to dial
+		peer this server sends to (a session dialled with `connectRelayed`, a
+		check the agent sent) is permitted on the way; one that is to dial
 		first has to be named here, from whatever the signalling said.
 
 		@throws IOError When there is no relay holding an address.
@@ -1826,7 +1817,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		arriving the same way.
 
 		For a peer no direct path reaches. `address` and `port` are where the
-		relay is to send, the peer's own relayed address, or whatever address
+		relay is to send: the peer's own relayed address, or whatever address
 		of its a pair ICE chose through the relay names.
 
 		@param timeoutMs As for `connect`: 20 seconds unless given, and 0 for
@@ -1877,13 +1868,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		Frees the relay's allocation, ending first each session that reached
-		its peer through it, at once, as `ReliableDatagramSocket.abort()` does,
-		each with a FIN, while the relay can still carry one.
+		its peer through it, at once, as `ReliableDatagramSocket.abort()`
+		does, each with a FIN, while the relay can still carry one.
 
 		It may be called from any thread, as `close()` may, and is handed to
-		the runtime the same way. Made elsewhere, it took the relay's tick off
-		the runtime from the wrong thread, and failed an `allocateRelay` still
-		waiting there, running its handlers on that thread.
+		the runtime the same way, so the relay's tick comes off its own
+		runtime, and an `allocateRelay` still waiting fails there, with its
+		handlers run on that runtime's thread.
 	**/
 	public function releaseRelay():Void {
 		var released = relay;
@@ -1950,7 +1941,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		The relay lost its allocation. The sessions that ran through it end
-		with it, each told why and none sent a FIN, what would carry it is
+		with it, each told why and none sent a FIN: what would carry it is
 		what just went.
 	**/
 	@:noCompletion private function __relayLost(client:TurnClient, reason:String):Void {
@@ -1970,8 +1961,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		One datagram for the relay to forward to a peer, permitting the peer
 		first. A channel, where the relay was asked to use them, is the
 		client's own business: `sendTo` asks for one with the first datagram
-		to a peer, and `poll` renews it. This asked as well, before every
-		datagram, which cost a second lookup of the peer's channel each time.
+		to a peer, and `poll` renews it.
 	**/
 	@:noCompletion private function __sendRelayed(client:TurnClient, bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
 		client.permit(address, haxe.Timer.stamp());
@@ -2028,8 +2018,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Whether this datagram was the reply to an outstanding STUN query.
 
 		Checked before the reliable-protocol decode, because a STUN message is
-		not one of those and would otherwise be dropped as noise, which is
-		exactly what happened to it before this existed.
+		not one of those and would otherwise be dropped as noise.
 	**/
 	@:noCompletion private function __takeStunReply(message:StunMessage):Bool {
 		if (__stunFuture == null || __stunQuery == null) {
@@ -2064,10 +2053,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	// key, is what everything else reads; the two change together, through
 	// `__file` and `__unfile`.
 	@:noCompletion private var __byHost:StringMap<haxe.ds.IntMap<ReliableDatagramSocket>> = new StringMap();
-	// How many sessions each host in `__byHost` has. Whether a host had any
-	// left was asked of its map, and asking a map whether it is empty copies
-	// all of it natively: on every close, for every session behind the same
-	// address, a carrier NAT puts many players behind one.
+	// How many sessions each host in `__byHost` has, so whether a host has
+	// any left is not asked of its map: asking a map whether it is empty
+	// copies all of it natively, on every close, for every session behind
+	// the same address (a carrier NAT puts many players behind one).
 	@:noCompletion private var __byHostCount:StringMap<Int> = new StringMap();
 
 	/** Files `socket` under its endpoint, in both maps. **/
@@ -2121,8 +2110,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	**/
 	@:noCompletion public function __receiveDatagram(data:ByteArray, address:String, port:Int):Void {
 		// The datagram is the sessions' to take its payload from, unless
-		// something else has decoded it, a hook of the application's, or
-		// the STUN decode below, which reads it in place.
+		// something else has decoded it (a hook of the application's, or
+		// the STUN decode below, which reads it in place).
 		var owned:Bool = true;
 
 		// First, whatever the application routes itself.
@@ -2159,8 +2148,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 					}
 
 					// The relay's: its answers, and what it forwards as Data
-					// indications. Before the agent, which used to take every
-					// STUN message there was, the relay's answers included.
+					// indications. Before the agent, which takes every STUN
+					// message there is, the relay's answers included.
 					if (relay != null && relay.receive(data, address, port, haxe.Timer.stamp(), message)) {
 						return;
 					}
@@ -2200,7 +2189,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		@param owned Whether nobody else reads `data` during this call, so a
 		frame may take it for its payload, moved down within it. Either way
 		`data` is valid only during the call: a session copies what it
-		keeps, a frame past a gap, a fragment, a CONNECT's payload.
+		keeps: a frame past a gap, a fragment, a CONNECT's payload.
 	**/
 	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>, owned:Bool = false):Void {
 		var connection:ReliableDatagramSocket = __sessionAt(address, port);
@@ -2279,7 +2268,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	// What its encrypted sessions seal into and open into, shared by all of
-	// them, one runtime, one datagram at a time, rather than a buffer of
+	// them (one runtime, one datagram at a time) rather than a buffer of
 	// each; the second taken afresh while it is out. See
 	// `ReliableDatagramSocket.__sealBuffer`.
 	@:noCompletion private var __sealed:ByteArray = null;
@@ -2287,8 +2276,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private var __openedOut:Bool = false;
 
 	// The payload a frame is copied out into when it cannot take the
-	// datagram itself, an application's onDatagram, or the relay, saw it
-	// first, one for the server, filled again for each; and whether it is
+	// datagram itself (an application's onDatagram, or the relay, saw it
+	// first): one for the server, filled again for each; and whether it is
 	// out, when a frame gets one of its own.
 	@:noCompletion private var __copy:ByteArray = null;
 	@:noCompletion private var __copyOut:Bool = false;
@@ -2343,8 +2332,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			// A CONNECT with a new id, from the address and port of a session
 			// already here: not from the peer that session was made for, which
 			// sends its own id every time. Either that peer restarted and this
-			// session is left over, and would take every CONNECT the new one
-			// sends, answer none, and be kept alive by them, or somebody is
+			// session is left over (and would take every CONNECT the new one
+			// sends, answer none, and be kept alive by them) or somebody is
 			// claiming the address. The old peer is asked, and the CONNECT that
 			// finds no answer due replaces the session.
 			if (!__replaceable(connection)) {
@@ -2418,7 +2407,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		// The session's key, if it has one; and no session where only one
-		// side would encrypt, see `encryptionKeyFor`.
+		// side would encrypt: see `encryptionKeyFor`.
 		payload.position = 0;
 		var key:Null<haxe.io.Bytes> = null;
 		try {
@@ -2482,7 +2471,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	/**
 		Whether a CONNECT is from another attempt than the one `connection` was
 		made for: both carry ids, and they differ. A CONNECT from an older
-		build carries none, and is taken by the session as it always was.
+		build carries none, and is taken by the session as any CONNECT is.
 	**/
 	@:noCompletion private static inline function __isAnotherAttempt(connection:ReliableDatagramSocket, frame:ReliableDatagramFrame):Bool {
 		var id:Int = frame.sequence;
@@ -2493,7 +2482,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Whether a session sent a CONNECT with a new id may be replaced: asked
 		its old peer whether it is still there, gave it the time to answer,
 		and heard nothing. The first such CONNECT asks, and the one that finds
-		the answer overdue and missing replaces it, a restarted peer is let
+		the answer overdue and missing replaces it: a restarted peer is let
 		back in on its next attempt, a few seconds on. A peer still there
 		answers, and keeps its session however many CONNECTs someone sends in
 		its name; asking again at most once a window, so they cannot make this
@@ -2524,7 +2513,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 	}
 
-	// The keys cookies, and rebind challenges, are made with: the one in
+	// The keys cookies (and rebind challenges) are made with: the one in
 	// use, and the one before it, which is still accepted. Made when first
 	// needed, and turned over every `__pathKeyPeriod` seconds; a cookie says
 	// which of the two made it in its top bit, the turnover's parity.
@@ -2544,8 +2533,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private var __macHigh:Int = 0;
 	@:noCompletion private var __macLow:Int = 0;
 
-	// The frames this server sends about an address, cookies, rebinds'
-	// answers, written here.
+	// The frames this server sends about an address (cookies, rebinds'
+	// answers), written here.
 	@:noCompletion private var __pathScratch:ByteArray = null;
 
 	/** What each kind of keyed hash starts with, so one can never pass for another. **/
@@ -2658,7 +2647,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		A rebind key for the session a peer with `connectionId` is opening,
-		filed by that id; null, the session cannot rebind, while rebinding
+		filed by that id; null (the session cannot rebind) while rebinding
 		is not allowed, with no secure random source, or when another session
 		that may rebind has the same id, which 32 random bits make rare.
 	**/
@@ -2769,8 +2758,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
-		Whether another REBIND may be checked this pass, a keyed hash for
-		the challenge and another for the proof, counting it if so. The
+		Whether another REBIND may be checked this pass (a keyed hash for
+		the challenge and another for the proof), counting it if so. The
 		count starts again when the runtime's pass ends.
 	**/
 	@:noCompletion private function __mayCheckRebind():Bool {
@@ -2794,8 +2783,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 	/**
 		Files `session` under the address and port its peer is at now, out of
-		everything it was filed under at the old one, the endpoint maps, the
-		host's count, the pending set, and through `via`, the relay it now
+		everything it was filed under at the old one (the endpoint maps, the
+		host's count, the pending set), and through `via`, the relay it now
 		reaches its peer through, or none.
 	**/
 	@:noCompletion private function __moveSession(session:ReliableDatagramSocket, address:String, port:Int, via:Null<TurnClient>):Void {
@@ -2864,9 +2853,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Tells a peer sending as though it had a session here that it has none,
 		with a FIN, which ends the session on its side at once.
 
-		Without it a peer whose session this side had closed or never had,
-		the server restarted, or gave the session up, went on sending into
-		nothing until its own timeout ran out. A FIN is the size of the
+		Without it a peer whose session this side had closed or never had
+		(the server restarted, or gave the session up) would go on sending
+		into nothing until its own timeout ran out. A FIN is the size of the
 		smallest frame that can draw one, so answering gains a sender nothing
 		it could not send itself. Never sent for a FIN that ends a session at
 		once, which is what this sends: two sides that each thought the other
@@ -2875,8 +2864,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		will give, often from a session that took the FIN and went, its
 		answer lost on the way.
 
-		Sent only within the process's allowance, `maxResetsPerSecond`: one
-		was sent for every frame from a stranger, however many came.
+		Sent only within the process's allowance, `maxResetsPerSecond`,
+		however many frames come from strangers.
 	**/
 	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>,
 			withChallenge:Bool = true):Void {
@@ -2943,7 +2932,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// Only sessions a peer opened to us. A session `connect()` dialled is
 		// registered here too, because that is how its replies get routed, but
 		// it was initiated rather than accepted, and whoever dialled it
-		// already holds it. Announcing it as a new arrival would have every
+		// already holds it: announcing it as a new arrival would have every
 		// caller wire it up twice.
 		if (!socket.__incoming) {
 			return;

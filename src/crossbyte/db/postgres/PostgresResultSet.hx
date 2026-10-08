@@ -11,10 +11,9 @@ import sys.db.ResultSet;
 	object with a field per column, holding the column's text, or `null` for
 	NULL, or, on PHP, what PDO makes of it.
 
-	It was `Dynamic`, so every `hasNext()` and `next()` was a call looked up
-	by name; it is a `sys.db.ResultSet` now, like the other drivers'
-	`request()`. `getResult(n)` and its kin read field `n` of the row `next()`
-	last gave, in column order.
+	A `sys.db.ResultSet`, like the other drivers' `request()`.
+	`getResult(n)` and its kin read field `n` of the row `next()` last
+	gave, in column order.
 **/
 class PostgresResultSet #if !js implements ResultSet #end {
 	/** How many rows it holds. **/

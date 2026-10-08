@@ -9,10 +9,9 @@ import utest.Assert;
 
 /**
 	What a WebSocket peer closed with reaches the connection, and the RPC
-	calls its closing fails. A `NetConnection` over a WebSocket told
-	`onClose` `Reason.Closed` whatever the close frame said, so a gateway
-	could not tell a backend going away (1001) from one refusing it by
-	policy (1008), and neither could a call that failed because of it.
+	calls its closing fails, rather than `Reason.Closed` whatever the close
+	frame said: a gateway can tell a backend going away (1001) from one
+	refusing it by policy (1008), and so can a call that failed because of it.
 
 	The close is dispatched on the socket as its session dispatches it, so
 	this needs no peer: whether a CrossByte peer writes the code into its

@@ -21,7 +21,7 @@ private typedef FpmRequest = {
  * cases about when the bridge connects and when it reads drive it against a
  * plain blocking backend, and run on eval as well: the bridge connects on a
  * thread of its own and reads only what the runtime's poll set reports, so a
- * socket eval cannot make non-blocking no longer stalls it.
+ * socket eval cannot make non-blocking does not stall it.
  */
 class PHPExchangeTest extends utest.Test {
 	#if !(js && !nodejs)
@@ -38,11 +38,10 @@ class PHPExchangeTest extends utest.Test {
 		Assert.isTrue(exchange.receive(records, records.length), "END_REQUEST was not recognised");
 		var response = exchange.response();
 
-		// PHP sends one Set-Cookie line per cookie, and each one used to
-		// overwrite the one before it, so only the last reached the client.
-		// Joined with a newline because a cookie carries commas of its own,
-		// the Expires date here has one, and a comma join could not be split
-		// apart again.
+		// PHP sends one Set-Cookie line per cookie, and each must reach the
+		// client, not overwrite the one before it. Joined with a newline because
+		// a cookie carries commas of its own (the Expires date here has one), and
+		// a comma join could not be split apart again.
 		Assert.equals("session=abc; Path=/; HttpOnly\ntheme=dark; Expires=Wed, 21 Oct 2037 07:28:00 GMT", response.headers.get("set-cookie"));
 		Assert.equals("Accept, Cookie", response.headers.get("vary"));
 		Assert.equals(201, response.status);
@@ -50,9 +49,9 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	public function testABinaryBodyPassesThroughUntouched():Void {
-		// A PNG: NULs, 0xFF, and sequences that are not UTF-8. The body used to
-		// be decoded as UTF-8 and re-encoded, which on Node turned these 23
-		// bytes into 8 and on eval threw from inside the tick.
+		// A PNG: NULs, 0xFF, and sequences that are not UTF-8. Decoded as UTF-8
+		// and re-encoded, these 23 bytes would become 8 on Node and throw from
+		// inside the tick on eval.
 		var body:Bytes = Bytes.ofHex("89504e470d0a1a0a0000000d49484452ff00fe80c3289f");
 		var response = __respond(__cgi("Status: 200 OK\r\nContent-Type: image/png\r\n\r\n", body));
 
@@ -132,10 +131,10 @@ class PHPExchangeTest extends utest.Test {
 
 	/**
 		A response past its limit fails as it arrives, the bytes past the
-		limit never held. Nothing bounded one: a script, or a backend not
-		running PHP at all, chose how much of the server's memory each
-		request took, and the server held it whole, and then twice over as
-		the body was taken from it.
+		limit never held. Unbounded, a script (or a backend not running PHP at
+		all) would choose how much of the server's memory each request took,
+		and the server would hold it whole, and then twice over as the body was
+		taken from it.
 	**/
 	public function testAResponsePastItsLimitFailsAsItArrives():Void {
 		var small = __records(__cgiBytes(Bytes.ofString("Content-Type: text/plain\r\n\r\n"), Bytes.alloc(3000)));
@@ -163,9 +162,9 @@ class PHPExchangeTest extends utest.Test {
 
 	/**
 		A header block past 64 KB, or of more than a hundred lines, fails as
-		it arrives. 40,000 lines of one field were taken and joined each onto
-		the whole value so far, quadratic in the lines: 5.6 s on the runtime's
-		thread, measured. They are joined once, at the end, now too.
+		it arrives. Repeated lines are joined once, at the end: joining 40,000
+		lines of one field each onto the whole value so far is quadratic, and
+		would take seconds on the runtime's thread.
 	**/
 	public function testAHeaderBlockPastItsLimitsFails():Void {
 		var flood = new StringBuf();
@@ -197,9 +196,9 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	public function testALargeRequestIsSplitIntoRecordsPhpFpmCanRead():Void {
-		// A record's length field is sixteen bits. The whole body went in one
-		// STDIN record, so a 100,000-byte POST declared 34,464 bytes and
-		// php-fpm read the rest of the body as record headers.
+		// A record's length field is sixteen bits, so the body is split across
+		// STDIN records: in one, a 100,000-byte POST would declare 34,464 bytes
+		// and php-fpm would read the rest of the body as record headers.
 		var body:Bytes = Bytes.alloc(100000);
 
 		for (i in 0...body.length) {
@@ -250,9 +249,9 @@ class PHPExchangeTest extends utest.Test {
 	#if (cpp || jvm)
 	public function testALargeUploadIsWrittenAsTheBackendReadsIt():Void {
 		// Bigger than any socket send buffer, to a backend that has not started
-		// reading yet. The request used to be written in one burst on a
-		// non-blocking socket, which refuses what does not fit: the upload
-		// failed at once as "Could not reach the PHP backend", a 502.
+		// reading yet. Written in one burst on a non-blocking socket, which
+		// refuses what does not fit, the upload would fail at once as "Could not
+		// reach the PHP backend", a 502.
 		var listener = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
 		listener.listen(1);
@@ -327,7 +326,7 @@ class PHPExchangeTest extends utest.Test {
 		Assert.equals(body.length, request.stdin.length);
 		Assert.equals(0, request.stdin.compare(body));
 
-		// Answer, and the exchange completes as it always did.
+		// Answer, and the exchange completes.
 		var answer = new BytesBuffer();
 		var cgi:Bytes = Bytes.ofString("Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nstored");
 		__header(answer, 6, cgi.length);
@@ -362,9 +361,9 @@ class PHPExchangeTest extends utest.Test {
 	public function testAReplyIsReadWhenItArrivesRatherThanAtTheNextTick():Void {
 		// Answered at once, and then the runtime's sockets polled without a
 		// single tick, which is how a server's loop spends the time between
-		// ticks. The reply was read from a tick listener, so it waited there
-		// for the next tick: up to 84ms, 42ms on average, at the default
-		// twelve a second, however quickly PHP had answered.
+		// ticks. Read from a tick listener, the reply would wait there for the
+		// next tick: up to 84ms, 42ms on average, at the default twelve a
+		// second, however quickly PHP had answered.
 		var backend = new BlockingBackend();
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 10);
 		var future = bridge.execute(__request());
@@ -410,13 +409,13 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	public function testABackendNameThatDoesNotResolveDoesNotHoldExecute():Void {
-		// The backend's name was looked up, and connected to, inside execute(),
-		// on the runtime's thread, so a name that does not resolve held it
-		// for as long as the resolver took, a second being ordinary, and the
-		// exchange failed from inside the call. Both are done on the bridge's
-		// connector thread now, and the failure arrives afterwards. Under
-		// `.invalid`, which never resolves (RFC 6761), and fresh each run, so
-		// no resolver has the answer cached.
+		// The backend's name is looked up, and connected to, on the bridge's
+		// connector thread, not inside execute() on the runtime's thread, where
+		// a name that does not resolve would hold it for as long as the resolver
+		// took, a second being ordinary, and the exchange would fail from inside
+		// the call. The failure arrives afterwards. Under `.invalid`, which never
+		// resolves (RFC 6761), and fresh each run, so no resolver has the answer
+		// cached.
 		var name:String = "crossbyte-php-" + Std.random(0x3FFFFFFF) + ".invalid";
 		var bridge = new PHPBridge(PHPMode.Connect(name, 9000), "", ["index.php"], 30);
 
@@ -469,8 +468,8 @@ class PHPExchangeTest extends utest.Test {
 
 	/**
 		Exchanges with the backend are bounded: past `maxExchanges` a request
-		waits for one to end, and only then connects. Every request opened a
-		connection of its own, however many were already waiting on a backend
+		waits for one to end, and only then connects, rather than opening a
+		connection of its own however many are already waiting on a backend
 		that answers one at a time.
 	**/
 	public function testExchangesWithTheBackendAreBounded():Void {
@@ -504,7 +503,7 @@ class PHPExchangeTest extends utest.Test {
 
 	/**
 		Past `MAX_WAITING` behind the exchanges with the backend, a request is
-		refused at once, as busy, a `PHPBusy` the handler can tell from a
+		refused at once, as busy: a `PHPBusy` the handler can tell from a
 		backend that answered badly.
 	**/
 	public function testARequestPastAFullQueueIsRefusedAsBusy():Void {
@@ -533,17 +532,17 @@ class PHPExchangeTest extends utest.Test {
 	}
 
 	/**
-		A pass reads its budget of a response at most, and tells the
-		loop there is more. A backend sending fast was read for as long as it
-		sent, the whole runtime waiting.
+		A pass reads its budget of a response at most, and tells the loop
+		there is more, rather than reading a backend sending fast for as long as
+		it sends, the whole runtime waiting.
 	**/
 	public function testAPassReadsTheBudgetAndLeavesTheRest():Void {
 		var backend = new BlockingBackend();
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 20);
 		// A budget small enough that what the system's buffers hold at once
-		// is more than it, wherever this runs: Linux's loopback took the
-		// answer a little at a time, and no pass met a budget of a megabyte
-		// (CI, 2026-10-04). The bytes are the same four megabytes.
+		// is more than it, wherever this runs: Linux's loopback can take the
+		// answer a little at a time, so that no pass meets a budget of a
+		// megabyte. The bytes are the same four megabytes.
 		@:privateAccess bridge.__readBudget = 16 * 1024;
 		var future = bridge.execute(__request());
 		var peer = backend.accept();

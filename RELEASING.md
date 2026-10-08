@@ -13,9 +13,9 @@ What a release needs, in the order it needs it.
    `main` branches.
 3. **CI green on every job**, including the ones that only run there: the
    native suite on Windows, Linux and macOS, the browser suite, the
-   database suites. Check each step ran for as long as a real run takes; a
-   step that finishes in seconds may have run nothing. "CI" below says how
-   a failure reads.
+   database suites. Check that each step ran for as long as a real run
+   takes; a step that finishes in seconds may have run nothing. "Reading a
+   CI failure" below says how a failure reads.
 
 ## The release commit
 
@@ -36,7 +36,7 @@ This writes `dist/crossbyte-<version>.zip` from the committed tree (see
 `ci/Package.hx`), and refuses to run over uncommitted changes to what it
 packages. Before submitting it, install it into an empty haxelib
 repository beside the fork's hxcpp and build a sample with `-lib crossbyte`
-alone: that is the check that nothing a user's build reads was left out.
+alone: that checks that nothing a user's build reads was left out.
 
 ```sh
 haxelib submit dist/crossbyte-<version>.zip
@@ -48,27 +48,30 @@ Publish a GitHub release for the tag with the version's changelog section.
 `haxelib submit` needs lib.haxe.org; CI does not (below), but a release
 waits for the registry.
 
-## CI
+## How CI gets its libraries
 
-- **The Haxe libraries CI uses** (utest, hxjava, hxnodejs, dox) are listed
-  in `ci/haxelibs.txt`, each with its exact version, its GitHub repository
-  and the commit of that version. `.github/actions/haxelibs` installs them
-  from a cache keyed on that list; on a miss, from GitHub at the commit
+- **The Haxe libraries** (utest, hxjava, hxnodejs, dox) are listed in
+  `ci/haxelibs.txt`, each with its exact version, its GitHub repository and
+  the commit of that version. `.github/actions/haxelibs` installs them from
+  a cache keyed on that list; on a miss, from GitHub at the commit
   (`haxelib git`); and only if GitHub cannot supply the commit, from
-  lib.haxe.org. So CI does not need the registry: on 2026-10-04 its API was
-  down for most of the day, and every job failed at its first install. To
-  change a version, find the commit of that release and check that it is
-  the registry's release (ci/haxelibs.txt says how each was checked), then
-  edit the list: the next run on each OS installs that one library, and
-  every run after takes it from the cache. Adding or dropping a library
-  installs all of them, once. GitHub drops a cache unused for seven days.
+  lib.haxe.org. So CI keeps working while the registry is down.
+- **To change a version**, find the commit of that release and check that
+  it is the registry's release (`ci/haxelibs.txt` says how each was
+  checked), then edit the list. The next run on each OS installs that one
+  library, and every run after takes it from the cache. Adding or dropping
+  a library installs all of them, once. GitHub drops a cache unused for
+  seven days.
 - **hxcpp** comes from the fork's git repository on GitHub, through
   `.github/actions/hxcpp`. `haxelib git` asks the registry only for a
   library's dependencies, and hxcpp has none.
-- **The step that fails is the step whose command failed.** A step that
-  runs several commands names the one that failed in an error annotation.
-  bash steps stop at the first command that fails. pwsh steps do not stop
-  at a failing native command, so each runs one; and because the runner
-  reports any failing pwsh step as exit code 1, a step that runs a test or
-  a sample prints the code in full: `0xC0000005` is an access violation,
-  `0xC0000409` a fail-fast abort, `0xC00000FD` a stack overflow.
+
+## Reading a CI failure
+
+The step that fails is the step whose command failed. A step that runs
+several commands names the one that failed in an error annotation. bash
+steps stop at the first command that fails. pwsh steps do not stop at a
+failing native command, so each runs one; and because the runner reports
+any failing pwsh step as exit code 1, a step that runs a test or a sample
+prints the code in full: `0xC0000005` is an access violation, `0xC0000409`
+a fail-fast abort, `0xC00000FD` a stack overflow.

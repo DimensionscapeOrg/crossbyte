@@ -16,16 +16,16 @@ class HpackTest extends utest.Test {
 	// ---------------------------------------------------------- primitives
 
 	public function testPrefixCodedIntegersMatchTheAppendixCExamples():Void {
-		// C.1.1, 10 in a 5-bit prefix fits inside the prefix.
+		// C.1.1: 10 in a 5-bit prefix fits inside the prefix.
 		Assert.equals("0a", hex(encodeInteger(10, 5, 0x00)));
 		Assert.equals(10, decodeInteger("0a", 5));
 
-		// C.1.2, 1337 does not, so the prefix saturates and continuation
+		// C.1.2: 1337 does not, so the prefix saturates and continuation
 		// bytes carry the remainder.
 		Assert.equals("1f9a0a", hex(encodeInteger(1337, 5, 0x00)));
 		Assert.equals(1337, decodeInteger("1f9a0a", 5));
 
-		// C.1.3, 42 in an 8-bit prefix, starting at a byte boundary.
+		// C.1.3: 42 in an 8-bit prefix, starting at a byte boundary.
 		Assert.equals("2a", hex(encodeInteger(42, 8, 0x00)));
 		Assert.equals(42, decodeInteger("2a", 8));
 	}
@@ -38,12 +38,12 @@ class HpackTest extends utest.Test {
 	}
 
 	public function testHuffmanRoundTripsAndMatchesTheAppendixCoding():Void {
-		// C.4.1, the Huffman form of "www.example.com".
+		// C.4.1: the Huffman form of "www.example.com".
 		var coded:Bytes = HpackHuffman.encode(Bytes.ofString("www.example.com"));
 		Assert.equals("f1e3c2e5f23a6ba0ab90f4ff", hex(coded));
 		Assert.equals("www.example.com", HpackHuffman.decode(coded, 0, coded.length).toString());
 
-		// C.6.1, a date, which is where a wrong code length usually shows up
+		// C.6.1: a date, which is where a wrong code length usually shows up
 		// first because of the mixed punctuation.
 		var date:Bytes = HpackHuffman.encode(Bytes.ofString("Mon, 21 Oct 2013 20:13:21 GMT"));
 		Assert.equals("d07abe941054d444a8200595040b8166e082a62d1bff", hex(date));
@@ -106,7 +106,7 @@ class HpackTest extends utest.Test {
 		Assert.equals(57, encoder.tableSize);
 		Assert.equals(57, decoder.tableSize);
 
-		// C.3.2, the repeated fields now cost one byte each, and
+		// C.3.2: the repeated fields now cost one byte each, and
 		// cache-control joins the table.
 		var second = [
 			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/"),
@@ -116,7 +116,7 @@ class HpackTest extends utest.Test {
 		Assert.equals(110, encoder.tableSize);
 		Assert.equals(110, decoder.tableSize);
 
-		// C.3.3, a custom name and value, neither in any table.
+		// C.3.3: a custom name and value, neither in any table.
 		var third = [
 			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "https"), new HpackHeader(":path", "/index.html"),
 			new HpackHeader(":authority", "www.example.com"), new HpackHeader("custom-key", "custom-value")
@@ -145,10 +145,10 @@ class HpackTest extends utest.Test {
 	}
 
 	public function testStaticPairsAreFoundExactly():Void {
-		// Pairs were looked up by name and value joined with a NUL, and a
-		// HashLink string ends at its first NUL: every pair of one name read
-		// as the name alone, the last entry won, and hl sent `:method GET` as
-		// POST and `:status 200` as 500.
+		// Pairs are not looked up by name and value joined with a NUL: a
+		// HashLink string ends at its first NUL, so every pair of one name would
+		// read as the name alone, the last entry would win, and hl would send
+		// `:method GET` as POST and `:status 200` as 500.
 		Assert.equals(2, HpackStaticTable.findPair(":method", "GET"));
 		Assert.equals(3, HpackStaticTable.findPair(":method", "POST"));
 		Assert.equals(6, HpackStaticTable.findPair(":scheme", "http"));
@@ -176,9 +176,9 @@ class HpackTest extends utest.Test {
 
 	/**
 		A NUL inside a string literal is decoded with the rest, plain or
-		Huffman-coded. JavaScript's `Bytes.toString` stops at a NUL, so the
-		field arrived as the part before it, the NUL that makes it malformed
-		never reached the rules that refuse it.
+		Huffman-coded. JavaScript's `Bytes.toString` stops at a NUL, so read
+		that way the field would arrive as the part before it, and the NUL
+		that makes it malformed would never reach the rules that refuse it.
 	**/
 	public function testANulInAStringIsDecodedWithTheRest():Void {
 		var nul:String = String.fromCharCode(0);
@@ -273,11 +273,11 @@ class HpackTest extends utest.Test {
 	}
 
 	public function testABlockPastTheListLimitStillAdvancesTheTable():Void {
-		// Refusing the block by throwing left it half read, so the table
-		// stopped wherever the limit fell and every later block on the
-		// connection decoded against the wrong entries: the connection had
-		// to die with the one request. Decoded to the end, the next block is
-		// read exactly as the peer wrote it.
+		// The block is decoded to the end, not refused by throwing half read:
+		// that would stop the table wherever the limit fell, and every later
+		// block on the connection would decode against the wrong entries, so
+		// the connection would have to die with the one request. Decoded to the
+		// end, the next block is read exactly as the peer wrote it.
 		var decoder = new HpackDecoder(4096, 300);
 		var encoder = new HpackEncoder(4096);
 
@@ -340,8 +340,8 @@ class HpackTest extends utest.Test {
 
 	public function testResizeBelowNothingEmptiesTheTableAndEnds():Void {
 		// A SETTINGS_HEADER_TABLE_SIZE of 2^31 or more reads negative as an
-		// Int, and resizing to it evicted forever: an empty table's size is 0,
-		// still more than -1. Below nothing is nothing.
+		// Int, and resizing to it must not evict forever: an empty table's size
+		// is 0, still more than -1. Below nothing is nothing.
 		var table = new HpackDynamicTable(4096);
 		table.add(new HpackHeader("aaa", "bbb"));
 		table.resize(-1);

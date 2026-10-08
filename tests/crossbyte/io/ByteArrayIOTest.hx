@@ -49,9 +49,9 @@ class ByteArrayIOTest extends utest.Test {
 
 	/**
 		The unsigned range at each edge where the encoded length changes and
-		at the top bit. The writer looped while a signed `v > 0x7F`, so a
-		value with bit 31 set went out as one byte, and `varUIntSize` sized it
-		as one; the reader refused everything from 2^31 up.
+		at the top bit. A writer looping while a signed `v > 0x7F` would send a
+		value with bit 31 set as one byte, `varUIntSize` would size it as one,
+		and a reader must not refuse everything from 2^31 up.
 	**/
 	public function testVarUIntRoundTripsTheWholeUnsignedRange():Void {
 		var values:Array<Int> = [0, 0x7F, 0x80, 0x3FFF, 0x4000, 1 << 30, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF];
@@ -81,9 +81,9 @@ class ByteArrayIOTest extends utest.Test {
 	}
 
 	/**
-		ZigZag over every Int. 1 << 30 maps to 0x80000000, which the writer
-		sent as a single byte that read back as 0; the reader refused what
-		any value at or past 2^30 in magnitude maps to.
+		ZigZag over every Int. 1 << 30 maps to 0x80000000, which must go out
+		as more than a single byte, and the reader must accept what any value
+		at or past 2^30 in magnitude maps to.
 	**/
 	public function testVarIntRoundTripsTheWholeIntRange():Void {
 		var values:Array<Int> = [0, 1, -1, 63, -64, 64, -65, 1 << 29, -(1 << 29), 1 << 30, -(1 << 30), 0x7FFFFFFF, 0x80000000];
@@ -102,12 +102,11 @@ class ByteArrayIOTest extends utest.Test {
 	}
 
 	/**
-		One name, one format. `ByteArray`'s unsigned varint was called
-		`readVarInt`/`writeVarInt`, the names `ByteArrayInput` and
-		`ByteArrayOutput` give ZigZag, so code moved from one class to the
-		other compiled and read every negative number wrong. It is
-		`readVarUInt`/`writeVarUInt` in all three now, and what one class
-		writes the others read.
+		One name, one format: `readVarUInt`/`writeVarUInt` in all three classes,
+		and what one class writes the others read. Were `ByteArray`'s unsigned
+		varint called `readVarInt`/`writeVarInt`, the names `ByteArrayInput` and
+		`ByteArrayOutput` give ZigZag, code moved from one class to the other
+		would compile and read every negative number wrong.
 	**/
 	public function testVarUIntIsOneFormatInEveryClass():Void {
 		var values:Array<Int> = [0, 1, 0x7F, 0x80, 300, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF];
@@ -164,10 +163,10 @@ class ByteArrayIOTest extends utest.Test {
 	}
 
 	/**
-		An object of any size, in either endian. HXSF and JSON text was framed
-		as writeUTF frames a string, behind a 16-bit length, so writeObject
-		threw a RangeError for anything past 65,535 bytes of it, a list of a
-		few thousand records, and nothing documented a limit.
+		An object of any size, in either endian. HXSF and JSON text framed as
+		writeUTF frames a string, behind a 16-bit length, would make writeObject
+		throw a RangeError for anything past 65,535 bytes of it (a list of a few
+		thousand records).
 	**/
 	public function testAMegabyteObjectRoundTrips():Void {
 		var text:String = StringTools.lpad("", "abcdefgh", 1 << 20);
@@ -235,8 +234,8 @@ class ByteArrayIOTest extends utest.Test {
 	/**
 		An object nested more than 256 levels deep is refused with an
 		IOError, in every encoding, and its bytes are consumed; one within the
-		limit reads. Unbounded, a peer's object nested a few thousand deep,
-		12 KB, overflowed the stack natively and ended the process reading
+		limit reads. Unbounded, a peer's object nested a few thousand deep
+		(12 KB) would overflow the stack natively and end the process reading
 		it, through any socket's `readObject`.
 	**/
 	public function testAnObjectNestedTooDeepIsRefused():Void {
@@ -272,7 +271,7 @@ class ByteArrayIOTest extends utest.Test {
 		An object holding more values than `ByteArray.maxObjectValues` is
 		refused with an IOError, in every encoding, and its bytes are
 		consumed; one holding as many reads. Each null of a run counts:
-		unbounded, `au100000000h`, twelve bytes, made an array of
+		unbounded, `au100000000h` (twelve bytes) would make an array of
 		100,000,000 slots, 800 MB natively, wherever a peer's object is read.
 	**/
 	public function testAnObjectHoldingTooManyValuesIsRefused():Void {
@@ -343,8 +342,8 @@ class ByteArrayIOTest extends utest.Test {
 	/**
 		AMF0 and AMF3 are bounded as HXSF is: a value at a time, and a length
 		claimed ahead of a string, bytes or a vector is read as the bytes
-		arrive, never allocated ahead of them. `format` made a buffer of the
-		length claimed first: five bytes asked for 2 GB.
+		arrive, never allocated ahead of them, as `format`, which makes a buffer
+		of the length claimed first, would: five bytes asking for 2 GB.
 	**/
 	public function testAMFIsBoundedInValuesAndInWhatItAllocates():Void {
 		// Each claims far more than follows, and reads as running out.
@@ -413,9 +412,9 @@ class ByteArrayIOTest extends utest.Test {
 
 	/**
 		HXSF that would read its own bytes again is refused with an IOError.
-		A negative string or bytes length moved the read back, so six bytes
-		read the same value for ever, adding it to an array until memory ran
-		out; a run of no nulls, or fewer, set an element already read.
+		A negative string or bytes length would move the read back, so six bytes
+		would read the same value for ever, adding it to an array until memory
+		ran out; a run of no nulls, or fewer, would set an element already read.
 	**/
 	public function testMalformedHXSFIsRefused():Void {
 		for (text in ["ay-4:h", "as-4:h", "as-8:h", "ay-8:h", "au0h", "au-5h", "ai1u-1h"]) {
@@ -460,13 +459,13 @@ class ByteArrayIOTest extends utest.Test {
 	}
 
 	public function testAnEncodingThisBuildCannotDoIsRefused():Void {
-		// Not an ObjectEncoding at all, the abstract is `from Int`, so this
-		// compiles and used to read back null and write zero bytes.
+		// Not an ObjectEncoding at all: the abstract is `from Int`, so this
+		// compiles, and must neither read back null nor write zero bytes.
 		__assertEncodingRefused(cast 99);
 
 		#if !format
-		// AMF needs the optional "format" haxelib. Without it the object used to
-		// go nowhere quietly, which is the worst way to find out.
+		// AMF needs the optional "format" haxelib. Without it the object must
+		// not go nowhere quietly, which is the worst way to find out.
 		__assertEncodingRefused(ObjectEncoding.AMF0);
 		__assertEncodingRefused(ObjectEncoding.AMF3);
 		#end

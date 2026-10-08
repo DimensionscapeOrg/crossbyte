@@ -15,18 +15,18 @@ import sys.thread.Mutex;
 /**
 	One piece of work queued for an asynchronous `SQLiteConnection`'s worker.
 
-	`run` does the work on the worker's thread and reports how it went, or,
-	for a statement's work, the statement does, with `sql` for its
-	`execute()` and `prefetch`: no function is made for each statement run.
-	`operation`: the `SQLEvent` type it reports, and `statement`, the
+	`run` does the work on the worker's thread and reports how it went; for
+	a statement's work the statement does, with `sql` for its `execute()`
+	and `prefetch`, so no function is made for each statement run.
+	`operation` (the `SQLEvent` type it reports) and `statement`, the
 	statement it reports to or `null` for the connection's own work, say whom
 	to tell when it never runs: queued behind a `close()`, behind an open
 	that failed, or before a `cancel()`. `call`, when set, is the caller
 	waiting on it, told instead.
 
 	`epoch` is the connection's count of `cancel()` calls when the job was
-	queued: one queued before the latest is dropped. A job that `keep`s,
-	an open, a close, a cancel's own report, is never dropped.
+	queued: one queued before the latest is dropped. A job that `keep`s (an
+	open, a close, a cancel's own report) is never dropped.
 	`statementEpoch` is the statement's own count, which its `cancel()`
 	moves on: what was asked of it before is dropped, and unheard. `gen` is
 	the connection's count of every `cancel()`, its own and its statements':
@@ -38,8 +38,8 @@ import sys.thread.Mutex;
 @:noCompletion
 class SQLiteJob {
 	// Declared references first, then numbers, then flags: hxcpp lays the
-	// fields out in this order, and mixed they were padded, a job is made
-	// for every statement run.
+	// fields out in this order, and mixed they would be padded. A job is
+	// made for every statement run.
 	public var run(default, null):Null<Void->Void>;
 	public var operation(default, null):String;
 	public var statement(default, null):Null<SQLiteStatement>;
@@ -81,10 +81,10 @@ class SQLiteJob {
 	worker, so that the work loop ends on its next pass without anyone
 	needing to wake it. `gone` is set by the worker before its last pass over
 	what is left, so that work asked for afterwards is refused where it is
-	asked for, and a call waiting on it stops waiting. One per worker: both
-	were the connection's, and a worker stopping as the next one started,
-	its CLOSE heard and `openAsync()` called before it had set them, could
-	mark the next one stopped, or take its work.
+	asked for, and a call waiting on it stops waiting. One per worker, so a
+	worker stopping as the next one starts (its CLOSE heard and
+	`openAsync()` called before it has set them) cannot mark the next one
+	stopped, or take its work.
 
 	`ended` is set once that last pass is over, under `ending`, which the
 	worker holds through the pass. Work that found the queue gone only after
@@ -106,18 +106,18 @@ class SQLiteQueue {
 
 /**
 	A call the calling thread makes of an asynchronous connection and waits
-	for, `request()`, a property that asks SQLite, run by the worker in
+	for (`request()`, a property that asks SQLite), run by the worker in
 	its turn, behind the work queued before it, so that nothing but the
 	worker ever touches the connection. hxcpp's glue keeps one live result
 	per connection and finalizes it as the next request starts: a read made
-	on the calling thread while the worker stepped a statement finalized it
-	under the worker, which then read freed memory.
+	on the calling thread while the worker stepped a statement would
+	finalize it under the worker, which would then read freed memory.
 
 	The caller waits on a `Lock`, which parks a thread where hxcpp's
 	collector can still run. `state` is guarded by the connection's mutex:
 	the worker moves it from `WAITING` to `RUNNING` as it takes the call
 	up, and a caller whose wait ran out moves it from `WAITING` to
-	`WITHDRAWN`: so a call either runs or does not, and never after its
+	`WITHDRAWN`, so a call either runs or does not, and never after its
 	caller has given up on it. Without threads (php) nothing waits: the
 	connection runs every call at once.
 **/
@@ -193,7 +193,7 @@ class SQLiteCall {
 
 	/**
 		On the caller: withdraws the call when the worker has not taken it
-		up, it will not run, and answers whether it did. A call that has
+		up (it will not run), and answers whether it did. A call that has
 		started is the caller's own work, and is waited for to its end, as on
 		a synchronous connection.
 	**/
@@ -315,11 +315,10 @@ class SQLiteReadRows implements ResultSet {
 	What a statement's work on the worker sends back to the runtime's thread:
 	the page it read, there, and the event to dispatch with it.
 
-	The rows are read on the worker. They were read on the runtime's thread
-	from the result set the worker handed over, while the worker had already
-	gone on to the next statement, and hxcpp's glue starts a statement by
-	finalizing the one before it, so a statement queued behind another took
-	all but the first of its rows.
+	The rows are read on the worker, before it goes on to the next
+	statement: hxcpp's glue starts a statement by finalizing the one before
+	it, so rows read on the runtime's thread from a result the worker had
+	handed over could be cut short by the statement queued behind it.
 **/
 @:noCompletion
 class SQLiteStatementMessage {
@@ -338,7 +337,7 @@ class SQLiteStatementMessage {
 	/**
 		The statement's count of `cancel()` calls when the work this answers
 		was asked for: one its `cancel()` has stopped since is not dispatched.
-		Beside the flags, in what was padding: a message is made for every
+		Beside the flags, in what would be padding: a message is made for every
 		statement run.
 	**/
 	public var epoch(default, null):Int;

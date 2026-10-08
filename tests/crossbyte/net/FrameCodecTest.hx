@@ -77,8 +77,8 @@ class FrameCodecTest extends utest.Test {
 
 		Four bytes claiming two gigabytes is all it takes. A reader that waits
 		for the bytes before judging the figure has already agreed to hold
-		however many were asked for, which is the shape that made the
-		WebSocket reader buffer indefinitely on ten bytes.
+		however many were asked for, which is how a reader comes to buffer
+		indefinitely on ten bytes.
 	**/
 	public function testAnImpossibleLengthIsRefusedBeforeAnythingIsHeld():Void {
 		var codec = new FrameCodec(1024);

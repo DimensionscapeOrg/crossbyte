@@ -12,10 +12,10 @@ import haxe.io.Bytes;
 	value is.
 
 	Plain JSON has no dates, no ObjectIds and no integers wider than a
-	double's 53 bits, which is why a command sent as JSON could never set a
-	TTL index's date or match an `_id`. Extended JSON writes them as small
-	objects, `{"$date": "2026-09-30T00:00:00Z"}`, `{"$oid": "..."}`,
-	`{"$numberLong": "9007199254740993"}`: and `parse` turns those into the
+	double's 53 bits, so a command sent as plain JSON cannot set a TTL
+	index's date or match an `_id`. Extended JSON writes them as small
+	objects (`{"$date": "2026-09-30T00:00:00Z"}`, `{"$oid": "..."}`,
+	`{"$numberLong": "9007199254740993"}`), and `parse` turns those into the
 	values `Bson` encodes.
 
 	`parse` keeps every object's field order, returning `BsonDocument`s,
@@ -34,7 +34,7 @@ class ExtendedJson {
 		Parses Extended JSON (canonical or relaxed, and the legacy forms of
 		`$binary` and `$date`). Objects become `BsonDocument`s; type wrappers
 		become their values; a number becomes an `Int`, an `Int64` when it
-		needs 64 bits, or else a `Float`, and a number written with a point
+		needs 64 bits, or else a `Float`; and a number written with a point
 		or exponent stays a double, as `BsonDouble` where its value is whole.
 
 		`{"$regex": ..., "$options": ...}` is left a document, since in a
@@ -718,7 +718,7 @@ private class ExtendedJsonParser {
 
 	/**
 		The value an Extended JSON type wrapper stands for, or the document
-		itself when it is not exactly one of them, `{"$gt": 5}` is a query
+		itself when it is not exactly one of them: `{"$gt": 5}` is a query
 		operator, not a type.
 	**/
 	private function __wrapper(document:BsonDocument):Dynamic {

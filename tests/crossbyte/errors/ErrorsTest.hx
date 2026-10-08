@@ -28,10 +28,9 @@ class ErrorsTest extends utest.Test {
 			atThrow = thrown.getCallStack();
 		}
 
-		// The error's stack is its own. Reading it after an unrelated exception
-		// has been caught used to hand back *that* exception's stack, because
-		// the value came from CallStack.exceptionStack(), global state, and
-		// not from the error at all.
+		// The error's stack is its own. Read after an unrelated exception has
+		// been caught, it is still this error's stack, not that exception's: it
+		// does not come from CallStack.exceptionStack(), which is global state.
 		Assert.equals(atConstruction, never.getCallStack());
 		Assert.isFalse(__names(never.getCallStack(), "__throwFromHere", __throwLine),
 			"an unrelated exception leaked into this error's stack");
@@ -43,8 +42,8 @@ class ErrorsTest extends utest.Test {
 		if (atThrow.length > 0 && __recordsTheMakingFrame()) {
 			Assert.isTrue(__names(atThrow, "__throwFromHere", __throwLine),
 				"expected the throw site in the stack, got: " + atThrow);
-			// Never thrown, and it still knows where it was made. This was
-			// empty before, for every error, until one was thrown and caught.
+			// Never thrown, and it still knows where it was made, without waiting
+			// for one to be thrown and caught.
 			Assert.isTrue(__names(atConstruction, "__makeUnthrownError", __constructionLine),
 				"expected the construction site in the stack, got: " + atConstruction);
 		}
@@ -71,7 +70,7 @@ class ErrorsTest extends utest.Test {
 
 	/**
 		Whether this runtime puts the frame that makes an exception in its
-		stack. The HashLink 1.14.0 release CI used to install leaves it out of every
+		stack. The HashLink 1.14.0 release that CI installs leaves it out of every
 		`haxe.Exception`'s, CrossByte's or not, so there no error can name its
 		own site; other builds of the same version keep it.
 	**/
@@ -90,9 +89,9 @@ class ErrorsTest extends utest.Test {
 	#end
 
 	/**
-		Whether `stack` names a site: by its method, or where frames carry no
-		method name, neko's are a file and a line, since its bytecode keeps
-		no more, by its line in this file.
+		Whether `stack` names a site: by its method, or, where frames carry no
+		method name (neko's are a file and a line, since its bytecode keeps no
+		more), by its line in this file.
 	**/
 	private static function __names(stack:String, method:String, line:Int):Bool {
 		return stack.indexOf(method) >= 0 || new EReg("ErrorsTest\\.hx line " + line + "\\b", "").match(stack);
@@ -118,9 +117,9 @@ class ErrorsTest extends utest.Test {
 	}
 
 	public function testEOFErrorKeepsTheMessageItIsGiven():Void {
-		// Its doc takes a message, and the constructor threw it away for a
-		// fixed one, FileStream's "Asked for 8 bytes with 3 left in the
-		// file" among them, and the id with it.
+		// Its doc takes a message, and the constructor keeps it, and the id with
+		// it, rather than putting a fixed one in its place (FileStream's "Asked
+		// for 8 bytes with 3 left in the file" among the messages kept).
 		var eof = new EOFError("the frame ended inside its header", 99);
 		Assert.equals("EOFError", eof.name);
 		Assert.equals("the frame ended inside its header", eof.message);

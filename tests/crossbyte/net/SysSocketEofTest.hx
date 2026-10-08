@@ -5,9 +5,10 @@ import utest.Assert;
 /**
 	Reading a byte at the end of a connection reports the end.
 
-	On eval `readByte` answered 0 there, a byte like any other, where every
-	other target throws `Eof`. A reader waiting for a delimiter at the end of a
-	connection, such as a line reader, read zeros for ever instead of stopping.
+	On eval `readByte` must not answer 0 there, a byte like any other,
+	where every other target throws `Eof`: a reader waiting for a
+	delimiter at the end of a connection, such as a line reader, would
+	read zeros for ever instead of stopping.
 **/
 class SysSocketEofTest extends utest.Test {
 	#if (sys && !(js || php))

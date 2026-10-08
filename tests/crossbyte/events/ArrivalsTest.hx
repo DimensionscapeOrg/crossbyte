@@ -15,7 +15,7 @@ import utest.Assert;
 	`clone()` is the one way to keep a whole event, so a clone copies the
 	bytes the event carries; and under `-D crossbyte_check_events` a payload
 	is killed, once its delivery returns, in a way that cannot be missed by
-	whatever kept it, its own length and position 0, and its storage
+	whatever kept it: its own length and position 0, and its storage
 	overwritten for whatever kept the storage instead.
 **/
 @:access(crossbyte.events.Event)
@@ -83,7 +83,7 @@ class ArrivalsTest extends utest.Test {
 		var payload = bytesOf([10, 20, 30, 40]);
 		payload.position = 1;
 		// What a keeper of the storage would hold: the same bytes, by another
-		// name, a Bytes over the payload's own storage.
+		// name (a Bytes over the payload's own storage).
 		var storage:Bytes = Bytes.ofData((payload : Bytes).getData());
 
 		Arrivals.kill(payload);
@@ -160,7 +160,7 @@ class ArrivalsTest extends utest.Test {
 	/**
 		A payload made for one arrival, done with: killed under the check,
 		left alone under `crossbyte_fresh_events`, and released emptied, with
-		storage past `KEEP` let go, whatever still refers to it, such as a
+		storage past `KEEP` let go, so whatever still refers to it, such as a
 		reused event, holds nothing once its call has returned.
 	**/
 	public function testDoneIsWhatEachModeSays():Void {
@@ -191,11 +191,11 @@ class ArrivalsTest extends utest.Test {
 
 	/**
 		Every way a reused payload is filled for the next arrival takes back
-		everything a listener can leave on a `ByteArray`, its position, its
-		length and the storage it grew, its byte order, its object encoding,
-		so the next arrival reads as one in a `ByteArray` made for it
-		would. Those are all a `ByteArray` carries besides its bytes; every
-		reused payload is filled through `reset`.
+		everything a listener can leave on a `ByteArray` (its position, its
+		length and the storage it grew, its byte order, its object encoding),
+		so the next arrival reads as one in a `ByteArray` made for it would.
+		Those are all a `ByteArray` carries besides its bytes; every reused
+		payload is filled through `reset`.
 	**/
 	public function testEveryFillStartsAsAByteArrayMadeForTheArrival():Void {
 		var arrived = Bytes.ofString("abcdefgh");

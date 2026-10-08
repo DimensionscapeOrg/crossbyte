@@ -82,8 +82,8 @@ class SharedChannelTest extends utest.Test {
 	/**
 		A message whose arguments nest more than 256 deep is dropped before
 		reading it gives the stack out. Reading takes a frame or two per level,
-		and natively a peer's arguments nested 6,000 deep, 12 KB, overflowed
-		the stack and ended the process, past any catch. 256 levels: the
+		and natively a peer's arguments nested 6,000 deep (12 KB) would overflow
+		the stack and end the process, past any catch. 256 levels: the
 		arguments' own array, then 255 within it.
 	**/
 	public function testArgumentsNestedPastTheBoundAreDropped():Void {
@@ -130,9 +130,9 @@ class SharedChannelTest extends utest.Test {
 
 	/**
 		A client method that throws is reported as any callback the runtime
-		runs is, logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`
-		on the runtime, and the channel goes on. It was caught and dropped
-		without a word: a bug in a handler looked like a message never sent.
+		runs is (logged, and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`
+		on the runtime), and the channel goes on. Caught and dropped without a
+		word, a bug in a handler would look like a message never sent.
 	**/
 	public function testAClientMethodThatThrowsIsReported():Void {
 		var runtime = CrossByte.current();
@@ -183,7 +183,7 @@ class SharedChannelTest extends utest.Test {
 		// Connected, as a channel is whenever anything can reach it: connect()
 		// is what attaches, on the owning runtime's thread, the listener a
 		// foreign thread's delivery waits for. A foreign thread attaching it
-		// raced the runtime's own listener changes, and lost.
+		// would race the runtime's own listener changes, and could lose.
 		channel.connect('__crossbyte_foreign_${Std.random(1000000)}');
 
 		Thread.create(() -> channel.__dispatchReceivedData(frame("receive", ["hello", 42])));
@@ -207,9 +207,10 @@ class SharedChannelTest extends utest.Test {
 	}
 
 	public function testSendingToTwoChannelsInTurnKeepsAConnectionToEach():Void {
-		// One outbound connection was kept, and closed and dialled again
-		// whenever a send went somewhere other than where the last one did:
-		// sending to two channels in turn was a connect a send.
+		// Outbound connections are kept per destination: one connection, closed
+		// and dialled again whenever a send went somewhere other than where the
+		// last one did, would make sending to two channels in turn a connect a
+		// send.
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
 		var a = new SharedChannel();
@@ -254,8 +255,8 @@ class SharedChannelTest extends utest.Test {
 
 	/**
 		`timeout = 0` means no deadline: a send to a channel nothing listens on
-		yet waits, on the calling thread, until something does. It made one
-		try and reported an error at once.
+		yet waits, on the calling thread, until something does, rather than
+		making one try and reporting an error at once.
 	**/
 	@:timeout(30000)
 	public function testATimeoutOfZeroWaitsForTheListenerWithoutADeadline():Void {

@@ -12,8 +12,8 @@ import sys.thread.Mutex;
 
 @:access(crossbyte.core.CrossByte)
 class TaskPoolTest extends utest.Test {
-	// Pools created through `makePool` are shut down after every test. Without
-	// this, each case leaked its worker threads for the rest of the run.
+	// Pools created through `makePool` are shut down after every test, so
+	// no case leaks its worker threads for the rest of the run.
 	private var __pools:Array<TaskPool> = [];
 
 	public function teardown():Void {
@@ -33,10 +33,10 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testJobsRunOffTheSubmittingThread():Void {
-		// On the jvm and the interpreter a pool ran every job inline, on the
-		// thread that submitted it: four 200ms jobs held the caller for 800ms,
-		// so AsyncDatabase, URLLoader and File's async calls stalled the very
-		// loop they exist to spare.
+		// On the jvm and the interpreter too, a pool runs jobs off the thread
+		// that submitted them: run inline, four 200ms jobs would hold the
+		// caller for 800ms, so AsyncDatabase, URLLoader and File's async calls
+		// would stall the very loop they exist to spare.
 		#if target.threaded
 		var pool = makePool(4);
 		var caller = new sys.thread.Tls<Bool>();
@@ -71,9 +71,9 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testPendingTasksHoldNoTickListeners():Void {
-		// Each pending task held a tick listener of its own, and adding or
-		// removing one copied the runtime's whole list: 8000 tasks took 2.3s
-		// to submit, and every idle tick polled all of them.
+		// Pending tasks do not each hold a tick listener of their own: adding
+		// or removing one copies the runtime's whole list, so 8000 tasks would
+		// take seconds to submit, and every idle tick would poll all of them.
 		#if target.threaded
 		var runtime = CrossByte.current();
 		var before = __tickListeners(runtime);
@@ -102,7 +102,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testAPoolCanBeSizedByTheProcessorCount():Void {
-		// processorCount was 0 everywhere but native, and a pool of 0 throws.
+		// processorCount is at least 1 everywhere, and a pool of 0 throws.
 		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
 		var pool = makePool(System.processorCount);
 		Assert.equals(System.processorCount, pool.workerCount);
@@ -155,11 +155,11 @@ class TaskPoolTest extends utest.Test {
 		var pool = makePool(1);
 		var callbackRuntime:CrossByte = null;
 		var callbackCount = 0;
-		// Held until the handler is attached. A job that finished first made
-		// onComplete call the handler at once, on this thread, which is a
-		// different contract from the one this case is about, and on the
-		// jvm, where a pool thread picks a job up within microseconds, it
-		// finished first every time.
+		// Held until the handler is attached. A job that finished first would
+		// make onComplete call the handler at once, on this thread, which is a
+		// different contract from the one this case is about; and on the jvm,
+		// where a pool thread picks a job up within microseconds, it would
+		// finish first every time.
 		var gate = new sys.thread.Lock();
 		var task = pool.submitResult(() -> {
 			gate.wait();
@@ -191,11 +191,10 @@ class TaskPoolTest extends utest.Test {
 
 	/**
 		A task made on a thread no runtime belongs to finishes on the pool
-		thread, and `onComplete` and `onError` looked at its state and added
-		their listener in two steps: a task finishing between them was never
-		heard, and whatever waited on the handler waited for good. Thousands
-		of tasks, each given its handler as soon as it is submitted; the jvm
-		lost about one in two thousand.
+		thread, so `onComplete` and `onError` look at its state and add their
+		listener in one step: in two, a task finishing between them would
+		never be heard, and whatever waited on the handler would wait for good.
+		Thousands of tasks, each given its handler as soon as it is submitted.
 	**/
 	@:timeout(60000)
 	public function testHandlersGivenOffAnyRuntimeAreAlwaysCalled():Void {
@@ -230,10 +229,10 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	/**
-		`onCancel` read the state without the lock and added its listener
-		after, so a task cancelled on another thread between the two was
-		never heard. A thread cancels each task as soon as it is made, while
-		the thread that made it gives it its handler.
+		`onCancel` reads the state and adds its listener under the lock, so a
+		task cancelled on another thread between the two is still heard. A
+		thread cancels each task as soon as it is made, while the thread that
+		made it gives it its handler.
 	**/
 	@:timeout(60000)
 	public function testCancelHandlersGivenOffAnyRuntimeAreAlwaysCalled():Void {
@@ -276,9 +275,8 @@ class TaskPoolTest extends utest.Test {
 	/**
 		A listener or handler that throws is reported, and the task's other
 		listeners and handlers still hear it, and its pool still lets it go.
-		The throw left the delivery where it was: the posted callback around
-		it reported it, but nothing after it ran, and the pool held the task
-		for the rest of its life.
+		A throw must not leave the delivery where it was, with nothing after
+		it run and the task held by the pool for the rest of its life.
 	**/
 	public function testAHandlerThatThrowsStopsNeitherTheOthersNorTheRelease():Void {
 		#if target.threaded
@@ -313,10 +311,10 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	/**
-		A task with no runtime delivers on the pool thread, which caught what
-		a handler threw and handed it to the task as the job's failure, too
-		late, the task being complete, so it went without a word, and the
-		pool held the task for good. It is logged now.
+		A task with no runtime delivers on the pool thread, so what a handler
+		throws there cannot be handed to the task as the job's failure (too
+		late, the task being complete), where it would go without a word and
+		the pool would hold the task for good. It is logged.
 	**/
 	public function testAHandlerThatThrowsOffAnyRuntimeIsLogged():Void {
 		#if target.threaded
@@ -476,8 +474,7 @@ class TaskPoolTest extends utest.Test {
 
 	/**
 		A job with no result makes a `Task<Any>`: what its result is has to be
-		said with a cast. It was `Task<Dynamic>`, whose result anything could
-		be read from unchecked.
+		said with a cast, rather than read unchecked from a `Task<Dynamic>`.
 	**/
 	public function testASubmittedJobsTaskIsTypedAny():Void {
 		var pool = makePool(1);
@@ -491,9 +488,9 @@ class TaskPoolTest extends utest.Test {
 
 	/**
 		A burst lets go of its tasks in a time that grows with its size, not
-		with its square: each finished task was found in the pool's list with
-		Array.remove. Checked by what is left, and by the list's slots staying
-		consistent while tasks finish in any order.
+		with its square, as finding each finished task in the pool's list with
+		Array.remove would. Checked by what is left, and by the list's slots
+		staying consistent while tasks finish in any order.
 	**/
 	public function testABurstsTasksAreAllLetGo():Void {
 		#if target.threaded

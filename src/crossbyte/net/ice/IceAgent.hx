@@ -25,7 +25,7 @@ import haxe.Int64;
 	anything.
 
 	That is not indirection for its own sake. Hole punching requires checks to
-	leave from the very port a peer listens on, one socket serving both, so
+	leave from the very port a peer listens on (one socket serving both), so
 	an agent that owned a socket of its own would be the wrong shape for the
 	only case that matters. It also means two agents can be pointed at each
 	other in a test with no network involved, on any target, and that the same
@@ -57,8 +57,8 @@ import haxe.Int64;
 	A NAT lets a datagram in only after one has gone out to that destination, so
 	the first check in each direction is what opens the mapping for the other.
 	Neither side can wait for the other to go first. A check arriving before its
-	pair has been tried therefore causes that pair to be tried at once, a
-	triggered check, which is what turns two peers punching blindly into a
+	pair has been tried therefore causes that pair to be tried at once (a
+	triggered check), which is what turns two peers punching blindly into a
 	connection.
 **/
 class IceAgent {
@@ -74,8 +74,8 @@ class IceAgent {
 	/**
 		The first retransmission delay, in seconds, doubling from there.
 
-		RFC 5389's RTO. A check has no failure to report, a datagram that
-		reaches nothing looks the same as one still in flight, so a timer is
+		RFC 5389's RTO. A check has no failure to report (a datagram that
+		reaches nothing looks the same as one still in flight), so a timer is
 		the only thing that ever ends one.
 	**/
 	public static inline var INITIAL_RTO:Float = 0.5;
@@ -88,10 +88,8 @@ class IceAgent {
 		RFC 8489's Rm of sixteen times the first timeout.
 
 		So a pair nothing answers is given up on 39.5 seconds after its first
-		check, seven transmissions over 31.5 seconds, and eight more for the
-		last of them to be answered. It waited one more doubling instead, and
-		gave up at 63.5, which `TurnClient` had already stopped doing for the
-		same schedule.
+		check: seven transmissions over 31.5 seconds, and eight more for the
+		last of them to be answered, the same schedule `TurnClient` keeps.
 	**/
 	public static inline var FINAL_WAIT:Float = 8.0;
 
@@ -118,19 +116,18 @@ class IceAgent {
 		otherwise, in seconds from `start`.
 
 		Eighty: a moment past two of the 39.5-second schedules RFC 8445's
-		timers give one check, an RTO of 500 ms, doubling, RFC 8489's seven
-		transmissions and sixteen RTOs for the last. One schedule is for a
+		timers give one check (an RTO of 500 ms, doubling, RFC 8489's seven
+		transmissions and sixteen RTOs for the last). One schedule is for a
 		pair to be answered, however late in its own; the other for the
 		nomination of it to go unanswered, after which the agent nominates the
-		next pair that answered. It was forty, a moment past one schedule, and
-		that move fitted only when the first pair had answered within half a
-		second, a NAT that drops a pair's first checks, as one does until
-		its own side has sent, pushed the agent's deadline ahead of its
-		nomination's. It ends only the waits nothing else would: no pair to
-		check, a nomination that never comes, a second nomination lost. RFC
-		8863 asks an agent not to give up on its checks before 39.5 seconds,
-		which this is well past. `PeerConnection` bounds its whole connect
-		with its own `readyTimeout`.
+		next pair that answered. With only one schedule, that move would fit
+		only when the first pair had answered within half a second, and a NAT
+		that drops a pair's first checks (as one does until its own side has
+		sent) would push the agent's deadline ahead of its nomination's. It
+		ends only the waits nothing else would: no pair to check, a nomination
+		that never comes, a second nomination lost. RFC 8863 asks an agent not
+		to give up on its checks before 39.5 seconds, which this is well past.
+		`PeerConnection` bounds its whole connect with its own `readyTimeout`.
 	**/
 	public static inline var DEFAULT_TIMEOUT:Float = 80.0;
 
@@ -153,19 +150,17 @@ class IceAgent {
 		read from the answers (RFC 8445 section 7.2.5.3.1).
 
 		The answers are the peer's to write, so without a bound a peer that
-		named a new place in each answer grew the list for as long as it kept
-		answering, and every candidate learned re-paired the whole list: 2,000
-		answers took 137 seconds on the interpreter, 5.7 ms an answer on the
-		jvm by the end, with the runtime serving nothing else meanwhile. A
-		real peer teaches at most one per destination this agent checks, a
-		symmetric NAT maps each to a port of its own, so this is
+		named a new place in each answer would grow the list, and the work
+		each answer costs, for as long as it kept answering. A real peer
+		teaches at most one per destination this agent checks (a symmetric
+		NAT maps each to a port of its own), so this is
 		`MAX_REMOTE_CANDIDATES`, as libwebrtc keeps one per connection. One
 		learned past it is not kept; the check it answered succeeds all the
 		same.
 
 		Learned candidates are not paired, as the RFC says: a check leaves
 		from the candidate's base, which is already paired with every remote
-		candidate, so pairing them added nothing but the work.
+		candidate, so pairing them would add nothing but the work.
 	**/
 	public static inline var MAX_LEARNED_LOCAL_CANDIDATES:Int = MAX_REMOTE_CANDIDATES;
 
@@ -191,8 +186,8 @@ class IceAgent {
 		Whether this peer decides which pair is used.
 
 		Exactly one of the two must be. The roles are settled before the agent
-		exists, by an offer/answer exchange, or by whatever brought the peers
-		together, and if both claim it anyway, the tiebreakers resolve it.
+		exists (by an offer/answer exchange, or by whatever brought the peers
+		together), and if both claim it anyway, the tiebreakers resolve it.
 	**/
 	public var controlling(default, null):Bool;
 
@@ -227,13 +222,8 @@ class IceAgent {
 
 		FAILED is final. The agent neither sends nor answers again, as RFC
 		7675 has a sender whose consent expired stop, and a path afresh is an
-		ICE restart: a new agent. A check nominating a pair used to bring a
-		failed agent back to CONNECTED, with nothing reporting it.
-
-		The consent failure used to set `state` and call nothing, on the
-		reasoning that a hook nothing is obliged to read is a way of not
-		reporting it, which left a caller with nothing to read but `state`,
-		polled every tick.
+		ICE restart: a new agent. A check nominating a pair does not bring a
+		failed agent back.
 	**/
 	public dynamic function onStateChanged(state:IceAgentState):Void {}
 
@@ -271,16 +261,15 @@ class IceAgent {
 		says what it was waiting for. 0 for no deadline. Read at every poll, so
 		it can be changed while checking.
 
-		There was none, and an agent could wait for ever: with no pair to check,
-		the peer's candidates all names, or none reachable from this agent's,
-		and no check arriving; as the controlled agent, its pairs answering
-		and the controlling peer never nominating one; or as the controlling
+		Without one an agent could wait for ever: with no pair to check (the
+		peer's candidates all names, or none reachable from this agent's) and
+		no check arriving; as the controlled agent, its pairs answering and
+		the controlling peer never nominating one; or as the controlling
 		agent, its nomination unanswered while another pair had answered. That
-		last one now moves on to the next pair that answered; the deadline is
-		for the rest. A nomination is given up on 39.5 seconds after it goes
-		out, so a `timeout` shorter than that plus the time the first pair
-		took to answer, `DEFAULT_TIMEOUT` leaves room, ends the agent
-		before the move.
+		last one moves on to the next pair that answered; the deadline is for
+		the rest. A nomination is given up on 39.5 seconds after it goes out,
+		so a `timeout` shorter than that plus the time the first pair took to
+		answer (`DEFAULT_TIMEOUT` leaves room) ends the agent before the move.
 	**/
 	public var timeout:Float = DEFAULT_TIMEOUT;
 
@@ -288,7 +277,7 @@ class IceAgent {
 		Called with a datagram to put on the wire.
 
 		The caller wires this to whatever socket the local candidates describe.
-		It must be the socket those candidates name, a check leaving from
+		It must be the socket those candidates name: a check leaving from
 		anywhere else opens a NAT mapping for a port the peer was never told
 		about.
 	**/
@@ -345,7 +334,7 @@ class IceAgent {
 		Adds one of this peer's own addresses.
 
 		Order does not matter, and candidates may arrive after checking has
-		started, gathering a reflexive address takes a round trip to a STUN
+		started: gathering a reflexive address takes a round trip to a STUN
 		server, and waiting for it before trying the host candidates would delay
 		the case that needs no server at all.
 
@@ -395,19 +384,16 @@ class IceAgent {
 		//
 		// Every major browser publishes its host candidates as random .local
 		// mDNS names by default, so the page cannot learn the user's private
-		// address. Nothing here speaks mDNS; a name reached `DatagramSocket`
-		// and went through `sys.net.Host`, which resolves synchronously on
-		// the event loop on every send. For a .local name nothing answers,
-		// that is a second's block and then a throw, per connectivity
-		// check, and checks retransmit. Measured against a real browser: the
-		// case where CrossByte is ICE-controlling took 15.8 seconds to
-		// connect against 0.9 with real addresses, the whole loop frozen for
-		// every other connection meanwhile.
-		//
-		// And where the operating system does resolve mDNS, the outcome
-		// changes with it: a GitHub Windows runner resolved the browser's
-		// names and took a host pair, this machine did not and took a
-		// peer-reflexive one, from the same code.
+		// address. Nothing here speaks mDNS; a name handed to `DatagramSocket`
+		// would be resolved through `sys.net.Host`, synchronously on the event
+		// loop, on every send. For a .local name nothing answers, that is a
+		// second's block and then a throw, per connectivity check, and checks
+		// retransmit: against a real browser, connecting as the controlling
+		// agent took 15.8 seconds against 0.9 with real addresses, the whole
+		// loop frozen for every other connection meanwhile. And where the
+		// operating system does resolve mDNS, the outcome would change with
+		// it: one machine takes a host pair, another a peer-reflexive one,
+		// from the same code.
 		//
 		// Dropping them loses nothing. The browser's checks reach this
 		// peer's real addresses, and `__pairFrom` learns the browser's from
@@ -421,10 +407,10 @@ class IceAgent {
 		}
 
 		// And an IPv4 address only as one the socket reads the way this does.
-		// Four runs of digits passed as numeric, so 1.2.3.999 did: hxcpp's
-		// resolver finds no literal in it and looks it up as a name, the same
-		// block on this loop as above, per check; and a relay was asked to
-		// permit whatever the octets wrapped to.
+		// Four runs of digits are not enough: for 1.2.3.999 hxcpp's resolver
+		// finds no literal and looks it up as a name, the same block on this
+		// loop as above, per check; and a relay would be asked to permit
+		// whatever the octets wrapped to.
 		if (!candidate.isIPv6() && StunMessage.ipv4Octets(candidate.address) == null) {
 			return false;
 		}
@@ -488,9 +474,8 @@ class IceAgent {
 
 			// Pairs the peer has given this agent reason to check since the
 			// path was chosen: a candidate it trickled late, or an address it
-			// asked from. A connected agent used to check nothing at all, so a
-			// peer that moved was answered and never followed. Only those
-			// pairs, at the pacing interval, and nothing while there are none.
+			// asked from, so a peer that moves is followed. Only those pairs,
+			// at the pacing interval, and nothing while there are none.
 			if (state == CONNECTED && __lateChecks && now >= __nextCheckAt) {
 				__pollLateChecks(now);
 			}
@@ -571,10 +556,9 @@ class IceAgent {
 		var previous = __arrivedVia;
 		__arrivedVia = via;
 
-		// Each says whether the message was this agent's. They all used to be
-		// reported taken, so a check addressed to another session, or an
-		// answer to something this agent never asked, was kept from whatever
-		// else on the socket might have wanted it.
+		// Each says whether the message was this agent's, so a check
+		// addressed to another session, or an answer to something this agent
+		// never asked, is left for whatever else on the socket might want it.
 		var taken:Bool;
 
 		switch (message.type) {
@@ -712,9 +696,9 @@ class IceAgent {
 		check.attempts = 0;
 
 		// A transaction of its own. The check that proved the pair was
-		// answered under the old one, and a late copy of that answer, the
-		// peer replying to a retransmission, was taken for the nomination's,
-		// selecting a pair the peer had never been asked to use.
+		// answered under the old one, and a late copy of that answer (the
+		// peer replying to a retransmission) would be taken for the
+		// nomination's, selecting a pair the peer had never been asked to use.
 		check.transaction = __freshTransaction();
 		check.state = WAITING;
 		__transmit(check, now);
@@ -723,10 +707,9 @@ class IceAgent {
 	/**
 		A check is given up on. When it was this agent's nomination, the pair
 		it nominated has stopped answering since it was proved, and is no
-		longer valid: the next poll nominates the best of the pairs left. The
-		nomination used to stay in flight for good, so a controlling agent
-		whose first choice went quiet never chose again, while another pair
-		that had answered sat unused.
+		longer valid: the next poll nominates the best of the pairs left,
+		rather than leaving a controlling agent whose first choice went quiet
+		with another pair that answered sitting unused.
 	**/
 	@:noCompletion private function __checkFailed(check:IceCheck):Void {
 		check.state = FAILED;
@@ -791,10 +774,10 @@ class IceAgent {
 
 		// A check from somewhere the peer never advertised makes that place a
 		// remote candidate, so `MAX_REMOTE_CANDIDATES` has to hold here as it
-		// does for the advertised ones: it did not, and a peer checking from
-		// 192 ports had 192 candidates paired and checked back. Past the cap
-		// the check goes unanswered, since an answer would make a pair at the
-		// peer's end, one it could nominate, that this end never formed.
+		// does for the advertised ones, or a peer checking from 192 ports
+		// would have 192 candidates paired and checked back. Past the cap the
+		// check goes unanswered, since an answer would make a pair at the
+		// peer's end (one it could nominate) that this end never formed.
 		if (__remoteAt(fromAddress, fromPort) == null && __remotes.length >= MAX_REMOTE_CANDIDATES) {
 			return true;
 		}
@@ -813,10 +796,10 @@ class IceAgent {
 
 		// Where this peer sees the sender, which is how the sender learns about
 		// a mapping its own NAT made and it could not have known. IPv4 alone:
-		// an IPv6 source was split on dots and read as numbers, so the answer
-		// named an IPv4 address that does not exist and the sender learned it
-		// as a reflexive view of itself. Without the attribute the check still
-		// succeeds at both ends, and nothing is learned that is not so.
+		// written for an IPv6 source, the answer would name an IPv4 address
+		// that does not exist and the sender learn it as a reflexive view of
+		// itself. Without the attribute the check still succeeds at both
+		// ends, and nothing is learned that is not so.
 		var response = new StunMessage(StunMessage.BINDING_SUCCESS, request.transactionId,
 			StunMessage.ipv4Octets(fromAddress) != null ? [StunMessage.xorMappedAddress(fromAddress, fromPort)] : []);
 
@@ -838,7 +821,7 @@ class IceAgent {
 		// mapping in this direction is open now and may not be later, so this
 		// pair goes to the front rather than waiting its turn. A pair that
 		// failed before is tried afresh (RFC 8445 section 7.3.1.4): the peer
-		// asking from it is new evidence, a network that came back, or a
+		// asking from it is new evidence: a network that came back, or a
 		// NAT that has opened.
 		if (check.state == WAITING || check.state == FROZEN || check.state == FAILED) {
 			if (check.state == FAILED) {
@@ -916,15 +899,15 @@ class IceAgent {
 		7.3.1.1.
 
 		This is not a defensive check against a broken peer. Roles are agreed
-		out of band, and any exchange that can be raced, both sides offering
-		at once, a restart, a signalling path that reordered two messages, can
+		out of band, and any exchange that can be raced (both sides offering
+		at once, a restart, a signalling path that reordered two messages) can
 		leave both convinced they are controlling. Nothing detects that until a
 		check arrives, because until then each side is internally consistent.
 
 		The larger tiebreaker keeps the role it claimed. What differs between
 		the two cases is who acts: a controlling agent that loses switches
 		itself, while a controlling agent that wins refuses the check and makes
-		the *sender* switch. That asymmetry is the whole mechanism, both peers
+		the *sender* switch. That asymmetry is the whole mechanism: both peers
 		apply the same comparison to the same two numbers and exactly one of
 		them moves.
 
@@ -996,7 +979,7 @@ class IceAgent {
 		// check has already made this agent controlled, and acting on that
 		// stale answer puts it straight back into the conflict it just left.
 		//
-		// Measured without this guard: the two still converge, but the role
+		// Without this guard the two still converge, but the role
 		// changes more than once, and every change throws away the priority of
 		// every pair and the nomination in progress. So the cost is round trips
 		// and churn rather than deadlock, which is worse to diagnose, because
@@ -1106,7 +1089,7 @@ class IceAgent {
 		Whether candidates are paired as they arrive. And once connected: a
 		candidate trickled after the path was found is somewhere the peer may
 		yet be reached, and pairing it is what lets a nomination from there be
-		followed. It was dropped into the list and never paired.
+		followed.
 	**/
 	@:noCompletion private inline function __pairing():Bool {
 		return state == CHECKING || state == CONNECTED;
@@ -1131,11 +1114,11 @@ class IceAgent {
 		a candidate at a time.
 
 		Each pair is made with the local half's base, as `pair` makes it
-		(RFC 8445 section 6.1.2.2), and one that is already checked, the
-		same base and the same remote, a reflexive candidate and its host,
-		is the redundant pair section 6.1.2.4 drops. Adding a candidate used
-		to pair both whole lists again and look each pair up, so the work of
-		each one grew with everything held before it.
+		(RFC 8445 section 6.1.2.2), and one that is already checked (the
+		same base and the same remote, a reflexive candidate and its host)
+		is the redundant pair section 6.1.2.4 drops. So adding a candidate
+		does not pair both whole lists again, and its work does not grow with
+		everything held before it.
 	**/
 	@:noCompletion private function __pairLocal(local:IceCandidate):Void {
 		for (remote in __remotes) {
@@ -1276,16 +1259,14 @@ class IceAgent {
 		}
 
 		// The local half is whichever of this peer's addresses the request came
-		// in on, when that is known. It used to be simply the first that could
-		// reach the remote at all, on the reasoning that one socket serves every
-		// local candidate so the choice moved the priority and nothing else.
-		//
-		// A relayed candidate breaks that. Its address belongs to a server, and
-		// naming it is what decides a datagram gets wrapped for that server to
-		// forward rather than addressed at the peer directly, so a check that
-		// arrived through a relay and was answered on a host candidate would go
-		// straight out at an address the peer is not reachable at, while looking
-		// from here like an ordinary triggered check.
+		// in on, when that is known, not simply the first that could reach
+		// the remote. One socket serves every local candidate, but a relayed
+		// candidate's address belongs to a server, and naming it is what
+		// decides a datagram gets wrapped for that server to forward rather
+		// than addressed at the peer directly: a check that arrived through a
+		// relay and was answered on a host candidate would go straight out at
+		// an address the peer is not reachable at, while looking from here
+		// like an ordinary triggered check.
 		if (via != null) {
 			for (local in __locals) {
 				if (local.sameAs(via) && local.canReach(remote)) {
@@ -1411,16 +1392,15 @@ class IceAgent {
 
 	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
 		// Only while checking or connected. A failed agent is done: a
-		// nomination used to bring one back to CONNECTED, through the branch
-		// below meant for the first, with nothing told.
+		// nomination does not bring one back to CONNECTED.
 		if (state != CHECKING && state != CONNECTED) {
 			return;
 		}
 
-		// A later nomination. The controlling peer has moved to another pair,
-		// its old address died, a better path appeared, and this agent
-		// follows it. It used to answer the new nomination and go on sending
-		// to the pair it had, until consent to that pair ran out.
+		// A later nomination. The controlling peer has moved to another pair
+		// (its old address died, a better path appeared), and this agent
+		// follows it rather than going on sending to the pair it had until
+		// consent to that pair ran out.
 		if (state == CONNECTED) {
 			if (selectedPair != null && selectedPair.sameAs(pair)) {
 				return;

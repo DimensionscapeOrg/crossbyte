@@ -18,7 +18,7 @@ package crossbyte.net;
 	round trip above it, and halves when a burst of loss is found or a frame
 	times out. TCP does the same, so a session shares a congested link fairly
 	with everything else on it. But every loss is taken for congestion, and on
-	a path that loses frames for other reasons, radio, mostly, the window
+	a path that loses frames for other reasons (radio, mostly) the window
 	stays small: at 1% loss it settles near twelve frames a round trip,
 	whatever the path could carry. `LossTolerantCongestionControl` is for those
 	paths.

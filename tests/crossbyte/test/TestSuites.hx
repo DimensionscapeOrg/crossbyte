@@ -60,7 +60,7 @@ class TestSuites {
 		// Also in PortableSuite: typed event-type constants refuse a listener
 		// of the wrong event at compile time.
 		runner.addCase(new crossbyte.events.EventTypesTest());
-		// Also in PortableSuite: "copy it to keep it", clone() copies, and
+		// Also in PortableSuite: "copy it to keep it": clone() copies, and
 		// what each define does to an event and its payload.
 		runner.addCase(new crossbyte.events.ArrivalsTest());
 	}
@@ -91,7 +91,7 @@ class TestSuites {
 		// it without dragging all of TestSuites in behind it.
 		ServerSuite.add(runner);
 
-		// HPACK is pure byte manipulation, no socket, no thread, so unlike
+		// HPACK is pure byte manipulation (no socket, no thread), so unlike
 		// the client below it means the same thing on every target, browser
 		// included. Also in PortableSuite, which is how js reaches it.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
@@ -115,10 +115,8 @@ class TestSuites {
 
 		#if cpp
 		// The URL group, for the native suite, which calls this and not
-		// addURL. So the loader had never run on the one target where its
-		// worker is a real thread, and close() with a request in flight
-		// crashed there with an access violation. addAll, which also calls
-		// addURL, never runs on cpp.
+		// addURL: the one target where the loader's worker is a real thread.
+		// addAll, which also calls addURL, never runs on cpp.
 		addURL(runner);
 		#end
 	}
@@ -213,7 +211,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
 		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
 		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
-		// Answers no MySQL server sends, counts and lengths a hostile one, or
+		// Answers no MySQL server sends: counts and lengths a hostile one, or
 		// whoever answers in its place, can put in a packet.
 		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
 		// SQLite opens only natively.
@@ -253,11 +251,11 @@ class TestSuites {
 		// Native only, like DatagramSocketTest beside it. These cases pump the
 		// runtime to wait for a datagram, and pumping means Sys.sleep, which on
 		// node blocks the very loop the socket is delivered on, so the query
-		// never completes and every case times out.
+		// would never complete and every case would time out.
 		runner.addCase(new crossbyte.net.StunClientTest());
 		runner.addCase(new crossbyte.net.SysSocketTimeoutTest());
 		runner.addCase(new crossbyte.net.SysSocketEofTest());
-		// Every sys target: eval ended the process for a reset connection.
+		// Every sys target: a reset connection must not end the process on eval.
 		runner.addCase(new crossbyte.net.SysSocketResetTest());
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		runner.addCase(new crossbyte.cluster.RendezvousTest());
@@ -266,7 +264,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.PeerClockTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
-		// Also in PortableSuite: Node is where a TCP NetConnection carried nothing.
+		// Also in PortableSuite: a TCP NetConnection carries its messages on Node too.
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
@@ -282,7 +280,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetHostUriTest());
 		// Also in PortableSuite, for Node's wss server.
 		runner.addCase(new crossbyte.net.NetHostTLSTest());
-		// Also in PortableSuite: Node is where a key kept its PEM in plain view.
+		// Also in PortableSuite: a key's PEM is not printed in plain view on Node.
 		runner.addCase(new crossbyte.net.KeyTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
@@ -325,7 +323,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.rtc.PeerConnectionHostTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
-		// one that matters most, it asserts that the support flag and the
+		// one that matters most: it asserts that the support flag and the
 		// behaviour agree, which is how the interpreter and neko earn a real
 		// assertion out of having no UDP at all rather than a skip.
 		runner.addCase(new crossbyte.net.LocalAddressTest());
@@ -341,16 +339,16 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketObjectTest());
 		// Also in PortableSuite, for Node's sockets.
 		runner.addCase(new crossbyte.net.SocketContractTest());
-		// Also in PortableSuite: Node is where the one replaced spoke up.
+		// Also in PortableSuite: Node's replaced socket must report nothing more.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		// What a closed connection leaves in the registry: on the jvm and
 		// natively measured by what the collector can take, elsewhere by
 		// searching the registry for it.
 		runner.addCase(new crossbyte.net.SocketRetentionTest());
-		// More sockets than one select can name, which neko refused.
+		// More sockets than one select can name, on neko too.
 		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
 		// Sockets numbered past select's FD_SETSIZE, which natively on Linux
-		// and macOS could not be asked about.
+		// and macOS must still be asked about.
 		runner.addCase(new crossbyte.net.DescriptorCeilingTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
@@ -378,9 +376,9 @@ class TestSuites {
 		// Registered outside the socket gate below. Most of its cases need a
 		// listening socket and are guarded inside the class, but its jvm branch
 		// only asserts that constructing a secure ServerSocket throws, and
-		// registering the class under `#if cpp` meant that branch compiled on
-		// jvm and ran on nothing. A case that executes nowhere reads as
-		// protection while providing none.
+		// registered under `#if cpp` that branch would compile on jvm and run on
+		// nothing. A case that executes nowhere reads as protection while
+		// providing none.
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 		// Which TLS version hxcpp's mbedTLS negotiates, against itself and
 		// against Node's OpenSSL, and TLS 1.3 resumption. The class is cpp only.
@@ -394,13 +392,11 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.JvmSocketTest());
 		#end
 
-		// jvm as well as cpp. These were cpp-only, and running them on jvm was
-		// how two faults there were found: a listener that ignored
-		// setBlocking(false) when it was called before bind(), so the first
-		// accept() on an idle port blocked the runtime's own thread; and TCP
-		// addresses reported uncompressed, which no UDP case could catch
-		// because DatagramSocket already canonicalised and the socket beside
-		// it did not.
+		// jvm as well as cpp, which finds faults a cpp-only run cannot: a
+		// listener ignoring setBlocking(false) called before bind(), so that the
+		// first accept() on an idle port blocks the runtime's own thread; and
+		// TCP addresses reported uncompressed, which no UDP case could catch
+		// because DatagramSocket canonicalises and the socket beside it might not.
 		#if (cpp || java || jvm)
 		runner.addCase(new crossbyte.cluster.NodeChannelTest());
 		// What a message waits as, queued or held for the pass: a copy.
@@ -414,7 +410,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.WebSocketConformanceTest());
 		// Beside it on purpose: the conformance cases cover the violations
 		// someone named, and this covers the ones nobody did. Same hand-written
-		// client, same gate, both drive the server through a real socket.
+		// client, same gate: both drive the server through a real socket.
 		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		// Not on eval, whose TLS handshake cannot be made non-blocking.
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
@@ -454,7 +450,7 @@ class TestSuites {
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		// Unguarded here for the interpreter above all, where none of the
-		// server suite runs and every upgrade used to throw.
+		// server suite runs, and where every upgrade must succeed too.
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());
 		// Sessions still upgrading when the server stops, drains or closes,
 		// and what it counts. Also in PortableSuite, for Node.
@@ -585,7 +581,7 @@ class TestSuites {
 
 	public static function addUtils(runner:Runner):Void {
 		// The suite's own assertion helper, registered in a group the native
-		// smoke build actually runs, `addFoundation` is not one of them, and
+		// smoke build actually runs (`addFoundation` is not one of them), and
 		// a test for a mechanism a hundred call sites depend on is worth
 		// nothing if it executes nowhere.
 		runner.addCase(new crossbyte.test.RequireTest());
@@ -643,10 +639,10 @@ class TestSuites {
 	public static function addNativeSmoke(runner:Runner):Void {
 		addCrypto(runner);
 		// The asymmetric JWT and JWKS cases are guarded `#if (cpp &&
-		// windows)` because they need the mbedTLS bridge, but this suite is
-		// the only place that combination is built, and it was not
-		// registering them, so they compiled out everywhere they ran and
-		// were unregistered everywhere they compiled. They had never run.
+		// windows)` because they need the mbedTLS bridge, and this suite is
+		// the only place that combination is built, so it has to register
+		// them, or they would compile out everywhere they ran and be
+		// unregistered everywhere they compiled.
 		addAuth(runner);
 		addCore(runner);
 		addErrors(runner);
@@ -657,36 +653,32 @@ class TestSuites {
 		addSysNet(runner);
 		addRPC(runner);
 		addTimers(runner);
-		// These three carry `#if cpp` cases of their own, SQLite in
+		// These three carry `#if cpp` cases of their own: SQLite in
 		// DBSupportTest, the named-pipe and shared-memory transports across
 		// the IPC suites, and the native helpers in UtilsTest. Registered
-		// only in addAll, which runs on the interpreter, those cases
-		// compiled out everywhere they were registered and were
-		// unregistered where they compiled: the same way the asymmetric JWT
-		// suite went unrun. Anything here that needs a native target has to
+		// only in addAll, which runs on the interpreter, those cases would
+		// compile out everywhere they were registered and be unregistered
+		// where they compiled. Anything here that needs a native target has to
 		// be in this suite or it is not tested at all.
 		addDatabase(runner);
 		addIPC(runner);
 		addUtils(runner);
-		// The metrics group ran on eval and the jvm only, and hxcpp is the one
-		// target whose metric updates are lock-free.
+		// The metrics group, natively too: hxcpp is the one target whose
+		// metric updates are lock-free.
 		addMetrics(runner);
 		// The whole IO group, not a hand-picked subset. Both halves of it
-		// need a native target and had been running on nothing:
-		// ByteArray's growth guarantees are guarded away from eval, whose
-		// shim cannot grow its storage in place, and FileStreamTest's two
-		// async cases skip everywhere except cpp. Registering only the two
-		// cases named above left the rest of FileTest and the File/socket
-		// IO cases native-untested.
+		// need a native target: ByteArray's growth guarantees are guarded away
+		// from eval, whose shim cannot grow its storage in place, and
+		// FileStreamTest's two async cases skip everywhere except cpp.
 		addIO(runner);
 		// This group is arithmetic, and arithmetic is where the targets
-		// disagree. BloomFilter and the hash helpers were both fixed for
-		// assuming a 32-bit Int, which is a bug that only exists between
-		// targets, and the compression codecs it also carries are bit
-		// packing and shift-based hashing, the same shape of thing. Their
-		// encoders emit a stream a decoder elsewhere has to read, so a
-		// target that packs bits differently produces output that is wrong
-		// rather than merely slower, and nothing else here would say so.
+		// disagree. BloomFilter and the hash helpers must not assume a 32-bit
+		// Int, which is a bug that only exists between targets, and the
+		// compression codecs it also carries are bit packing and shift-based
+		// hashing, the same shape of thing. Their encoders emit a stream a
+		// decoder elsewhere has to read, so a target that packs bits
+		// differently produces output that is wrong rather than merely slower,
+		// and nothing else here would say so.
 		addDataStructures(runner);
 		addAllocationBudgets(runner);
 	}

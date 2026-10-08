@@ -13,8 +13,8 @@ extern "C" {
 #define SHARED_OBJECT_ERROR_LOCK_TIMEOUT 1
 // Anything else: the region could not be made, mapped, locked or read.
 #define SHARED_OBJECT_ERROR_FAILED 2
-// Linux and macOS: what is under the name, the region, or on macOS its
-// lock file, is not this user's own: another user made it, or it is a
+// Linux and macOS: what is under the name (the region, or on macOS its
+// lock file) is not this user's own: another user made it, or it is a
 // link, a directory or anything else that is not one of ours.
 #define SHARED_OBJECT_ERROR_NOT_OWNED 3
 

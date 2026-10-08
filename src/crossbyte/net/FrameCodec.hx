@@ -9,14 +9,14 @@ import crossbyte.io.Endian;
 
 	TCP and a binary WebSocket deliver bytes, not messages: what one `send`
 	wrote can arrive as three reads, or share a read with the message after
-	it. Anything sending whole values over those, a serialized object, a
-	command, a snapshot, has to say where each one ends, and every caller
+	it. Anything sending whole values over those (a serialized object, a
+	command, a snapshot) has to say where each one ends, and every caller
 	writing that itself gets the same three things wrong: they scan the buffer
 	again on every read, they take the front off it, and they believe the
 	length a peer declared before checking it.
 
-	The datagram transports already keep boundaries, `DatagramSocket`,
-	`ReliableDatagramSocket` in its datagram mode, a WebRTC `DataChannel`,
+	The datagram transports already keep boundaries (`DatagramSocket`,
+	`ReliableDatagramSocket` in its datagram mode, a WebRTC `DataChannel`),
 	so none of them need this.
 
 	```haxe
@@ -48,7 +48,7 @@ class FrameCodec {
 		A peer declares the length before sending it, so the figure is a
 		claim, not a measurement. Checked the moment the header is readable
 		and refused there, because a reader that waits for the bytes first
-		has already agreed to hold as many as the peer asked for, four
+		has already agreed to hold as many as the peer asked for: four
 		bytes claiming two gigabytes is otherwise all it takes.
 	**/
 	public static inline var DEFAULT_MAX_FRAME:Int = 8 * 1024 * 1024;

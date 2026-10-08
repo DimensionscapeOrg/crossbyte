@@ -8,8 +8,8 @@ import haxe.io.Bytes;
 /**
 	MongoDB's OP_MSG framing over one blocking socket.
 
-	A message is a 16-byte header, length, request id, the id it answers,
-	and the opcode, 2013, then flag bits and sections: one of kind 0, the
+	A message is a 16-byte header (length, request id, the id it answers,
+	and the opcode, 2013), then flag bits and sections: one of kind 0, the
 	command's body document, and any of kind 1, a named sequence of documents
 	sent beside the body rather than as an array inside it. Compression is
 	never negotiated, so OP_COMPRESSED never arrives; nor does the legacy

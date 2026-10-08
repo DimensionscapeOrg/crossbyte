@@ -17,16 +17,13 @@ import utest.Assert;
 /**
 	How a reliable session closes.
 
-	`close()` sent the frames gathered in the pass and a FIN, and disposed:
-	whatever the congestion window held back, whatever had been lost and was
-	waiting to be sent again, and stream bytes not yet flushed went nowhere.
-	The FIN carried no sequence, so the receiver closed the moment it came,
-	throwing away anything held past a gap, and a FIN overtaking a lost
-	frame took that frame with it.
-
-	A close is graceful now: what was sent goes, a FIN follows in the same
-	sequence, and the receiver closes only once everything before the FIN has
-	been delivered. `abort()` keeps the old way for whoever needs it.
+	A close is graceful: what was sent goes (whatever the congestion window
+	held back, whatever had been lost and was waiting to be sent again, and
+	stream bytes not yet flushed), a FIN follows in the same sequence, and
+	the receiver closes only once everything before the FIN has been
+	delivered, rather than the moment it comes, throwing away anything held
+	past a gap, or taking with it a lost frame it overtook. `abort()` is the
+	abrupt close, for whoever needs it.
 
 	Two real sessions whose frames are carried across by hand, so a case says
 	exactly what the network loses; only the datagram leaving is replaced.

@@ -8,20 +8,18 @@ import haxe.io.Bytes;
 	One SQL statement prepared on a connection's `sqlite3`, kept to run again.
 
 	hxcpp's glue prepares a statement from its text every time it is asked to
-	run one, and has no way to bind a value: a statement's parameters were
-	written into its text as literals and the whole text prepared again for
-	each run. That was nine tenths of what a repeated INSERT cost (3.8-6.1 µs
-	against 0.36-0.63 µs prepared once and bound, the audit's SqlitePerf).
-	Here a statement is prepared once with `sqlite3_prepare_v2`, its
-	`:name` parameters bound for each run, and reset between runs; the
-	connection keeps the statements it has prepared by their text
+	run one, and has no way to bind a value. Here a statement is prepared
+	once with `sqlite3_prepare_v2`, its `:name` parameters bound for each
+	run, and reset between runs, so a repeated INSERT costs 0.36-0.63 µs
+	where through the glue it costs 3.8-6.1 µs; the connection keeps the
+	statements it has prepared by their text
 	(`NativeSQLiteConnection.prepared`).
 
-	Rows come back as the glue makes them, an Int, or an Int64 past 32 bits,
+	Rows come back as the glue makes them (an Int, or an Int64 past 32 bits,
 	a Float, a String, the blob's `BytesData`, a Bool for a column declared
-	BOOL, null for NULL, in an anonymous object with fixed slots, ordered
-	by the signed hash of the column names (see `AnonBuilder`), where the
-	glue's put every column in a hash map. Its errors read as the glue's do.
+	BOOL, null for NULL) in an anonymous object with fixed slots, ordered
+	by the signed hash of the column names (see `AnonBuilder`), rather than
+	in a hash map as the glue's are. Its errors read as the glue's do.
 
 	Every call is a plain method, never `inline`: the C++ functions are
 	declared by `@:cppFileCode` in this class's own file.
@@ -97,7 +95,7 @@ struct crossbyte_sqlite_stmt {
 	// SQLite\'s count of its own preparations of it when its columns were
 	// last read, and whether the run under way has stepped yet: the first
 	// step of a run is where SQLite prepares it again after a schema change,
-	// and its columns may then be others, a SELECT * after ALTER TABLE.
+	// and its columns may then be others: a SELECT * after ALTER TABLE.
 	int reprepares;
 	int started;
 	// The connection\'s list of the statements prepared on it and not yet
@@ -351,11 +349,10 @@ static void crossbyte_sqlite_stmt_reset(void *p) {
 }
 
 // Binds one of the values a literal would have written: null, a Bool as 1 or
-// 0, an Int, a Float, whole and within 2^53 as an integer, as the literal
-// Std.string wrote was one, an Int64, or a String, as text, or as a blob of
-// its UTF-8 when it holds a NUL, which a quoted literal could not carry and
-// was written as one. Answers false for anything else, which the caller
-// binds itself.
+// 0, an Int, a Float (whole and within 2^53 as an integer), an Int64, or a
+// String, as text, or as a blob of its UTF-8 when it holds a NUL, which a
+// quoted literal cannot carry. Answers false for anything else, which the
+// caller binds itself.
 static bool crossbyte_sqlite_stmt_bind(void *p, int i, Dynamic v) {
 	struct sqlite3_stmt *st = ((crossbyte_sqlite_stmt *)p)->st;
 
@@ -596,8 +593,8 @@ class NativeSQLiteStatement {
 	@:noCompletion private var __record:cpp.Pointer<cpp.Void>;
 
 	// Each parameter's name without its colon, by its index from 0, or null
-	// for one that is not a `:name`, a `?`, `$name` or `@name`, which is
-	// never bound, and reads as NULL, as it did written into the text.
+	// for one that is not a `:name` (a `?`, `$name` or `@name`), which is
+	// never bound, and reads as NULL.
 	@:noCompletion private var __params:Array<String>;
 
 	/**
@@ -684,8 +681,8 @@ class NativeSQLiteStatement {
 				var bytes:Bytes = value;
 				__bindBlob(__record, i + 1, bytes.getData(), bytes.length);
 			} else {
-				// A Date, as the literal Std.string wrote, or anything else
-				// as its text.
+				// A Date, as Std.string writes it, or anything else as its
+				// text.
 				__bindText(__record, i + 1, Std.string(value));
 			}
 		}

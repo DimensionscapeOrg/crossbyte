@@ -13,18 +13,15 @@ import haxe.io.Bytes;
  * the bits across the whole array from one hash computation per call: the
  * second hash is mixed out of the first.
  *
- * The bits are packed 32 to an `Int`, in a `haxe.ds.Vector`. They were an
- * `Array<Bool>`, an element per bit: a 10-million-bit filter held 38 MB on
- * the jvm and 76 MB on Node for 1.25 MB of bits. And each call hashed a UTF-8
- * copy of the item and a second, concatenated copy, about 470 bytes
- * allocated per check. It hashes the string's characters in place now, and
- * `add` and `contains` allocate nothing.
+ * The bits are packed 32 to an `Int`, in a `haxe.ds.Vector`, so a
+ * 10-million-bit filter holds 1.25 MB. The string's characters are hashed
+ * in place, and `add` and `contains` allocate nothing.
  *
  * Items are strings, `Int`s (`addInt`, `containsInt`) or bytes (`addBytes`,
  * `containsBytes`); the three kinds share one set of bits, so an `Int` and a
  * string can collide as any two items can. The positions are stepped
  * through without multiplying, so every target sets the same bits for the
- * same item, a filter's bits can be compared, or written down, across
+ * same item: a filter's bits can be compared, or written down, across
  * targets.
  *
  * @author Christopher Speciale

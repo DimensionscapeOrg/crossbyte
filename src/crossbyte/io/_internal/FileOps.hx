@@ -14,7 +14,7 @@ import sys.FileSystem;
 class FileOps {
 	/**
 		The file at `path` as `"<volume>:<index>"`, the same for every name
-		the file has, or null where the target cannot say, the path is
+		the file has, or null where the target cannot say: the path is
 		missing, or the target's `stat` has no file index (neko and hl on
 		Windows report 0 for every file).
 	**/
@@ -54,8 +54,8 @@ class FileOps {
 	}
 
 	/**
-		Whether `a` and `b` name one file: the same path once normalized,
-		compared without regard to case on Windows, or, where both exist,
+		Whether `a` and `b` name one file: the same path once normalized
+		(compared without regard to case on Windows) or, where both exist,
 		the same identity. Missing files are the same only by name.
 	**/
 	public static function sameFile(a:String, b:String, windows:Bool):Bool {
@@ -128,9 +128,9 @@ class FileOps {
 
 	/**
 		`path` opened to be read while another handle writes it, as an UPDATE
-		`FileStream`'s two handles do. BSD stdio, macOS's, keeps a read-only
-		stream's buffer across a seek into what it holds, so the reader went
-		on reading what the writer had since overwritten. A stream opened for
+		`FileStream`'s two handles do. BSD stdio (macOS's) keeps a read-only
+		stream's buffer across a seek into what it holds, so the reader would
+		go on reading what the writer had since overwritten. A stream opened for
 		reading and writing seeks to the file every time, so it is opened so
 		natively, and only read. Elsewhere the plain read handle.
 	**/
@@ -148,8 +148,8 @@ class FileOps {
 		`path` opened to be written from empty, as `sys.io.File.write` promises
 		and on the jvm under Windows does not keep: it deletes the file and
 		opens it afresh, Windows refuses the delete while any other handle has
-		the file open, and the old file is then opened without being cut,
-		its start overwritten, its old length kept, and nothing said. Cut here
+		the file open, and the old file is then opened without being cut (its
+		start overwritten, its old length kept, and nothing said). Cut here
 		through the handle, which Windows allows. Dynamic in a browser, where
 		the sys package cannot be named.
 	**/

@@ -36,8 +36,8 @@ import haxe.io.Error;
  *
  * Driven by the runtime's socket registry once open, rather than by the
  * tick: it is read when its socket is readable and flushed when a write is
- * waiting, so an idle session costs nothing. Only the phases before that,
- * a client's connect and a TLS handshake, still ride the tick, and each is
+ * waiting, so an idle session costs nothing. Only the phases before that (a
+ * client's connect and a TLS handshake) still ride the tick, and each is
  * bounded by a deadline.
  *
  * @author Christopher Speciale
@@ -53,8 +53,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		The largest frame this side sends: a message longer is sent in frames
-		of this many bytes. 64 KiB, the most a peer from before 1.0 took in
-		one frame. What this side takes in one is bounded by
+		of this many bytes. 64 KiB, the most a CrossByte peer older than 1.0
+		takes in one frame. What this side takes in one is bounded by
 		`maxMessageSize` alone.
 	**/
 	public static inline var FRAGMENT_SIZE:Int = 64 * 1024;
@@ -77,14 +77,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		1 MiB by default. A frame may be as long as the message: a browser
 		sends one of 100 KB as a single frame, and Node's `ws` sends every
-		message as one. There was a limit on each frame too, 64 KiB, and
-		with it a browser's message of more than that was refused whatever
-		this said; it bounded nothing this does not, now that a frame is
-		held to what is left of the message on its header.
+		message as one, so a frame is held only to what is left of the
+		message, on its header.
 
-		These were process-wide (`MAX_MESSAGE_SIZE`, `MAX_PAYLOAD`): a
-		second server, or a client, setting one changed it for every session
-		in the process.
+		Per session: one server, or a client, setting it changes it for no
+		other session in the process.
 	**/
 	public var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
 
@@ -92,8 +89,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		How long a closing handshake is given, in seconds: for the peer to
 		answer a close frame, and for what was queued before it to drain.
 		Past it the connection is closed regardless, as 1006 when the peer
-		never answered. Five by default. It was process-wide
-		(`CLOSE_TIMEOUT`).
+		never answered. Five by default, per session.
 	**/
 	public var closeTimeout:Float = DEFAULT_CLOSE_TIMEOUT;
 
@@ -141,7 +137,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 	 * Whether to ask for, or agree to, permessage-deflate (RFC 7692): each
-	 * message compressed on its own. Off unless set, before `connect`, or
+	 * message compressed on its own. Off unless set, before `connect` or
 	 * before a server's sessions arrive. Whether a session uses it is its
 	 * peer's say too; see `compressed`.
 	 */
@@ -167,9 +163,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// Whether what this side sends may go compressed: only where its peer
 	// agreed to inflate each message on its own; see __takeDeflateAnswer.
 	private var __deflateSend:Bool = false;
-	// Asked where there is no `__owner`; null is no one. Each started as a
-	// closure that did nothing, four made for every session and dropped as
-	// its owner set its own.
+	// Asked where there is no `__owner`; null is no one, so a session with
+	// an owner makes no closures for these.
 	public var onclose:Null<WebsocketEvent->Void> = null;
 	public var onerror:Null<WebsocketEvent->Void> = null;
 	public var onmessage:Null<WebsocketEvent->Void> = null;
@@ -200,8 +195,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __inputPosition:Int = 0;
 	private var __input:ByteArray;
 	private var __incomingMessageBuffer:ByteArray;
-	// The buffer messages are read into, kept from one to the next, up to
-	// Arrivals.KEEP, and filled again, so receiving makes no garbage; and
+	// The buffer messages are read into, kept from one to the next (up to
+	// Arrivals.KEEP) and filled again, so receiving makes no garbage; and
 	// whether it is out, handed over and not yet returned, when a message
 	// is read into one of its own. A listener that pumps the runtime can be
 	// handed the next message inside its own call. Never kept under either
@@ -220,10 +215,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		The `crossbyte.net.WebSocket` this session frames for, where it has
 		one: told of its opening, its messages, its errors, its close and its
 		overflow by typed calls, in place of `onopen`, `__onMessage`,
-		`onerror`, `onclose` and `onoverflow`, which are not asked then. Each
-		of those was a closure the owner made and the session kept for as
-		long as it lasted, six a session, 190 bytes natively, besides the
-		do-nothing ones each started with and the event made for each call.
+		`onerror`, `onclose` and `onoverflow`, which are not asked then, so
+		the session keeps no closure of the owner's for any of them and makes
+		no event for each call.
 	**/
 	@:noCompletion public var __owner:Null<crossbyte.net.WebSocket> = null;
 	private var __incomingOpcode:Int = -1;
@@ -276,9 +270,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var buffered:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
 		#if nodejs
 		// Node takes every frame whole and queues what the kernel will not,
-		// so the backlog is Node's: counting only this side's buffer read 0
-		// for a peer that had stopped reading, and a server's drain() waited
-		// on nothing.
+		// so the backlog is Node's: counting only this side's buffer would read
+		// 0 for a peer that had stopped reading, and a server's drain() would
+		// wait on nothing.
 		if (__socket != null) {
 			buffered += __socket.writableLength;
 		}
@@ -291,9 +285,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private var __pendingSent:Int = 0;
 
 	/**
-	 * What the network has taken from this session since it opened, on
-	 * Node, what was handed to Node's queue, which `outputBufferLength` counts
-	 * as still pending.
+	 * What the network has taken from this session since it opened (on
+	 * Node, what was handed to Node's queue, which `outputBufferLength`
+	 * counts as still pending).
 	 */
 	public var bytesSent(default, null):Float = 0;
 
@@ -308,8 +302,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	/**
-	 * Told as sent bytes reach the system, for whoever reports progress,
-	 * `crossbyte.net.WebSocket`'s OUTPUT_PROGRESS, and only while it is
+	 * Told as sent bytes reach the system, for whoever reports progress
+	 * (`crossbyte.net.WebSocket`'s OUTPUT_PROGRESS), and only while it is
 	 * set: on Node it costs a write callback.
 	 */
 	public var onprogress:Void->Void = null;
@@ -322,11 +316,6 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * handshake and the upgrade, together. `0` waits as long as it takes.
 	 * Counted from the connect's start whenever it is set, so it can be set
 	 * straight after construction.
-	 *
-	 * Each step had a clock of its own, and not all of them this one: a TLS
-	 * handshake gave up at a fixed three seconds whatever this said, on Node
-	 * nothing bounded a connect until the transport was up, and natively a
-	 * timeout of 0 failed a lookup at once.
 	 */
 	public var connectTimeout(default, set):Int = CONNECT_TIMEOUT_MS;
 
@@ -347,8 +336,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	public var pingInterval(get, set):Float;
 
 	/**
-	 * How long, in seconds, a session hears nothing, no message, no pong, no
-	 * frame at all, before it takes the peer for gone and closes with 1006;
+	 * How long, in seconds, a session hears nothing (no message, no pong, no
+	 * frame at all) before it takes the peer for gone and closes with 1006;
 	 * zero for never. Checked every `pingInterval`, or every quarter of this
 	 * with pings off.
 	 */
@@ -366,10 +355,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// Whether the transport is TLS, whichever side made it.
 	private var __tls:Bool = false;
 
-	// What a secure client checks the server against. Verified by default:
-	// every secure client used to be built with verification off, so any
-	// certificate for any host was accepted and whoever sat in the path could
-	// read the session.
+	// What a secure client checks the server against. Verified by default,
+	// so a secure client does not accept any certificate for any host.
 	private var __verifyCert:Bool = true;
 	private var __certAuthority:crossbyte.net.Certificate;
 
@@ -384,8 +371,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#end
 
 	// Whether onclose has been called. A session can be closed from several
-	// places in one pass, a failed write inside the frame that answers a
-	// close, say, and the owner is told once.
+	// places in one pass (a failed write inside the frame that answers a
+	// close, say), and the owner is told once.
 	private var __closeReported:Bool = false;
 
 	// What a client's failed connect is reported by: whether the owner is
@@ -451,17 +438,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		client gives up, with an error saying so, and closes with 1006. `0`
 		or less reads one of any size.
 
-		16 KiB by default, as Node's HTTP parser, and so the `ws` library
-		on it, has it: a browser's upgrade request is a few hundred bytes
+		16 KiB by default, as Node's HTTP parser (and so the `ws` library
+		on it) has it: a browser's upgrade request is a few hundred bytes
 		with its cookies, a few kilobytes at most, and the server holds what
 		has arrived of each one still upgrading, so this times
 		`maxPendingHandshakes` is what silent peers can make it hold.
-
-		There was no limit. Each arrival was appended to a string, copied
-		whole every time, and the whole of it searched again for the end of
-		the head: one connection sending a header without end made a server
-		hold 221 MB in 10 s, single passes of the runtime took a second, and
-		only `handshakeTimeout` ended it.
 	**/
 	public var maxHeaderSize:Int = DEFAULT_MAX_HEADER_SIZE;
 
@@ -499,16 +480,15 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (__isClient == null) {
 			__isClient = true;
 			#if !nodejs
-			// A client's alone, which connects from the tick: every session
-			// a server accepted made it too, and the handshake's below, and
-			// kept both for as long as it lasted. See __initSSLHandshake.
+			// A client's alone, which connects from the tick; a server's
+			// sessions need neither this nor the handshake's below. See
+			// __initSSLHandshake.
 			__tickConnectListener = __onTickConnect;
 			#end
 			// A client's alone: a server answers the key it is sent, and needs
-			// no randomness of its own. This was drawn before the question was
-			// asked, so every session a server accepted drew one too, and
-			// SecureRandom refuses on eval, hl and neko, so there every
-			// upgrade threw in the accept tick and the peer was reset.
+			// no randomness of its own. SecureRandom refuses on eval, hl and
+			// neko, so drawn for a server session it would throw in the accept
+			// tick and reset the peer.
 			__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 			__verifyCert = verifyCert;
 			__certAuthority = certAuthority;
@@ -538,9 +518,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				}
 
 				// Bounded as it is read. Std.parseInt answers a number too big
-				// for an Int differently on every target, its low 32 bits on
+				// for an Int differently on every target (its low 32 bits on
 				// Linux native, the largest Int on Windows, an exception on the
-				// jvm, nothing at all on eval, so a port past 65535 became
+				// jvm, nothing at all on eval), so a port past 65535 would become
 				// some other port, or the default, depending where it ran.
 				var portText:Null<String> = regex.matched(3);
 				if (portText == null || portText.length == 0) {
@@ -601,7 +581,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		} else {
 			// Accepted rather than dialled: already connected, so there is no
 			// connect event to wait for. __openConnection sends the upgrade
-			// request only for a client, and this is not one, a server waits
+			// request only for a client, and this is not one: a server waits
 			// to receive one.
 			__socket = socket;
 			__tls = Reflect.field(socket, "encrypted") == true;
@@ -613,10 +593,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__socket = new FlexSocket(__secure);
 			__tls = __secure;
 			if (__secure) {
-				// Checked unless the owner said not to. This was a flat
-				// `verifyCert = false`, so every secure client accepted any
-				// certificate for any host. The host name set below is what the
-				// certificate is then matched against, as well as the SNI name.
+				// Checked unless the owner said not to. The host name set below
+				// is what the certificate is then matched against, as well as the
+				// SNI name.
 				__socket.verifyCert = __verifyCert;
 				if (__certAuthority != null) {
 					__socket.setCA(__certAuthority.__native);
@@ -625,7 +604,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			}
 			// No byte order is set on the output: frames go out as raw bytes,
 			// and on jvm a socket has no output at all until it connects, so
-			// setting one here threw before any client, ws:// included,
+			// setting one here would throw before any client, ws:// included,
 			// had even started.
 			__connect();
 			__runtime.addEventListener(Event.TICK, __tickConnectListener);
@@ -667,14 +646,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		};
 
 		if (__secure) {
-			// Node verifies unless told otherwise; what it lacked was a way
-			// for the owner to say either thing, to trust a private
-			// authority, or, for a development server, not to check.
+			// Node verifies unless told otherwise; this lets the owner say
+			// either thing: trust a private authority, or, for a development
+			// server, not check.
 			var options:Dynamic = {port: __port, host: __host, rejectUnauthorized: __verifyCert};
 
 			// `servername` is the SNI name, and without it a host serving
 			// several certificates on one address has no way to pick this
-			// one's, the handshake then fails on a name mismatch that looks
+			// one's, and the handshake fails on a name mismatch that looks
 			// like a certificate error. Only for a name, though: SNI may not
 			// carry an address (RFC 6066 3), and Node checks the certificate
 			// against `host` when there is none.
@@ -703,8 +682,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	private function __bindNodeTransport():Void {
 		// Each one contained: these run from Node's event loop, so a listener
-		// that threw, a message handler meeting input it could not parse,
-		// threw into Node, which ended the process and every session in it.
+		// that threw (a message handler meeting input it could not parse)
+		// would throw into Node, which ends the process and every session in it.
 		__socket.on("data", function(chunk:Buffer):Void {
 			try {
 				__receiveNode(chunk);
@@ -728,8 +707,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			try {
 				if (readyState != CLOSED) {
 					// 1006 rather than 1000: the peer went without a close
-					// frame, which is ordinary, a dropped connection, a
-					// killed process, and is exactly what 1006 is for.
+					// frame, which is ordinary (a dropped connection, a
+					// killed process), and is exactly what 1006 is for.
 					__close(1006);
 				}
 			} catch (e:Dynamic) {
@@ -777,10 +756,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#if !nodejs
 	/**
 		Starts the connect. An address is connected to at once; a name is
-		looked up off the runtime's thread first (see `Resolver`), it used to
-		be looked up right here, holding every socket and timer on the runtime
-		for as long as the resolver took. The tick waits for the answer as it
-		waits for the connect, under the same deadline.
+		looked up off the runtime's thread first (see `Resolver`), so no
+		socket or timer on the runtime waits for the resolver. The tick waits
+		for the answer as it waits for the connect, under the same deadline.
 	**/
 	private function __connect():Void {
 		if (!Resolver.needsLookup(__host)) {
@@ -813,9 +791,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		} catch (e:Dynamic) {
 			// A connect in progress reports itself as a block, which is the
 			// ordinary case: the tick waits for it to finish. Anything else is
-			// a connect that has already failed, and every failure used to be
-			// swallowed here, leaving the tick to wait out the timeout for a
-			// connection that could never come.
+			// a connect that has already failed, reported now rather than left
+			// for the tick to wait out the timeout for a connection that could
+			// never come.
 			if (!BlockedError.isBlocked(e)) {
 				__connectFailure = Std.string(e);
 				return;
@@ -823,10 +801,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// Watched in the poll set, so the connect is taken up as soon as the
-		// system finishes it, as crossbyte.net.Socket's is: from the tick
-		// alone it waited for the next frame. For reading too, which is where
-		// a refused connect is reported on Windows. The tick stays, for the
-		// deadline.
+		// system finishes it, as crossbyte.net.Socket's is, rather than at
+		// the next frame. For reading too, which is where a refused connect
+		// is reported on Windows. The tick stays, for the deadline.
 		if (__runtime != null && __socket != null) {
 			__dialing = true;
 			__socket.custom = this;
@@ -853,11 +830,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		if (!__connected && !__handshaking) {
 			#if (java || jvm)
-			// Settled by whichever select reached it first, the runtime's
-			// poll as often as the one below, and that one filed the reason
+			// Settled by whichever select reached it first (the runtime's
+			// poll as often as the one below), and that one filed the reason
 			// on the socket. NIO closes a channel whose connect failed, so a
-			// select after it finds nothing, and the refusal sat here until
-			// the deadline: one connect in about 150.
+			// select after it finds nothing, and the refusal is read from
+			// here rather than waiting for the deadline.
 			var settled:Null<String> = (cast __socket : sys.net.Socket).__connectFailure;
 			if (settled != null) {
 				__onError("Failed to connect to server: " + settled);
@@ -867,16 +844,15 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			#end
 
 			// Asked about the exception set too: a refused connect is
-			// reported there on Windows and never becomes writable, so it sat
-			// here until the deadline, ten seconds by default for a refusal
-			// the system had reported at once.
+			// reported there on Windows and never becomes writable, so it
+			// would sit here until the deadline.
 			var sockets = FlexSocket.select(null, [__socket], [__socket], 0);
 
 			#if cpp
 			// Writable is not connected: POSIX makes a refused connect
-			// writable too, so on Linux and macOS a refusal was taken for a
-			// connection, sent its upgrade request, and ended at the first
-			// read as an unexplained 1006. See Socket's tick.
+			// writable too, so on Linux and macOS a refusal must not be
+			// taken for a connection and sent its upgrade request. See
+			// Socket's tick.
 			if (sockets.write[0] == __socket) {
 				var refused:Null<String> = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
 				if (refused != null) {
@@ -909,7 +885,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 	}
 
-	// ---- The registry's calls ---------------------------------------------
+	// The registry's calls.
 
 	public var registryClosed(get, never):Bool;
 
@@ -920,17 +896,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	/**
 	 * The socket is readable: read what is there.
 	 *
-	 * This ran from the tick for every session, every tick, whether or not
-	 * anything had arrived, a receive that found nothing, and on hxcpp
-	 * raised an exception to say so, per idle session per tick. The registry
-	 * polls every socket at once and calls only the ones with something to
-	 * read.
+	 * Read only when the registry reports something to read: polled from
+	 * the tick, every idle session would make a receive that found nothing
+	 * every tick, and on hxcpp an exception to say so. The registry polls
+	 * every socket at once and calls only the ones with something to read.
 	 */
 	public function registryOnReadable():Void {
 		#if !nodejs
 		// A connect or a TLS handshake still in flight is stepped rather than
-		// read: each was stepped only from the tick, so a connect waited for
-		// the next frame, and a handshake waited a frame per round trip.
+		// read, so a connect does not wait for the next frame, nor a handshake
+		// a frame per round trip.
 		if (__dialing) {
 			__onTickConnect(null);
 			return;
@@ -961,7 +936,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 	 * Whether the TLS layer holds decrypted bytes the kernel no longer has.
-	 * Only the jvm's can, see `Socket.registryHasBufferedInput`, and it is
+	 * Only the jvm's can (see `Socket.registryHasBufferedInput`), and it is
 	 * asked through its type, not dynamically, since the registry asks every
 	 * TLS session on every pump.
 	 */
@@ -1009,8 +984,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var scratch:Bytes = @:privateAccess crossbyte.net.Socket.__scratch();
 
 		// Appended in place, and the cursor put back afterwards, as `Socket`
-		// does, where each read used to be copied into a buffer of its own
-		// and then again into the input.
+		// does, with no copy of each read into a buffer of its own first.
 		__input.position = __input.length;
 
 		while (__connected && __socket != null) {
@@ -1020,8 +994,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					break;
 				}
 				totalBytes += nBytes;
-				// As Bytes, as Socket's read does: writeBytes takes a
-				// ByteArray, and one was made around the scratch every read.
+				// As Bytes, as Socket's read does: writeBytes takes a ByteArray,
+				// which would have to be made around the scratch every read.
 				@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, nBytes);
 
 				// An opening handshake already past what this side reads of
@@ -1033,13 +1007,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				// A pass's share, as Socket's (see READ_BUDGET there): what
 				// is left stays in the kernel, which reports the socket
-				// readable again next pass. It read for as long as reads came
-				// back full, so a peer sending faster than this parsed held
-				// the runtime here, every timer and every other socket
-				// waiting on it. TLS stops here too: a read takes a whole
-				// record into a buffer larger than any, so mbedTLS is left
-				// holding nothing select cannot see, and the jvm's engine,
-				// which can hold more, is asked about it before every select.
+				// readable again next pass, so a peer sending faster than
+				// this parses cannot hold the runtime here, every timer and
+				// every other socket waiting on it. TLS stops here too: a
+				// read takes a whole record into a buffer larger than any,
+				// so mbedTLS is left holding nothing select cannot see, and
+				// the jvm's engine, which can hold more, is asked about it
+				// before every select.
 				if (totalBytes >= @:privateAccess crossbyte.net.Socket.READ_BUDGET) {
 					// And the loop is told, so the rest is read before it
 					// waits rather than after.
@@ -1051,12 +1025,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				#if !eval
 				// A read shorter than the buffer has drained the socket, so it
-				// ends here, as Socket's does. It read on until the socket
-				// said it would block: a system call that read nothing on
-				// every arrival, answered with an exception hxcpp throws and
-				// this catches, a third of an echoing server's time, where
-				// a plain socket spent a twelfth. TLS reads on as before:
-				// mbedTLS holds plaintext select cannot see (see below).
+				// ends here, as Socket's does, rather than reading on until the
+				// socket says it would block: a system call that reads nothing
+				// on every arrival, answered with an exception hxcpp throws and
+				// this catches, would be a third of an echoing server's time.
+				// TLS reads on: mbedTLS holds plaintext select cannot see (see
+				// below).
 				if (!__tls && nBytes < scratch.length) {
 					break;
 				}
@@ -1077,14 +1051,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					break;
 				}
 
-				// TLS keeps the old read-until-short-read behaviour. A select
-				// on the raw descriptor sees the socket, not the session:
-				// mbedtls decrypts whole records into its own buffer, so
-				// plaintext waiting there is invisible to select and gating
-				// on it would strand a fully received message. The probe sits
-				// inside the try on purpose, a select failure on a dying
-				// socket lands in the catches below and closes the session,
-				// the same as a failed read.
+				// TLS keeps reading until a short read. A select on the raw
+				// descriptor sees the socket, not the session: mbedtls decrypts
+				// whole records into its own buffer, so plaintext waiting there
+				// is invisible to select and gating on it would strand a fully
+				// received message. The probe sits inside the try on purpose: a
+				// select failure on a dying socket lands in the catches below and
+				// closes the session, the same as a failed read.
 				if (!__tls && FlexSocket.select([__socket], [], [], 0).read.length == 0) {
 					break;
 				}
@@ -1096,8 +1069,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				break;
 			} catch (e:Eof) {
 				// A clean TCP FIN. The peer went away without sending a close
-				// frame, which is ordinary, a closed tab, a dropped mobile
-				// connection, and is reported as 1006 below, not logged as a
+				// frame, which is ordinary (a closed tab, a dropped mobile
+				// connection), and is reported as 1006 below, not logged as a
 				// failure.
 				doClose = true;
 				break;
@@ -1139,7 +1112,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * Whether what is pending can wait for the end of the runtime's pass:
 	 * it can when the runtime is already to flush it, or is asked to now.
 	 * Only on the runtime's own thread, whose list of what to flush is not
-	 * shared; a send from any other goes at once, as it always did.
+	 * shared; a send from any other goes at once.
 	 */
 	private function __holdForPass():Bool {
 		if (__passFlushQueued) {
@@ -1214,25 +1187,24 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * partially-accepted or momentarily-full socket retains the remainder
 	 * instead of losing it.
 	 *
-	 * What a pass sends a session goes in one write as the pass ends, every
-	 * message a handler sends, a timer's, a tick's, where each frame was a
-	 * write of its own, a system call apiece. A server relaying a chat room's
-	 * messages to everyone in it made one for every message to every member.
+	 * What a pass sends a session goes in one write as the pass ends (every
+	 * message a handler sends, a timer's, a tick's), not a write per frame,
+	 * so a server relaying a chat room's messages to everyone in it makes
+	 * one system call per member a pass rather than one per message.
 	 * Nothing waits past the pass: the loop flushes before it polls again,
 	 * and on Node a pass is a turn of its event loop. What has been held goes
 	 * at once when it reaches 64 KB, and on native a frame that size goes
 	 * straight from where it was built; so does everything where no pass is
-	 * coming, no runtime, one that has exited, or a send from another
-	 * thread than the session's runtime.
+	 * coming (no runtime, one that has exited, or a send from another
+	 * thread than the session's runtime).
 	 */
 	private function __queueOutput(data:ByteArray, length:Int):Void {
 		if (data != null && length > 0 && __socket != null) {
 			var pending:Int = __pendingOutput.length - __pendingSent;
 			#if !nodejs
 			// The socket is full and the registry will say when it has room:
-			// added to what waits, and not offered until then. Each frame was
-			// offered at once past 64 KB waiting, a write the system refused
-			// and an exception, per frame, while the peer read nothing.
+			// added to what waits, and not offered until then, so a peer reading
+			// nothing does not cost a refused write and an exception per frame.
 			if (__writeQueued && pending > 0) {
 				__pendingOutput.position = __pendingOutput.length;
 				__pendingOutput.writeBytes(data, 0, length);
@@ -1282,11 +1254,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#if !nodejs
 	/**
 		Offers `length` bytes of `buffer` from `offset` to the socket. Answers
-		how many it took, 0 when it had no room, or -1 if the write failed.
+		how many it took (0 when it had no room), or -1 if the write failed.
 
 		Written until the socket will take no more, not once: a TLS socket
-		takes one record a write, so a single write sent 16 KB a pass whatever
-		room the kernel had.
+		takes one record a write, so a single write would send 16 KB a pass
+		whatever room the kernel had.
 	**/
 	private function __offer(buffer:ByteArray, offset:Int, length:Int):Int {
 		var accepted:Int = 0;
@@ -1327,13 +1299,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * retried from the registry's writable queue. Only a genuine I/O failure
 	 * closes the session.
 	 *
-	 * What the socket took is stepped over rather than cut off. Every partial
-	 * write used to copy all that was still waiting into a new buffer, so a
-	 * peer reading slowly behind a large backlog cost a copy of the whole
-	 * backlog per write, quadratic in the backlog. The buffer is compacted
-	 * only once what has gone is past the threshold and at least as large as
-	 * what remains, so moving the rest down costs no more than the writes
-	 * that emptied the front.
+	 * What the socket took is stepped over rather than cut off, so a peer
+	 * reading slowly behind a large backlog does not cost a copy of the
+	 * whole backlog per write. The buffer is compacted only once what has
+	 * gone is past the threshold and at least as large as what remains, so
+	 * moving the rest down costs no more than the writes that emptied the
+	 * front.
 	 */
 	private function __flushPendingOutput():Void {
 		var pending:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
@@ -1347,8 +1318,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		//
 		// Copied into a buffer of its own first. `Buffer.hxFromBytes` wraps
 		// the storage it is given rather than copying it, and `__pendingOutput`
-		// is cleared and refilled by the very next frame, `clear()` resets
-		// the length and keeps the array, so handing Node a window onto it
+		// is cleared and refilled by the very next frame (`clear()` resets
+		// the length and keeps the array), so handing Node a window onto it
 		// would let the next frame overwrite the one still queued for sending.
 		var frame:ByteArray = new ByteArray();
 		frame.writeBytes(__pendingOutput, __pendingSent, pending);
@@ -1373,8 +1344,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__pendingSent = 0;
 
 		// So a peer that is not reading shows in Node's own queue, and the
-		// limit is measured there. It was measured after a return this path
-		// always took, and so never.
+		// limit is measured there.
 		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
 			if (__overflow(__socket.writableLength)) {
 				return;
@@ -1382,9 +1352,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// A close that was waiting for this to go: Node has it now, and sends
-		// it ahead of the end. Nothing waited here while each frame was written
-		// as it was made, but one held for the turn is still pending when the
-		// closing handshake finishes.
+		// it ahead of the end. A frame held for the turn can still be pending
+		// when the closing handshake finishes.
 		if (__closeWhenDrained) {
 			__close(__drainedCode, __drainedReason);
 		}
@@ -1396,8 +1365,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		if (accepted >= pending) {
-			// Emptied, and past KEEP its storage let go: what a backlog grew
-			// it to was kept for the rest of the session.
+			// Emptied, and past KEEP its storage let go, so what a backlog grew
+			// it to is not kept for the rest of the session.
 			__emptied(__pendingOutput);
 			__pendingSent = 0;
 
@@ -1455,10 +1424,6 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		owner hears why first, and what was waiting is thrown away rather
 		than left queued for a peer that is not reading. Answers whether it
 		closed.
-
-		It closed with 1011 and said nothing, whatever the owner's
-		`outputOverflowPolicy` said; and on Node ended its socket, which keeps
-		Node's queue waiting on that same peer.
 	**/
 	private function __overflow(waiting:Int):Bool {
 		var owner = __owner;
@@ -1478,7 +1443,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return true;
 	}
 
-	// ---- Answering pings ---------------------------------------------------
+	// Answering pings.
 
 	// What the socket will have taken, counted as `bytesSent` counts, once
 	// the last answer to a ping has gone; 0 before the first. And the
@@ -1495,17 +1460,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		RFC 6455 5.5.3 allows exactly this: a pong for only the most recent
 		ping, where pings arrive faster than they can be answered. So the
-		answers a session owes are never more than two, one going, one
-		kept, at most 125 bytes, however many pings arrive; and the last
+		answers a session owes are never more than two (one going, one
+		kept, at most 125 bytes) however many pings arrive; and the last
 		ping is always the one last answered. libwebsockets answers so.
 
-		Every ping was answered with a pong of its own. A peer sending pings
-		and reading nothing piled them up without end: 32 MB of pongs in
-		10 s natively, each written as a frame and offered to a full socket,
-		single passes of the runtime taking 1.4 s, every other session on
-		it waiting that long. HTTP/2 meets the same flood with a budget of
-		replies over a window (`maxControlReplies`) and closes past it,
-		because it must answer every PING; WebSocket need not, so nothing
+		A pong for every ping would let a peer sending pings and reading
+		nothing pile them up without end (32 MB of pongs in 10 s natively,
+		each written as a frame and offered to a full socket), holding every
+		other session on its runtime. HTTP/2 meets the same flood with a
+		budget of replies over a window (`maxControlReplies`) and closes past
+		it, because it must answer every PING; WebSocket need not, so nothing
 		here has to be closed or tuned.
 	**/
 	private function __answerPing(payload:ByteArray):Void {
@@ -1611,8 +1575,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				}
 
 				// Either the peer began it or this is its answer to ours. What
-				// is reported is the peer's code and reason either way, what
-				// it said about why, which is what a browser reports too.
+				// is reported is the peer's code and reason either way (what
+				// it said about why), which is what a browser reports too.
 				__finishClose(code, reason);
 		}
 	}
@@ -1682,11 +1646,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				}
 
 				// A frame is refused on its header alone, before the wait below for a
-				// payload that may never arrive. These checks used to sit after that
-				// wait, and so ten bytes claiming a two-gigabyte length put the
-				// session into a wait for a frame it would have refused the moment it
-				// completed. A data frame is held to what is left of its message
-				// under maxMessageSize, so nothing waits for more than a message.
+				// payload that may never arrive, so ten bytes claiming a two-gigabyte
+				// length cannot put the session into a wait for a frame it would
+				// refuse once it completed. A data frame is held to what is left of
+				// its message under maxMessageSize, so nothing waits for more than a
+				// message.
 				var isControl:Bool = opCode >= WebSocketOpcode.CLOSE;
 				if (isControl && (!isFinal || payloadLength > 125)) {
 					__fail(1002);
@@ -1728,10 +1692,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				if (isControl) {
 					// At most 125 bytes, into one buffer the session keeps for
-					// them: nothing hands a control frame's payload out, a
-					// ping's is copied into its answer, a close's read in the
-					// call, and a peer sending a stream of pings made a buffer
-					// for every one.
+					// them: nothing hands a control frame's payload out (a ping's
+					// is copied into its answer, a close's read in the call), so a
+					// peer sending a stream of pings makes no buffer for each.
 					var control:ByteArray = __control;
 					if (control == null) {
 						control = __control = new ByteArray();
@@ -1779,10 +1742,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				// Read straight into the message the frame belongs to, unmasked
 				// where it lands: a message's first frame takes the buffer it
-				// is read into (__takeMessage), and each after it is appended.
-				// Every frame was read into a ByteArray made for it, which was
-				// the message if it was the first, and was copied into the
-				// message and dropped if it was not.
+				// is read into (__takeMessage), and each after it is appended,
+				// with no ByteArray made for each frame.
 				if (opCode != WebSocketOpcode.CONTINUATION) {
 					__incomingMessageBuffer = __takeMessage();
 				}
@@ -1835,8 +1796,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			var limit:Int = maxHeaderSize;
 			if (endIndex < 0) {
 				__headScanned = __input.length;
-				// Held where it arrived, as bytes, until the head is whole: it
-				// was moved into a string, copied whole with every arrival.
+				// Held where it arrived, as bytes, until the head is whole,
+				// rather than moved into a string copied whole with every arrival.
 				if (limit > 0 && __input.length - start > limit) {
 					__headTooLarge(limit);
 				}
@@ -1860,8 +1821,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			var headers:StringMap<String>;
 
 			// Read as what the session's role expects: a request on a server,
-			// an answer on a client. Anything else was left where it lay,
-			// found again with every arrival, until a deadline ended it.
+			// an answer on a client.
 			if (__isClient == false) {
 				if (lines[0].indexOf(GET) != 0) {
 					__refuseUpgrade(400, null);
@@ -1882,9 +1842,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					headers.set("status", "101");
 				} else {
 					// A failed connect, as a browser reports one: the
-					// answer said, then 1006 (see __close). It closed with
-					// 1002 and no error, as if an open session had broken
-					// the protocol.
+					// answer said, then 1006 (see __close), not 1002 with
+					// no error, as if an open session had broken the protocol.
 					__onError("The server refused the WebSocket upgrade: " + lines[0]);
 					__close(1006);
 					return;
@@ -1909,10 +1868,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				// buffer. They have to be dropped explicitly: anything left
 				// here is parsed as the start of the first frame, and the
 				// 'G' of "GET" (0x47) has RSV1 set, so the peer's first
-				// real message was rejected as a protocol error.
+				// real message would be rejected as a protocol error.
 				//
-				// And the storage the head was read into goes with them: a
-				// session that opens and says nothing kept it for good.
+				// And the storage the head was read into goes with them, or a
+				// session that opens and says nothing would keep it for good.
 				__letGo(__input);
 				__inputPosition = 0;
 
@@ -1946,11 +1905,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * A server session's answer to the upgrade request it has just received:
 	 * the `101`, or a refusal. Says whether the session opened.
 	 *
-	 * The request was parsed and thrown away, so nothing about who was asking
-	 * reached anything able to act on it, and a browser offering a subprotocol
-	 * heard none back and failed the connection. Now the request is kept, the
-	 * owner's `onupgrade` decides on it, and the subprotocol accepted is
-	 * echoed.
+	 * The request is kept, the owner's `onupgrade` decides on it, and the
+	 * subprotocol accepted is echoed: a browser offering a subprotocol that
+	 * hears none back fails the connection.
 	 */
 	private function __acceptUpgrade(requestLine:String, headers:StringMap<String>, ?head:String):Bool {
 		if (!__validateRequestHandshake(headers)) {
@@ -2069,8 +2026,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * this. It runs on `Bytes` rather than through `ByteArray`'s array
 	 * access deliberately: that accessor calls `__resize` on every element
 	 * write to bounds-check an index this loop already knows is in range,
-	 * and on a server this is touched once per inbound byte. Measured on
-	 * 32 MB, the old per-byte form ran at 648 MB/s and this at ~1470 MB/s.
+	 * and on a server this is touched once per inbound byte. This runs at
+	 * about twice the speed of a per-byte loop through it.
 	 *
 	 * Whole 32-bit words are XORed at a time. The key is read with the same
 	 * accessor as the data, so both agree on byte order and word `i` lines
@@ -2109,9 +2066,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// RFC 6455 7.4. The ranges carry the rule, not just the handful of
 		// holes inside them: 1000-2999 belongs to the protocol and only the
 		// assigned part of it may travel, 3000-3999 is for libraries and
-		// 4000-4999 is private. Accepting anything at or above 1000 let a
-		// peer close with 1016, 2000 or 65535, none of which mean
-		// anything, when the answer to an unknown code is 1002.
+		// 4000-4999 is private. A peer closing with 1016, 2000 or 65535,
+		// none of which mean anything, is answered 1002.
 		if (code >= 3000 && code <= 4999) {
 			return true;
 		}
@@ -2224,17 +2180,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__inputPosition = __input.position;
 	}
 
-	// ---- Memory a session keeps --------------------------------------------
+	// Memory a session keeps.
 
 	/**
 		The most storage a buffer keeps once it has emptied: 64 KB, what a
 		pass reads of a socket into it at once and what it batches for one.
 		A busy session fills and empties its buffers within that every pass,
-		allocating nothing; past it a buffer has held a backlog, a burst
-		read in one pass, output behind a peer that stopped reading, and
-		lets the storage go as it empties, where it kept the largest it had
-		ever needed for as long as the session lasted, up to the 8 MiB a
-		server lets wait for one peer.
+		allocating nothing; past it a buffer has held a backlog (a burst
+		read in one pass, output behind a peer that stopped reading) and
+		lets the storage go as it empties, rather than keeping the largest
+		it ever needed, up to the 8 MiB a server lets wait for one peer, for
+		as long as the session lasts.
 	**/
 	private static inline var KEEP:Int = 64 * 1024;
 
@@ -2270,11 +2226,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		Lets go of every buffer a session holds between messages, once it has
 		been quiet for a beat of its heartbeat: nothing heard, for what it
 		reads, and nothing sent, for what it writes. An idle session then
-		holds its objects and no storage, what it took in and sent before
-		it went quiet, up to `KEEP` a buffer and 16 KB of message, was held
-		for as long as it lasted. A session that is busy is never quiet for a
-		beat, so this costs it nothing; one that wakes allocates again what
-		its first messages need.
+		holds its objects and no storage, rather than what it took in and
+		sent before it went quiet, up to `KEEP` a buffer and 16 KB of
+		message, for as long as it lasts. A session that is busy is never
+		quiet for a beat, so this costs it nothing; one that wakes allocates
+		again what its first messages need.
 	**/
 	private function __trimWhenQuiet(heard:Bool, sent:Bool):Void {
 		if (!heard) {
@@ -2304,12 +2260,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * Moves the unread tail of `__input` down over what has been parsed, in
 	 * place, once the parsed part is at least as long as the tail, so no
 	 * byte is moved more often than bytes are consumed, and what is moved is
-	 * at most the frame still arriving.
-	 *
-	 * This ran after every frame, from 64 KB parsed, and copied the whole
-	 * unread rest of the input into a new buffer each time: a burst cost the
-	 * square of its length. A client uploading 64 KB messages was received
-	 * at 21 MB/s, 82% of the server's time spent in that copy.
+	 * at most the frame still arriving. Copying the whole unread rest of the
+	 * input into a new buffer after every frame would make a burst cost the
+	 * square of its length.
 	 *
 	 * A move within one buffer is a blit whose ends overlap, which every
 	 * target copies front to back or as if through a temporary: safe moving
@@ -2399,8 +2352,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			} else {
 				// All a listener left on it taken back: position, length,
 				// byte order and object encoding, as a ByteArray made for the
-				// message has them. The object encoding was kept, so after
-				// one listener read a JSON message every message read JSON.
+				// message has them, so one listener reading a JSON message does
+				// not make every later message read as JSON.
 				Arrivals.reset(message);
 			}
 		} else {
@@ -2429,9 +2382,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("sec-websocket-key"))
 		];
 
-		// The subprotocol accepted, echoed. A browser that offered one and
-		// heard none back failed the connection outright, so a page asking
-		// for a subprotocol could never open a session here.
+		// The subprotocol accepted, echoed: a browser that offered one
+		// and hears none back fails the connection outright.
 		if (protocol != null) {
 			lines.push("Sec-WebSocket-Protocol: " + protocol);
 		}
@@ -2563,7 +2515,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return true;
 	}
 
-	// ---- permessage-deflate (RFC 7692) -----------------------------------
+	// permessage-deflate (RFC 7692).
 
 	/**
 		The extensions a `Sec-WebSocket-Extensions` value lists, each with its
@@ -2613,7 +2565,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	/**
 		A server's answer to this client's offer, taken if this side can keep
 		it: permessage-deflate alone, without context takeover on the
-		server's side, this side inflates each message on its own, and
+		server's side (this side inflates each message on its own), and
 		with nothing asked of this side's compressor but its full window.
 
 		What this side sends goes compressed only where the server said
@@ -2667,7 +2619,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		A client's offers, in its order of preference: the first
 		permessage-deflate offer this side can keep is taken, and the answer
 		for it becomes `extensions`. An offer that would narrow this side's
-		window is passed over, its compressor looks back the whole 32 KB,
+		window is passed over (its compressor looks back the whole 32 KB),
 		and so is one naming a parameter this side does not know.
 	**/
 	private function __acceptDeflateOffer(value:String):Bool {
@@ -2714,8 +2666,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		A whole compressed message, inflated in place of what arrived. Fails
-		the connection, 1009 past `maxMessageSize`, which bounds what a
-		small message can inflate into, 1007 for data that is not DEFLATE,
+		the connection (1009 past `maxMessageSize`, which bounds what a
+		small message can inflate into, 1007 for data that is not DEFLATE)
 		and answers false.
 	**/
 	private function __inflateIncoming():Bool {
@@ -2751,7 +2703,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		then the empty block that ends a flush, less the four octets a
 		receiver puts back. This compressor finishes its stream with a final
 		block, so what that leaves is a single octet of the empty block's
-		header, the form RFC 7692 7.2.3.4 gives for a final block.
+		header: the form RFC 7692 7.2.3.4 gives for a final block.
 	**/
 	private static function __deflateOutgoing(data:ByteArray):ByteArray {
 		var deflated:ByteArray = new ByteArray();
@@ -2775,8 +2727,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		if (__secure) {
 			__initSSLHandshake();
-			// The client speaks first: its hello goes now, where it waited
-			// for the next tick to be sent at all.
+			// The client speaks first: its hello goes now, not at the next
+			// tick.
 			__onTickSSLHandshake(null);
 		} else {
 			__openConnection(__tickConnectListener);
@@ -2785,7 +2737,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#end
 
 	/**
-	 * The transport is up, TCP, and TLS where there is one, and the
+	 * The transport is up (TCP, and TLS where there is one) and the
 	 * session moves from the tick to the registry: read when readable,
 	 * retried when a write is waiting, and no longer visited otherwise.
 	 */
@@ -2818,9 +2770,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// client.
 		if (__isClient != false) {
 			// The answer is waited for within what is left of the connect's
-			// deadline, armed when the connect began. A peer that accepts the
-			// connection and never replies, a TLS listener spoken to in plain
-			// text is one, once held the client in CONNECTING for good.
+			// deadline, armed when the connect began, so a peer that accepts the
+			// connection and never replies (a TLS listener spoken to in plain
+			// text is one) cannot hold the client in CONNECTING for good.
 			__doHandshake();
 		}
 	}
@@ -2922,12 +2874,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 	 * The scheduler this session's deadlines and heartbeat run on: its own
-	 * runtime's, whichever thread arms or clears one. They were the calling
-	 * thread's, `crossbyte.Timer`'s, so a close from another thread threw
-	 * clearing the heartbeat half way through closing; and on Node, where a
-	 * socket's callbacks run as the application's, a child runtime's session
-	 * armed its heartbeat on the application's timers and cleared it on its
-	 * own.
+	 * runtime's, whichever thread arms or clears one. So a close from
+	 * another thread can clear the heartbeat, and on Node, where a socket's
+	 * callbacks run as the application's, a child runtime's session arms and
+	 * clears its heartbeat on its own timers.
 	 */
 	private function __timers():TimerScheduler {
 		if (__runtime == null) {
@@ -2964,29 +2914,22 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * Begins the deferred TLS handshake, stepped from the poll set and the
 	 * tick. It has no clock of its own: a client's is its connect's
 	 * deadline, from `connectTimeout`, and an accepted session's is its
-	 * server's `handshakeTimeout`, over TLS and the upgrade together. It had
-	 * a fixed three seconds, so wss gave up at 3 s whatever either said.
+	 * server's `handshakeTimeout`, over TLS and the upgrade together.
 	 *
-	 * Known limitation, wss is not usable on the eval/interp target. eval
+	 * Known limitation: wss is not usable on the eval/interp target. eval
 	 * cannot make a socket non-blocking (`setBlocking` is a no-op there; see
 	 * the vendored sys.net.Socket), so `handshake()` below can park the whole
 	 * runtime thread waiting for the peer's next flight, and no deadline
 	 * fires because control never comes back to check it.
 	 *
-	 * The obvious mitigation does not work, and was measured rather than
-	 * assumed, again once the vendored sys.net.Socket learned to survive
-	 * eval's socket errors, so that a plain socket's read that times out
-	 * now throws `Blocked`. A TLS handshake's reads are not that socket's:
-	 * eval makes them inside its own mbedTLS binding, which the shim does
-	 * not reach. A socket timeout does reach that recv, SO_RCVTIMEO
-	 * expires on schedule, but eval raises the expiry as an OCaml
-	 * `Unix.Unix_error` (`ETIMEDOUT` on Windows, `EAGAIN` on Linux) that no
-	 * Haxe catch intercepts, and the interpreter ends: a client handshake
-	 * against a server that never answers, with a one-second timeout, did
-	 * on both. That trades a stalled connection for an uncatchable process
-	 * death, so the timeout is deliberately not set here. Run wss on
-	 * cpp/hxcpp or jvm, where the descriptor really is non-blocking and
-	 * this path is bounded.
+	 * A socket timeout does not help. A TLS handshake's reads are made inside
+	 * eval's own mbedTLS binding, which the vendored socket does not reach.
+	 * SO_RCVTIMEO does expire on schedule there, but eval raises the expiry
+	 * as an OCaml `Unix.Unix_error` (`ETIMEDOUT` on Windows, `EAGAIN` on
+	 * Linux) that no Haxe catch intercepts, and the interpreter ends. That
+	 * trades a stalled connection for an uncatchable process death, so the
+	 * timeout is deliberately not set here. Run wss on cpp/hxcpp or jvm,
+	 * where the descriptor really is non-blocking and this path is bounded.
 	 */
 	#if !nodejs
 	private function __initSSLHandshake():Void {
@@ -3017,9 +2960,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// Three outcomes, kept distinct: completed, needs more data, or
-		// failed. Previously a non-`Blocked` error left the "retry" flag
-		// clear and fell through to __openConnection(), treating a failed
-		// handshake as a successful one.
+		// failed, so a failed handshake is never treated as a successful
+		// one.
 		var complete:Bool = false;
 		var failure:String = null;
 
@@ -3029,8 +2971,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		} catch (e:Dynamic) {
 			// Blocked only means the peer's next flight has not arrived
 			// yet. Anything else is terminal. The Dynamic catch is what
-			// covers the TLS layer's string form, which a typed catch here
-			// used to miss, turning a mid-handshake pause into a failure.
+			// covers the TLS layer's string form, so a mid-handshake pause
+			// is not taken for a failure.
 			if (!BlockedError.isBlocked(e)) {
 				failure = Std.string(e);
 			}
@@ -3043,7 +2985,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 
 		// A terminal failure closes immediately instead of idling until the
-		// deadline, and the owner is told why before the close, a
+		// deadline, and the owner is told why before the close: a
 		// certificate the client refused is the one failure here worth
 		// reading. A merely stalled peer is the deadline's.
 		if (failure != null) {
@@ -3087,14 +3029,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * Closes the session the way RFC 6455 has it closed: a close frame with
 	 * `code` and `reason`, then the peer's answer, then the connection.
 	 *
-	 * This sent a close frame with nothing in it, so a peer saw 1005, or
-	 * 1000, whatever code was asked for, and closed the socket straight
-	 * after queueing it, which on a native target could drop both the frame
-	 * and anything still waiting to go out before it. Now the code and reason
-	 * are in the frame, the connection stays up for the peer's answer, and
-	 * closes once that arrives and everything queued has gone, or after
-	 * `closeTimeout` regardless. `onclose` reports the code and reason the
-	 * peer answered with, or 1006 when it never did.
+	 * The code and reason are in the frame, and the connection stays up for
+	 * the peer's answer: it closes once that arrives and everything queued
+	 * has gone, or after `closeTimeout` regardless. `onclose` reports the
+	 * code and reason the peer answered with, or 1006 when it never did.
 	 *
 	 * A session not yet open has nobody to say anything to, and closes at
 	 * once.
@@ -3149,7 +3087,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 	 * The last step of a closing handshake: close once everything queued has
-	 * gone, reporting `code` and `reason`, at once when nothing is waiting,
+	 * gone, reporting `code` and `reason`: at once when nothing is waiting,
 	 * or when the deadline passes with something still stuck.
 	 */
 	private function __finishClose(code:Int, ?reason:String):Void {
@@ -3173,9 +3111,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			if (readyState == CLOSED) {
 				return;
 			}
-			// Either the peer never answered our close, which is a
-			// connection that ended without one, 1006, or it did, and what
-			// was queued could not drain in time.
+			// Either the peer never answered our close (a connection that
+			// ended without one, 1006) or it did, and what was queued could
+			// not drain in time.
 			if (__closeWhenDrained) {
 				__close(__drainedCode, __drainedReason);
 			} else {
@@ -3222,10 +3160,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		// A client that never opened has failed to connect, whatever ended
 		// it, and says so as a browser's WebSocket does: an error saying why,
-		// then 1006. Here, once, where each way of failing used to say it
-		// differently, 1015 for a TLS failure, 1002 and no error for a
-		// refused upgrade, 1006 and no error for a server that hung up. Its
-		// owner's own close is no failure.
+		// then 1006, once, here, whether TLS failed, the upgrade was refused
+		// or the server hung up. Its owner's own close is no failure.
 		if (connecting && __isClient == true && !__ownerClosing) {
 			if (!__errorReported) {
 				var why:String = __connected ? "The server closed the connection before it answered the WebSocket upgrade" : "The connection failed before it opened";
@@ -3251,7 +3187,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (__socket != null) {
 			#if nodejs
 			// What the turn was holding goes before the socket ends, as it went
-			// before it was held, the close frame `abort` and a protocol
+			// before it was held: the close frame `abort` and a protocol
 			// failure send just ahead of this, and whatever was sent before it.
 			// Node sends what it was given ahead of the end.
 			if (__connected && !__discardOnClose && __pendingOutput != null && __pendingOutput.length > __pendingSent) {
@@ -3282,12 +3218,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			}
 			#end
 
-			// Closed whether or not the session ever opened. Only an open one
-			// used to be: a TLS handshake that failed, or a connect that timed
-			// out, detached its listeners and dropped the socket without
-			// closing it, so every refused or stalled connection kept its
-			// descriptor, and, accepted, kept its peer waiting, for as long
-			// as the process ran.
+			// Closed whether or not the session ever opened, so a TLS handshake
+			// that failed, or a connect that timed out, does not keep its
+			// descriptor (and, accepted, keep its peer waiting) for as long as
+			// the process runs.
 			try {
 				#if nodejs
 				// Ended, so what Node holds goes ahead of the FIN, unless what
@@ -3326,7 +3260,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		#end
 	}
 
-	// ---- Heartbeat ---------------------------------------------------------
+	// Heartbeat.
 
 	private function get_pingInterval():Float {
 		return __pingInterval < 0 ? DEFAULT_PING_INTERVAL : __pingInterval;
@@ -3363,9 +3297,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	/**
 	 * Starts the heartbeat, for an open session: both ends run one.
 	 *
-	 * It was dead code before, a client started it only if a delay had been
-	 * set, which nothing set, and an accepted session had the delay and never
-	 * started it, so a peer that vanished without a FIN was held forever,
+	 * Without it a peer that vanished without a FIN would be held forever,
 	 * with everything sent to it piling up.
 	 */
 	private function __startHeartbeat():Void {
@@ -3433,8 +3365,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		Sends `length` bytes of `data` from `offset` as one binary message,
-		framed from where they lie: `crossbyte.net.WebSocket.sendBinary`'s,
-		which copied them into a ByteArray of their own first, every message.
+		framed from where they lie, with no copy into a ByteArray of their
+		own: `crossbyte.net.WebSocket.sendBinary`'s.
 	**/
 	public function sendRange(data:ByteArray, offset:Int, length:Int):Void {
 		__prepareMessage(data, offset, length, WebSocketOpcode.BINARY);
@@ -3453,19 +3385,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	#if (cpp || jvm)
 	/**
 		Sends `data` as one uncompressed text frame without encoding it into
-		a `Bytes` of its own: it was encoded into one, wrapped in a ByteArray
-		and copied into the frame from there, 190 bytes natively and 520 on
-		the jvm for a 100-character message. Its UTF-8 goes into the
-		session's payload scratch instead, which `__sendFrame` frames as it
-		does any payload.
+		a `Bytes` of its own (190 bytes natively and 520 on the jvm for a
+		100-character message): its UTF-8 goes into the session's payload
+		scratch instead, which `__sendFrame` frames as it does any payload.
 
 		Natively for any string: one held a byte a character is its UTF-8 as
-		it stands, and is copied whole; one held in UTF-16, any character
-		past ASCII, is encoded a character at a time, where it was encoded
-		into a buffer of its own every message. On the jvm when it is short:
-		a loop over the characters there is no faster than the platform's
-		encoder past a few hundred. Not when the message is to be compressed
-		or is longer than a frame.
+		it stands, and is copied whole; one held in UTF-16 (any character
+		past ASCII) is encoded a character at a time. On the jvm when it is
+		short: a loop over the characters there is no faster than the
+		platform's encoder past a few hundred. Not when the message is to be
+		compressed or is longer than a frame.
 
 		@return Whether it went; false leaves it to the general path, which
 		        sends what this does not and refuses a session not open.
@@ -3568,8 +3497,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		`length` bytes of `data` from `offset` sent as one message: compressed
-		where that was agreed and the message is worth it, and sent as it
-		is when compressing did not make it smaller, which RFC 7692 leaves to
+		where that was agreed and the message is worth it, and sent as it is
+		when compressing did not make it smaller, which RFC 7692 leaves to
 		each message. Neither `data` nor its `position` is changed.
 	**/
 	private function __prepareMessage(data:ByteArray, offset:Int, length:Int, opcode:Int):Void {
@@ -3598,10 +3527,10 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		Sends `length` bytes of `data` from `offset` as one message, framed as
 		this side frames: in frames of at most `FRAGMENT_SIZE`, RSV1 on the
 		first where it is `compressed`. Each frame is made from where its
-		bytes lie, read by offset, never moving `position`, so a prepared
+		bytes lie (read by offset, never moving `position`), so a prepared
 		message's payload is sent by every session that holds it, and a
-		message longer than a frame is no longer copied a fragment at a time
-		into a buffer of its own first.
+		message longer than a frame is not copied a fragment at a time into a
+		buffer of its own first.
 	**/
 	private function __sendPayload(data:ByteArray, offset:Int, total:Int, opcode:Int, compressed:Bool):Void {
 		if (total <= FRAGMENT_SIZE) {
@@ -3620,7 +3549,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		}
 	}
 
-	// ---- One message to many ------------------------------------------------
+	// One message to many.
 
 	/**
 		Sends a prepared message: on a server, its frames as they were made,
@@ -3683,7 +3612,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return __deflateOutgoing(data);
 	}
 
-	// ---- Masks -------------------------------------------------------------
+	// Masks.
 
 	/**
 		How many random bytes a client's masks are drawn from at a time: 8 KB,
@@ -3706,10 +3635,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		RFC 6455 5.3 asks each frame's masking key to be fresh and
 		unpredictable, from a strong source of entropy. Each key here is four
-		bytes the CSPRNG made, used for one frame and never again, what a
-		key drawn for each frame alone is, drawn a pool at a time, as `ws`
-		draws them, where each frame drew its own four bytes: a ByteArray and
-		its storage for every frame a client sent, 140 bytes natively.
+		bytes the CSPRNG made, used for one frame and never again (what a key
+		drawn for each frame alone is), drawn a pool at a time, as `ws` draws
+		them, so a frame costs no allocation of its own.
 	**/
 	private static inline function __maskPool():MaskPool {
 		#if target.threaded
@@ -3785,8 +3713,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__output.writeBytes(masked);
 		}
 		// Hand the frame to the pending buffer rather than writing it
-		// directly: a momentarily full socket is a normal condition, and
-		// treating it as fatal here used to drop the session outright.
+		// directly: a momentarily full socket is a normal condition, not a
+		// reason to drop the session.
 		__queueOutput(__output, __output.length);
 		__output.clear();
 	}
@@ -3808,8 +3736,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	/**
-	 * Pings the peer, which answers with a pong carrying the same payload,
-	 * at most 125 bytes, and none by default. A pong counts as hearing from
+	 * Pings the peer, which answers with a pong carrying the same payload
+	 * (at most 125 bytes, and none by default). A pong counts as hearing from
 	 * the peer, as anything it sends does.
 	 */
 	public function ping(?payload:ByteArray):Void {
@@ -3838,8 +3766,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	// A control frame with nothing in it, as every heartbeat's ping is: one
-	// empty buffer, never written to, where each ping made one. Only read,
-	// framed from, by offset, so any thread may share it.
+	// empty buffer, never written to, shared by every ping. Only read
+	// (framed from, by offset), so any thread may share it.
 	private static var __empty:Null<ByteArray> = null;
 
 	private static inline function __noPayload():ByteArray {

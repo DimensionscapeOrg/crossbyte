@@ -92,9 +92,9 @@ class HTTPServerMetricsTest extends utest.Test {
 	}
 
 	public function testAStatusClassIsLookedUpOnce(async:Async):Void {
-		// Every response looked its counter up in the registry: a label map
-		// built, sorted into a key, and the registry's lock taken, on top of
-		// the counter's own.
+		// A response does not look its counter up in the registry, which would
+		// build a label map, sort it into a key, and take the registry's lock,
+		// on top of the counter's own.
 		var registry = new CountingMetrics();
 		var root = File.createTempDirectory();
 		var fixture = new ByteArray();

@@ -9,8 +9,8 @@ import haxe.io.Bytes;
  * Bound values never become part of the statement text, which is the whole
  * point: the driver's other path builds SQL by substitution, so a value is only
  * ever as safe as the escaping applied to it, and no escaping at all can carry
- * a NUL byte, `PQescapeStringConn` works on NUL-terminated C strings, so a
- * ciphertext blob is silently truncated at its first zero.
+ * a NUL byte: `PQescapeStringConn` works on NUL-terminated C strings, so a
+ * ciphertext blob would be silently truncated at its first zero.
  *
  * ```haxe
  * connection.requestParams("INSERT INTO events (id, payload) VALUES ($1, $2)",

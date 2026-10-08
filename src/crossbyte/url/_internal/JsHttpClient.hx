@@ -21,8 +21,8 @@ import haxe.io.Bytes;
  * `URLLoader` spawns one on the native targets so a blocking request does not
  * stall the runtime, and a blocking request is not a thing that exists here.
  *
- * The callbacks are deliberately narrow, status, the final response's
- * headers, progress, completion, failure, so the two implementations below
+ * The callbacks are deliberately narrow (status, the final response's
+ * headers, progress, completion, failure), so the two implementations below
  * cannot drift in what they report even though almost nothing about how they
  * work is shared. Where the platform leaves a choice, they make the one the
  * native client makes: redirects are followed, dropping credentials when one
@@ -44,8 +44,8 @@ class JsHttpClient {
 	 * before either, when a final response has arrived: its status, headers,
 	 * the URL it came from, and whether a redirect led there.
 	 *
-	 * Cancelling `token` aborts the request where it stands, the hop in
-	 * flight, a redirect included, and calls `onError` with "Request
+	 * Cancelling `token` aborts the request where it stands (the hop in
+	 * flight, a redirect included) and calls `onError` with "Request
 	 * cancelled", at once, unless the request has ended already.
 	 */
 	public static function send(request:URLRequest, onStatus:Int->Void, onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
@@ -67,16 +67,16 @@ class JsHttpClient {
 
 		// A URLVariables, or an object's fields, goes where a form puts it:
 		// into the query of a GET or HEAD, and otherwise into the body,
-		// form-encoded, as natively. Sent as it stood, it was a debug dump,
-		// of the map a URLVariables is at run time, or "{ user : bob }".
+		// form-encoded, as natively, not as a debug dump of the map a
+		// URLVariables is at run time, or "{ user : bob }".
 		var url:String = request.url;
 		var body:Dynamic = request.data;
 		// Bytes are copied as the load begins: they are the caller's again
-		// once `load` has returned, a datagram's payload handed on from its
-		// listener, which the socket fills with the next datagram. Node was
-		// given a view of them, which it writes once connected, and a
-		// redirect that keeps the body read them again later still: the
-		// server was sent the next datagram's bytes over the first's.
+		// once `load` has returned (a datagram's payload handed on from its
+		// listener, which the socket fills with the next datagram). Given a
+		// view, Node would write them once connected, and a redirect that
+		// keeps the body would read them again later still, sending the
+		// server the next datagram's bytes over the first's.
 		if (body != null && (body is Bytes)) {
 			var bytes:Bytes = cast body;
 			body = bytes.sub(0, bytes.length);
@@ -101,8 +101,8 @@ class JsHttpClient {
 		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError, onResponse, token);
 		#elseif nodejs
 		// Node's http client speaks HTTP/1.1 and nothing else, and natively a
-		// version that cannot be had fails rather than falls back, HTTP/2
-		// speaks it or refuses. It was sent as HTTP/1.1 regardless.
+		// version that cannot be had fails rather than falls back (HTTP/2
+		// speaks it or refuses), so another version is refused here too.
 		if (request.httpVersion != null && request.httpVersion != HTTPVersion.HTTP_1_1) {
 			onError(request.httpVersion + " is not available to URLLoader on Node: its http client speaks HTTP/1.1 only. Use HTTPVersion.HTTP_1_1.");
 			return;
@@ -120,9 +120,9 @@ class JsHttpClient {
 	 *
 	 * The browser follows redirects itself and applies its own rules to them,
 	 * which are the rules the other clients copy. What it leaves a page is
-	 * applied here where it can be, `userAgent`, `followInsecureRedirects`
+	 * applied here where it can be (`userAgent`, `followInsecureRedirects`
 	 * and `maxDecompressedSize`, the last two once the browser has shown what
-	 * it did, and a request asking what a page cannot do is refused, saying
+	 * it did), and a request asking what a page cannot do is refused, saying
 	 * so, rather than sent as though it had been done.
 	 */
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
@@ -136,8 +136,9 @@ class JsHttpClient {
 			return;
 		}
 		// The browser follows every redirect itself, and shows a page none of
-		// them: the 3xx asked for could not be handed back. Refused, where it
-		// went out and came back as whatever the redirect led to.
+		// them: the 3xx asked for could not be handed back, so the request is
+		// refused rather than sent and answered with whatever the redirect
+		// led to.
 		if (!request.followRedirects) {
 			onError("URLRequest.followRedirects = false is not available in a browser: the browser follows every redirect itself and shows a page none of them");
 			return;
@@ -193,9 +194,9 @@ class JsHttpClient {
 			}
 		}
 
-		// Time without progress, not a deadline on the whole exchange: this
-		// was xhr.timeout, which ended a large download that was still moving
-		// where every other client would have let it finish.
+		// Time without progress, not a deadline on the whole exchange, so a
+		// large download that is still moving is let finish, as every other
+		// client lets it (xhr.timeout would end it).
 		function armIdle():Void {
 			stopIdle();
 			if (request.idleTimeout > 0 && !settled) {
@@ -210,8 +211,8 @@ class JsHttpClient {
 		}
 
 		// The browser refuses a method that is not a token, and a header name
-		// or value it will not send, by throwing, out of URLLoader.load()
-		// rather than as the IO_ERROR every other failure is.
+		// or value it will not send, by throwing (out of URLLoader.load()
+		// rather than as the IO_ERROR every other failure is).
 		try {
 			xhr.open(method, url, true);
 			xhr.responseType = ARRAYBUFFER;
@@ -252,12 +253,12 @@ class JsHttpClient {
 			}
 			armIdle();
 			// Headers are in as of HEADERS_RECEIVED, which is where the status
-			// is worth reporting, waiting for the body would hold it back
+			// is worth reporting: waiting for the body would hold it back
 			// behind however long the transfer takes.
 			if (xhr.readyState == 2) {
 				stopHead();
 				// Both absolute, as the browser reports where a response came
-				// from: compared with the URL as written, a relative one said
+				// from: compared with the URL as written, a relative one would say
 				// every response to it had been redirected.
 				var requested:String = __absolute(url);
 				var finalUrl:String = (xhr.responseURL != null && xhr.responseURL != "") ? xhr.responseURL : requested;
@@ -315,7 +316,7 @@ class JsHttpClient {
 			if (!settle()) {
 				return;
 			}
-			// The browser deliberately withholds the reason, a DNS failure,
+			// The browser deliberately withholds the reason: a DNS failure,
 			// a refused connection and a blocked cross-origin request are one
 			// event with no detail, so there is nothing more specific to pass on.
 			onError("HTTP request failed: " + url);
@@ -446,9 +447,9 @@ class JsHttpClient {
 
 		Its length, not its buffer's. `getData()` is the whole buffer, and a
 		`ByteArray`'s runs on past `length` into the room it keeps to grow,
-		and into whatever it held before it was cleared. Both clients sent the
-		buffer: "hello" went out as nine bytes, and written after a secret,
-		with the rest of the secret behind it.
+		and into whatever it held before it was cleared: sending the buffer,
+		"hello" would go out as nine bytes, and written after a secret, with
+		the rest of the secret behind it.
 	**/
 	@:noCompletion public static inline function __view(bytes:Bytes):js.lib.Uint8Array {
 		return new js.lib.Uint8Array(bytes.getData(), 0, bytes.length);
@@ -464,8 +465,7 @@ class JsHttpClient {
 	 * at most `maxRedirects`, a 301, 302 or 303 turning into a bodiless GET,
 	 * `https` to `http` only when `followInsecureRedirects` says so, and the
 	 * caller's `Authorization`, `Proxy-Authorization` and `Cookie` dropped once
-	 * a hop leaves the origin the request started at. A 3xx used to complete
-	 * the load here, where the native client and the browser followed it.
+	 * a hop leaves the origin the request started at.
 	 */
 	static function __sendNode(request:URLRequest, method:String, target:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
@@ -570,8 +570,8 @@ class JsHttpClient {
 		// The native client's jar, for the length of this request: what a
 		// response sets goes back to the host that set it on the hops after
 		// it, unless the caller wrote a Cookie of its own, which wins while it
-		// is sent. Nothing was kept, so a sign-in answering 302 with a session
-		// cookie reached the page it sent the client to without it.
+		// is sent, so a sign-in answering 302 with a session cookie reaches
+		// the page it sends the client to with it.
 		var jar:Null<CookieJar> = request.manageCookies ? new CookieJar() : null;
 		var callersCookie:Bool = __hasHeader(headers, "cookie");
 
@@ -620,8 +620,8 @@ class JsHttpClient {
 				path: url.pathname + url.search,
 				method: method,
 				headers: headers,
-				// The request's limit on the response's header section, which
-				// was Node's own 16 KB, a quarter of the native client's.
+				// The request's limit on the response's header section, in
+				// place of Node's own 16 KB, a quarter of the native client's.
 				maxHeaderSize: request.maxResponseHeaderSize > 0 ? request.maxResponseHeaderSize : 0x7FFFFFFF
 			};
 			if (secure) {
@@ -748,9 +748,8 @@ class JsHttpClient {
 					}
 
 					// Decoded as the native client decodes, within the same
-					// limits. The body was handed on as it came, so a gzip
-					// answer reached the caller as gzip, garbage as text, and
-					// the next such body ended the process in getString.
+					// limits, rather than handed on as it came (a gzip answer
+					// would reach the caller as gzip, garbage as text).
 					__decodeNode(js.node.Buffer.concat(chunks), response.headers.get("content-encoding"), request.maxDecompressedSize,
 						function(error:Null<String>, decoded:Null<js.node.Buffer>):Void {
 							if (error != null) {
@@ -770,7 +769,7 @@ class JsHttpClient {
 			};
 
 			// Node refuses a method that is not a token, or a header value
-			// holding a line break, by throwing here, synchronously, out of
+			// holding a line break, by throwing here, synchronously: out of
 			// URLLoader.load() and into whoever called it, where every other
 			// failure arrives as an IO_ERROR.
 			var clientRequest:js.node.http.ClientRequest;
@@ -795,8 +794,8 @@ class JsHttpClient {
 				});
 			}
 
-			// The head's deadline, from the request having gone, "finish" is
-			// Node saying its last byte went to the socket, to the response.
+			// The head's deadline, from the request having gone ("finish" is
+			// Node saying its last byte went to the socket) to the response.
 			// Nothing arriving moves it, as bytes arriving move the idle one.
 			if (request.headTimeout > 0) {
 				clientRequest.on("finish", function() {
@@ -820,14 +819,14 @@ class JsHttpClient {
 
 	/**
 		`request`'s TLS options onto Node's request `options`: whether the
-		server is checked, the authority trusted, the client certificate,
-		not once a redirect has `leftOrigin`, and the pinned keys.
+		server is checked, the authority trusted, the client certificate
+		(not once a redirect has `leftOrigin`), and the pinned keys.
 
 		Node's agent keeps its sockets by these same options, so a request
 		that checks its server is never handed a socket opened without the
 		check. Pins are not among them, and are not checked in
 		`checkServerIdentity` either: Node calls that only once the chain has
-		verified, so with `verifyCert` off a pin was never looked at. A pinned
+		verified, so with `verifyCert` off a pin would never be looked at. A pinned
 		request makes its own connection instead, and is given it only once
 		the server's key has been checked, before a byte of the request.
 	**/
@@ -1039,7 +1038,7 @@ class JsHttpClient {
 		}
 	}
 
-	/** Node's parsed headers, a string each, an array for Set-Cookie, as header objects. */
+	/** Node's parsed headers (a string each, an array for Set-Cookie) as header objects. */
 	static function __nodeHeaders(raw:Dynamic):Array<URLRequestHeader> {
 		var list:Array<URLRequestHeader> = [];
 		for (name in Reflect.fields(raw)) {
@@ -1062,8 +1061,8 @@ class JsHttpClient {
 	unless stopped first.
 
 	On the runtime's timers, as `haxe.Timer` is here, and checked against the
-	clock when one runs: a runtime pumped faster than the clock, a test's,
-	a host's, would otherwise end a request early.
+	clock when one runs: a runtime pumped faster than the clock (a test's,
+	a host's) would otherwise end a request early.
 **/
 private class Deadline {
 	private final __due:Float;

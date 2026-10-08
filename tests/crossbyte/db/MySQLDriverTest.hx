@@ -24,9 +24,9 @@ import utest.Assert;
 @:access(crossbyte.db.mysql.MySQLStatement)
 class MySQLDriverTest extends utest.Test {
 	public function testARefusedStatementThrowsAndIsStillDispatched():Void {
-		// execute() dispatched an SQLErrorEvent and returned, so a caller not
-		// listening, an AsyncDatabase task, a SchemaMigrator step, saw a
-		// failed INSERT as one that had run.
+		// execute() throws as well as dispatching an SQLErrorEvent, so a caller
+		// not listening (an AsyncDatabase task, a SchemaMigrator step) does not
+		// see a failed INSERT as one that had run.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("INSERT INTO users (email) VALUES ('a@example.com')", "Duplicate entry 'a@example.com' for key 'users.email'");
 		var statement:MySQLStatement = __statement(wire);
@@ -62,9 +62,9 @@ class MySQLDriverTest extends utest.Test {
 
 	public function testTransactionsSentAsSqlAreFollowedWithoutTheServerFlags():Void {
 		// Natively the server's status flags say whether a transaction is
-		// open. A connection that cannot read them, a target other than cpp,
-		// follows the statements that open and close one instead, so a
-		// pool still rolls back a START TRANSACTION sent as text.
+		// open. A connection that cannot read them (a target other than cpp)
+		// follows the statements that open and close one instead, so a pool
+		// still rolls back a START TRANSACTION sent as text.
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = new ScriptedConnection();
 
@@ -100,10 +100,10 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAFailureThatIsNotAStringStillBecomesAnSQLError():Void {
-		// The driver's failure was handed to SQLError and IOError where they
-		// take a String. On the jvm that is a java.sql.SQLException, so every
-		// failure surfaced as a ClassCastException: no SQLError, no listener,
-		// and the error number and SQLSTATE JDBC had were lost.
+		// The driver's failure is handed to SQLError and IOError as text, where
+		// they take a String. On the jvm it is a java.sql.SQLException, and
+		// passed as itself every failure would surface as a ClassCastException:
+		// no SQLError, no listener, and the error number and SQLSTATE JDBC had lost.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var sql:String = "INSERT INTO users (email) VALUES ('a@example.com')";
 		#if java
@@ -165,13 +165,13 @@ class MySQLDriverTest extends utest.Test {
 
 	public function testAFailedOpenIsAnIOError():Void {
 		// A port nothing listens on. On the jvm there is not even a driver to
-		// try it with, and the ClassNotFoundException that says so became a
-		// ClassCastException on its way into IOError.
+		// try it with, and the ClassNotFoundException that says so must not
+		// become a ClassCastException on its way into IOError.
 		//
-		// Obtained rather than assumed: this was port 1, which is closed
-		// only by convention, and on a machine where something listens there
-		// the open met a server that was not MySQL, a failure the hl client
-		// cannot see coming, so HashLink's double free below followed.
+		// Obtained rather than assumed: port 1 is closed only by convention,
+		// and on a machine where something listens there the open would meet a
+		// server that was not MySQL, a failure the hl client cannot see coming,
+		// so HashLink's double free below would follow.
 		var vacant:sys.net.Socket = new sys.net.Socket();
 		vacant.bind(new sys.net.Host("127.0.0.1"), 0);
 		vacant.listen(1);
@@ -200,18 +200,18 @@ class MySQLDriverTest extends utest.Test {
 		#if hl
 		// HashLink's mysql library frees a connection that failed to open,
 		// and leaves it to the collector with a finalizer that frees it
-		// again. The next major collection did, into memory the heap had
-		// since given to someone else, and the hl suite died of heap
-		// corruption some four hundred cases later. Collecting here makes a
-		// double free this case's own.
+		// again. The next major collection does, into memory the heap may have
+		// since given to someone else, and the hl suite would die of heap
+		// corruption far from here. Collecting here makes a double free this
+		// case's own.
 		hl.Gc.major();
 		#end
 	}
 
 	public function testParametersAreWrittenAsTheirTypes():Void {
-		// Parameters were strings only: an Int did not compile, "50" went out
-		// as LIMIT '50' (which MySQL refuses), a null left :name in the SQL,
-		// and bytes were cut at their first NUL.
+		// Parameters of every type: an Int compiles, a number goes out as a
+		// number (MySQL refuses LIMIT '50'), a null becomes NULL rather than
+		// leaving :name in the SQL, and bytes are not cut at their first NUL.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var statement:MySQLStatement = __statement(wire);
 		statement.text = "INSERT INTO t VALUES (:none, :count, :ratio, :yes, :big, :blob, :when, :text, :missing) LIMIT :limit";
@@ -243,8 +243,8 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testABackslashEscapedQuoteDoesNotEndALiteral():Void {
-		// MySQL reads \' inside a literal as a quote; the scan ended the
-		// literal there, and substituted the :name the server still read as
+		// MySQL reads \' inside a literal as a quote, so the scan must not end
+		// the literal there and substitute the :name the server still reads as
 		// part of it.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var statement:MySQLStatement = __statement(wire);
@@ -256,8 +256,7 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testTheConnectionEscapesAndQuotesByTheSessionsMode():Void {
-		// SQLite and Postgres connections had escape() and quote(); MySQL's
-		// did not.
+		// escape() and quote(), as SQLite and Postgres connections have them.
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = new ScriptedConnection();
 
@@ -273,9 +272,9 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testGeneratedSavepointNamesDoNotRepeat():Void {
-		// Named from haxe.Timer.stamp() in microseconds through Std.int, as
-		// SQLite's and Postgres's were before the same fix: names made back to
-		// back collided, and the value passes Int 36 minutes into a process.
+		// Not named from haxe.Timer.stamp() in microseconds through Std.int:
+		// names made that way collide back to back, and the value passes Int 36
+		// minutes into a process.
 		var connection:MySQLConnection = new MySQLConnection();
 		var seen:Map<String, Bool> = new Map();
 		var distinct:Int = 0;
@@ -294,9 +293,10 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testSavepointsNestAndResolveWithoutANameToTheInnermost():Void {
-		// setSavepoint() returned nothing; releaseSavepoint(null) released a
-		// name it had just made up; rollbackToSavepoint(null) rolled the whole
-		// transaction back.
+		// setSavepoint() returns the name it made; releaseSavepoint(null)
+		// releases the innermost rather than a name it has just made up; and
+		// rollbackToSavepoint(null) rolls back to the innermost, not the whole
+		// transaction.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;
@@ -337,7 +337,7 @@ class MySQLDriverTest extends utest.Test {
 
 	public function testIsolationLevelReadsTheOlderVariableWhereTheNewOneIsMissing():Void {
 		// @@transaction_isolation is MySQL 5.7.20's name; MariaDB before 11.1
-		// knows only @@tx_isolation, and the getter failed there.
+		// knows only @@tx_isolation, so the getter falls back to it.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("SELECT @@transaction_isolation AS lvl;", "Unknown system variable 'transaction_isolation'");
 		wire.results.set("SELECT @@tx_isolation AS lvl;", [{lvl: "READ-COMMITTED"}]);
@@ -348,8 +348,8 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAClientCharsetMySQLRefusesIsRefusedBeforeConnecting():Void {
-		// ucs2, utf16 and utf32 were accepted, and MySQL refuses each as a
-		// client character set.
+		// ucs2, utf16 and utf32 are refused, as MySQL refuses each as a client
+		// character set.
 		for (charset in ["ucs2", "utf16", "utf32"]) {
 			Assert.raises(() -> new MySQLConnection().open({
 				host: "127.0.0.1",
@@ -364,9 +364,9 @@ class MySQLDriverTest extends utest.Test {
 
 	/**
 		A timeout that is not a number of seconds is refused before
-		connecting, on every target, as 0, no limit, is taken. NaN reached
-		the native client as no limit at all, and a negative one as the old
-		50 seconds or five hours.
+		connecting, on every target, as 0 (no limit) is taken. NaN would reach
+		the native client as no limit at all, and a negative one as 50 seconds
+		or five hours.
 	**/
 	public function testANaNOrNegativeTimeoutIsRefusedBeforeConnecting():Void {
 		var bad:Array<Float> = [Math.NaN, -1];
@@ -380,7 +380,7 @@ class MySQLDriverTest extends utest.Test {
 				writeTimeout: value}), crossbyte.errors.ArgumentError);
 		}
 
-		// A negative keepalive timing was taken for the system's own.
+		// A negative keepalive timing is refused, not taken for the system's own.
 		Assert.raises(() -> new MySQLConnection().open({host: "127.0.0.1", port: 1, user: "app", password: "secret", database: "app",
 			keepAliveIdle: -1}), crossbyte.errors.ArgumentError);
 	}
@@ -388,11 +388,11 @@ class MySQLDriverTest extends utest.Test {
 	#if !cpp
 	public function testAnSslModeThatNeedsTlsIsRefusedWhereTheClientHasNone():Void {
 		// Only the native client reads sslMode. Elsewhere REQUIRED and both
-		// VERIFY modes went unread, and the connection was made in the clear,
-		// password and all, with nothing said. Refused now, as the native
-		// client refuses a server offering no TLS: with 2026, and before
-		// connecting, a connect attempt to port 1 fails otherwise, and the
-		// jvm has no JDBC driver to try one with.
+		// VERIFY modes would go unread, and the connection be made in the clear,
+		// password and all, with nothing said. Refused, as the native client
+		// refuses a server offering no TLS: with 2026, and before connecting
+		// (a connect attempt to port 1 fails otherwise, and the jvm has no JDBC
+		// driver to try one with).
 		for (mode in [MySQLSSLMode.REQUIRED, MySQLSSLMode.VERIFY_CA, MySQLSSLMode.VERIFY_IDENTITY]) {
 			var error:MySQLConnectionError = null;
 
@@ -416,10 +416,10 @@ class MySQLDriverTest extends utest.Test {
 	#end
 
 	public function testPagesComeBackInTheOrderTheyWereRead():Void {
-		// Off cpp the pages waited in an Array read with pop(), newest first,
-		// so a result paged ahead of getResult() came back last page first on
-		// the jvm and in the interpreter. And each page taken after the last
-		// had been read said it was complete.
+		// Off cpp the pages wait in order: read from an Array with pop(),
+		// newest first, a result paged ahead of getResult() would come back last
+		// page first on the jvm and in the interpreter. And only the last page
+		// says it is complete.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.results.set("SELECT id FROM users", [for (id in 1...6) {id: id}]);
 		var statement:MySQLStatement = __statement(wire);
@@ -447,9 +447,9 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAStatementGivenItsConnectionBeforeOpenRuns():Void {
-		// The statement copied its connection's handle when sqlConnection was
-		// set: given its connection before open(), it held none, and refused
-		// to run on the connection that was by then open.
+		// The statement reads its connection's handle when it runs, not when
+		// sqlConnection is set: given its connection before open(), it would
+		// hold none and refuse to run on the connection that was by then open.
 		var connection:MySQLConnection = new MySQLConnection();
 		var statement:MySQLStatement = new MySQLStatement();
 		statement.sqlConnection = connection;
@@ -463,9 +463,9 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAnIsolationLevelTheServerRefusesIsAMySQLError():Void {
-		// The setter went round request(), so what the driver threw escaped
-		// as itself, on the jvm a java.sql.SQLException, not as the
-		// MySQLError every other refusal is.
+		// The setter goes through request(), so what the driver throws arrives
+		// as the MySQLError every other refusal is, not as itself (on the jvm a
+		// java.sql.SQLException).
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;", "Transaction characteristics can't be changed while a transaction is in progress");
 		var connection:MySQLConnection = new MySQLConnection();
@@ -482,10 +482,10 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAnInsertIdPastThirtyTwoBitsIsAskedForInSQL():Void {
-		// Off cpp the id came from sys.db.Connection.lastInsertId(), an Int:
+		// Off cpp the id comes from sys.db.Connection.lastInsertId(), an Int:
 		// wrapped past 2^31 on hl and neko, which read it with a 32-bit
 		// getIntResult. As SQLite's driver does, an id that cannot be right
-		// is asked for in SQL now, as text, which no driver narrows.
+		// is asked for in SQL, as text, which no driver narrows.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.insertId = -1294967296; // 3,000,000,000 in 32 bits
 		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "3000000000"}]);
@@ -494,7 +494,7 @@ class MySQLDriverTest extends utest.Test {
 		statement.execute();
 
 		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
-		// The connection's own, whole as well: it was an Int, held at 2^31 - 1.
+		// The connection's own, whole as well, not an Int held at 2^31 - 1.
 		Assert.equals(3000000000.0, statement.sqlConnection.lastInsertRowID);
 
 		// One in range is taken as it is, with nothing more asked, but on
@@ -514,9 +514,9 @@ class MySQLDriverTest extends utest.Test {
 	#if (hl || neko)
 	public function testAnInsertIdPastThirtyTwoBitsCannotWrapIntoRange():Void {
 		// hl's and neko's lastInsertId() is a SELECT LAST_INSERT_ID() read in
-		// 32 bits, so an id of 2^32 + 1 read as 1, in range, and taken as it
-		// was. Asked in SQL as text every time there: the same round trip
-		// their drivers made to answer it.
+		// 32 bits, so an id of 2^32 + 1 would read as 1, in range, and be taken
+		// as it was. Asked in SQL as text every time there: the same round trip
+		// their drivers make to answer it.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.insertId = 1;
 		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "4294967297"}]);
@@ -530,11 +530,11 @@ class MySQLDriverTest extends utest.Test {
 	#end
 
 	public function testAffectedRowsPastThirtyTwoBitsAreWhole():Void {
-		// Off the native client affectedRows asked SELECT ROW_COUNT() and read
-		// the answer with Std.parseInt, which past 2^31 answers differently on
-		// every target and never the number. It is asked as text now, and
-		// read whole. Both questions are scripted, as a driver hands a BIGINT
-		// back, a number, and as text.
+		// Off the native client affectedRows asks SELECT ROW_COUNT(), and must
+		// not read the answer with Std.parseInt, which past 2^31 answers
+		// differently on every target and never the number. It is asked as text,
+		// and read whole. Both questions are scripted, as a driver hands a BIGINT
+		// back (a number) and as text.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var connection:MySQLConnection = __statement(wire).sqlConnection;
 		wire.results.set("SELECT ROW_COUNT() AS n;", [{n: 3000000000.0}]);
@@ -548,10 +548,10 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAStatementsRowsAffectedIsTheServersCountWhole():Void {
-		// A statement's rowsAffected was the length of the driver's result:
-		// for a write, the driver's Int count, which hl's driver wraps past
-		// 2^31, three billion rows updated read -1294967296, and for a
-		// SELECT, its rows. A count that cannot be right is asked for in SQL.
+		// A statement's rowsAffected is not the length of the driver's result:
+		// for a write, that is the driver's Int count, which hl's driver wraps
+		// past 2^31 (three billion rows updated would read -1294967296), and for
+		// a SELECT, its rows. A count that cannot be right is asked for in SQL.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		var statement:MySQLStatement = __statement(wire);
 		wire.writeCount = -1294967296;
@@ -580,8 +580,8 @@ class MySQLDriverTest extends utest.Test {
 	public function testAnInsertWhoseGeneratedKeyPassesThirtyTwoBitsIsNotReportedFailed():Void {
 		// Haxe's JDBC binding reads a single insert's generated key with
 		// getInt, after the INSERT has run, and Connector/J refuses a value
-		// past 2^31 with SQLSTATE 22003: a committed insert threw. (Shaped as
-		// Connector/J raises it; there is no Connector/J here to raise it.)
+		// past 2^31 with SQLSTATE 22003: a committed insert must not throw.
+		// (Shaped as Connector/J raises it; there is no Connector/J here to raise it.)
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("INSERT INTO t (x) VALUES (1)",
 			new java.sql.SQLException("Value '3000000000' is outside of valid range for type java.lang.Integer", "22003", 0));
@@ -591,8 +591,8 @@ class MySQLDriverTest extends utest.Test {
 		statement.execute();
 		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
 
-		// The same SQLSTATE from the server, a value out of range for its
-		// column, with MySQL's error number, is still a failure.
+		// The same SQLSTATE from the server (a value out of range for its
+		// column, with MySQL's error number) is still a failure.
 		wire.failures.set("INSERT INTO t (x) VALUES (2)", new java.sql.SQLException("Out of range value for column 'x' at row 1", "22003", 1264));
 		statement.text = "INSERT INTO t (x) VALUES (2)";
 		Assert.raises(() -> statement.execute(), SQLError);

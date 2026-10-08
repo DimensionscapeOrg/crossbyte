@@ -57,9 +57,8 @@ class UncaughtErrorEvent extends Event {
 		whose handler threw, the task whose listener did. Null otherwise.
 
 		Typed `Any`: what it is varies with the source, so it is read through
-		a test and a cast to the type expected,
+		a test and a cast to the type expected:
 		`if (Std.isOfType(event.origin, Socket)) (cast event.origin : Socket).close()`.
-		It was `Dynamic`, which let a field be read from it unchecked.
 	**/
 	public var origin(default, null):Any;
 

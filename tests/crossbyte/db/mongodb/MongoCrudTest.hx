@@ -373,10 +373,9 @@ class MongoCrudTest extends utest.Test {
 
 	public function testCountsPastThirtyTwoBitsAreWhole():Void {
 		// MongoDB counts in 64 bits: an update or delete over a large
-		// collection answers past 2^31, as an int64. Every count was read as
-		// an Int, held at 2^31 - 1, so three billion documents updated read
-		// 2147483647, and affectedRows, count() and a statement's
-		// rowsAffected with them.
+		// collection answers past 2^31, as an int64. Read as an Int, held at
+		// 2^31 - 1, three billion documents updated would read 2147483647, and
+		// affectedRows, count() and a statement's rowsAffected with them.
 		__start();
 		server.replyNext("update", new BsonDocument()
 			.add("n", Int64.fromFloat(3000000000.0))
@@ -586,10 +585,9 @@ class MongoCrudTest extends utest.Test {
 	}
 
 	public function testAParameterSetToNullIsBoundAsNull():Void {
-		// A parameter set to null was refused as "no parameter named email",
-		// though it was there: Extended JSON was asked for its value alone, and
-		// null meant absent. It is a BSON null now; one never set is still
-		// refused.
+		// A parameter set to null is a BSON null, not refused as "no parameter
+		// named email" as if Extended JSON were asked for its value alone, null
+		// meaning absent; one never set is still refused.
 		__start();
 		var statement = new MongoStatement();
 		statement.sqlConnection = connection;
@@ -624,8 +622,8 @@ class MongoCrudTest extends utest.Test {
 		var caught:crossbyte.errors.SQLError = null;
 		statement.addEventListener(SQLErrorEvent.ERROR, event -> caught = event.error);
 
-		// Thrown as well as dispatched, as MySQL's statements do: a caller
-		// not listening read a refused command as one that had run.
+		// Thrown as well as dispatched, as MySQL's statements do, so a caller
+		// not listening does not read a refused command as one that had run.
 		Assert.raises(() -> statement.execute(), MongoError);
 
 		Require.notNull(caught);
@@ -644,8 +642,8 @@ class MongoCrudTest extends utest.Test {
 
 	/**
 		Pages read ahead of `getResult()` say complete only for the last. Each
-		said `!executing` as it was taken, so once the last page had been read
-		every page still waiting said it was the last.
+		saying `!executing` as it was taken would make every page still
+		waiting say it was the last, once the last page had been read.
 	**/
 	public function testOnlyTheLastPageReadAheadIsComplete():Void {
 		__start();
@@ -670,8 +668,7 @@ class MongoCrudTest extends utest.Test {
 
 	public function testRepliesAreAnonymousObjectsCarryingTheirSequences():Void {
 		// The connection decodes every reply into anonymous objects, never
-		// into BsonDocuments: the branches MongoWire and MongoStatement kept
-		// for one were never taken, and are gone.
+		// into BsonDocuments.
 		__start();
 		var reply:Dynamic = connection.runCommand({ping: 1});
 		Assert.isFalse(Std.isOfType(reply, BsonDocument));

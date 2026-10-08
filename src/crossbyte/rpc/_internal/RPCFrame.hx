@@ -7,13 +7,13 @@ import haxe.io.Bytes;
 /**
 	A frame being written, and the buffer it is written in.
 
-	A session keeps one and writes every frame it sends into it, calls,
-	answers, error answers, pings and pongs, on both lanes, and hands it to
+	A session keeps one and writes every frame it sends into it (calls,
+	answers, error answers, pings and pongs, on both lanes) and hands it to
 	`INetConnection.send` as it is, being a `ByteArray`. `send` copies what it
 	keeps before it returns, so the next frame can be written over this one:
 	a call allocates nothing to be framed. One asked for while the session's
-	is still being written or sent, a handler calling or answering from
-	inside a send that delivers at once, is a fresh one, used once.
+	is still being written or sent (a handler calling or answering from
+	inside a send that delivers at once) is a fresh one, used once.
 
 	Written from `position`, little-endian as every frame is, each value
 	making room for itself as it is written. A frame is begun with room for
@@ -32,7 +32,7 @@ class RPCFrame extends ByteArrayData {
 		The most a session's buffer is kept at: one that grew past it, for a
 		frame larger than this, is let go once that frame has been sent, and
 		the next is framed in a new one. A session that sends large frames
-		steadily, a snapshot of a few kilobytes to its client every tick,
+		steadily (a snapshot of a few kilobytes to its client every tick)
 		frames them all in one buffer, and a single huge one does not leave it
 		holding megabytes. At 10,000 sessions the most they can hold is 160 MB;
 		what they do hold is what their frames need, a few hundred bytes each
@@ -181,14 +181,13 @@ class RPCFrame extends ByteArrayData {
 
 	/**
 		`value` as its UTF-8 bytes after their count, as a varint: what
-		`ByteArrayOutput.writeVarUTF` wrote, without the `Bytes` it made of
+		`ByteArrayOutput.writeVarUTF` writes, without the `Bytes` it makes of
 		the string first. Natively a string held a byte a character is copied
-		as it stands, those bytes are its UTF-8, and on the jvm a short
-		ASCII one a character at a time; anything else is encoded as it was.
+		as it stands (those bytes are its UTF-8), and on the jvm a short
+		ASCII one a character at a time; anything else is encoded to UTF-8.
 
-		@throws ArgumentError For `null`, which only an optional value, a
-		        presence byte before it, can carry. It crashed natively, and
-		        threw a null access elsewhere.
+		@throws ArgumentError For `null`, which only an optional value (a
+		        presence byte before it) can carry.
 	**/
 	public function putString(value:String):Void {
 		if (value == null) {
@@ -330,9 +329,9 @@ class RPCFrame extends ByteArrayData {
 
 	/**
 		Ends a frame a writer filled: its count of values goes in the byte
-		kept for it, moving the values along when the count needs more
+		kept for it (moving the values along when the count needs more
 		than one byte, past 127 of them, so the varint stays the one
-		`RPCRuntimeCodec.writeArgs` writes, and the frame is finished.
+		`RPCRuntimeCodec.writeArgs` writes), and the frame is finished.
 	**/
 	public function finishValues():RPCFrame {
 		building = false;

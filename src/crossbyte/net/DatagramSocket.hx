@@ -1,6 +1,6 @@
 package crossbyte.net;
 
-// Not built for the browser. UDP has no web equivalent, WebRTC data channels are the nearest thing and are a different protocol with a different API, not a drop-in. Node has dgram, so it has real UDP.
+// Not built for the browser. UDP has no web equivalent: WebRTC data channels are the nearest thing and are a different protocol with a different API, not a drop-in. Node has dgram, so it has real UDP.
 #if !(js && !nodejs)
 
 #if nodejs
@@ -113,13 +113,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 
-		The interpreter has no UDP socket. Neko has one of CrossByte's own:
-		Haxe's `sys.net.UdpSocket` constructor throws "Not available on this
-		platform" there, and this once said `true` and then threw on the first
-		socket, the one thing a support flag exists to prevent, since a
-		caller checks it so it can take the other path, and a flag that lies
-		leaves no other path to take. It then said `false` for a while after
-		neko's socket worked.
+		The interpreter has no UDP socket. Neko has one of CrossByte's own,
+		since Haxe's `sys.net.UdpSocket` constructor throws "Not available on
+		this platform" there. A caller checks this flag to take another path
+		when it is false, so it says true only where a socket can be made.
 	**/
 	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
 
@@ -128,11 +125,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		system here: natively, on the jvm and on Node.
 
 		HashLink and Neko have UDP sockets and no way to ask a socket for its
-		buffers or to size them, neither has a native for either option,
-		so there both read 0, which means not known rather than empty, and
-		setting either throws. It used to do nothing, silently, which left a
-		caller that sized its buffers for a burst no way to find out it had
-		not.
+		buffers or to size them (neither has a native for either option), so
+		there both read 0, which means not known rather than empty, and
+		setting either throws rather than doing nothing, so a caller that
+		sizes its buffers for a burst finds out that it could not.
 	**/
 	public static var bufferSizeSupported(default, null):Bool = #if (cpp || java || jvm || nodejs) true #else false #end;
 
@@ -152,12 +148,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		The byte order used for `ByteArray` payloads dispatched by this socket.
 
-		`ByteArray.defaultEndian` when the socket is made, little-endian
-		unless the application changed it, as a ByteArray it makes is, so a
+		`ByteArray.defaultEndian` when the socket is made (little-endian
+		unless the application changed it, as for a ByteArray it makes), so a
 		number written into a new ByteArray reads back as itself from the
 		datagram that carried it. Set `Endian.BIG_ENDIAN` for a protocol in
-		network byte order. Payloads came big-endian whatever the rest of the
-		application did.
+		network byte order.
 	**/
 	public var endian(get, set):Endian;
 
@@ -186,7 +181,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	/**
 		The default remote IP address for a connected socket, or an empty string when
-		the socket is not connected, or while a name given to `connect()` is
+		the socket is not connected or while a name given to `connect()` is
 		looked up.
 	**/
 	public var remoteAddress(get, never):String;
@@ -201,8 +196,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		How many bytes of arriving datagrams the operating system holds for
 		this socket until they are read. Past it, what arrives is dropped.
 
-		The system's default is small, 64 KB on Windows, a little over 200 KB
-		on Linux, and a burst larger than it that arrives while the program
+		The system's default is small (64 KB on Windows, a little over 200 KB
+		on Linux), and a burst larger than it that arrives while the program
 		is busy elsewhere is mostly lost. A socket that many peers send to, or
 		a peer that sends a window of datagrams at once, wants more.
 
@@ -210,8 +205,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		`net.core.rmem_max` unless that is raised, and reports twice what it
 		keeps, counting its own bookkeeping; every system rounds. Read it back
 		to know. On Node it is applied once the socket is bound, and reads as
-		what was asked until then. Where `bufferSizeSupported` is false,
-		HashLink and Neko, it reads 0, meaning not known, and cannot be set.
+		what was asked until then. Where `bufferSizeSupported` is false
+		(HashLink and Neko), it reads 0, meaning not known, and cannot be set.
 
 		@throws RangeError If set below 1.
 		@throws IOError If set once the socket is closed, or if the system
@@ -229,7 +224,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		On macOS it is also the largest datagram the socket sends: 9,216
 		bytes to begin with (`net.inet.udp.maxdgram`), and a larger one is
 		refused with an error that says so (see `send`). Raise it there
-		before sending more, `sendBufferSize = 64 * 1024` covers anything
+		before sending more: `sendBufferSize = 64 * 1024` covers anything
 		UDP carries. Linux and Windows send a datagram larger than this
 		buffer, up to UDP's own limit.
 
@@ -246,11 +241,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// IPv6's (IPv4's header leaves 65,507).
 	@:noCompletion private static inline var MAX_DATAGRAM:Int = 65527;
 	// Most datagrams read in one go before the other sockets get their turn.
-	// It was 64, and the registry asks once a pass, so a socket could take in
-	// no more than 64 datagrams a pass, at 60 passes a second, 3,840 a
-	// second, whatever was arriving, with the rest left to overflow the
-	// kernel's buffer. Reading one costs a microsecond or two, so this still
-	// bounds a flood's hold on the loop to a few milliseconds.
+	// The registry asks once a pass, so this bounds what a socket takes in a
+	// pass (at 60 passes a second, 61,440 a second); a lower cap leaves the
+	// rest of a burst to overflow the kernel's buffer. Reading one costs a
+	// microsecond or two, so this still bounds a flood's hold on the loop to
+	// a few milliseconds.
 	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 1024;
 
 	// How many datagrams a batch takes in at first, and at most: a read that
@@ -268,8 +263,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// Failed reads in a row, with nothing succeeding between them, before the
 	// socket is called broken rather than merely complained at. Generous on
 	// purpose: the cost of guessing high is a socket that stays deaf a little
-	// longer than it might, and the cost of guessing low is the bug this
-	// replaces, one stray ICMP silencing a working socket.
+	// longer than it might, and the cost of guessing low is one stray ICMP
+	// error silencing a working socket.
 	@:noCompletion private static inline var MAX_CONSECUTIVE_READ_FAILURES:Int = 64;
 
 	@:noCompletion private var __bound:Bool = false;
@@ -285,8 +280,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// The payload and the event each datagram is handed out in: one of each
 	// per socket, made with the first datagram and filled again for every
 	// one after it, so receiving makes no garbage (see Arrivals). Taken
-	// afresh while they are out, a listener that pumps the runtime can be
-	// handed the next datagram inside its own call, and never under
+	// afresh while they are out (a listener that pumps the runtime can be
+	// handed the next datagram inside its own call), and never under
 	// -D crossbyte_fresh_events or -D crossbyte_check_events.
 	@:noCompletion private var __arrival:ByteArray = null;
 	@:noCompletion private var __arrivalEvent:DatagramSocketDataEvent = null;
@@ -343,9 +338,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __socket:NodeDatagram;
 
 	// Sends Node has not finished, and a close waiting for them. Node sends a
-	// turn later even to a numeric address, it looks the address up first,
-	// so closing straight after a send cancelled it: the FIN a closing
-	// session sends last was the datagram that never left.
+	// turn later even to a numeric address (it looks the address up first),
+	// so a close straight after a send would cancel it, and the FIN a closing
+	// session sends last would never leave.
 	@:noCompletion private var __sendsInFlight:Int = 0;
 	@:noCompletion private var __closeWhenSent:NodeDatagram = null;
 	@:noCompletion private var __onSent:js.lib.Error->Int->Void = null;
@@ -367,7 +362,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// What the last datagram's source host read as, so a run of datagrams
 	// from one peer names it once; and this socket's own address as a
 	// datagram reports it, asked once rather than for every datagram. Each
-	// datagram used to cost a Host, its formatting, and a getsockname() call.
+	// datagram would otherwise cost a Host, its formatting, and a
+	// getsockname() call.
 	@:noCompletion private var __sourceHost:Int = 0;
 	@:noCompletion private var __sourceText:String = null;
 
@@ -436,7 +432,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		try {
 			#if nodejs
 			// Node binds asynchronously and reports a refusal as an event, so
-			// a failure here arrives as ioError rather than out of this call,
+			// a failure here arrives as ioError rather than out of this call:
 			// the same shape ServerSocket takes on Node, and for the same
 			// reason.
 			var socket = __nodeSocket(localAddress);
@@ -457,11 +453,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					// Named for what actually failed, and carrying the reason.
-					// "Bind failed" used to be answered with "Operation
-					// attempted on invalid socket.", which describes a socket
-					// that was in fact fine, it was the address or the port
-					// that would not take.
+					// Named for what actually failed, and carrying the reason,
+					// rather than "Operation attempted on invalid socket.",
+					// which would describe a socket that is fine when it was
+					// the address or the port that would not take.
 					throw new IOError("Could not bind to " + localAddress + ":" + localPort + ": " + Std.string(e));
 			}
 		}
@@ -471,18 +466,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Neko's and HashLink's binds set SO_REUSEADDR, and on Linux two
 		datagram sockets that both set it may share a port: a bind to port 0
-		can be handed one another socket holds, the one of the two then
-		receives the other's datagrams, and a bind to a port in use
-		succeeds. hxcpp's bind no longer sets it on a datagram socket (the
-		fork's 7ddf550b); these natives cannot be asked not to. So on Linux
-		the port is checked against /proc/net/udp once bound: one another
-		socket holds is refused, as it is everywhere else, and port 0 handed
-		one is asked for again, on a socket of its own, up to 16 times. A
-		socket refused keeps a fresh socket underneath, to bind again.
-
-		On neko `DatagramSocketTest.testInterleavedSendersAreEachNamed`
-		received none of six datagrams in CI (2026-10-05): its receiver had
-		been handed a port another socket held.
+		can be handed one another socket holds (the one of the two then
+		receives the other's datagrams), and a bind to a port in use
+		succeeds. hxcpp's bind does not set it on a datagram socket; these
+		natives cannot be asked not to. So on Linux the port is checked
+		against /proc/net/udp once bound: one another socket holds is
+		refused, as it is everywhere else, and port 0 handed one is asked for
+		again, on a socket of its own, up to 16 times. A socket refused keeps
+		a fresh socket underneath, to bind again.
 	**/
 	@:noCompletion private function __refuseSharedPort(localAddress:String, asked:Int):Void {
 		if (!__portsCanBeShared()) {
@@ -579,7 +570,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		return count;
 	}
 
-	/** An IPv4 address as /proc prints it, its four bytes as one little-endian word, as text. **/
+	/** An IPv4 address as /proc prints it (its four bytes as one little-endian word), as text. **/
 	@:noCompletion private static function __dotted(hex:String):Null<String> {
 		if (hex.length != 8) {
 			return null;
@@ -691,7 +682,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		connected to, is reported as an `ioError` event after the call
 		returns: the datagrams waiting on it are dropped, and the socket is
 		left unconnected. On a thread with no CrossByte runtime a name is
-		looked up in the call, as it always was.
+		looked up in the call.
 
 		@param host The remote address, or a name, to connect to.
 		@param port The remote UDP port to connect to.
@@ -699,7 +690,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		@throws RangeError If `port` is outside the valid UDP port range.
 		@throws IOError If the socket is closed, or cannot be connected to
 		        `host` there and then: an address it cannot take, a name on
-		        Node, or, on a thread with no runtime, a name that does
+		        Node, or (on a thread with no runtime) a name that does
 		        not resolve.
 	**/
 	public function connect(host:String, port:Int):Void {
@@ -718,8 +709,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 		try {
 			#if nodejs
-			// Node grew a connect() for datagram sockets in v12, but the
-			// extern predates it. Emulated instead: the remote is remembered,
+			// The dgram extern has no connect() (Node added one for datagram
+			// sockets in v12), so it is emulated: the remote is remembered,
 			// send() names it every time, and __receiveNode drops anything
 			// from anywhere else, which is the whole of what connecting a
 			// UDP socket does.
@@ -752,7 +743,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 
 			// Without a runtime on this thread there is nothing to hand an
-			// answer back to, so a name is looked up here, as it always was.
+			// answer back to, so a name is looked up here.
 			if (Resolver.needsLookup(host) && Resolver.runtimeHere() != null) {
 				__connectByName(host, port);
 				return;
@@ -772,11 +763,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					// Named for what actually failed, and carrying the reason.
-					// "Bind failed" used to be answered with "Operation
-					// attempted on invalid socket.", which describes a socket
-					// that was in fact fine, it was the address or the port
-					// that would not take.
+					// Named for what actually failed, and carrying the reason,
+					// rather than "Operation attempted on invalid socket.",
+					// which would describe a socket that is fine when it was
+					// the address or the port that would not take.
 					throw new IOError("Could not connect to " + host + ":" + port + ": " + Std.string(e));
 			}
 		}
@@ -787,11 +777,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		`connect()` to a name: looked up off the runtime's thread (see
 		`Resolver`), and the socket connected when the answer comes.
 
-		It used to be looked up in the call, on the runtime's thread, so every
-		socket and timer there waited on the resolver, a second, for a name
-		that does not exist, and one that did not resolve was thrown. The
-		socket counts as connected from the call, so `send()` with no
-		destination is taken meanwhile and waits for the answer.
+		Looked up in the call, on the runtime's thread, every socket and
+		timer there would wait on the resolver (a second, for a name that
+		does not exist). The socket counts as connected from the call, so
+		`send()` with no destination is taken meanwhile and waits for the
+		answer.
 	**/
 	@:noCompletion private function __connectByName(host:String, port:Int):Void {
 		__connected = true;
@@ -924,18 +914,18 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		waits again. On Node, Node looks the name up for each datagram,
 		asynchronously. Either way a name that does not resolve is reported
 		as an `ioError` event, and the datagrams sent to it are dropped. On a
-		thread with no CrossByte runtime a name is looked up in the call, as
-		it always was. A datagram sent with no destination while a name given
-		to `connect()` is looked up waits for that answer the same way.
+		thread with no CrossByte runtime a name is looked up in the call. A
+		datagram sent with no destination while a name given to `connect()`
+		is looked up waits for that answer the same way.
 
 		How large a datagram can be: UDP carries at most 65,507 bytes over
 		IPv4 and 65,527 over IPv6, and every system refuses more. macOS also
 		refuses a datagram larger than the socket's `sendBufferSize`, which
 		starts at 9,216 bytes there: raise it first to send larger ones.
 		Linux and Windows send up to UDP's limit whatever `sendBufferSize`
-		is. A datagram refused for its size throws an `IOError` that says so,
-		"a datagram of N bytes is larger than this socket can send
-		(sendBufferSize M)", with the limits, and the `ioError` event says
+		is. A datagram refused for its size throws an `IOError` that says so
+		("a datagram of N bytes is larger than this socket can send
+		(sendBufferSize M)", with the limits), and the `ioError` event says
 		the same, natively and on the jvm; on Node, which sends a turn later,
 		only the event. HashLink and Neko report every failed send alike, so
 		there only a datagram past 65,527 bytes is named so. Short of these
@@ -954,12 +944,12 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		@throws IllegalOperationError If a connected socket is asked to send to an explicit alternate destination.
 		@throws IOError If the send operation fails.
 
-		`send` is `inline`, a forwarder over a method with no optional
-		arguments, which on the jvm boxed each one per call (16 bytes for a
-		port, a length or an offset above 127), so a subclass cannot
-		override it: wrap the socket instead (see the CHANGELOG's Upgrading
-		notes). Taken as a value, or called through `Reflect` or `Dynamic`,
-		it works as before.
+		`send` is `inline`: a forwarder over a method with no optional
+		arguments, since the jvm boxes each optional argument per call (16
+		bytes for a port, a length or an offset above 127). So a subclass
+		cannot override it: wrap the socket instead (see the CHANGELOG's
+		Upgrading notes). Taken as a value, or called through `Reflect` or
+		`Dynamic`, it works as any other method does.
 	**/
 	public inline function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, address:String = null, port:Int = 0):Void {
 		__send(bytes, offset, length, address, port);
@@ -1063,15 +1053,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	/**
 		What a send that failed says: for a datagram larger than this socket
-		can send, its size, the socket's send buffer and the limits, where it
-		said "Socket operation failed" as every other failure did; otherwise
-		what the system said.
+		can send, its size, the socket's send buffer and the limits, rather
+		than a bare "Socket operation failed"; otherwise what the system
+		said.
 
 		Told apart natively by the system's own error (EMSGSIZE; the glue
 		throws "Datagram too large" for it), on the jvm by the JDK's text
 		for it, and on Node by the error's code, in `__sent`. HashLink and
 		Neko report every failure alike, so there only a datagram past
-		`MAX_DATAGRAM`: too large for UDP over either family, is named.
+		`MAX_DATAGRAM` (too large for UDP over either family) is named.
 	**/
 	@:noCompletion private function __sendFailure(error:Dynamic, length:Int):String {
 		return __isTooLarge(error, length) ? __tooLargeText(length) : Std.string(error);
@@ -1112,7 +1102,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		A send that failed is reported, as one natively is. Node reports it
 		here once a send is given a callback, instead of as the socket's
 		"error" event, so without this a name that did not resolve, or a
-		datagram too large to send, went unreported.
+		datagram too large to send, would go unreported.
 	**/
 	@:noCompletion private function __sent(error:js.lib.Error, _:Int):Void {
 		__sendsInFlight--;
@@ -1142,15 +1132,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		The address to send a datagram for `address`:`port` to, or null while
 		`address` is a name still being looked up.
 
-		A name used to be looked up here on every datagram, on the runtime's
-		thread: each send to one waited on the resolver, and one that did not
-		resolve held every socket and timer on the runtime for as long as the
-		resolver took to say so. It is now looked up once, off the thread (see
-		`Resolver`), and the answer used for `NAME_LIFETIME` seconds; after
-		that the old answer goes on being used while a new one is fetched.
+		A name is looked up once, off the runtime's thread (see `Resolver`),
+		and the answer used for `NAME_LIFETIME` seconds; after that the old
+		answer goes on being used while a new one is fetched. Looked up here
+		on every datagram, each send to a name would wait on the resolver, and
+		one that did not resolve would hold every socket and timer on the
+		runtime for as long as the resolver took to say so.
 
 		The last destination is kept as well, so a run of datagrams to one
-		peer, the usual shape, builds its address once rather than a
+		peer (the usual shape) builds its address once rather than a
 		`Host` and an `Address` per datagram.
 	**/
 	@:noCompletion private function __targetFor(address:String, port:Int):Null<Address> {
@@ -1162,7 +1152,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var host:Host;
 		var expires:Float = 0;
 		// Without a runtime on this thread there is nothing to hand an answer
-		// back to, so a name is looked up here, as it always was.
+		// back to, so a name is looked up here.
 		var byName:Bool = Resolver.needsLookup(address) && Resolver.runtimeHere() != null;
 
 		if (byName) {
@@ -1218,7 +1208,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	}
 
 	/**
-		A name's answer. What waited on it is sent, or, for a name that did
+		A name's answer. What waited on it is sent or, for a name that did
 		not resolve, dropped and reported, once for all of it.
 	**/
 	@:noCompletion private function __onNameAnswer(address:String, name:DatagramName, host:Null<Host>, failure:Null<String>):Void {
@@ -1350,8 +1340,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Hands one datagram out: to the receiver first, then to the `DATA`
 		listeners, when there are any. This is the outermost call that hands
-		`payload` out, on every target, so once it has returned, or a
-		listener has thrown, the datagram is done with. `pooled` says
+		`payload` out, on every target, so once it has returned (or a
+		listener has thrown), the datagram is done with. `pooled` says
 		`payload` is the socket's own (`__arrival`), which is emptied here
 		for the next datagram, its event with it; otherwise, under
 		`-D crossbyte_check_events`, the payload and its event are killed
@@ -1451,8 +1441,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				if (__batchNext >= __batchCount) {
 					// All the last read took in is handed out. This pass reads
 					// again, unless its own read already found the socket
-					// emptied, fewer waiting than it asked for, when the
-					// next poll says when more come, as an empty read did.
+					// emptied (fewer waiting than it asked for), when the
+					// next poll says when more come, as an empty read does.
 					if (asked && !__batchFull) {
 						break;
 					}
@@ -1465,7 +1455,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 						return;
 					}
 					if (taken == -2) {
-						// A kernel without recvmmsg: one at a time, as before.
+						// A kernel without recvmmsg: one at a time.
 						__batchStop();
 						__batchRefused = true;
 						continue;
@@ -1496,9 +1486,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			} else
 			#end
 			{
-				// -1 when nothing is waiting, which ends every pass that read:
-				// readFrom threw Blocked for it, an exception made and caught
-				// each time the socket was drained.
+				// __tryReadFrom answers -1 when nothing is waiting, which ends
+				// every pass that read; readFrom throws Blocked for it, an
+				// exception made and caught each time the socket is drained.
 				try {
 					bytesReady = @:privateAccess __socket.__tryReadFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
 				} catch (_:Eof) {
@@ -1513,12 +1503,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 				// An earlier datagram's ICMP error, not a datagram (-3): its
 				// destination's port was unreachable. Nothing about this
-				// socket, so not a failed read. Counted as failed reads, 64 of
-				// them in a row stopped the socket receiving for good, on
-				// Windows, which reports them unless told not to, a reliable
-				// UDP server whose resets to strangers came back that way went
-				// deaf to every session. Skipped, and the pass reads on,
-				// within its share.
+				// socket, so not a failed read; counted as one, 64 in a row
+				// would stop the socket receiving for good (on Windows, which
+				// reports them unless told not to, a reliable UDP server whose
+				// resets to strangers came back that way would go deaf to every
+				// session). Skipped, and the pass reads on, within its share.
 				if (bytesReady == -3) {
 					processed++;
 					continue;
@@ -1587,9 +1576,9 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		}
 
 		// Stopped at the cap, not at an empty socket: the loop is told, so
-		// the rest are read before it waits rather than a frame later. A
-		// server polled once a frame otherwise took at most 1,024 datagrams
-		// a frame, 12,288 a second at twelve ticks, however many came.
+		// the rest are read before it waits rather than a frame later, which
+		// would hold a server polled once a frame to 1,024 datagrams a frame
+		// (12,288 a second at twelve ticks) however many came.
 		if (processed >= MAX_DATAGRAMS_PER_TICK && __cbInstance != null) {
 			@:privateAccess __cbInstance.__noteMoreToRead();
 		}
@@ -1649,12 +1638,12 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		-1 when none was waiting, or -2 where the kernel has no recvmmsg.
 
 		A batch starts at `BATCH_FIRST` and doubles, up to `BATCH_MOST`, each
-		time a read fills it, here, when everything it held is out, so
+		time a read fills it; it grows here, once everything it held is out, so
 		nothing is lost. Each slot is 64 KB, past the largest datagram, so
 		none is cut short; the system commits a slot's memory a page at a
 		time, as datagrams are written into it. So a busy socket holds at
 		most 4 MB of address space, and, for datagrams of up to 4 KB, 4 KB a
-		slot it has used, 256 KB at the most, while a socket that never
+		slot it has used (256 KB at the most), while a socket that never
 		has a second datagram waiting holds none.
 	**/
 	@:noCompletion private function __batchRead(limit:Int):Int {
@@ -1703,8 +1692,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	}
 
 	/**
-		Datagrams a batch took in that a pass did not hand out, a listener
-		threw, or stopped the socket receiving, are handed out on the
+		Datagrams a batch took in that a pass did not hand out (a listener
+		threw, or stopped the socket receiving) are handed out on the
 		runtime's next pass, before anything read after them: the poll
 		cannot see them, since the kernel no longer has them.
 	**/
@@ -1737,25 +1726,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		A read that failed, on a socket that has no connection to lose.
 
-		This used to go straight to `__dispatchIoError`, which calls
-		`stopReceiving()`: so one failed read deafened the socket for good. On
-		a connectionless socket that is the wrong reading of what a read error
-		is. Send a datagram to a port nothing listens on and the peer's stack
-		answers ICMP port unreachable; Windows reports that back to the sender
-		as an error on a *later* read, which is then consumed by it. The
-		datagram it complains about is already gone, and the socket is fine.
+		A failed read ends this tick's loop and nothing more; it does not go
+		to `__dispatchIoError`, whose `stopReceiving()` would deafen the
+		socket for good. On a connectionless socket a read error usually says
+		nothing about the socket. Send a datagram to a port nothing listens
+		on and the peer's stack answers ICMP port unreachable; Windows
+		reports that back to the sender as an error on a *later* read, which
+		is then consumed by it. The datagram it complains about is already
+		gone, and the socket is fine. For a peer-to-peer mesh that is
+		ordinary (dialling peers that have since left), and one departed peer
+		should not silence every other.
 
-		Measured before changing anything: one datagram to a closed local port
-		and a socket that had just completed a STUN exchange stopped receiving
-		entirely, reporting `Custom(Socket operation failed)`. For a
-		peer-to-peer mesh that is not an edge case, dialling peers that have
-		since left is ordinary, and one departed peer should not silence
-		every other.
-
-		So a failed read ends this tick's loop and nothing more. A socket that
-		is genuinely broken keeps failing, and the run counter is what tells
-		the two apart: nothing succeeds in between, the count climbs, and the
-		error is reported for real rather than swallowed.
+		A socket that is genuinely broken keeps failing, and the run counter
+		is what tells the two apart: nothing succeeds in between, the count
+		climbs, and the error is reported for real rather than swallowed.
 	**/
 	@:noCompletion private function __onReadFailed(message:String):Void {
 		__consecutiveReadFailures++;
@@ -1777,24 +1761,19 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		A datagram that could not be sent is one datagram. Nothing about the
 		socket has changed: it is still bound, still readable, and still the
 		only way anything reaches this endpoint, so stopping reception because
-		one destination was unroutable throws away every other peer over an
-		error about one of them.
+		one destination was unroutable would throw away every other peer over
+		an error about one of them.
 
-		That is not hypothetical. ICE finds a path by trying every candidate a
-		peer offered, and most of them fail: a candidate on a network this host
-		cannot reach, or an IPv6 address on a socket bound to IPv4, refuses at
-		the `sendto` and is meant to. Routing that into `__dispatchIoError`,
-		which is what this did, meant the first such attempt stopped the
-		socket receiving, permanently and silently. A browser interoperability
-		run found it: every check went out, none came back, and nothing said
-		why.
+		ICE finds a path by trying every candidate a peer offered, and most
+		of them fail: a candidate on a network this host cannot reach, or an
+		IPv6 address on a socket bound to IPv4, refuses at the `sendto` and
+		is meant to. Routed into `__dispatchIoError`, the first such attempt
+		would stop the socket receiving, permanently and silently: every
+		check would go out and none come back.
 
-		The caller still gets an `IOError` thrown, and the event still fires, so
-		nothing that was reported before is reported less. What no longer
-		happens is the socket going deaf over it.
-
-		This is the same rule the read path already follows for the same reason.
-		See `__onReadFailed`.
+		The caller still gets an `IOError` thrown, and the event still fires;
+		only the socket does not go deaf over it. The read path follows the
+		same rule for the same reason; see `__onReadFailed`.
 	**/
 	@:noCompletion private function __dispatchSendError(message:String):Void {
 		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
@@ -1803,7 +1782,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	#if !nodejs
 	/**
 		The address `send` would send to for `address` and `port`, or null
-		while a name is still being looked up, for a sender that keeps it,
+		while a name is still being looked up: for a sender that keeps it,
 		as a reliable session keeps its peer's, rather than have one built
 		for each datagram: this socket keeps only the last.
 	**/
@@ -1815,24 +1794,23 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		Sends `length` bytes of `bytes` from `offset` to `target` when the
 		runtime's pass ends, together with everything else sent this way from
 		this socket in the pass: on Linux in as few system calls as the
-		kernel allows, a run to one peer cut up by the kernel from a single
-		send, the rest 64 to a call, and elsewhere one send each, as now.
+		kernel allows (a run to one peer cut up by the kernel from a single
+		send, the rest 64 to a call), and elsewhere one send each.
 		`sender` is told if this one could not go.
 
-		Sending a datagram at a time cost its system call each, which was
-		most of what a server sending reliable UDP spent: 5.9 us a 1,200-byte
-		datagram on Windows, against 6.2 for the bare call. Over Linux
-		loopback a run cut by the kernel cost a seventh of the CPU of the same
-		datagrams sent one by one.
+		A system call per datagram is most of what a server sending reliable
+		UDP spends: 5.9 us a 1,200-byte datagram on Windows, against 6.2 for
+		the bare call. Over Linux loopback a run cut by the kernel costs a
+		seventh of the CPU of the same datagrams sent one by one.
 
-		Goes now where there is no pass to wait for: no runtime, a runtime
-		that has stopped, or a target without the batch call.
+		Goes at once where there is no pass to wait for: no runtime, a
+		runtime that has stopped, or a target without the batch call.
 	**/
 	@:noCompletion public function __sendInPass(bytes:Bytes, offset:Int, length:Int, target:Address,
 			sender:Null<crossbyte._internal.net.DatagramSender>):Void {
 		#if cpp
-		// This socket's runtime, or for one that only sends, set at
-		// receive(), the thread's.
+		// This socket's runtime (set at receive()), or for one that only
+		// sends, the thread's.
 		var runtime:CrossByte = __cbInstance;
 		if (runtime == null) {
 			try {
@@ -1953,8 +1931,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private function __syncPolling():Void {
 		#if nodejs
-		// Nothing to synchronise. There is no descriptor to hand the registry,
-		// Node calls __receiveNode when a datagram arrives, so whether
+		// Nothing to synchronise. There is no descriptor to hand the registry
+		// (Node calls __receiveNode when a datagram arrives), so whether
 		// anything is delivered turns on __receiving alone, which the caller
 		// has already set.
 		return;
@@ -2005,10 +1983,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__family = family;
 		__socket = Dgram.createSocket({type: family});
 
-		// Contained: these run from Node's event loop, and a listener that
-		// threw there ended the process. A datagram socket is not closed for
-		// it, one socket carries every peer of a server, and one handler
-		// failing on one datagram is no reason to stop hearing the rest, so
+		// Contained: these run from Node's event loop, where a listener that
+		// throws would end the process. A datagram socket is not closed for
+		// it (one socket carries every peer of a server, and one handler
+		// failing on one datagram is no reason to stop hearing the rest), so
 		// the failure is logged and the next datagram delivered as usual.
 		__socket.on("message", function(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
 			try {
@@ -2034,7 +2012,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	 * Node fixes the family when the socket is created; a `sys.net.UdpSocket`
 	 * does not, and takes whatever address it is later handed. So a socket
 	 * that has not been bound or connected yet is simply replaced, which is
-	 * free, nothing has been done with it. One that has is left alone, and
+	 * free: nothing has been done with it. One that has is left alone, and
 	 * Node reports the mismatch itself rather than having it hidden here.
 	 */
 	@:noCompletion private function __nodeSocket(forAddress:String):NodeDatagram {
@@ -2057,8 +2035,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	 * Two things gate it, and both are what the polled path does by asking the
 	 * operating system rather than by checking. `receive()` not having been
 	 * called means nothing should arrive, and a connected socket sees only its
-	 * peer, Node's own `connect()` would enforce the second, but the extern
-	 * predates it, so the filter is here and the send path names the
+	 * peer. The dgram extern has no `connect()` to enforce the second,
+	 * so the filter is here and the send path names the
 	 * destination every time instead.
 	 */
 	@:noCompletion private function __receiveNode(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
@@ -2074,8 +2052,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 		// Node hands each datagram over in a Buffer of its own, which nothing
 		// here can spare it: its bytes are copied into the socket's payload,
-		// used again for every datagram, where they were sliced into a buffer
-		// of their own and wrapped in a ByteArray, with an event, each time.
+		// used again for every datagram, rather than sliced into a buffer of
+		// their own and wrapped in a ByteArray, with an event, each time.
 		var pooled:Bool = __pooledArrival();
 		var payload:ByteArray;
 		if (pooled) {
@@ -2112,9 +2090,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		The buffer sizes asked for, applied once Node has bound the socket:
 		once it has a port. `bind()` returns before Node has, and a size set
-		in between was applied to a handle with no socket yet, ENOTSOCK,
-		and reported as an `ioError` that also stopped the socket receiving.
-		A refusal is reported, and the socket goes on receiving.
+		in between would go to a handle with no socket yet (ENOTSOCK). A
+		refusal is reported, and the socket goes on receiving.
 	**/
 	@:noCompletion private function __applyNodeBuffers():Void {
 		if (__socket == null || __localPort == 0) {
@@ -2202,9 +2179,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		Whether this socket's own address is known, asking the system only when
 		it is not: the answer is kept until a bind, connect or close, which are
 		all that can change it, and kept only once it has a port, since a
-		socket that was never bound is given one by its first send. Each read of
-		`localAddress` or `localPort` was a getsockname() call, and a reliable
-		session reads both for every message it hands over.
+		socket that was never bound is given one by its first send. Asked on
+		every read of `localAddress` or `localPort`, it would be a
+		getsockname() call each, and a reliable session reads both for every
+		message it hands over.
 	**/
 	@:noCompletion private function __knownLocal():Bool {
 		if (__localText == null || __localNumber == 0) {
@@ -2273,7 +2251,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			return 0;
 		}
 		#elseif nodejs
-		// Until Node has bound it, `bind()` returns first, there is no
+		// Until Node has bound it (`bind()` returns first) there is no
 		// socket to ask.
 		if (__localPort == 0) {
 			return receive ? __receiveBufferRequest : __sendBufferRequest;

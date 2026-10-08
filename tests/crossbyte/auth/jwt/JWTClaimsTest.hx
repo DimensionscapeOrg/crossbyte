@@ -10,11 +10,11 @@ import crossbyte.test.Require;
  * JWT claims: times as seconds in a `Float`, and claims beyond the registered
  * ones.
  *
- * Times were `Int`. A token expiring at 2147483647, a common "never", was
+ * As `Int` times, a token expiring at 2147483647 (a common "never") would be
  * accepted on cpp and Node and refused on the interpreter and the jvm, where
- * adding the leeway wrapped, and anything after January 2038 was refused on
- * the jvm. A claim of an application's own, `{sub: ..., role: "admin"}`, did
- * not compile: "has extra field role". HS256 only, so this runs everywhere.
+ * adding the leeway wraps, and anything after January 2038 would be refused
+ * on the jvm. A claim of an application's own, `{sub: ..., role: "admin"}`,
+ * compiles. HS256 only, so this runs everywhere.
  */
 class JWTClaimsTest extends utest.Test {
 	static inline final SECRET:String = "0123456789abcdef0123456789abcdef";
@@ -98,7 +98,7 @@ class JWTClaimsTest extends utest.Test {
 	public function testTimesAndRegisteredClaimsKeepTheirTypes():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]));
 
-		// Made here: a time that is not a number is refused before signing,
+		// Made here: a time that is not a number is refused before signing:
 		// by the compiler when it is written in a literal (JWTTypesTest), and
 		// here when it is built by name. Field by field rather than a literal:
 		// the jvm types a literal's fields, and refuses the string in a Float.

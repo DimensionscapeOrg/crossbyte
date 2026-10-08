@@ -14,7 +14,7 @@ import js.node.stream.Writable.IWritable;
  * A child's stdin is the one of the three standard streams that survives the
  * move: writing is fire-and-forget, so Node's asynchronous stream sits under a
  * synchronous `Output` without having to pretend. Its stdout and stderr do not,
- * which is why there is no `Input` beside this, a synchronous read cannot be
+ * which is why there is no `Input` beside this: a synchronous read cannot be
  * served by a stream that delivers through callbacks, and `NativeProcess`
  * refuses those accessors on Node rather than inventing one.
  *

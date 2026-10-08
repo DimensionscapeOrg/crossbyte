@@ -9,11 +9,11 @@ import utest.Async;
  * keep a descriptor for as long as it likes.
  *
  * `ServerWebSocketDrainTest` covers this on the targets that accept through
- * their own loop. Node did not: connections arrive on a callback there, so
- * nothing recorded an accepted session as pending and nothing ran the reaper.
- * `handshakeTimeout` defaults to ten seconds, so this is protection that was
- * on by default everywhere and absent on the one target most likely to be
- * serving a browser, which is the entire audience for a WebSocket.
+ * their own loop. Node accepts on a callback, so it needs its own proof
+ * that an accepted session is recorded as pending and that the reaper runs.
+ * `handshakeTimeout` defaults to ten seconds, so this protection is on by
+ * default everywhere, and Node is the target most likely to be serving a
+ * browser, which is the entire audience for a WebSocket.
  *
  * Asynchronous so that Node can run it at all. The synchronous pump-and-sleep
  * the drain test uses blocks the event loop that the accept callback needs, so
@@ -47,10 +47,9 @@ class ServerWebSocketUpgradeReapTest extends utest.Test {
 
 				// Held on to, so that the closing below can be asserted rather
 				// than inferred from the list emptying. That distinction is the
-				// whole point: the list used to empty on the first tick because
-				// every pending session looked "already gone", and the session
-				// was dropped from tracking with its descriptor still open. An
-				// assertion on the list alone passes either way.
+				// whole point: a session dropped from tracking with its descriptor
+				// still open would empty the list just the same, so an assertion on
+				// the list alone passes either way.
 				var session = @:privateAccess server.__pendingUpgrades[0].session;
 				Assert.notNull(session);
 				Assert.isFalse(session.registryClosed, "the session was closed before its deadline");

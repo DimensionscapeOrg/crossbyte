@@ -11,7 +11,7 @@ import utest.Assert;
 	target has none of its own (`ChaCha20Poly1305`).
 
 	Every expected byte here comes from somewhere else: RFC 8439's own
-	vectors, and Node's `crypto` (OpenSSL) for the rest, `export`-free
+	vectors, and Node's `crypto` (OpenSSL) for the rest, from `export`-free
 	scripts that make each input from the formula `fill` repeats. The sealed
 	datagrams are computed there end to end (HKDF with Node's HMAC, then the
 	AEAD), so a target that produces them here interoperates byte for byte
@@ -61,8 +61,8 @@ class ReliableDatagramCipherTest extends utest.Test {
 	}
 
 	/**
-		Every length a datagram can have the AEAD treat differently, empty,
-		short of a block, a block, past one, the largest, with AAD of none,
+		Every length a datagram can have the AEAD treat differently (empty,
+		short of a block, a block, past one, the largest), with AAD of none,
 		short, a block and a hello's header, against OpenSSL; and any byte
 		changed is refused, with nothing written.
 	**/
@@ -170,7 +170,7 @@ class ReliableDatagramCipherTest extends utest.Test {
 		Assert.notEquals(base, sealedBy(fill(16, 9, 17), fill(16, 5, 201), plain), "the peer's random changed nothing");
 	}
 
-	/** A random equal to this end's, a CONNECT sent back at its sender, is refused: it would give both directions one key. **/
+	/** A random equal to this end's (a CONNECT sent back at its sender) is refused: it would give both directions one key. **/
 	public function testAnEqualRandomIsRefused():Void {
 		var cipher = new SessionCipher(fill(32, 1, 1), fill(16, 3, 3));
 		Assert.isFalse(cipher.derive(fill(16, 3, 3)));
@@ -195,8 +195,8 @@ class ReliableDatagramCipherTest extends utest.Test {
 	}
 
 	/**
-		Every byte of a sealed datagram, the header, which is authenticated
-		as associated data, the ciphertext and the tag, changed in turn, each
+		Every byte of a sealed datagram (the header, which is authenticated
+		as associated data, the ciphertext and the tag) changed in turn, each
 		way a bit can flip: refused and counted every time, and the original
 		still opens after, since nothing that failed moved the window.
 	**/

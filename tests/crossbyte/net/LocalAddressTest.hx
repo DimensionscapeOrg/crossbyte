@@ -2,8 +2,8 @@ package crossbyte.net;
 
 // `LocalAddress` is absent on the browser, along with the rest of the UDP
 // family, so there is nothing here to run there and nothing to assert about.
-// Node is a different matter and does run these, `JsTestMain` registers
-// them, the way it registers the server suite the browser also cannot have.
+// Node is a different matter and does run these (`JsTestMain` registers
+// them, the way it registers the server suite the browser also cannot have).
 #if !(js && !nodejs)
 import utest.Assert;
 import utest.Async;
@@ -19,12 +19,11 @@ class LocalAddressTest extends utest.Test {
 	/**
 		The one thing a support flag exists to do.
 
-		Not a tautology: `DatagramSocket.isSupported` said `true` on neko and
-		then threw "Not available on this platform" from the constructor, so a
-		caller that checked it had already been told the only lie that mattered.
-		This case is what catches that happening again on any target, it does
-		not care which answer is right, only that the flag and the behaviour
-		agree.
+		Not a tautology: `DatagramSocket.isSupported` saying `true` on a target
+		whose constructor throws "Not available on this platform" would tell a
+		caller that checked it the only lie that mattered. This case catches that
+		on any target: it does not care which answer is right, only that the flag
+		and the behaviour agree.
 	**/
 	@:timeout(4000)
 	public function testSupportIsReportedHonestly(async:Async):Void {
@@ -122,7 +121,7 @@ class LocalAddressTest extends utest.Test {
 		The other half of the same proof: loopback and the outside world are
 		reached on different interfaces, so a per-destination lookup must
 		distinguish them. A machine with no route out fails `primary()` instead,
-		which the error branch accepts, that is a real network condition, not
+		which the error branch accepts: that is a real network condition, not
 		a wrong answer.
 	**/
 	@:timeout(6000)
@@ -196,10 +195,9 @@ class LocalAddressTest extends utest.Test {
 		This is the gap the class was written to close, stated as the only thing
 		that is true on every target: after the wildcard bind that every
 		listener actually uses, the socket has nothing a peer could dial. On sys
-		targets it reports `0.0.0.0`, which is every interface and so names
 		none. On Node it reports the empty string, because `bind` there is
 		asynchronous and `localAddress` is read back when the callback lands
-		rather than asked for on demand, a difference worth knowing about
+		rather than asked for on demand: a difference worth knowing about
 		separately, and not one this class can paper over.
 
 		Either way the caller is left with nothing to advertise, which is why

@@ -7,8 +7,8 @@ import haxe.io.Bytes;
 	bits long, which nobody without the key can compute or predict. It is
 	what a reliable datagram server makes its join cookies and its rebind
 	challenges with, and what a session proves it holds its rebind secret
-	with, each one a few dozen bytes, made or checked per CONNECT, per
-	reset or per REBIND, and what Linux makes its SYN cookies with.
+	with (each one a few dozen bytes, made or checked per CONNECT, per
+	reset or per REBIND), and what Linux makes its SYN cookies with.
 
 	Written over 32-bit halves, so it gives the same answer on every target,
 	JavaScript's doubles included (every addition ends in `| 0`), and

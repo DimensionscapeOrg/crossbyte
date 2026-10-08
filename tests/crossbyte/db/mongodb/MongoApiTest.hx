@@ -11,14 +11,13 @@ import crossbyte.errors.ArgumentError;
 import utest.Assert;
 
 /**
-	The shapes of the driver's public types, as 1.0 fixes them: options
-	that are classes taking object literals, a hint, a collation and a
-	write concern's `w` typed for what they hold, write errors and upserts
-	as classes, and the parser and the cursor's constructor kept inside.
-
-	Each was an anonymous structure or `Dynamic`, read by name on every
-	operation and taking anything. What does and does not compile is
-	decided when this is compiled, so it runs on every target.
+	The shapes of the driver's public types: options that are classes
+	taking object literals, a hint, a collation and a write concern's `w`
+	typed for what they hold, write errors and upserts as classes, and the
+	parser and the cursor's constructor kept inside, rather than anonymous
+	structures or `Dynamic` read by name on every operation and taking
+	anything. What does and does not compile is decided when this is
+	compiled, so it runs on every target.
 **/
 class MongoApiTest extends utest.Test {
 	public function testOptionsAreClassesThatTakeLiterals():Void {
@@ -32,8 +31,8 @@ class MongoApiTest extends utest.Test {
 		Assert.isNull(TypeCheck.errorOf(({key: {at: 1}, expireAfterSeconds: 0, unique: true} : MongoIndex)));
 		Assert.notNull(TypeCheck.errorOf(({unique: true} : MongoIndex)), "an index needs its key");
 
-		// Classes now, read directly: one made elsewhere as an anonymous
-		// object is not options, nor are one call's options another's.
+		// Classes, read directly: one made elsewhere as an anonymous object is
+		// not options, nor are one call's options another's.
 		Assert.isNull(TypeCheck.errorOf(Std.isOfType(null, MongoFindOptions)), "options are a class");
 		Assert.notNull(TypeCheck.errorOf({
 			var shared = {limit: 1};

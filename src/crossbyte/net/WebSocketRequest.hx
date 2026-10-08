@@ -11,10 +11,9 @@ import haxe.ds.StringMap;
 	The HTTP request a client sent to open a WebSocket session: what a server
 	has to decide on before it answers, and what a session keeps afterwards.
 
-	A server used to parse this and throw it away, so nothing about who was
-	asking, the path they asked for, a token in the query, a cookie, the
-	page's `Origin`, the subprotocol a browser offered, reached anything
-	that could act on it. `ServerWebSocket.upgrade` is shown it before the
+	It reaches what can act on who is asking: the path they asked for, a
+	token in the query, a cookie, the page's `Origin`, the subprotocol a
+	browser offered. `ServerWebSocket.upgrade` is shown it before the
 	`101` goes out, and can refuse the session or choose its subprotocol;
 	the session then carries it as `WebSocket.request`.
 
@@ -75,7 +74,7 @@ final class WebSocketRequest {
 		`101`, or `null` for none.
 
 		The first one offered unless the server's `upgrade` hook chooses
-		otherwise, a browser that offers a subprotocol and hears none back
+		otherwise: a browser that offers a subprotocol and hears none back
 		fails the connection, so accepting the session means accepting one.
 		It must be one the client offered.
 
@@ -85,7 +84,7 @@ final class WebSocketRequest {
 
 	/**
 		The status a refused upgrade is answered with: 403 unless the hook
-		says otherwise, 401 for a missing credential, say, or 426 for a
+		says otherwise: 401 for a missing credential, say, or 426 for a
 		subprotocol the server does not speak.
 	**/
 	public var status:Int = 403;
@@ -186,9 +185,9 @@ final class WebSocketRequest {
 	/**
 		The session has opened, and its `connect` listeners have run, which
 		is where a request is mostly read: the parsed headers go, and the head
-		they came from is what the session keeps, a single string, where
-		the map of every header and its name and value as strings of their
-		own was about a third of what an idle session held (2.2 KB of 6.6
+		they came from is what the session keeps: a single string, where the
+		map of every header and its name and value as strings of their own
+		would be about a third of what an idle session holds (2.2 KB of 6.6
 		natively, 1.8 of 5.1 on the jvm).
 	**/
 	@:allow(crossbyte._internal.websocket)

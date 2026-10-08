@@ -17,10 +17,10 @@ import utest.Assert;
  * in a packet. The default `sslMode`, `PREFERRED`, checks no certificate, so
  * anyone in the middle can be that server.
  *
- * Each of these ended the process, or made the client allocate a gigabyte,
- * from a packet of a few bytes. Each is now a `MySQLError` with error 2027
- * (`CR_MALFORMED_PACKET`), and the connection is closed, since the exchange
- * cannot be followed past a packet that breaks it.
+ * Each is a `MySQLError` with error 2027 (`CR_MALFORMED_PACKET`), and the
+ * connection is closed, since the exchange cannot be followed past a packet
+ * that breaks it, rather than a process ended, or a gigabyte allocated, from
+ * a packet of a few bytes.
  */
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLNativeHostileTest extends utest.Test {
@@ -41,8 +41,8 @@ class MySQLNativeHostileTest extends utest.Test {
 	}
 
 	public function testAColumnCountPastTwoToTheThirtyOneIsRefused():Void {
-		// Nine bytes: a column count of 2^31 - 1 sized a malloc of 150 GB,
-		// which returned NULL, and the client wrote to it.
+		// Nine bytes: a column count of 2^31 - 1, which must not size a malloc
+		// of 150 GB, returning NULL for the client to write to.
 		__answerWith([__packet([0xFE, 0xFF, 0xFF, 0xFF, 0x7F, 0, 0, 0, 0])]);
 
 		var error:MySQLError = __refused("SELECT HOSTILE");
@@ -51,8 +51,8 @@ class MySQLNativeHostileTest extends utest.Test {
 	}
 
 	public function testAColumnCountOfMillionsIsRefusedBeforeAnythingIsAllocated():Void {
-		// Four bytes: 16,777,215 columns, which the client allocated and
-		// zeroed, 1.2 GB, before reading the first of them.
+		// Four bytes: 16,777,215 columns, which must not be allocated and
+		// zeroed (1.2 GB) before the first of them is read.
 		__answerWith([__packet([0xFD, 0xFF, 0xFF, 0xFF])]);
 
 		var error:MySQLError = __refused("SELECT HOSTILE");
@@ -70,8 +70,8 @@ class MySQLNativeHostileTest extends utest.Test {
 	public function testALocalFileRequestIsRefused():Void {
 		// 0xFB is how a server asks the client to send it a file of the
 		// client's own (LOAD DATA LOCAL INFILE). The client never offers
-		// that; it read the byte as a count of -1 columns, and allocated
-		// accordingly.
+		// that, and must not read the byte as a count of -1 columns and
+		// allocate accordingly.
 		__answerWith([__packet([0xFB, "/".code, "e".code, "t".code, "c".code])]);
 
 		var error:MySQLError = __refused("SELECT HOSTILE");
@@ -80,8 +80,8 @@ class MySQLNativeHostileTest extends utest.Test {
 	}
 
 	public function testAColumnWithoutANameIsRefused():Void {
-		// A NULL where the name goes: the result was built, and its first
-		// row read the name it did not have.
+		// A NULL where the name goes: the result must not be built with its
+		// first row reading the name it does not have.
 		var definition:BytesBuffer = new BytesBuffer();
 
 		for (part in ["def", "app", "t", "t"]) {
@@ -99,10 +99,10 @@ class MySQLNativeHostileTest extends utest.Test {
 	}
 
 	public function testAColumnStringClaimingTwoGigabytesIsRefused():Void {
-		// A catalog name 2^31 - 1 bytes long, in a packet of a few: the
-		// length was added to the position, the sum wrapped negative, and the
-		// check that it fitted passed. malloc was then asked for 2^31 bytes,
-		// in an int, which wrapped too.
+		// A catalog name 2^31 - 1 bytes long, in a packet of a few: added to
+		// the position, the length would wrap the sum negative and pass the
+		// check that it fitted, and malloc would then be asked for 2^31 bytes,
+		// in an int, which wraps too.
 		var definition:BytesBuffer = new BytesBuffer();
 		definition.addByte(0xFE);
 		definition.add(Bytes.ofHex("ffffff7f00000000"));
@@ -114,8 +114,8 @@ class MySQLNativeHostileTest extends utest.Test {
 	}
 
 	public function testARowValueClaimingTwoGigabytesIsRefused():Void {
-		// The same wrap in a row: a value 2^31 - 1 bytes long passed its check,
-		// and the row's end was written 2 GB before its buffer.
+		// The same wrap in a row: a value 2^31 - 1 bytes long must not pass its
+		// check and have the row's end written 2 GB before its buffer.
 		var row:BytesBuffer = new BytesBuffer();
 		row.addByte(0xFE);
 		row.add(Bytes.ofHex("ffffff7f00000000"));
@@ -135,8 +135,8 @@ class MySQLNativeHostileTest extends utest.Test {
 
 	public function testAnEmptyPacketAmongTheRowsIsRefused():Void {
 		// The rows are read into buffers each row keeps, and the connection's
-		// own was let go before the first: an empty packet then wrote its end
-		// marker through a null pointer.
+		// own must not be let go before the first, or an empty packet would
+		// write its end marker through a null pointer.
 		__answerWith([__packet([1]), __column("id"), __eof(), Bytes.alloc(0)]);
 
 		var connection:MySQLConnection = __open();
@@ -193,9 +193,9 @@ class MySQLNativeHostileTest extends utest.Test {
 
 	public function testAnErrorCutShortInItsStateDoesNotReadPastIt():Void {
 		// An error packet that ends at the '#' that starts its SQLSTATE: the
-		// five characters were copied from past its end, the end marker,
-		// then whatever an earlier packet left in the buffer, and the error
-		// carried the success state "00000".
+		// five characters must not be copied from past its end (the end
+		// marker, then whatever an earlier packet left in the buffer), which
+		// would give the error the success state "00000".
 		__server.onQuery = function(session, sql) {
 			if (sql != "SELECT HOSTILE") {
 				return false;

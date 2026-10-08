@@ -32,10 +32,10 @@ class MySQLNativeResultTest extends utest.Test {
 
 	public function testAWriteThroughAStatementSucceeds():Void {
 		// A write is answered with an OK packet, whose result handle is the
-		// affected-row count. Iterating it threw "Invalid result", so every
-		// INSERT, UPDATE and DELETE run through a statement was reported as
-		// failed after the server had applied it, and code that retries on
-		// error wrote twice.
+		// affected-row count, and iterating it must not throw "Invalid result":
+		// every INSERT, UPDATE and DELETE run through a statement would be
+		// reported as failed after the server had applied it, and code that
+		// retries on error would write twice.
 		__server.start();
 		var connection:MySQLConnection = __open();
 		var statement:MySQLStatement = new MySQLStatement();
@@ -86,12 +86,12 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testColumnValuesAreExact():Void {
-		// Measured against the client before: BIGINT 1234567890123456789 read
-		// as ...768 (a Float), DECIMAL(19,4) as a Float, INT UNSIGNED 3e9 as
-		// 2147483647, DATE 2040-06-01 as 1904-04-26, DATE 1965 as -1000 ms
-		// (and printing it ended the process on Windows), NULL columns missing
-		// from the row, COUNT(*) renamed "???", and a VARCHAR with a _bin
-		// collation read as Bytes.
+		// Each type read as itself: BIGINT 1234567890123456789 not as ...768 (a
+		// Float), DECIMAL(19,4) not as a Float, INT UNSIGNED 3e9 not as
+		// 2147483647, DATE 2040-06-01 not as 1904-04-26, DATE 1965 not as -1000
+		// ms (and printing it must not end the process on Windows), NULL columns
+		// present in the row, COUNT(*) not renamed "???", and a VARCHAR with a
+		// _bin collation not read as Bytes.
 		__server.onQuery = function(session, sql) {
 			if (sql != "SELECT TYPES") {
 				return false;
@@ -133,7 +133,7 @@ class MySQLNativeResultTest extends utest.Test {
 		var snowflake:haxe.Int64 = Reflect.field(row, "snowflake");
 		Assert.equals("1234567890123456789", haxe.Int64.toStr(snowflake));
 
-		// A count that fits an Int is an Int, as an INT column's always was.
+		// A count that fits an Int is an Int, as an INT column's is.
 		var count:Dynamic = Reflect.field(row, "COUNT(*)");
 		Assert.isTrue(Std.isOfType(count, Int), "COUNT(*) came back as " + Std.string(count));
 		Assert.equals(7, (count : Int));
@@ -147,7 +147,7 @@ class MySQLNativeResultTest extends utest.Test {
 
 		var born:Date = Reflect.field(row, "born");
 		Assert.equals(-149040000000.0, born.getTime());
-		// Printing it ended a Windows process: the CRT refused the time.
+		// Printing it must not end a Windows process, as the CRT refusing the time would.
 		Assert.isTrue(Std.string(born).indexOf("1965-04-1") == 0, Std.string(born));
 
 		var expires:Date = Reflect.field(row, "expires");
@@ -174,9 +174,9 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testADateBeforeNineteenSeventyCanBePrinted():Void {
-		// hxcpp's Date on Windows: localtime refused a negative time, the
-		// zeroed fields it was replaced with went to strftime, and the CRT's
-		// invalid-parameter handler ended the process (0xC0000409).
+		// hxcpp's Date on Windows: localtime refuses a negative time, and the
+		// zeroed fields put in its place must not go to strftime, whose CRT
+		// invalid-parameter handler ends the process (0xC0000409).
 		var early:Date = Date.fromTime(-1000);
 		Assert.equals(1969, early.getUTCFullYear());
 		Assert.equals(23, early.getUTCHours());
@@ -196,8 +196,8 @@ class MySQLNativeResultTest extends utest.Test {
 
 	public function testCountsPastThirtyTwoBitsAreWhole():Void {
 		// The client reads both from the statement's answer, as an Int64 past
-		// 2^31, and the connection held them at 2^31 - 1: affectedRows and
-		// lastInsertRowID were Ints.
+		// 2^31, and the connection holds them whole: affectedRows and
+		// lastInsertRowID are not Ints held at 2^31 - 1.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "UPDATE")) {
 				session.ok(3000000000.0, 5000000001.0);
@@ -215,11 +215,11 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testAStatementsCountsAreItsOwnAndWhole():Void {
-		// A statement's rowsAffected was the length of the client's result:
-		// for a write, the count as an Int, held at 2^31 - 1 though the client
-		// had it whole; for a SELECT read a page at a time, the rows read so
-		// far. And its lastInsertRowID was read from the connection as the
-		// page was taken: after a SELECT ran in between, 0.
+		// A statement's rowsAffected is not the length of the client's result:
+		// for a write, that is the count as an Int, held at 2^31 - 1 though the
+		// client has it whole; for a SELECT read a page at a time, the rows read
+		// so far. And its lastInsertRowID is not read from the connection as
+		// the page is taken, which after a SELECT in between would be 0.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "UPDATE")) {
 				session.ok(3000000000.0, 0);
@@ -271,10 +271,10 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testResultsCostNoExtraRoundTrips():Void {
-		// Every getResult() sent SELECT LAST_INSERT_ID(), 20 pages, 21
-		// extra statements, after which affectedRows, itself a SELECT
-		// ROW_COUNT(), read -1. Both numbers are in the statement's own
-		// answer.
+		// getResult() sends nothing more: a SELECT LAST_INSERT_ID() per page
+		// (20 pages, 21 extra statements) would leave affectedRows, itself a
+		// SELECT ROW_COUNT(), reading -1. Both numbers are in the statement's
+		// own answer.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "INSERT")) {
 				session.ok(1, 3000000001.0);
@@ -297,7 +297,7 @@ class MySQLNativeResultTest extends utest.Test {
 		statement.text = "INSERT INTO users (email) VALUES ('a@example.com')";
 		statement.execute();
 		var inserted = Require.notNull(statement.getResult());
-		// Past 2^31, where lastInsertId(), an Int, ran out.
+		// Past 2^31, where lastInsertId(), an Int, runs out.
 		Assert.equals(3000000001.0, inserted.lastInsertRowID);
 		Assert.equals(1.0, inserted.rowsAffected);
 		Assert.equals(1, connection.affectedRows);
@@ -320,9 +320,9 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testTheFirstPageArrivesBeforeTheRestOfTheResult():Void {
-		// The whole result was read before the first page was returned: a
-		// million rows reached 190 MB first. Here the server pauses after ten
-		// rows, and the first five must not wait for it.
+		// The first page is returned before the whole result is read, which
+		// for a million rows would reach 190 MB first. Here the server pauses
+		// after ten rows, and the first five must not wait for it.
 		__server.onQuery = function(session, sql) {
 			if (sql == "SELECT SLOW PAGES") {
 				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
@@ -356,7 +356,7 @@ class MySQLNativeResultTest extends utest.Test {
 	public function testAPagedStatementSurvivesAnotherStatementOnItsConnection():Void {
 		// The rest of a result read part way is read aside when the
 		// connection is needed for something else, so the page after still
-		// comes, as it did when results were read whole first.
+		// comes, as it would if results were read whole first.
 		__server.onQuery = function(session, sql) {
 			if (sql == "SELECT TWENTY") {
 				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
@@ -391,8 +391,8 @@ class MySQLNativeResultTest extends utest.Test {
 	}
 
 	public function testFloatsReadTheSameInAnyLocale():Void {
-		// The client parsed DOUBLE with atof, which reads the process's
-		// locale: under one with a decimal comma, 1.5 came back as 1.
+		// DOUBLE is not parsed with atof, which reads the process's locale:
+		// under one with a decimal comma, 1.5 would come back as 1.
 		var decimalComma:Bool = untyped __cpp__('(setlocale(LC_NUMERIC, "de-DE") != 0 || setlocale(LC_NUMERIC, "de_DE.UTF-8") != 0 || setlocale(LC_NUMERIC, "German") != 0)');
 
 		if (!decimalComma) {

@@ -3,12 +3,12 @@ package crossbyte.ds;
 import utest.Assert;
 
 /**
-	The interest loop, a grid query per observer, its ids added to the
-	observer's `InterestSet`, a commit, allocated per id per tick on the jvm
-	and Node: 2.2 MB a tick for 1,000 views of 50. Every `Array<Int>` in it
-	boxed ids above 127 on the jvm, and every one emptied with `resize(0)`
-	gave V8 its store back. The lists are now vectors with counts, and a
-	query can fill an `IdList`.
+	The interest loop (a grid query per observer, its ids added to the
+	observer's `InterestSet`, a commit) allocates nothing per id per tick
+	on the jvm and Node, where `Array<Int>`s would cost 2.2 MB a tick for
+	1,000 views of 50: every one boxes ids above 127 on the jvm, and every
+	one emptied with `resize(0)` gives V8 its store back. The lists are
+	vectors with counts, and a query can fill an `IdList`.
 
 	The allocation cases are measured on the jvm, whose per-thread allocation
 	counter is exact. Elsewhere the same code runs for its answers.
@@ -115,10 +115,10 @@ class IdListTest extends utest.Test {
 
 	#if jvm
 	/**
-		A round of an observer's interest, ids added, then committed,
-		allocates nothing once the set has grown to it. Each id above 127 was
-		boxed as it went into the round's list, and each word of its bits was
-		boxed as it changed.
+		A round of an observer's interest (ids added, then committed)
+		allocates nothing once the set has grown to it: no id above 127 is
+		boxed as it goes into the round's list, and no word of its bits is
+		boxed as it changes.
 	**/
 	public function testAnInterestRoundAllocatesNothingOnceGrown():Void {
 		var set = new InterestSet(8192);

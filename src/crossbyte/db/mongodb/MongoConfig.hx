@@ -71,15 +71,15 @@ typedef MongoConfig = {
 	@:optional var tlsAllowInvalidCertificates:Bool;
 
 	/**
-		Seconds `open()` may take with each server it tries, the connect,
-		TLS, the hello and the login together, before that server fails
+		Seconds `open()` may take with each server it tries (the connect,
+		TLS, the hello and the login together) before that server fails
 		with an `IOError`, as MySQL's `connectTimeout` covers its login.
 		Defaults to 10; 0 for no limit. Once open, a read waits on
 		`socketTimeout` instead. Looking a host name up is not bounded by it.
 
 		On the interpreter (eval) the connect and a TLS handshake have no
-		limit, eval connects blocking, and fails an expired socket timeout
-		by aborting the process, so only the hello and the login are
+		limit (eval connects blocking, and fails an expired socket timeout
+		by aborting the process), so only the hello and the login are
 		bounded. On hl the connect is bounded where the system applies a
 		send timeout to it: on Linux, not on Windows.
 	**/
@@ -87,7 +87,7 @@ typedef MongoConfig = {
 
 	/**
 		Seconds a read may wait for the server once the connection is open,
-		or 0, the default, as in MongoDB's drivers, for no limit. A long
+		or 0 (the default, as in MongoDB's drivers) for no limit. A long
 		aggregation may legitimately run for minutes; bound a single
 		operation with its `maxTimeMS` option instead, which the server
 		enforces. Not applied on the interpreter, which fails an expired
@@ -98,10 +98,10 @@ typedef MongoConfig = {
 
 	/**
 		TCP keepalive, on unless set `false`, so a connection to a server that
-		has vanished, a partition, a host that died without closing, is
+		has vanished (a partition, a host that died without closing) is
 		noticed instead of waited on: about two minutes with the timings
-		below. With no keepalive and no `socketTimeout`, the default, a read
-		waiting on such a server waited for ever, holding the connection and
+		below. With no keepalive and no `socketTimeout`, a read waiting on
+		such a server would wait for ever, holding the connection and
 		whatever worker was using it.
 
 		Keepalive probes only a connection with nothing unacknowledged in
@@ -151,7 +151,7 @@ typedef MongoConfig = {
 **/
 typedef MongoWriteConcern = {
 	/**
-		How many members must apply the write, a number, or `"majority"`.
+		How many members must apply the write: a number, or `"majority"`.
 		`0` asks for no acknowledgement at all: the write is sent and not
 		waited for, and its result reads `acknowledged: false`.
 	**/

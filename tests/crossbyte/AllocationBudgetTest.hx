@@ -33,9 +33,9 @@ import utest.Assert;
 /**
 	How many bytes each common operation allocates, held to a budget.
 
-	Each case runs one operation for real, a request to an `HTTPServer` over
+	Each case runs one operation for real (a request to an `HTTPServer` over
 	loopback, a message echoed by a `ServerWebSocket`, a call over an RPC
-	pair, warms it up, and then measures what it allocates with
+	pair), warms it up, and then measures what it allocates with
 	`AllocationMeter`: the median of three runs, in bytes per operation. Both
 	ends of a connection run on this thread and both are counted: what a
 	client allocates is CrossByte's sockets' doing, the test code around them
@@ -66,7 +66,7 @@ class AllocationBudgetTest extends utest.Test {
 
 	// What each operation allocates, in bytes: as measured on MEASURED_ON
 	// natively on Windows, natively on Linux and on the jvm, and then the
-	// budget each is held to there, the figure and a quarter, and 64 bytes,
+	// budget each is held to there: the figure and a quarter, and 64 bytes,
 	// rounded up to 8. A figure of 0 is held to 8, which one object an
 	// operation would pass. The jvm's figure is the largest of Oracle's JRE 8
 	// on Windows, Temurin 8 on Linux and a run of the full suite.
@@ -85,16 +85,15 @@ class AllocationBudgetTest extends utest.Test {
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2392], [4376, 4360, 3056]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 624], [216, 216, 848]);
-	// Nothing natively since RUDP-3 (2026-10-08), where the copy of each
-	// message kept until it is acknowledged was 424 B: the frames it is kept
-	// in come from a pool and go back to it (FramePool). The jvm's 80 B is
-	// CI's Temurin 8 on Linux, the largest read (Oracle 8 on Windows: 64);
-	// none of it is reliable UDP's. Linux natively taken as Windows until
+	// Nothing natively: the frames each message is kept in until it is
+	// acknowledged come from a pool and go back to it (FramePool). The jvm's
+	// 80 B is CI's Temurin 8 on Linux, the largest read (Oracle 8 on Windows:
+	// 64); none of it is reliable UDP's. Linux natively taken as Windows until
 	// measured.
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
-	// The same, every datagram sealed and opened (RUDP-2): what encryption
-	// adds is buffers the server's sessions share, made once. Measured as
-	// the line above, 2026-10-08 (Oracle 8 on Windows: 73).
+	// The same, every datagram sealed and opened: what encryption adds is
+	// buffers the server's sessions share, made once. Measured as the line
+	// above, later than MEASURED_ON (Oracle 8 on Windows: 73).
 	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
@@ -106,14 +105,14 @@ class AllocationBudgetTest extends utest.Test {
 	// The array and the string the handler is given are most of it.
 	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
 	// Written with runtimeCall and read with registerArgs: no array, nothing
-	// boxed. Measured natively on Windows and on the jvm (Oracle 8),
-	// 2026-10-08; Linux taken as Windows until measured.
+	// boxed. Measured natively on Windows and on the jvm (Oracle 8), later
+	// than MEASURED_ON; Linux taken as Windows until measured.
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 24], [8, 8, 96]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
 		counted. On the jvm, enough for the compiler to have finished with
-		the path: after 6,000 Temurin 8's first run of a GET still read a
+		the path: after 6,000, Temurin 8's first run of a GET still reads a
 		fifth above the two after it.
 	**/
 	private static inline var WARM:Int = #if jvm 12000 #else 300 #end;
@@ -132,8 +131,8 @@ class AllocationBudgetTest extends utest.Test {
 	/**
 		The meter itself, read against allocations of known size: a run that
 		allocates nothing reads (near) nothing, and `Bytes` of 1,000 and 8,000
-		bytes read their size and not much more, a small one shares its
-		block, a large one is allocated on its own.
+		bytes read their size and not much more (a small one shares its
+		block, a large one is allocated on its own).
 	**/
 	public function testTheMeterReadsWhatIsAllocated():Void {
 		var nothing = AllocationMeter.measure(() -> {}, 200000);
@@ -208,9 +207,9 @@ class AllocationBudgetTest extends utest.Test {
 	}
 
 	public function testATimerPausedAndResumed():Void {
-		// What a game does with the timers of whatever it pauses. Natively
-		// the time a timer was paused at was a boxed Float, and on the jvm
-		// the time and policy were boxed again by each default they passed.
+		// What a game does with the timers of whatever it pauses. Natively the
+		// time a timer was paused at must not be a boxed Float, and on the jvm
+		// the time and policy must not be boxed again by each default they pass.
 		var runtime = __start();
 		// A frame in, so the clock is not at a whole second: natively a boxed
 		// whole number of up to 255 is taken from a cache.
@@ -640,9 +639,9 @@ class AllocationBudgetTest extends utest.Test {
 
 	/**
 		A deadline from the session's `callTimeout` costs a call nothing: the
-		calls under it share one queue and one timer. Each armed a timer of
-		its own, 112 bytes natively and 95 on the jvm, which a budget a
-		quarter over a call's figure would not have caught coming back.
+		calls under it share one queue and one timer. A timer of its own for
+		each call (112 bytes natively and 95 on the jvm) is less than a quarter
+		of a call's figure, so the call's budget alone would not catch it.
 	**/
 	public function testAnRpcCallsDeadlineAllocatesNothing():Void {
 		var without:AllocationReading = __rpcCallUnder(0);
@@ -805,11 +804,11 @@ class AllocationBudgetTest extends utest.Test {
 
 	/**
 		A host-driven runtime of the case's own, with nothing on it, made the
-		thread's runtime by a first frame: what the case makes, sockets,
-		servers, timers, is its, and nothing else is. The suite's runtime is
+		thread's runtime by a first frame: what the case makes (sockets,
+		servers, timers) is its, and nothing else is. The suite's runtime is
 		not idle by the time a case runs: in the full jvm suite a frame of it
-		allocated 597 bytes, where an empty one's allocated a sixth of that,
-		since other cases left sockets on it to poll. `__finish` ends it,
+		allocates 597 bytes, where an empty one's allocates a sixth of that,
+		since other cases leave sockets on it to poll. `__finish` ends it,
 		which hands the thread back to the suite's.
 	**/
 	private static function __start():CrossByte {
@@ -929,8 +928,8 @@ private class Budget {
 
 /**
 	An HTTP/1.1 client on one kept-alive connection that reads its responses
-	into one buffer and counts them, parsing just enough, the status and
-	`Content-Length`: to know where each ends. Allocates nothing per
+	into one buffer and counts them, parsing just enough (the status and
+	`Content-Length`) to know where each ends. Allocates nothing per
 	response, so what is measured is the server and the socket under it.
 **/
 private class Http1Client {

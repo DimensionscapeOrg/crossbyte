@@ -10,7 +10,7 @@ import crossbyte.net.ObjectEncoding;
 
 	Multi-byte values are read in the implementing object's `endian`. A `ByteArray` and
 	the sockets start in `ByteArray.defaultEndian`, which is little-endian on every target
-	unless you change it, not big-endian, as in AIR. Set `endian` to `Endian.BIG_ENDIAN`
+	unless you change it, not big-endian as in AIR. Set `endian` to `Endian.BIG_ENDIAN`
 	for network byte order.
 
 	Reads never wait for data. If insufficient data is available, an `EOFError` exception
@@ -40,7 +40,7 @@ interface IDataInput {
 
 	/**
 		Which format `readObject()` reads, a constant from the ObjectEncoding class. It is
-		`HXSF` unless changed, not AMF, as in AIR; a `ByteArray` starts in
+		`HXSF` unless changed, not AMF as in AIR; a `ByteArray` starts in
 		`ByteArray.defaultObjectEncoding`. `JSON` is always available. `AMF0` and `AMF3`
 		need the optional `format` haxelib (`-lib format`), and asking for one without it
 		throws.

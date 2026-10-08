@@ -9,12 +9,12 @@ import utest.Async;
 /**
 	A socket reads and writes objects without being told how first.
 
-	`objectEncoding` was never set: natively and on the jvm it read 0, which
-	is AMF0 and throws on a build without `-lib format`, and on Node, eval
-	and in a page it read null, which throws too. So `writeObject` and
-	`readObject` threw on every socket until the application chose an
-	encoding, where `ByteArray`, `FileStream` and `ReliableDatagramSocket`
-	start in `ObjectEncoding.DEFAULT`.
+	`objectEncoding` starts in `ObjectEncoding.DEFAULT`, as it does for
+	`ByteArray`, `FileStream` and `ReliableDatagramSocket`. Left unset it
+	would read 0 natively and on the jvm, which is AMF0 and throws on a
+	build without `-lib format`, and null on Node, eval and in a page,
+	which throws too: `writeObject` and `readObject` would throw on every
+	socket until the application chose an encoding.
 **/
 class SocketObjectTest extends utest.Test {
 	public function testASocketStartsInTheDefaultEncoding():Void {

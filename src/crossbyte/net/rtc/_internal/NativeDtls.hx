@@ -5,7 +5,7 @@ package crossbyte.net.rtc._internal;
 	The native side of `DtlsCertificate`.
 
 	Native only. mbedTLS is what hxcpp already links for `sys.ssl`, and nothing
-	on the other targets offers certificate generation, Node has no DTLS at
+	on the other targets offers certificate generation: Node has no DTLS at
 	all, and a browser makes its own certificates inside `RTCPeerConnection`
 	where nothing can reach them.
 **/

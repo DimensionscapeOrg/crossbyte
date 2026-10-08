@@ -11,13 +11,12 @@ import haxe.io.Bytes;
 /**
 	What a closed connection leaves behind in the runtime: nothing.
 
-	The socket registry kept every connection that wrote in a busy pass. Its
-	writable queue is a `Stack`, and `Stack.clear()` only reset the count, so
-	the backing array went on holding each socket queued there; the select
-	buffer kept the last sockets polled once the set emptied. Through
-	`sys.net.Socket.custom` each held the whole `Socket`, its buffers and its
-	`userData`: 150 closed connections carrying 64 KB each all survived five
-	collections on the jvm.
+	The socket registry's writable queue is a `Stack`, whose `clear()` must
+	let go of what it held rather than only reset the count, and the select
+	buffer must not keep the last sockets polled once the set empties.
+	Through `sys.net.Socket.custom` either would hold the whole `Socket`,
+	its buffers and its `userData`: 150 closed connections carrying 64 KB
+	each would survive five collections on the jvm.
 **/
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.net.Socket)

@@ -36,7 +36,7 @@ class JWK {
 	private function new() {}
 
 	/**
-	 * The algorithm this key can verify, `RS256` or `ES256`, or `null`
+	 * The algorithm this key can verify (`RS256` or `ES256`), or `null`
 	 * if it cannot verify either.
 	 *
 	 * Derived from the key material rather than the `alg` member, which

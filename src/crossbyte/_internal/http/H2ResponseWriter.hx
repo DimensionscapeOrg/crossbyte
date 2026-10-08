@@ -19,7 +19,7 @@ import haxe.io.Bytes;
  * Three differences from HTTP/1.1 are forced by the protocol rather than
  * chosen. Field names go out lowercase (§8.2.1 makes any other casing
  * malformed). Connection-management fields are dropped, because HTTP/2 does
- * its own framing and §8.2.2 makes them malformed too, notably `Connection`,
+ * its own framing and §8.2.2 makes them malformed too: notably `Connection`,
  * which the HTTP/1.1 writer always emits. And the stream has to be closed
  * explicitly, since a stream left open is a request the client still believes
  * is in flight.
@@ -154,14 +154,14 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		}
 
 		// content-length is legal on a response and worth sending when known,
-		// but it is not what frames the body, END_STREAM is.
+		// but it is not what frames the body: END_STREAM is.
 		var chunked:Bool = head.chunked == true;
 		if (head.contentLength != null && !chunked) {
 			fields.push(new HpackHeader("content-length", Std.string(head.contentLength)));
 		}
 
 		// A head with no body ends the stream now. Anything else waits for
-		// endResponse, because the body may arrive in slices, a chunked one
+		// endResponse, because the body may arrive in slices: a chunked one
 		// of a length nobody knows yet.
 		var empty:Bool = !chunked && (head.contentLength == null || head.contentLength == 0);
 		__connection.sendHeaders(__streamId, head.statusCode, fields, empty);
@@ -172,11 +172,11 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	 * Whether a field carries a credential, and so goes out never-indexed
 	 * (RFC 7541 6.2.3) instead of into the dynamic table.
 	 *
-	 * Every response field was indexed, a session token in `set-cookie`
-	 * included. 7.1.3: an entry's presence can be inferred from the
-	 * compressed sizes of later responses an attacker can influence, and a
-	 * table filling with one-off tokens evicts the entries worth keeping. The
-	 * client already sends its `authorization` and `cookie` this way.
+	 * Indexed, a session token in `set-cookie` would be exposed. RFC 7541
+	 * 7.1.3: an entry's presence can be inferred from the compressed sizes of
+	 * later responses an attacker can influence, and a table filling with
+	 * one-off tokens evicts the entries worth keeping. The client already
+	 * sends its `authorization` and `cookie` this way.
 	 */
 	private static inline function __isCredential(name:String):Bool {
 		return switch (name) {
@@ -199,9 +199,9 @@ class H2ResponseWriter implements HTTPResponseWriter {
 
 	/**
 	 * Kept as it is, not copied, when it is the whole of `data`: a body the
-	 * server made for this response, or one it keeps and never changes. Every
-	 * response body was copied here, and again into its DATA frame, a
-	 * quarter of what a 64 KB response cost under HTTP/2.
+	 * server made for this response, or one it keeps and never changes.
+	 * Copying it here and again into its DATA frame would be a quarter of
+	 * what a 64 KB response costs under HTTP/2.
 	 */
 	public function writeBodyTaken(data:ByteArray, offset:Int, length:Int):Void {
 		if (__ended || length <= 0) {

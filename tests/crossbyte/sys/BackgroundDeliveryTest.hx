@@ -11,9 +11,9 @@ import utest.Assert;
 
 	The work runs on the one thread there is, inside `submit` or `run`, and
 	what it reports is delivered in a later turn, as it is from a thread
-	elsewhere. It was delivered inside the call, so a listener added after
-	`submit`: the obvious order, and the only one `submit`'s return value
-	allows, never heard anything.
+	elsewhere. Delivered inside the call, it would never reach a listener
+	added after `submit` (the obvious order, and the only one `submit`'s
+	return value allows).
 
 	Empty wherever there are threads; `TaskPoolTest` and `WorkerTest` cover
 	those.
@@ -92,8 +92,8 @@ class BackgroundDeliveryTest extends utest.Test {
 
 	/**
 		Cancelled between `run()` and the later turn its messages come in, a
-		worker delivers none of them and ends cancelled, not RUNNING for
-		good, as it did when the work had already sent its COMPLETE.
+		worker delivers none of them and ends cancelled, not RUNNING for good,
+		even when the work has already sent its COMPLETE.
 	**/
 	@:timeout(5000)
 	public function testACancelledWorkerDeliversNothingMore(async:utest.Async):Void {

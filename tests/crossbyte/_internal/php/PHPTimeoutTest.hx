@@ -8,11 +8,11 @@ import utest.Assert;
 /**
  * The deadline on a FastCGI exchange.
  *
- * There was none. No socket timeout either, so a backend that accepted a
- * connection and then said nothing held the runtime thread for as long as it
- * cared to, and a CrossByte runtime serves all of its connections from one
- * tick, so that stopped the whole server for every client at once, with no
- * recovery short of killing the process.
+ * Without one, and with no socket timeout either, a backend that accepted a
+ * connection and then said nothing would hold the runtime thread for as long
+ * as it cared to, and a CrossByte runtime serves all of its connections from
+ * one tick, so that would stop the whole server for every client at once,
+ * with no recovery short of killing the process.
  *
  * The peer here is a plain listening socket that accepts and never replies,
  * which is precisely that failure and needs no PHP to reproduce. It is the
@@ -32,11 +32,10 @@ class PHPTimeoutTest extends utest.Test {
 		var future = bridge.execute(request());
 		var returned:Float = haxe.Timer.stamp() - started;
 
-		// The assertion the blocking bridge could not have: execute() comes
-		// back at once. It used to sit here for the whole exchange, inside the
-		// tick, so a slow page stopped every other connection this runtime was
-		// serving. Half a second is the deadline; returning well inside it is
-		// the proof that the wait moved off the call.
+		// execute() comes back at once rather than sitting here for the whole
+		// exchange, inside the tick, where a slow page would stop every other
+		// connection this runtime was serving. Half a second is the deadline;
+		// returning well inside it is the proof that the wait is off the call.
 		Assert.isTrue(returned < 0.25, "execute() blocked for " + returned + "s instead of returning a Future");
 
 		var runtime = CrossByte.current();
@@ -67,10 +66,9 @@ class PHPTimeoutTest extends utest.Test {
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", listener.host().port), "", ["index.php"], 0.5);
 		var future = bridge.execute(request());
 
-		// The point of the whole change, stated as a measurement: the runtime
-		// goes on dispatching ticks while an exchange is outstanding. Under the
-		// blocking bridge this loop could not have run at all, execute() had
-		// not returned yet.
+		// Stated as a measurement: the runtime goes on dispatching ticks while
+		// an exchange is outstanding. Were execute() blocking, this loop could
+		// not run at all: execute() would not have returned yet.
 		var runtime = CrossByte.current();
 		var ticks:Int = 0;
 		var onTick = function(_):Void {
@@ -113,9 +111,8 @@ class PHPTimeoutTest extends utest.Test {
 	}
 
 	public function testTheDeadlineCanBeTurnedOff():Void {
-		// Zero means no deadline, which is what this class did unconditionally
-		// before. Kept configurable rather than mandatory: a deployment with a
-		// legitimately slow report should be able to say so.
+		// Zero means no deadline. Kept configurable rather than mandatory: a
+		// deployment with a legitimately slow report should be able to say so.
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", 1), "", ["index.php"], 0);
 		Assert.equals(0.0, bridge.timeoutSeconds);
 	}

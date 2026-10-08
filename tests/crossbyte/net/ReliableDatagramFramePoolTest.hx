@@ -18,7 +18,7 @@ import utest.Assert;
 	frame's own buffer, and the frame given back once acknowledged, for the
 	next message. A steady flow allocates nothing for its messages, as
 	`AllocationBudgetTest`'s reliable UDP line holds it to; these cases are
-	what reusing them must never cost, a message sent with another's
+	what reusing them must never cost: a message sent with another's
 	bytes, a caller's buffer changed under a resend, a pool that keeps
 	growing, or one that keeps too little for a game's ticks.
 **/
@@ -98,9 +98,9 @@ class ReliableDatagramFramePoolTest extends utest.Test {
 	/**
 		A game server's tick sends to every session and has it all back
 		before the next: what is in use goes from a thousand to none, every
-		tick. Every frame is kept for the next tick, a pool that kept only
-		what was in use as each came back kept half, and made the other half
-		again every tick, and once the ticks shrink, what was kept for them
+		tick. Every frame is kept for the next tick (a pool keeping only what
+		was in use as each came back would keep half, and make the other half
+		again every tick), and once the ticks shrink, what was kept for them
 		goes, within two periods; once nothing comes back for a while, all but
 		the spare goes.
 	**/

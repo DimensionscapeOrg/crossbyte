@@ -11,15 +11,16 @@ import utest.Async;
 
 /**
 	What a `ServerWebSocket` does with a session between accepting it and
-	opening it, while its peer is still upgrading, when the server stops,
+	opening it (while its peer is still upgrading) when the server stops,
 	drains or closes, and what it counts.
 
-	The deadline on those sessions is reaped from the tick `stopAccepting()`,
-	`drain()` and `close()` take away, and none of them touched the sessions
-	themselves: a peer caught mid-upgrade was held with no deadline at all,
-	and one that finished afterwards opened on a server that had stopped.
+	The deadline on those sessions is reaped from the tick that
+	`stopAccepting()`, `drain()` and `close()` take away, so each of them
+	has to deal with the sessions itself: otherwise a peer caught
+	mid-upgrade would be held with no deadline at all, and one that
+	finished afterwards would open on a server that had stopped.
 	`pendingHandshakeCount()` and `handshakeFailures`, inherited from
-	`ServerSocket`, never moved.
+	`ServerSocket`, count these sessions too.
 
 	Peers are `WirePeer`s, so each says exactly as much as a case needs, on
 	every target, Node included.
@@ -89,8 +90,8 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 
 	/**
 		A close code that may not be sent is refused before anything is
-		stopped. Each session's `closeWith` refused it, and the refusals were
-		swallowed, so no session heard why it was dropped.
+		stopped, rather than refused by each session's `closeWith` and
+		swallowed, with no session hearing why it was dropped.
 	**/
 	public function testDrainWithACodeThatMayNotBeSentIsRefused():Void {
 		var server = new ServerWebSocket();
@@ -153,9 +154,8 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 	}
 
 	/**
-		`pendingHandshakeCount()` is the sessions still upgrading, what
-		`maxPendingHandshakes` bounds, where it read 0 on every
-		`ServerWebSocket`.
+		`pendingHandshakeCount()` counts the sessions still upgrading, which is
+		what `maxPendingHandshakes` bounds.
 	**/
 	@:timeout(15000)
 	public function testPendingHandshakeCountIsTheSessionsStillUpgrading(async:Async):Void {
@@ -179,9 +179,9 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 
 	/**
 		`listen()` wants a bound server, as its doc says, and throws for one
-		that is not. Natively it never asked: Windows refused the listen
-		with an error of the socket's own, and Linux and macOS bound the
-		socket to a port of their choosing and listened there.
+		that is not, rather than leaving it to the system: Windows refuses the
+		listen with an error of the socket's own, and Linux and macOS bind the
+		socket to a port of their choosing and listen there.
 	**/
 	public function testListenWantsABoundServer():Void {
 		var server = new ServerWebSocket();
@@ -193,9 +193,9 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 	/**
 		A port already in use is reported, wherever it is found: natively
 		`bind()` throws, and on Node, which claims the port only once
-		`listen()` starts, as `ioError` and then `close`, as a
-		`DatagramSocket` reports it there. Node dispatched `close` alone. On
-		eval too, whose bind in use once ended the interpreter.
+		`listen()` starts, as `ioError` and then `close` (not `close` alone),
+		as a `DatagramSocket` reports it there. On eval too, where a bind to a
+		port in use must not end the interpreter.
 	**/
 	@:timeout(15000)
 	public function testAPortInUseIsReported(async:Async):Void {
@@ -242,9 +242,9 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 		The system refusing twice to hand over a waiting connection, as it
 		does when the process is out of descriptors, then relenting: counted,
 		reported once, and the server carries on, as `ServerSocket` does with
-		its own accepts. hxcpp raises it as a bare string, which was
-		swallowed without a trace; the jvm as an I/O error, which closed the
-		server.
+		its own accepts, whether the refusal comes as hxcpp's bare string
+		(which must not be swallowed without a trace) or the jvm's I/O error
+		(which must not close the server).
 	**/
 	@:timeout(15000)
 	public function testAnAcceptThatFailsIsReportedOnceAndTheServerCarriesOn(async:Async):Void {
@@ -314,8 +314,8 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 #if !nodejs
 /**
 	A server whose system refuses the first `refusals` connections it is
-	asked for, the way one out of descriptors does, hxcpp raises that as a
-	bare string, the jvm as an I/O error, then hands them over.
+	asked for, the way one out of descriptors does (hxcpp raises that as a
+	bare string, the jvm as an I/O error), then hands them over.
 **/
 private class RefusingServerWebSocket extends ServerWebSocket {
 	private var __refusals:Int;

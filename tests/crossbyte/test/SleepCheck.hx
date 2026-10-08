@@ -9,12 +9,12 @@ import sys.io.File;
  * Fails the build where anything but the sleep behind `System.sleep` calls
  * `Sys.sleep`.
  *
- * On the interpreter under Windows `Sys.sleep` can sleep for 49 days, see
- * `crossbyte.sys.System.sleep` for why, and it hung the interpreter suite
- * in a different test each run until every sleep in the library, the tests
- * and the samples went through `System.sleep`. A call left behind, or one
- * added later, is one more place to hang, so it is a compile error rather
- * than something a review has to catch.
+ * On the interpreter under Windows `Sys.sleep` can sleep for 49 days (see
+ * `crossbyte.sys.System.sleep` for why), hanging whichever test calls it.
+ * Every sleep in the library, the tests and the samples goes through
+ * `System.sleep`, and a call left behind, or one added later, would be one
+ * more place to hang, so it is a compile error rather than something a
+ * review has to catch.
  *
  * Run from `SuiteCoverage.check()`, so every suite build asks.
  */

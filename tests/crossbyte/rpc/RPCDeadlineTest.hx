@@ -10,12 +10,12 @@ import utest.Assert;
 	Deadlines, for the calls a session makes and for the answers its handler
 	owes.
 
-	A call with no deadline waited for as long as its connection lasted: a
-	peer that took a call and never answered it, a handler whose future
-	never completes, held the caller's response for good, and held one of
-	its own session's 256 places for calls waiting. A call can now be given a
-	deadline, one at a time or as a session's default, and a session can give
-	its handler one.
+	A call with no deadline waits for as long as its connection lasts: a
+	peer that takes a call and never answers it (a handler whose future
+	never completes) holds the caller's response for good, and holds one of
+	its own session's 256 places for calls waiting. A call can be given a
+	deadline, one at a time or as a session's default, and a session can
+	give its handler one.
 
 	Runs on the runtime's own clock, pumped.
 **/

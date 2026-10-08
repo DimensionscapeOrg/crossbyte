@@ -17,9 +17,9 @@ import utest.Async;
 
 /**
 	"Copy it to keep it" on a WebSocket: a message is right while it is
-	handled, every way of sending it back sends what arrived, queued behind
-	a peer that is not reading, too, and what a listener keeps is what each
-	mode says it is.
+	handled, every way of sending it back sends what arrived (queued behind
+	a peer that is not reading, too), and what a listener keeps is what
+	each mode says it is.
 **/
 @:access(crossbyte.net.WebSocket)
 @:access(crossbyte.net.Socket)
@@ -360,8 +360,8 @@ class WebSocketArrivalTest extends utest.Test {
 	}
 
 	/**
-		A message arriving inside a listener's call, the listener pumps, and
-		the session reads the next, gets an event and a buffer of its own,
+		A message arriving inside a listener's call (the listener pumps, and
+		the session reads the next) gets an event and a buffer of its own,
 		and the message being handled is left as it was.
 	**/
 	@:timeout(30000)

@@ -19,7 +19,7 @@ import haxe.ds.IntMap;
 
 	The peer that was the DTLS client opens channels on even stream numbers and
 	the other on odd ones. That is the entire collision-avoidance scheme, and it
-	is worth the paragraph because the alternative, negotiating a number,
+	is worth the paragraph because the alternative (negotiating a number)
 	would cost a round trip before every channel and could still race. Two peers
 	opening a channel at the same instant here simply cannot pick the same
 	stream.
@@ -67,11 +67,11 @@ class DataChannelSet {
 		itself; 0 or less for no limit but the stream numbers of its parity,
 		32,768. Read as each OPEN arrives.
 
-		Each channel the peer opens is one this end keeps, the channel, its
-		label and protocol, a stream's sequence numbers each way, for as long
+		Each channel the peer opens is one this end keeps (the channel, its
+		label and protocol, a stream's sequence numbers each way) for as long
 		as the peer leaves it open, and opening one costs the peer an OPEN of
-		a few bytes: 3,000 opened with 1 KB labels held 3,000 channels and 3 MB
-		of labels, and nothing but the stream numbers stopped it. An OPEN past
+		a few bytes: without a bound, 3,000 opened with 1 KB labels would hold
+		3,000 channels and 3 MB of labels. An OPEN past
 		this is refused the way RFC 8832 has a channel refused: no ACK, and the
 		stream reset, which closes the peer's end of it. Counted in
 		`refusedChannels`.
@@ -90,7 +90,7 @@ class DataChannelSet {
 
 		The W3C API takes names to 65,535 bytes, and a peer that names each of
 		its channels so makes this end keep 64 KB twice over per channel. An
-		application names a channel for what it carries, "chat", "state",
+		application names a channel for what it carries ("chat", "state"),
 		so a kilobyte is far past any real name.
 	**/
 	public var maxLabelSize:Int = DEFAULT_MAX_LABEL_SIZE;
@@ -136,7 +136,7 @@ class DataChannelSet {
 
 		// The peer closed channels: it reset the streams it sends on, or asked
 		// this end to reset its own. Each channel closes the ordinary way, which
-		// resets the stream this end sends on in answer, RFC 8831 section
+		// resets the stream this end sends on in answer: RFC 8831 section
 		// 6.7's other half. A channel this end had already closed is not here,
 		// and its stream was reset when it closed.
 		transfer.onStreamsReset = function(streams:Null<Array<Int>>):Void {
@@ -177,8 +177,9 @@ class DataChannelSet {
 		}
 
 		// The W3C API's TypeError: the OPEN carries each length in sixteen
-		// bits, and a longer one was written cut to its low bits, so the peer
-		// read a label short and the protocol out of the label's bytes.
+		// bits, and a longer one would be written cut to its low bits, so the
+		// peer would read a label short and the protocol out of the label's
+		// bytes.
 		if (__utf8Size(label) > MAX_NAME_SIZE || __utf8Size(protocol) > MAX_NAME_SIZE) {
 			throw new ArgumentError("A channel's label and protocol may be at most " + MAX_NAME_SIZE + " bytes each in UTF-8.");
 		}
@@ -217,9 +218,9 @@ class DataChannelSet {
 		Closes every channel, because the association under them has ended.
 
 		Each is closed the ordinary way, so each reports `onClose` and one still
-		waiting for its acknowledgement settles `opened`. Without this a channel
-		outlived its association: `open` stayed true after the peer had aborted,
-		and the first sign of it was a `send` that threw.
+		waiting for its acknowledgement settles `opened`, rather than
+		outliving its association with `open` still true after the peer has
+		aborted.
 	**/
 	public function closeAll():Void {
 		// No stream is reset on the way: the association is ending, which
@@ -279,10 +280,10 @@ class DataChannelSet {
 			return;
 		}
 
-		// With the peer's own terms. A browser's `{ordered: false,
-		// maxRetransmits: 0}` channel was answered as a reliable one: the type
-		// and the reliability parameter were parsed and dropped, so what this
-		// end sent back on it was retransmitted like everything else.
+		// With the peer's own terms: a browser's `{ordered: false,
+		// maxRetransmits: 0}` channel is answered as such, not as a reliable
+		// one, so what this end sends back on it is not retransmitted like
+		// everything else.
 		var channel = @:privateAccess new DataChannel(__transfer, streamId, message.label, !message.unordered, message.protocol,
 			message.maxRetransmits, message.maxPacketLifeTime);
 		__channels.set(streamId, channel);
@@ -303,19 +304,19 @@ class DataChannelSet {
 
 		**Deliberately never reuses a closed channel's number.** Closing resets
 		the stream at both ends, and a number is free again only once both
-		resets are done, the peer's answering one can be late, or never come
-		from a peer without stream reconfiguration, so a reused number could
+		resets are done (the peer's answering one can be late, or never come
+		from a peer without stream reconfiguration), so a reused number could
 		be one the far side still believes taken, and its own collision guard
 		would refuse the OPEN in silence. Freeing the map entry is about not
 		retaining a dead channel, and about letting the *peer* reopen on a
 		number of its parity, whose sequence numbers the reset has started
 		again; it is not licence to hand this side's numbers out twice.
 
-		What changed is the end of the range. The counter used to run past 65535
-		and keep going, while `SctpDataChunk` writes the number into a sixteen-
-		bit field, so after 32768 channels it wrapped on the wire and collided
-		with a live stream, silently, while this map went on keying by the
-		untruncated value. Running out now says so.
+		The range ends at what `SctpDataChunk` can write: it puts the number in
+		a sixteen-bit field, so a counter running past 65535 would wrap on the
+		wire after 32768 channels and collide with a live stream, silently,
+		while this map went on keying by the untruncated value. Running out
+		says so.
 	**/
 	@:noCompletion private function __freeStreamId():Int {
 		while (__nextId <= MAX_STREAM_ID && __channels.exists(__nextId)) {

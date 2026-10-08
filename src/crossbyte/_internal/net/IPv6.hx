@@ -6,8 +6,8 @@ package crossbyte._internal.net;
  * The platform decides how it renders an address, and the platforms
  * disagree: hxcpp gives the compressed `::1`, the jvm gives the expanded
  * `0:0:0:0:0:0:0:1`. Both are the same address and neither is wrong, but
- * an application that compares what it bound against what it is told back,
- * the obvious thing to do, works on one target and fails on the other.
+ * an application that compares what it bound against what it is told back
+ * (the obvious thing to do) works on one target and fails on the other.
  *
  * `compress` produces the RFC 5952 canonical form: lowercase, no leading
  * zeros in a group, and the longest run of two or more zero groups
@@ -18,8 +18,8 @@ class IPv6 {
 	 * Returns `address` in canonical IPv6 form, or unchanged if it is not
 	 * a plain IPv6 literal.
 	 *
-	 * Anything that is not an eight-group literal, a hostname, an IPv4
-	 * address, an already-compressed form, a zone-suffixed address, is
+	 * Anything that is not an eight-group literal (a hostname, an IPv4
+	 * address, an already-compressed form, a zone-suffixed address) is
 	 * returned as-is rather than guessed at. Being conservative matters
 	 * more than being clever: mangling a hostname would be far worse than
 	 * leaving one platform's spelling alone.
@@ -50,8 +50,8 @@ class IPv6 {
 		}
 
 		// Four runs of digits between three dots, checked by hand: a pattern
-		// literal is compiled afresh on every call, and this is now asked on
-		// the way to every connect and every datagram sent somewhere new.
+		// literal is compiled afresh on every call, and this is asked on the
+		// way to every connect and every datagram sent somewhere new.
 		var dots:Int = 0;
 		var digits:Int = 0;
 		for (i in 0...address.length) {

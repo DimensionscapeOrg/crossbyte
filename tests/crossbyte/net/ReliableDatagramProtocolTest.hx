@@ -46,8 +46,8 @@ class ReliableDatagramProtocolTest extends utest.Test {
 	/**
 		SipHash-2-4, which join cookies, rebind challenges and rebind proofs
 		are made with, against the reference's 64 vectors: the key 00..0f,
-		and the messages 00..n-1 for n from 0 to 63, every length of last
-		block, and one, two and seven whole blocks. Printed by libsodium's
+		and the messages 00..n-1 for n from 0 to 63 (every length of last
+		block, and one, two and seven whole blocks). Printed by libsodium's
 		`crypto_shorthash_siphash24` reference, vendored in this repository.
 	**/
 	public function testSipHashGivesTheReferencesAnswers():Void {
@@ -97,9 +97,9 @@ class ReliableDatagramProtocolTest extends utest.Test {
 	];
 
 	/**
-		A 1.0 CONNECT puts its extension, features, a cookie, padding,
-		ahead of what `connect` passed, and the decoder hands the two over
-		apart: the payload is exactly what was passed.
+		A 1.0 CONNECT puts its extension (features, a cookie, padding) ahead
+		of what `connect` passed, and the decoder hands the two over apart: the
+		payload is exactly what was passed.
 	**/
 	public function testAnExtendedConnectCarriesItsExtensionApartFromThePayload():Void {
 		var encoded = ReliableDatagramProtocol.encodeConnect(77, bytesOf("token"), ReliableDatagramProtocol.FEATURE_REBIND);
@@ -194,7 +194,7 @@ class ReliableDatagramProtocolTest extends utest.Test {
 		Assert.equals(77, graceful.sequence);
 		Assert.equals(5, graceful.ack);
 
-		// What every FIN used to be, and what a peer from before 1.0 sends.
+		// The abortive FIN, which is what a peer from before 1.0 sends.
 		var abortive = ReliableDatagramProtocol.decode(ReliableDatagramProtocol.encode(FIN, 0));
 		Require.notNull(abortive);
 		Assert.isFalse(abortive.graceful);
@@ -253,8 +253,8 @@ class ReliableDatagramProtocolTest extends utest.Test {
 	}
 
 	public function testALargePayloadStillEncodesWhole():Void {
-		// encode keeps its old promise: any size, which encodeInto leaves to
-		// the socket to have checked.
+		// encode takes any size, which encodeInto leaves to the socket to have
+		// checked.
 		var big = new ByteArray();
 		for (i in 0...5000) {
 			big.writeByte(i & 0xFF);

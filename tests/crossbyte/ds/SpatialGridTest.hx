@@ -66,7 +66,7 @@ class SpatialGridTest extends utest.Test {
 	}
 
 	public function testEveryQueryStaysExactAsThingsMove():Void {
-		// Small cells, ordinary ones, and one cell holding everything, the
+		// Small cells, ordinary ones, and one cell holding everything: the
 		// last is a single list that every move relinks and every unlink
 		// edits, head, middle and tail.
 		for (cellSize in [7.0, 100.0, 1000.0]) {

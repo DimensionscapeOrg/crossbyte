@@ -101,13 +101,13 @@ class SnowflakeIdTest extends utest.Test {
 	/**
 		A clock that reads fractions of a millisecond does not repeat.
 
-		Each reading that differed from the last only in its fraction was
-		taken for a new millisecond, so the sequence went back to zero, and
-		the fraction was then dropped, which gave the identifier minted a
-		moment before. `Sys.time() * 1000` is such a clock, and so is the
-		default one natively: microseconds on Linux and macOS, and on Windows
-		seconds plus a thousandth per millisecond, which lands either side of
-		the whole millisecond once multiplied back.
+		A reading that differs from the last only in its fraction is not taken
+		for a new millisecond: the sequence would go back to zero, and with the
+		fraction then dropped, give the identifier minted a moment before.
+		`Sys.time() * 1000` is such a clock, and so is the default one natively:
+		microseconds on Linux and macOS, and on Windows seconds plus a thousandth
+		per millisecond, which lands either side of the whole millisecond once
+		multiplied back.
 	**/
 	public function testAFractionalClockDoesNotRepeat():Void {
 		var base:Float = SnowflakeId.DEFAULT_EPOCH_MS + 1000.0;
@@ -148,11 +148,11 @@ class SnowflakeIdTest extends utest.Test {
 	/**
 		The default clock, read as fast as it will go, never repeats.
 
-		One generator's identifiers rise strictly, a new millisecond, or a
-		later sequence in the same one, so anything at or below the one
-		before is a repeat or worse. The repeats came at millisecond
-		boundaries: natively on Linux and macOS at every reading, on Windows
-		at about one boundary in a hundred, so half a second's worth.
+		One generator's identifiers rise strictly (a new millisecond, or a
+		later sequence in the same one), so anything at or below the one before
+		is a repeat or worse. Repeats would come at millisecond boundaries:
+		natively on Linux and macOS at every reading, on Windows at about one
+		boundary in a hundred, so half a second's worth.
 	**/
 	public function testTheDefaultClockNeverRepeats():Void {
 		var ids = new SnowflakeId(4);
@@ -201,7 +201,7 @@ class SnowflakeIdTest extends utest.Test {
 
 	/**
 		When an identifier says it was minted, for any time its forty one bits
-		can hold. It was read through an Int, and threw Overflow for every
+		can hold. Read through an Int, it would throw Overflow for every
 		identifier minted more than 24.8 days after the epoch.
 	**/
 	public function testTimestampOfReadsBackWhenAnIdWasMinted():Void {

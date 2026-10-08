@@ -20,10 +20,8 @@ import utest.Assert;
 	`itemClass`, on every driver's statement: each row an instance of the
 	class, made with no arguments and each field set from the column of its
 	name, as AIR's `SQLStatement.itemClass` makes them, and a column the
-	class has no field for an error, as AIR has it.
-
-	It was declared on all four statements and read by none: every row was an
-	anonymous object, whatever it said.
+	class has no field for an error, as AIR has it. Every driver reads it,
+	so a row is not an anonymous object whatever it says.
 **/
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 @:access(crossbyte.db.mysql.MySQLConnection)
@@ -119,7 +117,7 @@ class ItemClassTest extends utest.Test {
 		// A column the class has no field for is an error, as in AIR.
 		Assert.raises(() -> run("SELECT id, name, extra FROM accounts"), SQLError);
 
-		// Without one, rows are what they always were.
+		// Without one, rows are anonymous objects.
 		setClass(null);
 		result = run("SELECT id, name FROM accounts");
 		Require.notNull(result);

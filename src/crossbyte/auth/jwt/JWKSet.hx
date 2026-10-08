@@ -27,8 +27,8 @@ final class IgnoredKey {
 /**
  * A JWK Set (RFC 7517), parsed into verification keys.
  *
- * This is what turns a provider's published keys, Google, Microsoft,
- * Auth0, an in-house issuer, into the PEM maps `JWTSigner.RS256` and
+ * This is what turns a provider's published keys (Google, Microsoft,
+ * Auth0, an in-house issuer) into the PEM maps `JWTSigner.RS256` and
  * `JWTSigner.ES256` take:
  *
  * ```haxe
@@ -64,16 +64,16 @@ class JWKSet {
 	/**
 	 * Parses a JWK Set document.
 	 *
-	 * Throws only when the document itself is unusable, not JSON, nested
+	 * Throws only when the document itself is unusable: not JSON, nested
 	 * more than 32 levels deep, or without a `keys` array. Individual keys
 	 * that cannot be used are collected into `ignored` instead, so one
 	 * unrecognised entry cannot cost a service the rest of its keys.
 	 *
 	 * The nesting, objects and arrays together, is measured before the
 	 * document is parsed; a real set nests three or four levels. Parsing
-	 * takes a frame per level, and natively a document nested 6,000 deep,
-	 * 12 KB from a provider's endpoint, or from whoever can answer for it,
-	 * overflowed the stack and ended the process.
+	 * takes a frame per level, and natively a document nested 6,000 deep
+	 * (12 KB from a provider's endpoint, or from whoever can answer for it)
+	 * would overflow the stack and end the process.
 	 *
 	 * @param json The JWK Set document.
 	 * @throws String If the document is not a JWK Set.
@@ -184,7 +184,7 @@ class JWKSet {
 	}
 
 	/**
-	 * The keys that verify `algorithm`, `RS256` or `ES256`, as the
+	 * The keys that verify `algorithm` (`RS256` or `ES256`) as the
 	 * verify-only `JWTSigner` that `JWT.make` and `JWT.updateKeys` take.
 	 *
 	 * Keys are named by `kid`. A set whose only usable key has none is given

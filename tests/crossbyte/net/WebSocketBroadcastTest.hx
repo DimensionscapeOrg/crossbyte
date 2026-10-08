@@ -167,8 +167,8 @@ class WebSocketBroadcastTest extends utest.Test {
 
 	#if !(eval || hl || neko)
 	/**
-		A client sends a prepared message framed and masked as its own, the
-		compressed form where it agreed to compression, and the server
+		A client sends a prepared message framed and masked as its own (the
+		compressed form where it agreed to compression), and the server
 		reads it as any other. Not where a client cannot be made: the
 		interpreter, hl and neko have no secure random for its key.
 	**/
@@ -217,7 +217,7 @@ class WebSocketBroadcastTest extends utest.Test {
 
 	#if !(eval || nodejs)
 	/**
-		A session that closes as it is sent to, past its output limit, and
+		A session that closes as it is sent to (past its output limit), and
 		one its close listener closes, later in the list: each is passed over,
 		and every other session is sent the message once. A server's list of
 		sessions loses a closing one, its last taking its place, so walking

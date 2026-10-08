@@ -20,8 +20,8 @@ import utest.Assert;
 	types (`SQLValue`), their rows made with fixed slots, and read by column
 	with `executeEach`.
 
-	Parameters were `String`s, written into the statement's text as quoted
-	literals, and the text prepared again on every run.
+	Parameters are bound, not written into the statement's text as quoted
+	literals with the text prepared again on every run.
 **/
 class SQLiteBindingTest extends utest.Test {
 	public function testParametersAreBoundAsTheirTypes():Void {
@@ -40,12 +40,12 @@ class SQLiteBindingTest extends utest.Test {
 		Assert.equals("integer,real,integer,integer,integer,text,blob,null", [for (row in rows) Std.string(row.t)].join(","));
 		Assert.equals(7, rows[0].x);
 		Assert.equals(2.5, rows[1].x);
-		// A whole Float is an integer, as its literal text was.
+		// A whole Float is an integer.
 		Assert.equals(3, rows[2].x);
 		Assert.equals(1, rows[3].x);
 		Assert.equals("78187493520", Int64.toStr(rows[4].x));
 		Assert.equals("it's", rows[5].x);
-		// A blob, byte for byte: it was written as the text Bytes.toString gives.
+		// A blob, byte for byte, not the text Bytes.toString gives.
 		var back:Bytes = Bytes.ofData(rows[6].x);
 		Assert.equals("00ff7f8001", back.toHex());
 		Assert.isNull(rows[7].x);
@@ -59,7 +59,7 @@ class SQLiteBindingTest extends utest.Test {
 		insert.parameters.x = "a" + String.fromCharCode(0) + "b";
 		insert.execute();
 		var rows:Array<Dynamic> = __rows(connection, "SELECT typeof(x) AS t, length(CAST(x AS BLOB)) AS n FROM v");
-		// As before: a blob of its bytes, since a quoted literal cannot hold it.
+		// A blob of its bytes, since a quoted literal cannot hold it.
 		Assert.equals("blob", rows[0].t);
 		Assert.equals(3, rows[0].n);
 		connection.close();
@@ -84,7 +84,7 @@ class SQLiteBindingTest extends utest.Test {
 		Assert.equals(2, second.a);
 		Assert.isNull(second.b);
 
-		// Placeholders that are not :name stay unbound, NULL, as before.
+		// Placeholders that are not :name stay unbound, NULL.
 		select.text = "SELECT ? AS q, @a AS at, $a AS dollar, :a AS colon";
 		select.execute();
 		var third:Dynamic = select.getResult().data[0];
@@ -103,7 +103,7 @@ class SQLiteBindingTest extends utest.Test {
 	public function testAWideRowReadsBackEveryColumn():Void {
 		// Rows are made with fixed slots, found by a binary search over the
 		// signed hash of their names past the fifth: ordered by the unsigned
-		// hash, every column whose hash has its top bit set read as absent.
+		// hash, every column whose hash has its top bit set would read as absent.
 		var connection:SQLiteConnection = __open();
 		var names:Array<String> = [for (i in 0...40) "column_" + i + "_" + StringTools.hex((i * 40503) & 0xFFFF)];
 		var sql:String = "SELECT " + [for (i in 0...names.length) i + " AS " + names[i]].join(", ");
@@ -186,9 +186,9 @@ class SQLiteBindingTest extends utest.Test {
 
 	/**
 		A connection let go without `close()` is closed when the collector
-		takes it, as the glue's finalizer closed it before statements were
-		kept: with one kept, SQLite refused that close, and the database
-		stayed open, its file locked, for the life of the process.
+		takes it, statements kept or not: with one kept, SQLite refuses a plain
+		close, and the database would stay open, its file locked, for the life
+		of the process.
 	**/
 	public function testAConnectionLetGoUnclosedIsClosedWhenCollected():Void {
 		var directory:String = haxe.io.Path.join([Sys.getCwd(), "export"]);
@@ -371,7 +371,7 @@ class SQLiteBindingTest extends utest.Test {
 	}
 
 	public function testTheConnectionsOwnReadsAnswerClasses():Void {
-		// They were anonymous structures, read by name.
+		// Not anonymous structures read by name.
 		var connection:SQLiteConnection = __open();
 		connection.request("CREATE TABLE p (id INTEGER PRIMARY KEY)");
 		connection.request("CREATE TABLE c (id INTEGER, p INTEGER REFERENCES p(id))");

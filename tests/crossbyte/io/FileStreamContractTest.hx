@@ -17,10 +17,10 @@ import utest.Assert;
 	threads, on one opened with `openAsync()` once the file has loaded.
 **/
 class FileStreamContractTest extends utest.Test {
-	// --- reads ---------------------------------------------------------------
+	// --- reads --------------------------------------------------------------
 
 	public function testReadByteIsSigned():Void {
-		// It returned the unsigned byte: 0xFF read as 255.
+		// Signed: 0xFF reads as -1, not as the unsigned 255.
 		__eachReader([0xFF, 0x80, 0x7F], function(stream:FileStream, how:String) {
 			Assert.equals(-1, stream.readByte(), how);
 			Assert.equals(-128, stream.readByte(), how);
@@ -32,7 +32,7 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testReadBooleanIsTrueForAnyNonzeroByte():Void {
-		// It compared with 1, so a 2 read as false.
+		// Any byte but 0 is true, not only 1: a 2 reads as true.
 		__eachReader([0x02, 0x00, 0x01, 0xFF], function(stream:FileStream, how:String) {
 			Assert.isTrue(stream.readBoolean(), how);
 			Assert.isFalse(stream.readBoolean(), how);
@@ -42,8 +42,8 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testAShortReadThrowsEOFErrorAndConsumesNothing():Void {
-		// haxe.io.Eof escaped every read but readBytes: the documented error
-		// was never thrown, and the bytes a short read took stayed taken.
+		// The documented error, not haxe.io.Eof, and the bytes a short read
+		// would have taken stay where they are.
 		__eachReader([1, 2, 3], function(stream:FileStream, how:String) {
 			for (read in [
 				() -> (stream.readInt() : Dynamic),
@@ -84,12 +84,12 @@ class FileStreamContractTest extends utest.Test {
 		});
 	}
 
-	// --- writes --------------------------------------------------------------
+	// --- writes -------------------------------------------------------------
 
 	public function testWriteShortKeepsTheLowSixteenBits():Void {
-		// writeInt16 threw Overflow for anything outside -32768..32767, so
-		// 0xFFFF, which writeShort is for as much as -1 is, could not be
-		// written.
+		// Not writeInt16, which throws Overflow for anything outside
+		// -32768..32767, so 0xFFFF (which writeShort is for as much as -1 is)
+		// could not be written.
 		__eachWriter(function(stream:FileStream) {
 			stream.endian = BIG_ENDIAN;
 			stream.writeShort(0xFFFF);
@@ -102,9 +102,9 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testWriteBytesClampsItsRange():Void {
-		// As documented, and as ByteArray clamps. Out-of-range arguments went
-		// to the file layer as they were, which read past the source, on the
-		// interpreter that ended the process.
+		// As documented, and as ByteArray clamps. Out-of-range arguments passed
+		// to the file layer as they were would read past the source, which on
+		// the interpreter ends the process.
 		var source = ByteArray.fromBytes(Bytes.ofString("hello"));
 
 		__eachWriter(function(stream:FileStream) {
@@ -117,11 +117,11 @@ class FileStreamContractTest extends utest.Test {
 		});
 	}
 
-	// --- endian --------------------------------------------------------------
+	// --- endian -------------------------------------------------------------
 
 	public function testTheDefaultsAreByteArrays():Void {
-		// endian was read from a file handle, so asking before open() was a
-		// null access, and open() then made it big-endian whatever it was.
+		// endian is the stream's own, not a file handle's, so asking before
+		// open() is no null access, and open() leaves it as it was.
 		var stream = new FileStream();
 		Assert.equals(ByteArray.defaultEndian, stream.endian);
 		Assert.equals(ByteArray.defaultObjectEncoding, stream.objectEncoding);
@@ -200,7 +200,7 @@ class FileStreamContractTest extends utest.Test {
 		}
 	}
 
-	// --- objects -------------------------------------------------------------
+	// --- objects ------------------------------------------------------------
 
 	public function testObjectsAreFramedByAThirtyTwoBitLength():Void {
 		// A 32-bit length in the stream's byte order, then the UTF-8: the
@@ -218,8 +218,8 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testObjectsLargerThanSixtyFourKilobytesRoundTrip():Void {
-		// They were framed by writeUTF's 16-bit length, so past 65,535 bytes
-		// writeObject threw RangeError.
+		// Framed by writeUTF's 16-bit length, past 65,535 bytes writeObject
+		// would throw RangeError.
 		var big:Array<String> = [for (i in 0...20000) "item" + i];
 
 		for (encoding in [crossbyte.net.ObjectEncoding.HXSF, crossbyte.net.ObjectEncoding.JSON]) {
@@ -254,8 +254,8 @@ class FileStreamContractTest extends utest.Test {
 
 	public function testAnObjectNestedTooDeepIsRefused():Void {
 		// Bounded as ByteArray's readObject is: a file's object can be anyone's,
-		// and natively one nested a few thousand deep overflowed the stack
-		// reading it and ended the process.
+		// and natively one nested a few thousand deep would overflow the stack
+		// reading it and end the process.
 		for (encoding in [crossbyte.net.ObjectEncoding.HXSF, crossbyte.net.ObjectEncoding.JSON]) {
 			var open:String = encoding == crossbyte.net.ObjectEncoding.JSON ? "[" : "a";
 			var close:String = encoding == crossbyte.net.ObjectEncoding.JSON ? "]" : "h";
@@ -293,8 +293,7 @@ class FileStreamContractTest extends utest.Test {
 
 	public function testAnObjectOfMoreValuesThanAllowedIsRefused():Void {
 		// As ByteArray's readObject: `ByteArray.maxObjectValues` holds for a
-		// file's object in either text encoding. A JSON one was bounded in
-		// nesting only, and read whatever count of values it held.
+		// file's object in either text encoding, not only a bound on nesting.
 		var saved:Int = ByteArray.maxObjectValues;
 		ByteArray.maxObjectValues = 8;
 		try {
@@ -330,8 +329,8 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testObjectEncodingAppliesToAnAsynchronousStream():Void {
-		// The asynchronous stream read and wrote through its buffer, which was
-		// a plain ByteArray: HXSF and little-endian, whatever the stream said.
+		// The asynchronous stream reads and writes in the stream's encoding and
+		// endian, not as a plain ByteArray's: HXSF and little-endian.
 		#if target.threaded
 		var file = File.createTempFile();
 		var writer = new FileStream();
@@ -356,9 +355,9 @@ class FileStreamContractTest extends utest.Test {
 
 	#if format
 	public function testAnAmfObjectReadsOnlyItself():Void {
-		// Every byte to the end of the file was read into a buffer and one
-		// object parsed from it, so the next object, and anything after,
-		// was gone: the second readObject threw haxe.io.Eof.
+		// Not every byte to the end of the file read into a buffer with one
+		// object parsed from it, which would lose the next object and anything
+		// after: the second readObject would throw haxe.io.Eof.
 		for (encoding in [crossbyte.net.ObjectEncoding.AMF0, crossbyte.net.ObjectEncoding.AMF3]) {
 			for (async in __writeModes()) {
 				var how = (async ? "openAsync" : "open") + ", encoding " + encoding;
@@ -385,13 +384,13 @@ class FileStreamContractTest extends utest.Test {
 	}
 	#end
 
-	// --- position ------------------------------------------------------------
+	// --- position -----------------------------------------------------------
 
 	public function testAnAsynchronousWriteGoesWhereThePositionIs():Void {
-		// The writer took bytes from one buffer that only grew, from wherever
-		// it had got to, so after "AAAAAAAA" was written, moving the position
-		// back and writing "BB" changed nothing: AAAAAAAA, where the same
-		// calls on a synchronous stream make BBAAAAAA.
+		// The writer writes at the position, not from wherever it had got to in
+		// one buffer that only grows: after "AAAAAAAA" is written, moving the
+		// position back and writing "BB" makes BBAAAAAA, as the same calls on a
+		// synchronous stream do.
 		#if target.threaded
 		var file = File.createTempFile();
 		var stream = new FileStream();
@@ -415,7 +414,7 @@ class FileStreamContractTest extends utest.Test {
 		#end
 	}
 
-	// --- helpers -------------------------------------------------------------
+	// --- helpers ------------------------------------------------------------
 
 	/** Sync and async, for reading: a Node stream reads asynchronously too, inline. **/
 	private static function __modes():Array<Bool> {

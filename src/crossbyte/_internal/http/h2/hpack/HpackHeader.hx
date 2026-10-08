@@ -34,8 +34,8 @@ class HpackHeader {
 
 	/**
 		Set once the field has been found well-formed (RFC 9113 8.2.1) on a
-		request: a field the decoder hands out again from its table, a
-		browser's same User-Agent and Accept on every request, is not read
+		request: a field the decoder hands out again from its table (a
+		browser's same User-Agent and Accept on every request) is not read
 		character by character again. The check reads only the two strings,
 		so its answer holds for the field's life.
 	**/
@@ -56,9 +56,7 @@ class HpackHeader {
 
 	/**
 		`Bytes.ofString(text).length`, without making the bytes when `text` is
-		ASCII, as nearly every header is, since then it is the length. Both
-		strings of every header were encoded only to be measured: on Node, a
-		seventh of an HTTP/2 server's time.
+		ASCII, as nearly every header is, since then it is the length.
 	**/
 	static function __octets(text:String):Int {
 		for (i in 0...text.length) {

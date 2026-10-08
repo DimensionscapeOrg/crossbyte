@@ -352,10 +352,10 @@ class Report {
 	}
 
 	/**
-		Set by a process a parent started: once its standard output is gone,
-		the parent died, it ends, rather than run on with nobody reading.
-		Clients orphaned by a crashed server otherwise lived for good, their
-		reports failing before they reached their own deadline.
+		Set by a process a parent started: once its standard output is gone
+		(the parent died) it ends, rather than run on with nobody reading:
+		clients orphaned by a crashed server would otherwise live for good,
+		their reports failing before they reached their own deadline.
 	**/
 	public static var exitWhenOrphaned:Bool = false;
 

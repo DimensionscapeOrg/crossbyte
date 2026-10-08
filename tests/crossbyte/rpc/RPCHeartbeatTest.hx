@@ -13,15 +13,13 @@ import utest.Assert;
 	The session heartbeat: a ping when nothing else has gone, and the
 	connection closed when nothing has come back.
 
-	It closed healthy connections and never noticed dead ones. Pings were
-	one-way and nobody answered them, so a client heartbeating a server that
-	only answers calls heard nothing between calls and gave up on it. A peer
-	that had never sent a byte was compared against a deadline that moved
-	with the clock, and was never timed out. It ran only with commands, so a
-	server, a handler and nothing else, never dropped a client that had
-	vanished. Started before the connection was up it never started, started
-	twice it ran twice and outlived `stop()`, and a timeout reported the
-	close twice.
+	Pings are answered, so a client heartbeating a server that only answers
+	calls hears from it between calls. A peer that has never sent a byte is
+	measured against a fixed deadline, and timed out. A server (a handler
+	and nothing else) heartbeats too, and drops a client that has vanished.
+	Started before the connection is up it starts when the connection does;
+	started twice it runs once, and stops at `stop()`; and a timeout reports
+	the close once.
 
 	Runs on the runtime's own clock, pumped: a heartbeat's seconds pass as
 	fast as the pump is called.
@@ -62,7 +60,7 @@ class RPCHeartbeatTest extends utest.Test {
 	}
 
 	public function testAPeerThatNeverSendsIsTimedOut():Void {
-		// A server session, a handler and nothing else, whose client never
+		// A server session (a handler and nothing else) whose client never
 		// says a word, and answers no ping: nothing is reading its end.
 		var link = LinkedConnection.pair();
 		var server = new RPCSession(link.server, null, new QuietHandler());
@@ -196,9 +194,9 @@ class RPCHeartbeatTest extends utest.Test {
 	}
 
 	public function testAPingIsNotACallAndNoLimitOnCallsRefusesIt():Void {
-		// A handler refusing every call, a rate limit run out, still
-		// answers the heartbeat: refusing it closed the connection, and
-		// counting it spent the client's allowance on pings.
+		// A handler refusing every call (a rate limit run out) still answers
+		// the heartbeat: refusing it would close the connection, and counting
+		// it would spend the client's allowance on pings.
 		var link = LinkedConnection.pair();
 		var handler = new RefusingHandler();
 		var server = new RPCSession(link.server, null, handler);
@@ -213,9 +211,9 @@ class RPCHeartbeatTest extends utest.Test {
 
 	public function testAPingGoesOnEveryBeatWhateverTheClockRoundsTo():Void {
 		// The beat after a ping is an interval after it, which the clock's
-		// rounding put a hair short, 2.8 - 1.8 is 0.99999999999999978, and
-		// the ping waited for the next beat: a ping every other beat, and a
-		// peer's pongs heard twice the interval apart.
+		// rounding can put a hair short (2.8 - 1.8 is 0.99999999999999978), and
+		// the ping must not wait for the next beat: that would be a ping every
+		// other beat, and a peer's pongs heard twice the interval apart.
 		var link = LinkedConnection.pair();
 		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
 		client.heartbeatInterval = 1000;
@@ -237,7 +235,7 @@ class RPCHeartbeatTest extends utest.Test {
 	}
 
 	public function testAHeartbeatLogsNothing():Void {
-		// It logged five lines at INFO for every session on every beat.
+		// Nothing is logged at INFO for every session on every beat.
 		var logged:Array<String> = [];
 		var sink = Logger.sink;
 		Logger.sink = line -> logged.push(line);

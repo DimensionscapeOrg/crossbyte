@@ -6,7 +6,8 @@ import utest.Assert;
 @:access(crossbyte.ipc.SharedObject)
 class SharedObjectTest extends utest.Test {
 	// Every name a case opened, so teardown can take the regions away: on
-	// Linux and macOS they outlived the run, one more set each time.
+	// Linux and macOS they would otherwise outlive the run, one more set each
+	// time.
 	private static var __names:Array<String> = [];
 
 	public function teardown():Void {
@@ -162,13 +163,11 @@ class SharedObjectTest extends utest.Test {
 	/**
 		A sync made while another handle flushes reads one whole payload.
 
-		The length and the bytes were read under two acquisitions of the
-		region's lock, so a flush between them left a copy cut to the old
-		length, or one shorter than the new. The first failed to parse and
-		`sync()` swapped in `{}`, which a participant then flushing wrote
-		over the shared state, and the second threw. Over three seconds of
-		a second handle flushing payloads of varying length, 176,256 syncs
-		read `{}` and 2,923 threw.
+		The length and the bytes are read under one acquisition of the region's
+		lock. Read under two, a flush between them would leave a copy cut to the
+		old length, or one shorter than the new: the first would fail to parse
+		and leave `sync()` to swap in `{}` (which a participant then flushing
+		would write over the shared state), and the second would throw.
 	**/
 	@:timeout(30000)
 	public function testASyncWhileAnotherHandleFlushesReadsAWholePayload():Void {
@@ -231,7 +230,7 @@ class SharedObjectTest extends utest.Test {
 		A payload that cannot be read is not replaced with `{}`.
 
 		`sync()` throws and leaves `data` as it was: swapping in an empty
-		object meant the next flush wrote it over whatever the region held.
+		object would mean the next flush wrote it over whatever the region held.
 	**/
 	public function testASyncOfAPayloadThatCannotBeReadKeepsTheData():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -267,8 +266,8 @@ class SharedObjectTest extends utest.Test {
 		A payload whose values nest more than 256 deep cannot be read: `sync()`
 		throws and keeps `data`, and the constructor starts from `defaultData`.
 		Reading takes a frame or two per level, and natively a payload nested
-		6,000 deep, 12 KB, which any process writing the region could leave,
-		overflowed the stack and ended the process reading it, past any
+		6,000 deep (12 KB, which any process writing the region could leave)
+		would overflow the stack and end the process reading it, past any
 		catch.
 	**/
 	public function testAPayloadNestedPastTheBoundCannotBeRead():Void {
@@ -311,8 +310,8 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		The constructor starts from `defaultData` when the region's payload
-		cannot be read, as it does when the region is empty. It started from
-		`{}` and dropped what it was given.
+		cannot be read, as it does when the region is empty, rather than from
+		`{}`, which would drop what it was given.
 	**/
 	public function testTheConstructorStartsFromDefaultDataWhenThePayloadCannotBeRead():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -343,11 +342,12 @@ class SharedObjectTest extends utest.Test {
 	/**
 		A region found before its creator sized it is sized here, not refused.
 
-		On Linux and macOS the creator made a region and sized it in two
-		steps, before taking the lock, and a handle opening the name between
-		them found it empty: "Failed to create or open shared object". Linux
-		keeps a region as a file under /dev/shm, so the moment is made here
-		by hand and held still, an empty file under the region's name.
+		On Linux and macOS a creator makes a region and sizes it in two steps,
+		before taking the lock, and a handle opening the name between them finds
+		it empty; it must size it rather than fail with "Failed to create or
+		open shared object". Linux keeps a region as a file under /dev/shm, so
+		the moment is made here by hand and held still: an empty file under the
+		region's name.
 	**/
 	public function testARegionFoundBeforeItWasSizedIsSizedNotRefused():Void {
 		var name:String = uniqueName("unsized");
@@ -377,12 +377,12 @@ class SharedObjectTest extends utest.Test {
 	/**
 		A handle asking for more than a region has is told what it has.
 
-		Whichever participant took the lock first set up the header with its
-		own `maxSize`, so one that opened a smaller region first was told it
-		could flush that much, and wrote past the end of the mapping. Made
-		here by hand: the region's file at the size a creator asking for 64
-		bytes gives it, with no header yet, that creator between sizing the
-		region and taking the lock.
+		Whichever participant takes the lock first sets up the header with its
+		own `maxSize`, so one that opened a smaller region first must not be
+		told it can flush that much, which would write past the end of the
+		mapping. Made here by hand: the region's file at the size a creator
+		asking for 64 bytes gives it, with no header yet (that creator between
+		sizing the region and taking the lock).
 	**/
 	public function testAHandleAskingForMoreThanARegionHasIsToldWhatItHas():Void {
 		var name:String = uniqueName("small");
@@ -410,9 +410,8 @@ class SharedObjectTest extends utest.Test {
 	}
 
 	/**
-		Where Linux keeps a region: the name the native side gives it, the
-		name made safe, then its hash (`nameHash`), as a file under
-		/dev/shm.
+		Where Linux keeps a region: the name the native side gives it (the
+		name made safe, then its hash, `nameHash`) as a file under /dev/shm.
 	**/
 	private static function posixRegionPath(name:String):String {
 		var bytes = haxe.io.Bytes.ofString(name);
@@ -462,9 +461,9 @@ class SharedObjectTest extends utest.Test {
 	#if (cpp && !windows)
 	/**
 		On Linux and macOS a region, and macOS's lock file, are their user's
-		alone. Both were made 0666 less the umask, 0644 as a rule, so any
-		local user could read what any SharedObject held, and open the lock
-		file and hold every participant's lock.
+		alone. Made 0666 less the umask (0644 as a rule), any local user could
+		read what any SharedObject held, and open the lock file and hold every
+		participant's lock.
 	**/
 	public function testARegionAndItsLockFileAreTheirUsersAlone():Void {
 		var name:String = uniqueName("private");
@@ -485,7 +484,7 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		A link put where macOS's lock file goes is not followed, and the
-		region is not opened. It was followed: another user's link made this
+		region is not opened: followed, another user's link would make this
 		process make, or lock, a file wherever it pointed.
 	**/
 	public function testALinkWhereTheLockFileGoesIsNotFollowed():Void {
@@ -512,8 +511,8 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		A FIFO put where macOS's lock file goes does not hold the open. Opened
-		for reading, a FIFO waits for a writer: the constructor waited for
-		good, outside the collector's reach, and stopped this process's
+		for reading, a FIFO waits for a writer, and the constructor would wait
+		for good, outside the collector's reach, stopping this process's
 		collections with it. The open runs on a thread of its own here, and a
 		write to the FIFO lets it go if it waits.
 	**/
@@ -555,13 +554,13 @@ class SharedObjectTest extends utest.Test {
 	}
 
 	/**
-		A lock file deleted while the region is open, as macOS's cleaner
-		deletes what in /tmp nobody has touched for three days, does not
-		part the participants. The next one to open made a new file and
-		locked that, while those open went on locking the old: two
+		A lock file deleted while the region is open (as macOS's cleaner
+		deletes what in /tmp nobody has touched for three days) does not part
+		the participants. Otherwise the next one to open would make a new file
+		and lock that, while those open went on locking the old: two
 		participants each holding the region's lock. A handle open before
-		now finds the file gone and takes the new one, and waits for whoever
-		holds it.
+		finds the file gone and takes the new one, and waits for whoever holds
+		it.
 	**/
 	@:timeout(60000)
 	public function testALockFileDeletedWhileOpenStillLocksEveryone():Void {
@@ -598,8 +597,8 @@ class SharedObjectTest extends utest.Test {
 	/**
 		Opening a region brings its lock file's times up to date, as each
 		hour of use does, so a cleaner of old files in /tmp does not find
-		one in use old. A lock took nothing of the file, and left its times
-		as they were made.
+		one in use old. A lock alone takes nothing of the file, and leaves its
+		times as they were made.
 	**/
 	public function testOpeningBringsTheLockFilesTimesUpToDate():Void {
 		if (!__usesLockFile()) {
@@ -627,10 +626,10 @@ class SharedObjectTest extends utest.Test {
 	/**
 		A region or lock file another user made under the name is not used,
 		and the error says why. One made first by another user, writable by
-		all, was opened and shared with them where the system allowed it,
-		macOS does, so they read what this process wrote and wrote what it
-		read. Needs root, to make a file another user owns; elsewhere it
-		passes having checked nothing.
+		all, would otherwise be opened and shared with them where the system
+		allows it (macOS does), so they would read what this process wrote and
+		write what it read. Needs root, to make a file another user owns;
+		elsewhere it passes having checked nothing.
 	**/
 	public function testWhatAnotherUserMadeUnderTheNameIsNotUsed():Void {
 		var name:String = uniqueName("theirs");
@@ -658,7 +657,7 @@ class SharedObjectTest extends utest.Test {
 			}
 			__removeQuietly(path);
 			// Linux refuses some of these itself (fs.protected_regular), with
-			// an error that said nothing of why; macOS has no such guard.
+			// an error that says nothing of why; macOS has no such guard.
 			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), path + ", another user's, was not refused as theirs: " + raised);
 			Assert.isTrue(Std.string(raised).indexOf("not this user's own") >= 0, Std.string(raised));
 		}
@@ -718,14 +717,14 @@ class SharedObjectTest extends utest.Test {
 	/**
 		A participant stopped while holding the region's lock fails the others'
 		waits at `lockTimeout`, with an `IOError` saying so, and they read,
-		write and clear nothing. The wait had no deadline, so a holder
-		suspended in a debugger or sent SIGSTOP stopped every participant for
-		as long as it stayed stopped.
+		write and clear nothing. A wait with no deadline would let a holder
+		suspended in a debugger or sent SIGSTOP stop every participant for as
+		long as it stayed stopped.
 
 		The holder is a second handle whose lock is taken on a thread of its
-		own, on Windows a mutex belongs to the thread that takes it, so
-		another thread waits on it as another process would, and kept until
-		the case lets it go.
+		own (on Windows a mutex belongs to the thread that takes it, so another
+		thread waits on it as another process would) and kept until the case
+		lets it go.
 	**/
 	@:timeout(60000)
 	public function testALockHeldPastTheDeadlineFailsTheWait():Void {

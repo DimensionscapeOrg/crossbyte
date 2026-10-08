@@ -9,11 +9,11 @@ import utest.Assert;
 
 	JavaScript has no 32-bit integer arithmetic: `+` and `++` on a Haxe `Int`
 	there go on past 2^31 - 1, where every other target wraps. Ordering
-	survived, because the comparison runs through `^`, which truncates. But a
-	sequence counted up past 2^31 no longer equalled the same sequence read
-	off the wire, which is wrapped, and a reliable session reaching it
-	stopped delivering. Sessions start at a random point in the 32-bit range,
-	so some started close to it.
+	would survive without the wrap, because the comparison runs through `^`,
+	which truncates. But a sequence counted up past 2^31 would no longer
+	equal the same sequence read off the wire (which is wrapped), and a
+	reliable session reaching it would stop delivering. Sessions start at a
+	random point in the 32-bit range, so some start close to it.
 
 	Registered in the portable suite, so it runs on Node and in a browser,
 	which is where it matters.
@@ -97,9 +97,9 @@ class Seq32Test extends utest.Test {
 	}
 
 	/**
-		A sequence prints as the unsigned number it is. It went through a
-		Float, which the jvm writes in scientific notation past 10^7:
-		"4.294967295E9", and in hex as 7FFFFFFF, saturated.
+		A sequence prints as the unsigned number it is, not through a Float,
+		which the jvm writes in scientific notation past 10^7 ("4.294967295E9"),
+		and in hex as 7FFFFFFF, saturated.
 	**/
 	public function testPrintsAsAnUnsignedNumberOnEveryTarget():Void {
 		var top:Seq32 = 0xFFFFFFFF;
@@ -116,8 +116,8 @@ class Seq32Test extends utest.Test {
 
 	/**
 		`%` is unsigned, and its answer is exact. A remainder of 2^31 or more
-		went through Std.int, which saturates on the jvm: 0xC0000000 %
-		0xFFFFFFF0 came out 2147483647.
+		does not go through Std.int, which saturates on the jvm: 0xC0000000 %
+		0xFFFFFFF0 would come out 2147483647.
 	**/
 	public function testModuloIsUnsignedOnEveryTarget():Void {
 		var top:Seq32 = 0xFFFFFFFF;
@@ -134,7 +134,7 @@ class Seq32Test extends utest.Test {
 		Assert.equals(0x0FFFFFFF, ((top % sixteen) : Int));
 	}
 
-	/** The example in the type's documentation, which did not compile. **/
+	/** The example in the type's documentation, as written there. **/
 	public function testTheDocumentedExample():Void {
 		var a:Seq32 = 0xFFFFFFFF;
 		var b:Seq32 = 0;

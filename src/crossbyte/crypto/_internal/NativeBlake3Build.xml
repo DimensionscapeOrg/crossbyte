@@ -2,19 +2,15 @@
 	<!--
 		BLAKE3 with its vectorised backends compiled in.
 
-		These were all switched off, BLAKE3_NO_SSE2, NO_SSE41, NO_AVX2,
-		NO_AVX512, with only the portable path built, on the grounds of
-		keeping the native backend deterministic across hxcpp releases. The
-		determinism that argument protects is real but it is about the build,
-		not the output: BLAKE3 is specified so that every implementation
-		produces identical bytes, and blake3_dispatch.c picks between them at
-		runtime by CPUID. The known-answer vectors in CryptoTest are what hold
-		that claim honest, and they pass unchanged with these enabled.
+		The output does not depend on which runs: BLAKE3 is specified so that
+		every implementation produces identical bytes, and blake3_dispatch.c
+		picks between them at runtime by CPUID. The known-answer vectors in
+		CryptoTest hold that claim honest.
 
-		What it cost was the entire reason to vendor BLAKE3 instead of using
-		the BLAKE2b libsodium already provides: speed. Measured on this
-		machine, 16 MB hashed eight times, portable against AVX2,
-		977 MB/s to 3,459 MB/s, and blake3_simd_degree from 1 to 8.
+		Speed is the reason to vendor BLAKE3 instead of using the BLAKE2b
+		libsodium already provides: 16 MB hashed eight times runs at about
+		977 MB/s portable and 3,459 MB/s with AVX2 (blake3_simd_degree 1
+		against 8).
 
 		Unlike libsodium's vectorised sources, BLAKE3's do not guard their own
 		bodies: blake3_avx2.c includes <immintrin.h> and uses the intrinsics
@@ -33,9 +29,9 @@
 
 	<!--
 		x86 vector backends cannot be compiled for ARM at all. One flag rather
-		than a condition repeated on every element below, so the two halves,
-		the defines that tell dispatch what exists, and the files that provide
-		it, cannot drift apart.
+		than a condition repeated on every element below, so the two halves
+		(the defines that tell dispatch what exists, and the files that provide
+		it) cannot drift apart.
 	-->
 	<set name="CROSSBYTE_BLAKE3_NO_SIMD" value="1" if="HXCPP_ARM64"/>
 	<set name="CROSSBYTE_BLAKE3_NO_SIMD" value="1" if="HXCPP_ARMV7"/>
@@ -60,11 +56,9 @@
 	<!--
 		One group per backend, because hxcpp takes compiler flags per group and
 		not per file: a <compilerflag> nested inside a <file> is dropped without
-		a word, since the parser only reads <depend> there. These flags used to
-		sit on the files, so none of them ever reached a compiler. MSVC did not
-		notice, it accepts any intrinsic whatever /arch says, but GCC
-		refuses to inline _mm_shuffle_epi8 into a translation unit built
-		without -msse4.1, and every Linux build stopped at blake3_sse41.c.
+		a word, since the parser only reads <depend> there. MSVC accepts any
+		intrinsic whatever /arch says, but GCC refuses to inline
+		_mm_shuffle_epi8 into a translation unit built without -msse4.1.
 
 		isMsvc rather than windows, so a MinGW build gets the GNU spelling.
 		SSE2 is baseline on x86-64 and MSVC has no switch for SSE4.1, so only

@@ -21,11 +21,11 @@ import utest.Assert;
 /**
 	Extended JSON, the text a command can be written in.
 
-	The old driver decoded command text with PHP's json_decode, so a command
-	had no way to carry a date, an ObjectId or a 64-bit integer: a session's
-	`expiresAt` went to the server as a string, and the TTL index meant to
-	delete it never did. These hold the type wrappers to what they stand for,
-	and placeholders to being bound as values.
+	A command's text carries a date, an ObjectId or a 64-bit integer as
+	itself, as Extended JSON's type wrappers say: a session's `expiresAt`
+	must reach the server as a date, not a string, or the TTL index meant to
+	delete it never does. These hold the type wrappers to what they stand
+	for, and placeholders to being bound as values.
 **/
 class ExtendedJsonTest extends utest.Test {
 	public function testTypeWrappersBecomeTheirValues():Void {
@@ -69,7 +69,7 @@ class ExtendedJsonTest extends utest.Test {
 
 		// And they reach BSON as their types: a date, not text; and a
 		// {"$numberLong": "5"} an int64, on hxcpp too, where a small Int64 in
-		// a Dynamic would have been an Int.
+		// a Dynamic would be an Int.
 		var bytes:Bytes = Bson.encode(new BsonDocument().add("d", parsed.get("date")));
 		Assert.equals(0x09, bytes.get(4));
 		Assert.equals(0x12, Bson.encode(new BsonDocument().add("n", ExtendedJson.parse('{"$$numberLong": "5"}'))).get(4));
@@ -115,8 +115,8 @@ class ExtendedJsonTest extends utest.Test {
 	}
 
 	public function testAParameterThatExistsIsBoundEvenWhenNull():Void {
-		// Asked for a value alone, a null meant no such parameter, so one set
-		// to null was refused. Given whether it exists, it is bound as null.
+		// Asked for a value alone, a null would mean no such parameter, and one
+		// set to null would be refused. Given whether it exists, it is bound as null.
 		var values:Map<String, Dynamic> = ["email" => null];
 		var parsed:BsonDocument = ExtendedJson.parse('{"email": :email}', name -> values.get(name), name -> values.exists(name));
 		Assert.same(["email"], parsed.keys());

@@ -5,12 +5,12 @@ import crossbyte.events.TickEvent;
 import utest.Assert;
 
 /**
- * Focused, target-agnostic coverage for the stop-flag plumbing introduced by
- * the thread-safety hardening in `CrossByte`. The flag is now routed through the
- * `__getRunning()`/`__setRunning()` accessors (an atomic 0/1 int on cpp, a plain
- * Bool elsewhere). These assertions verify the single-threaded, host-driven
- * observable behavior is unchanged: a running runtime ticks, `exit()` is observed
- * by the next `pump()`, and the EXIT lifecycle still fires exactly once.
+ * Target-agnostic coverage for the runtime's stop flag, which is read and
+ * written through the `__getRunning()`/`__setRunning()` accessors (an atomic
+ * 0/1 int on cpp, a plain Bool elsewhere). These assertions check the
+ * single-threaded, host-driven behaviour: a running runtime ticks, `exit()`
+ * is observed by the next `pump()`, and the EXIT lifecycle fires exactly
+ * once.
  *
  * Runs under every target (including eval/interp): host-driven runtimes are
  * driven synchronously via `pump()`, so there are no threads, sleeps, or
@@ -60,11 +60,11 @@ class CrossByteRunningFlagTest extends utest.Test {
 		runtime.exit();
 		Assert.equals(before, CrossByte.current());
 
-		// pump() used to publish `this` as the thread's current runtime before it
-		// read the stop flag, so this call left a runtime that can never tick
-		// again as CrossByte.current() for the rest of the thread's life. Nothing
-		// threw; everything that later resolved the current runtime just stopped
-		// being serviced.
+		// pump() on an exited runtime must not make it the thread's current
+		// runtime. It reads the stop flag before it publishes `this`; otherwise a
+		// runtime that can never tick again would stay CrossByte.current() for the
+		// rest of the thread's life, and everything that later resolved the
+		// current runtime would silently stop being serviced, with nothing thrown.
 		runtime.pump(1 / 60, 0);
 		Assert.equals(before, CrossByte.current());
 		Assert.notEquals(runtime, CrossByte.current());
@@ -81,8 +81,8 @@ class CrossByteRunningFlagTest extends utest.Test {
 		stopped.exit();
 		stopped.pump(1 / 60, 0);
 
-		// The observable damage the claim did: work handed to the current runtime
-		// after that pump was never serviced again, silently.
+		// Work handed to the current runtime after pumping an exited one is still
+		// serviced.
 		var runtime = CrossByte.current();
 		var ticks = 0;
 		var listener = function(_:TickEvent):Void {

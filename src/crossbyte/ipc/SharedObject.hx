@@ -45,19 +45,18 @@ private typedef SharedObjectHandle = Dynamic;
  * macOS each name also has a small lock file, `/tmp/cbso_<hash>.lock`, which
  * stays with the region and goes with it: macOS cannot lock a region itself.
  * `remove(name)` is the only thing that takes it away; `close()` leaves it,
- * since other participants may hold it. If something else does, macOS
- * deletes files in /tmp that nobody has touched for three days, the next
+ * since other participants may hold it. If something else does (macOS
+ * deletes files in /tmp that nobody has touched for three days), the next
  * participant to lock the region makes it again, and those already open
  * move to the new one before they read or write; a lock file in use has its
  * times brought up to date hourly, so that it is not found old.
  *
  * On Linux and macOS a region belongs to the user that made it: it is made
  * readable and writable by that user alone, as is its lock file, and one
- * under the name that another user made, or a link, a FIFO or a
- * directory where a lock file should be, is not used: the constructor,
- * or whichever call finds it, throws an `IOError` saying so. A region used
- * to be made readable by every local user, and one another user had made
- * first, writable by all, was shared with them. On Windows a region is in
+ * under the name that another user made (or a link, a FIFO or a
+ * directory where a lock file should be) is not used: the constructor,
+ * or whichever call finds it, throws an `IOError` saying so. On Windows a
+ * region is in
  * the session's own namespace, and opened with the user's own default
  * permissions.
  */
@@ -82,8 +81,8 @@ class SharedObject {
 		The longest, in milliseconds, that `flush()`, `sync()` and `clear()`
 		wait for the region's lock. A participant holds it while it copies a
 		payload in or out, which takes it microseconds; one stopped while
-		holding it, suspended in a debugger, sent SIGSTOP, starved on a
-		loaded machine, stopped every other participant with it, for as
+		holding it (suspended in a debugger, sent SIGSTOP, starved on a
+		loaded machine) would stop every other participant with it, for as
 		long as it stayed stopped. Past the deadline the call throws an
 		`IOError` saying the region's lock was not released in time, and
 		reads, writes and clears nothing.
@@ -108,9 +107,9 @@ class SharedObject {
 	 * @param name        Shared memory region name.
 	 * @param maxSize     Optional maximum payload size for new regions (bytes).
 	 * @param defaultData Optional object to start from when the region holds nothing,
-	 *                    or nothing this build can read, another program's bytes,
+	 *                    or nothing this build can read (another program's bytes,
 	 *                    a value naming a class this build does not have, or values
-	 *                    nested more than 256 deep. A flush then replaces what the
+	 *                    nested more than 256 deep). A flush then replaces what the
 	 *                    region held.
 	 * @throws IOError When another participant holds the region's lock for longer
 	 *         than `lockTimeout`'s default, five seconds; or, on Linux and macOS,
@@ -151,11 +150,9 @@ class SharedObject {
 		}
 
 		// What the region holds when it can be read, and `defaultData`
-		// otherwise. A payload that failed to parse, or that a flush
-		// elsewhere had cut short, when the length and the bytes were two
-		// reads, gave `{}` here, and `defaultData` was dropped. A lock not
-		// released in time is not a region holding nothing: starting from
-		// `defaultData` then, a flush would write it over what is there.
+		// otherwise. A lock not released in time is not a region holding
+		// nothing: starting from `defaultData` then, a flush would write it
+		// over what is there.
 		var payload:Null<String>;
 		try {
 			payload = __readPayload();
@@ -211,15 +208,15 @@ class SharedObject {
 	 * Reloads payload from shared memory into `data`: one whole payload, as one
 	 * flush left it. An empty region gives `{}`.
 	 *
-	 * @throws IOError When the region holds a payload this build cannot read,
-	 *         another program's bytes, a value naming a class this build does not
-	 *         have, or values nested more than 256 deep, or when another
+	 * @throws IOError When the region holds a payload this build cannot read
+	 *         (another program's bytes, a value naming a class this build does
+	 *         not have, or values nested more than 256 deep), or when another
 	 *         participant holds the region's lock for longer than `lockTimeout`.
 	 *         `data` keeps what it had: an empty object in its place would be
 	 *         written over the region by the next flush. The nesting is bounded
 	 *         because reading takes a frame per level: natively a payload nested
 	 *         6,000 deep, which any process writing the region could leave,
-	 *         overflowed the stack and ended the process reading it.
+	 *         would overflow the stack and end the process reading it.
 	 */
 	public function sync():Void {
 		__requireConnected();
@@ -279,8 +276,8 @@ class SharedObject {
 
 		@param name The name the region was opened under.
 		@return Whether a region was removed: `false` when none had the name.
-		@throws IOError When a region has the name and cannot be removed,
-		        another user's, say, or, on macOS, when another participant
+		@throws IOError When a region has the name and cannot be removed
+		        (another user's, say), or, on macOS, when another participant
 		        holds its lock for longer than `lockTimeout`'s default, five
 		        seconds.
 	**/
@@ -307,9 +304,8 @@ class SharedObject {
 
 	/**
 	 * The region's payload, its length and bytes read under one acquisition of
-	 * the lock. They were two reads, and a flush between them left a copy cut
-	 * to the old length, which failed to parse, or short of the new, which
-	 * threw.
+	 * the lock, so a flush between them cannot leave a copy cut to the old
+	 * length, which fails to parse, or short of the new, which throws.
 	 *
 	 * Read into a buffer the size the last read found; one that is too small
 	 * learns the length from the same call, and the third try takes the whole
@@ -374,7 +370,7 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __notOwnedError(name:String):IOError {
-		return new IOError('SharedObject "$name": what is under the name, the region, or on macOS its lock file, '
+		return new IOError('SharedObject "$name": what is under the name (the region, or on macOS its lock file) '
 			+ 'is not this user\'s own, and is not used: another user made it, or it is not a file of ours');
 	}
 

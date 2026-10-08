@@ -10,11 +10,12 @@ import sys.thread.Lock;
 /**
 	Handing a runtime work from another thread with `post`.
 
-	A runtime waiting out the rest of its frame used to sleep through it: a
-	callback posted mid-frame waited for the next tick, 38ms on average at the
-	default rate and up to a whole frame. These run a child runtime's real
-	loop at two ticks a second and post just after a tick, the worst moment,
-	where the old wait was half a second.
+	A runtime waiting out the rest of its frame wakes for posted work rather
+	than sleeping through it, where a callback posted mid-frame would wait for
+	the next tick: 38ms on average at the default rate, and up to a whole
+	frame. These run a child runtime's real loop at two ticks a second and
+	post just after a tick, the worst moment, where that wait would be half a
+	second.
 **/
 @:access(crossbyte.core.CrossByte)
 class PostTest extends utest.Test {
@@ -32,8 +33,8 @@ class PostTest extends utest.Test {
 	}
 
 	public function testExitFromAnotherThreadStopsTheLoopPromptly():Void {
-		// exit() from another thread used to be noticed only once the loop
-		// had slept out its frame.
+		// exit() from another thread is noticed at once, not once the loop has
+		// slept out its frame.
 		var ticked = new Lock();
 		var exited = new Lock();
 		var child = CrossByte.make(DEFAULT, HEAP, configured -> {

@@ -11,8 +11,8 @@ import utest.Assert;
 	blocks hashed once, and a message read straight from a string.
 
 	RFC 4231's vectors, and agreement with `haxe.crypto.Hmac` at every message
-	length across three blocks, where the padding and length land in the
-	last block or spill into one more, under keys shorter than, equal to and
+	length across three blocks (where the padding and length land in the
+	last block or spill into one more) under keys shorter than, equal to and
 	longer than a block. Text that is not ASCII is hashed as its UTF-8, as
 	`Bytes.ofString` encodes it. Pure Haxe, so it runs on every target: an
 	`Int32Array` on JavaScript, a `Vector` elsewhere.

@@ -11,7 +11,7 @@ import utest.Async;
 /**
 	What a socket sends to a peer that reads slower than it is written to.
 
-	Both cases were broken on Node alone, and both run everywhere a socket is
+	Both cases matter most on Node, and both run everywhere a socket is
 	non-blocking, since what they describe is not a Node property: a slow
 	reader must get exactly what was written, and `maxOutputBufferSize` must be
 	reachable. Not on eval, whose sockets block, so a write to a peer that has
@@ -23,9 +23,9 @@ class SocketOutputTest extends utest.Test {
 		Ten half-megabyte messages, each filled with its own letter, written to
 		a peer that is not reading yet.
 
-		On Node a flush handed Node a view over the output buffer and then
-		cleared it for reuse, so each message was written over the bytes of
-		the one Node still had queued: what a slow reader got was the first
+		On Node a flush must not hand Node a view over the output buffer and
+		then clear it for reuse: each message would be written over the bytes
+		of the one Node still had queued, and a slow reader would get the first
 		few messages and then the last one, repeated.
 	**/
 	@:timeout(30000)
@@ -59,8 +59,8 @@ class SocketOutputTest extends utest.Test {
 
 	/**
 		A writer is told as its backlog reaches a slow reader, down to
-		nothing left waiting. OUTPUT_PROGRESS was documented and never
-		dispatched, so a writer had nothing to wait on but a timer.
+		nothing left waiting, through OUTPUT_PROGRESS, so it has something to
+		wait on other than a timer.
 	**/
 	@:timeout(30000)
 	public function testAWriterIsToldAsItsBacklogDrains(async:Async):Void {
@@ -103,10 +103,10 @@ class SocketOutputTest extends utest.Test {
 	/**
 		A peer that never reads, and a socket that goes on writing to it.
 
-		On Node the backlog is Node's queue rather than the socket's buffer, so
-		`outputBufferLength` read 0 however much was waiting and the limit,
-		measured against it, could never be reached: the queue grew for as long
-		as the writer did.
+		On Node the backlog is Node's queue rather than the socket's buffer,
+		and `outputBufferLength` and the limit have to count it: otherwise the
+		limit could never be reached, and the queue would grow for as long as
+		the writer did.
 	**/
 	@:timeout(60000)
 	public function testTheOutputLimitIsReachedAgainstAPeerThatDoesNotRead(async:Async):Void {
@@ -158,9 +158,10 @@ class SocketOutputTest extends utest.Test {
 		Written and flushed straight after `connect()`, before the connection
 		is up: the bytes wait and go once it is.
 
-		The flush wrote to a socket not yet connected, which Windows refuses
-		("not connected"), so it threw, and the tick's own flush reported the
-		same refusal as an `ioError` on every tick until the connect finished.
+		A flush must not write to a socket not yet connected, which Windows
+		refuses ("not connected"): it would throw, and the tick's own flush
+		would report the same refusal as an `ioError` on every tick until the
+		connect finished.
 	**/
 	@:timeout(15000)
 	public function testWritingBeforeTheConnectFinishesIsNotAnError(async:Async):Void {
@@ -205,7 +206,8 @@ class SocketOutputTest extends utest.Test {
 		The same, against a connect that stays pending: a listener whose queue
 		is full and never accepted from, so the kernel drops the connect's
 		SYN and retries it. Over plain loopback the connect finishes before
-		anything is written, and the old flush got away with it.
+		anything is written, so the case above alone could not catch a flush
+		that wrote too early.
 	**/
 	@:timeout(15000)
 	public function testWritingWhileTheConnectIsPendingIsNotAnError(async:Async):Void {
@@ -260,12 +262,12 @@ class SocketOutputTest extends utest.Test {
 		16 KB a write and 64 KB a pass, as a TLS socket does against a slow
 		reader.
 
-		Every write the socket took only part of used to copy everything still
-		waiting into a new buffer, a copy of the backlog per 16 KB record,
-		quadratic in its size, and a pass wrote once, whatever room there
-		was. What went is now stepped over, the buffer compacted only when what
-		went is at least what remains, and a pass writes until the socket takes
-		no more. Not on Node, which takes every write whole.
+		A write the socket takes only part of steps over what went, rather than
+		copying everything still waiting into a new buffer (a copy of the
+		backlog per 16 KB record, quadratic in its size); the buffer is
+		compacted only when what went is at least what remains, and a pass
+		writes until the socket takes no more, rather than once. Not on Node,
+		which takes every write whole.
 	**/
 	@:timeout(30000)
 	public function testAWebSocketBacklogIsSteppedThroughNotCopied(async:Async):Void {

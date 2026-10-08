@@ -10,32 +10,20 @@ import haxe.Timer;
 
 /**
 	A server-shaped workload, run for as long as you ask, to find out whether
-	the native collector's intermittent fault reaches production code.
+	a native process stays up.
 
 	## What it is answering
 
-	The cpp suite segfaults inside hxcpp's collector somewhere between one run
-	in seven and one in two, and the structure it corrupts is the string hash
-	`hx::SourceInfo` keeps for `haxe.PosInfos`. That detail matters, because
-	almost nothing outside a test harness makes those: every `utest` assertion
-	takes a `?pos:haxe.PosInfos` and there are thousands of them per run,
-	while `Logger` captures no position at all and exactly one file under
-	`src/` so much as mentions the type.
-
-	So either the fault is test-shaped and of little consequence to a server,
-	or it is a collector fault that lands on whichever structure is largest
-	and merely meets that one first under utest. Those readings have very
-	different consequences for a process meant to stay up for days, and
-	nothing measured so far tells them apart.
-
-	This is the experiment that does. It allocates and discards the way a game
-	server does, connections, entities arriving and leaving, messages of
-	varied size, string-keyed lookups, and deliberately generates **no**
+	Unit tests run for seconds and allocate in a test's shape: thousands of
+	`haxe.PosInfos` from assertions, little else for long. A fault in the
+	native collector that only shows after hours of a server's churn would
+	pass all of them. This allocates and discards the way a game server
+	does (connections, entities arriving and leaving, messages of varied
+	size, string-keyed lookups) and deliberately generates **no**
 	`PosInfos`: nothing here calls `trace`, `Timer.measure`, or an assertion
-	library. Run it long. If it stays up, the fault is test-shaped and can be
-	prioritised accordingly. If it falls over, the result is better still: a
-	controlled reproducer owned by this repository, which is the thing every
-	previous attempt on that bug has lacked.
+	library, so what it exercises is the collector under production code.
+	Run it long. If it falls over, it is a controlled reproducer owned by
+	this repository.
 
 	`SoakMain.exe [seconds] [clients]`, default one minute and sixteen
 	clients. The exit status is the answer; the progress lines are so a long
@@ -117,8 +105,8 @@ class SoakMain {
 				entities.remove(handles.shift());
 			}
 
-			// String-keyed churn, because the structure the collector damages
-			// under test is a string hash. Same shape, no PosInfos.
+			// String-keyed churn, the shape of the string hash hxcpp keeps for
+			// PosInfos under test, without any PosInfos.
 			for (_ in 0...20) {
 				var key:String = "s" + next() + "-" + next();
 				sessions.set(key, new SessionState(key, next()));

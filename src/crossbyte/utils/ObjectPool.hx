@@ -11,17 +11,17 @@ import crossbyte.errors.ArgumentError;
  * when one comes back twice or was never lent. A release build cannot afford
  * that tracking on every call, but it still refuses the two mistakes that
  * cost nothing to see: an object released twice in a row, and a release
- * when every object the pool made is already free. It kept both, so the
- * next two `acquire`s handed one object to two owners. `release` answers
- * `false` for what it refused.
+ * when every object the pool made is already free, either of which would
+ * have the next two `acquire`s hand one object to two owners. `release`
+ * answers `false` for what it refused.
  *
  * **Bursts.** An object released is kept for the next `acquire` while fewer
- * than `maxFree` are free, 10,000 unless set, and let go past that. It
- * kept every one, so a burst of a hundred thousand left a hundred thousand
- * behind for good: memory the collector could never take back, and more for
- * it to walk at every collection, which on a native build is what a pause
- * lasts in proportion to. A reservation, `reserve`, the constructor's
- * `length`, `resizeCapacity`, raises `maxFree` to what it reserves, so the
+ * than `maxFree` are free (10,000 unless set), and let go past that, so a
+ * burst of a hundred thousand does not leave a hundred thousand behind for
+ * good: memory the collector could never take back, and more for it to
+ * walk at every collection, which on a native build is what a pause lasts
+ * in proportion to. A reservation (`reserve`, the constructor's `length`,
+ * `resizeCapacity`) raises `maxFree` to what it reserves, so the
  * objects asked for in advance are not let go after their first use.
  *
  * @param T The type of objects to be pooled.
@@ -51,7 +51,7 @@ final class ObjectPool<T:{}> {
 	 * what `reserve`, the constructor's `length` or `resizeCapacity` reserve.
 	 * A release past it is let go rather than kept, and no longer counts
 	 * toward `capacity`. `0` keeps nothing; `0x7FFFFFFF` keeps every object
-	 * released, as the pool did before it had a default.
+	 * released.
 	 *
 	 * What it bounds is memory held between bursts: at most `maxFree`
 	 * objects, of whatever size `objectFactory` makes them, stay behind after

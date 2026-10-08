@@ -11,8 +11,8 @@ import haxe.io.Bytes;
 	is sent. `finish` ends the stream.
 
 	Matches reach back 32 KB into what was written before, so a stream of short
-	messages that repeat themselves, server-sent events naming the same
-	fields, compresses as one long message would, not as each message alone.
+	messages that repeat themselves (server-sent events naming the same
+	fields) compresses as one long message would, not as each message alone.
 	The input is kept in a buffer of twice the window, slid down by a window
 	as it fills, and the hash chains slid with it, as zlib does: about two
 	operations a byte over the life of a stream, where priming a fresh match

@@ -8,8 +8,8 @@ import haxe.ds.Vector;
  *
  * Each id sits on a list belonging to the cell its position falls in, and the
  * list is threaded through arrays indexed by id, so `set` costs the same
- * however much the grid holds: a comparison when the id stays in its cell,
- * which, at any ordinary speed, is nearly every step, and a relink when it
+ * however much the grid holds: a comparison when the id stays in its cell
+ * (which, at any ordinary speed, is nearly every step) and a relink when it
  * crosses into another. Once the arrays have grown to the largest id, moving
  * allocates nothing. A query visits only the cells its shape overlaps and
  * checks the exact position of everything it finds there.
@@ -32,7 +32,7 @@ import haxe.ds.Vector;
  * `queryRectIds`, or into an `Array<Int>` through `queryCircle` and
  * `queryRect`. The list is the one to use every tick: an array boxes every
  * id above 127 on the jvm, and one emptied with `resize(0)` gives its
- * storage back on JavaScript, so a round of views reallocates it, 2.2 MB a
+ * storage back on JavaScript, so a round of views reallocates it: 2.2 MB a
  * tick for 1,000 views of 50 on either, where the list allocates nothing.
  *
  * **Grid or `QuadTree`.** A grid's cost follows how many things share the
@@ -53,7 +53,7 @@ import haxe.ds.Vector;
  * it, only more slowly, if much is out there. The grid holds one array
  * entry per cell, so the bounds and cell size decide its size up front.
  *
- * **Ids** are small non-negative integers, entity slots, say, as
+ * **Ids** are small non-negative integers (entity slots, say), as
  * `InterestSet` takes them, so what a query finds can be added to one
  * directly. The grid keeps five array entries for every id up to the largest
  * it has been given.

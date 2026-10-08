@@ -13,8 +13,8 @@ import utest.Assert;
  * The server serving PHP, end to end, against a backend held open on purpose.
  *
  * There are four things an asynchronous bridge has to survive. Two
- * are covered where the bridge itself is tested, a backend that never
- * answers, and a record torn across two reads. The other two are not properties
+ * are covered where the bridge itself is tested (a backend that never
+ * answers, and a record torn across two reads). The other two are not properties
  * of the bridge at all but of the handler wrapped around it, and they only
  * appear once a response can arrive after the request that asked for it has
  * stopped being the current one:
@@ -78,16 +78,15 @@ class HTTPPhpTest extends utest.Test {
 		backend.answer(200, "text/plain", "nobody is listening");
 		HTTPTestSupport.pumpMore(30);
 
-		// The claim is not "it did not throw", an exception swallowed
-		// somewhere would pass that too. It is that the server is still a
+		// The claim is not "it did not throw" (an exception swallowed
+		// somewhere would pass that too). It is that the server is still a
 		// server afterwards, which only a second client can establish.
 		//
 		// Worth being exact about what this pins, because it is less than it
 		// looks: with the handler's staleness guard removed this still passes,
 		// since writing into a socket that is already gone is absorbed rather
 		// than fatal. So it covers the survival property and not the guard.
-		// The pipelined case above is the one that fails when its guard goes,
-		// and it was rewritten once because the first version did not.
+		// The pipelined case above is the one that fails when its guard goes.
 		var second = world.freshClient("GET /static.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 		HTTPTestSupport.pumpUntil(() -> HTTPTestSupport.isResponseComplete(second.text()), 3.0);
 
@@ -104,11 +103,11 @@ class HTTPPhpTest extends utest.Test {
 
 		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
-		// PHP sends one Set-Cookie line per cookie, and the bridge stored its
-		// headers by name, so each line overwrote the one before and only the
-		// last cookie reached the browser. The comma in the Expires date is
-		// deliberate: joining cookies with ", " would put one in the middle of
-		// a value, and nothing downstream could split them apart again.
+		// PHP sends one Set-Cookie line per cookie, and each must reach the
+		// browser: headers stored by name would let each line overwrite the one
+		// before, so only the last cookie arrived. The comma in the Expires date
+		// is deliberate: joining cookies with ", " would put one in the middle
+		// of a value, and nothing downstream could split them apart again.
 		backend.answer(200, "text/plain", "from php", [
 			"Set-Cookie: session=abc; Path=/; HttpOnly",
 			"Set-Cookie: theme=dark; Expires=Wed, 21 Oct 2037 07:28:00 GMT"
@@ -128,9 +127,9 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testAScriptSeesTheRequestsHeadersAndTheClientTheScripts():Void {
-		// The bridge passed a script eight request headers and gave the client
-		// four of the script's back, so CORS, named downloads, HTTP auth,
-		// conditional requests and CSRF checks broke behind it.
+		// A script is passed the request's headers and gives the client its own
+		// back, all of them, or CORS, named downloads, HTTP auth, conditional
+		// requests and CSRF checks would break behind it.
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend);
 
@@ -209,9 +208,10 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testABlacklistedScriptIsRefusedHoweverItIsReached():Void {
-		// The lists were checked where a file is served and nowhere else, so a
-		// GET for a blacklisted script was refused while a POST to it, and a
-		// rewrite carrying the PHP flag onto it, ran it.
+		// The lists are checked wherever a script would run, not only where a
+		// file is served: otherwise a GET for a blacklisted script would be
+		// refused while a POST to it, and a rewrite carrying the PHP flag onto
+		// it, ran it.
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend, (config, root) -> {
 			config.blacklist = [root.resolvePath("admin.php").nativePath];
@@ -252,9 +252,9 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testAPostFollowsARewrite():Void {
-		// A POST was resolved against the path it named, whatever a rule
-		// rewrote it to: a form posting to /submit, rewritten onto
-		// /index.php, was answered 404 while the GET beside it ran the script.
+		// A POST is resolved against the path a rule rewrote it to, not the
+		// one it named: a form posting to /submit, rewritten onto /index.php,
+		// must not be answered 404 while the GET beside it runs the script.
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend, (config, _) -> {
 			config.rewrites = [{pattern: "^/submit$", target: "/index.php"}];
@@ -271,10 +271,10 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testARewritesQueryReachesTheScriptWithoutThePhpFlag():Void {
-		// A rule's query, and QSA's merging of the request's into it, were
-		// used only with the PHP flag. A rule naming a script without it,
-		// resolved as the file it names, then run, gave the script the
-		// request's own query, and the route the rule captured was lost.
+		// A rule's query, and QSA's merging of the request's into it, are used
+		// without the PHP flag too. A rule naming a script without it (resolved
+		// as the file it names, then run) must give the script the rule's query,
+		// not the request's own, or the route the rule captured is lost.
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend, (config, _) -> {
 			config.rewrites = [{pattern: "^/r/(.*)$", target: "/index.php?route=$1", flags: [crossbyte.http.config.RewriteFlag.QSA]}];
@@ -288,9 +288,10 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testABackendThatFailsIsAnsweredWithAWholeResponse():Void {
-		// The 502 and the 504 were written as a HEAD's answer: a Content-Length
-		// counting the text, and no text. The client was left waiting for
-		// bytes that never came until the connection closed under it.
+		// The 502 and the 504 are written with their text, not as a HEAD's
+		// answer (a Content-Length counting the text, and no text), which would
+		// leave the client waiting for bytes that never came until the
+		// connection closed under it.
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend);
 
@@ -306,8 +307,8 @@ class HTTPPhpTest extends utest.Test {
 	}
 
 	public function testARequestTheBridgeHasNoRoomForIsAnswered503():Void {
-		// A request refused at once because the bridge already had as many
-		// exchanges with the backend as it holds, and as many waiting, was
+		// A request refused at once because the bridge already has as many
+		// exchanges with the backend as it holds, and as many waiting, is not
 		// answered 502, as though the backend had answered badly: the backend
 		// did nothing wrong, and the request may succeed in a moment.
 		var backend = new FakeFastCGI();
@@ -344,7 +345,7 @@ class HTTPPhpTest extends utest.Test {
 	 * Every Set-Cookie value in the first response, in order.
 	 *
 	 * Read off the raw header block rather than through
-	 * `HTTPTestSupport.parseResponse`, whose map keeps one value per name,
+	 * `HTTPTestSupport.parseResponse`, whose map keeps one value per name:
 	 * the same collapse this is checking for.
 	 */
 	private function setCookies(raw:String):Array<String> {
@@ -496,8 +497,8 @@ private class PhpWorld {
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.php", "index.html"]);
 		config.phpEnabled = true;
 		// 0 is Connect: talk to a backend already listening rather than launch
-		// php-cgi. There is no PHP in CI and this test does not want one,
-		// what is under test is the handler, not the interpreter.
+		// php-cgi. There is no PHP in CI and this test does not want one: what
+		// is under test is the handler, not the interpreter.
 		config.phpMode = 0;
 		config.phpAddress = "127.0.0.1";
 		config.phpPort = backend.localPort;

@@ -12,8 +12,8 @@ import sys.thread.Thread;
 
 	    ScalingLoad <port> <connections> <seconds> <h1|h2> [depth]
 
-	Each connection keeps `depth` requests in flight, pipelined over
-	HTTP/1.1, concurrent streams over HTTP/2 (prior knowledge, cleartext),
+	Each connection keeps `depth` requests in flight (pipelined over
+	HTTP/1.1, concurrent streams over HTTP/2, prior knowledge, cleartext)
 	and counts the responses that arrive after a second's warm-up, for
 	`seconds`. Prints `RPS <requests per second> requests=<n> errors=<n>`.
 **/

@@ -18,8 +18,8 @@ package crossbyte.db.mongodb.bson;
 	connection.find("people", {city: "Oslo"}, {sort: byName});
 	```
 
-	Anywhere order does not matter, a filter, a projection, a document to
-	insert, an anonymous object is fine, and is what the driver returns.
+	Anywhere order does not matter (a filter, a projection, a document to
+	insert) an anonymous object is fine, and is what the driver returns.
 **/
 class BsonDocument {
 	/** How many fields the document has. **/

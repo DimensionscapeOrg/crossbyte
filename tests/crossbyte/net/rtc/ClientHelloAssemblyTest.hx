@@ -306,10 +306,10 @@ class ClientHelloAssemblyTest extends utest.Test {
 		The run list is what every arriving fragment is matched against, and a
 		peer picks where it splits. Fragments carrying every other byte never
 		meet, so an unbounded list grows by one per fragment and the cost of
-		the next one grows with it, quadratic in a number the peer chooses,
-		for twenty-six bytes of wire each. Measured before this was bounded:
-		four thousand of them, about a hundred kilobytes, took seven seconds
-		on eval. None of it is authenticated. The DTLS demux routes on the
+		the next one grows with it: quadratic in a number the peer chooses,
+		for twenty-six bytes of wire each. Unbounded, four thousand of them,
+		about a hundred kilobytes, took seven seconds on eval. None of it is
+		authenticated. The DTLS demux routes on the
 		first byte of a datagram, so reaching here needs no certificate, no
 		ICE exchange and no particular source address.
 	**/
@@ -372,7 +372,7 @@ class ClientHelloAssemblyTest extends utest.Test {
 	/**
 		The cap does not reach an honest peer, at the worst size one could use.
 
-		Sixty-four pieces of a full-size message is a path MTU of 256 bytes,
+		Sixty-four pieces of a full-size message is a path MTU of 256 bytes:
 		a fifth of the smallest IPv6 will carry, so below anything that sends.
 		Delivered odd-then-even, which is the ordering that holds the most
 		runs open at once: every piece of the first half lands with a gap on

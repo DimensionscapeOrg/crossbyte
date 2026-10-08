@@ -190,7 +190,7 @@ class ByteDeltaTest extends utest.Test {
 	public function testAHostileDeltaIsRefusedRatherThanObeyed():Void {
 		var baseline:ByteArray = randomBytes(5);
 
-		// A length above the limit, refused before anything is built, and
+		// A length above the limit, refused before anything is built; and
 		// this one is otherwise well formed, so nothing else would stop it.
 		Assert.raises(() -> ByteDelta.decode(craft([2000, 0, 2000], [for (_ in 0...2000) 7]), baseline, 1000));
 		Assert.raises(() -> ByteDelta.decode(craft([1 << 30]), baseline, 1000));
@@ -218,9 +218,9 @@ class ByteDeltaTest extends utest.Test {
 
 	/**
 		A varint past 32 bits is a malformed delta, refused with the IOError
-		the documentation gives for one. The reader shifted the extra bits off
-		the top, so a length of 2^32 + 3 read as 3 and this decoded; and a
-		length from 2^31 up was written as a single byte, of 0.
+		the documentation gives for one. Shifting the extra bits off the top
+		would read a length of 2^32 + 3 as 3 and decode this; and a length from
+		2^31 up must not be written as a single byte, of 0.
 	**/
 	public function testALengthPast31BitsIsAMalformedDelta():Void {
 		var baseline:ByteArray = randomBytes(5);

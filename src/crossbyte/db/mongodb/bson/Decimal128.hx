@@ -11,7 +11,7 @@ import haxe.io.Bytes;
 	belongs in one. Nothing here converts through `Float`: the value is its 16
 	bytes, `toString` gives the exact decimal text by the BSON specification's
 	rules, and `fromString` parses text to exactly those bytes, or refuses
-	it, where the text cannot be held without rounding.
+	it where the text cannot be held without rounding.
 
 	```haxe
 	import crossbyte.db.mongodb.MongoConnection;
@@ -41,7 +41,7 @@ final class Decimal128 {
 
 	/**
 		Parses decimal text: an optional sign, digits with an optional point,
-		and an optional exponent, `-12.50`, `1E+3`, `0.000001`, or
+		and an optional exponent (`-12.50`, `1E+3`, `0.000001`), or
 		`Infinity`, `Inf` or `NaN` in either case.
 
 		@throws ArgumentError When `text` is not a number, has more significant
@@ -331,7 +331,7 @@ final class Decimal128 {
 	}
 
 	/**
-		The nearest `Float`. Lossy by nature, the reason to hold a
+		The nearest `Float`. Lossy by nature: the reason to hold a
 		Decimal128 at all is that most decimals have no exact binary form.
 	**/
 	public function toFloat():Float {

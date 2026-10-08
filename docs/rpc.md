@@ -1,7 +1,7 @@
 # RPC
 
-CrossByte's RPC turns method calls into frames on any `NetConnection`, TCP,
-WebSocket, reliable UDP or local IPC, and back. The calls are typed and
+CrossByte's RPC turns method calls into frames on any `NetConnection` (TCP,
+WebSocket, reliable UDP or local IPC) and back. The calls are typed and
 checked at compile time: a macro writes the code that encodes each call and
 the code that decodes and dispatches it, so a call costs a method's worth of
 encoding rather than a round of reflection.
@@ -17,7 +17,7 @@ RPC runs on every target CrossByte builds for, JavaScript included: the
 portable test suite runs it on Node and in a browser. What carries it is the
 `NetConnection` a session is given, so it goes wherever one does.
 
-A session writes every frame it sends, calls, answers, pings, in one
+A session writes every frame it sends (calls, answers, pings) in one
 buffer of its own, and hands it to its connection's `send`, which copies what
 it keeps before it returns: framing a call allocates nothing. Every transport
 CrossByte ships copies. An `INetConnection` of your own must as well, since the
@@ -25,9 +25,8 @@ buffer holds the session's next frame as soon as `send` returns; built with
 `-D crossbyte_check_events`, a session poisons each frame once it is sent, so
 a connection that kept one sends garbage its tests will see.
 
-Every example on this page is typechecked by `node ci/doc-examples.js`, which
-CI runs, in the order it appears: a later example uses what an earlier one
-declared.
+Every example on this page compiles, in the order it appears: a later example
+uses what an earlier one declared.
 
 ## A contract, both ends, and a connection
 
@@ -121,8 +120,8 @@ for them is one object. Each call is answered on the connection it came in
 on. While a method runs, the handler's `session` is the session whose call
 it is, so a method can tell its callers apart:
 
-- `session.data` holds whatever the application keeps per client, a
-  player, a login, set when the session is made;
+- `session.data` holds whatever the application keeps per client (a
+  player, a login), set when the session is made;
 - `session.commands` calls that client back, if the session has commands;
 - `session.connection` is its connection.
 
@@ -131,7 +130,7 @@ Between calls `session` is `null`. A method that answers later, with a
 future completes; code that needs the caller after its method has returned
 keeps `session` in a variable of its own.
 
-A handler with state of its own per client, nothing shared, can still be
+A handler with state of its own per client, with nothing shared, can still be
 made per session; it simply never sees another.
 
 ## One-way calls and requests
@@ -182,9 +181,9 @@ on the wire:
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
 | a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
 | an enum | its constructor's index, 1 byte (2 past 256 constructors), then that constructor's arguments |
-| an abstract over any of these, `enum abstract Team(Int)`, `UInt` | as the type it abstracts |
+| an abstract over any of these, such as `enum abstract Team(Int)` or `UInt` | as the type it abstracts |
 
-An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
+An argument that may be absent (`?value:Int`, or `value:Null<Int>`) costs
 one more byte to say whether it is there, whatever its kind (a compact number,
 an array, a structure, an enum), and so does an element of an
 `Array<Null<T>>`, a structure's field that may be absent and an enum
@@ -194,7 +193,7 @@ constructor's optional argument. An absent value is that byte alone. One that ma
 its type is not `Null<T>` fails the call as a throw does. A return type is
 any of these, or `Void`. Anything else fails the build, naming the method.
 
-Arrays nest, `Array<Array<Int>>` is a count of counts, and an array
+Arrays nest (`Array<Array<Int>>` is a count of counts), and an array
 arriving is the handler's to keep: each call's is made for it. Its count is
 the sender's to choose, so it is checked against what is left of the frame,
 at the least each element takes, before anything is made for it: a frame of
@@ -214,8 +213,8 @@ seven significant digits; `UInt8` for a level, a set of flags; `Int16` for a
 small signed delta; `UInt16` for a count. Each is an `Int` (or a `Float`)
 wherever one is wanted, so arithmetic on them is `Int` arithmetic, and
 comparisons compare the `Int` it holds. An `Int` assigned to one keeps its low
-bits, as a cast to a byte or a short does in C, `var level:UInt8 = 300` holds
-44, so what a value holds is what is sent and what arrives. A `Float32` is
+bits, as a cast to a byte or a short does in C (`var level:UInt8 = 300` holds
+44), so what a value holds is what is sent and what arrives. A `Float32` is
 Haxe's own `Single` where the target has one (natively, the jvm, HashLink),
 rounded as it is assigned; on JavaScript, the interpreter and neko it is a
 `Float`, rounded as it is sent. A contract may declare `Single` itself, and
@@ -275,13 +274,13 @@ interface WorldContract {
 }
 ```
 
-On the wire a structure is its fields' values one after another, no names,
-tags or lengths, no byte for a field that cannot be absent, and one inside
+On the wire a structure is its fields' values one after another, with no names,
+tags or lengths and no byte for a field that cannot be absent, and one inside
 another is read and written through the same frame, so nothing is made for it
 but the value itself. The fields go in the order of their names, so moving a
 declaration changes nothing; `@:field(n)` pins a field ahead of the named ones,
 in the order of n (0 to 65535), as the `hxwire` library orders its fields. A
-field that may be absent, `Null<T>`, or `@:optional` in a typedef, has a
+field that may be absent (`Null<T>`, or `@:optional` in a typedef) has a
 byte before it saying whether it is there.
 
 A class's fields are every `var` it and the classes it extends declare, private
@@ -306,7 +305,7 @@ of bytes, and an array of them as one run, as an array of `Int`s is. A typedef
 reads best where the structure is small or the call is not hot, and on
 JavaScript, where both are plain objects.
 
-A structure's layout, each field's pinned id, name and kind, in order, is
+A structure's layout (each field's pinned id, name and kind, in order) is
 part of the op of every method that carries it, so renaming, retyping, adding,
 removing or making absent a field changes the op, and a peer built from the
 other version answers as for a method it does not have. Its name is not: a
@@ -315,7 +314,7 @@ call can use one each.
 
 **Against packing by hand.** The `PlayerState` above, with eight inventory
 slots, sent one-way and read into a `PlayerState` on the other side, both ends
-(`RpcGameBench`): natively 130 ns and 592 bytes allocated, against 274 ns and
+counted: natively 130 ns and 592 bytes allocated, against 274 ns and
 1,704 bytes when the same values are packed into a `Bytes` by hand, sent as a
 `Bytes` argument and unpacked by hand, 105 ns of which is the packing alone;
 on the jvm 189-205 ns and 544 bytes against 261-289 ns and 920. The frame is
@@ -326,8 +325,8 @@ natively; as a typedef the call is 181 ns and 1,296 bytes.
 `RPCStruct`: hxwire keeps its JSON and binary for storage, and RPC generates
 its own writer and reader, which stream into the frame where hxwire's would
 make a `Bytes` of their own. RPC reads `@:field(n)` and orders fields as
-hxwire does, so for fields both carry and that cannot be absent, `Int`,
-`Float`, `Bool`, `String`, `Bytes`, arrays of them, nested structures, the
+hxwire does, so for fields both carry and that cannot be absent (`Int`,
+`Float`, `Bool`, `String`, `Bytes`, arrays of them, nested structures), the
 call's arguments are byte for byte what hxwire's `toBinary()` makes. (A field
 that may be absent differs: hxwire's byte says it is null, RPC's that it is
 there.) Fields hxwire leaves alone, RPC has to be told to: mark them
@@ -337,8 +336,8 @@ there.) Fields hxwire leaves alone, RPC has to be told to: mark them
 
 A simple enum is its constructor's index: one byte, or two for an enum of more
 than 256 constructors. An enum with arguments is the same index followed by
-that constructor's arguments, each as its type is written, a tagged union, as
-Rust's enums and protobuf's `oneof` are, so a message that is one of several
+that constructor's arguments, each as its type is written (a tagged union, as
+Rust's enums and protobuf's `oneof` are), so a message that is one of several
 shapes is one argument rather than several methods or a hand-packed `Bytes`:
 
 ```haxe
@@ -365,8 +364,8 @@ does not carry.
 
 Because nothing on the wire names a field, the two ends must agree on each
 method exactly: its name, its arguments in order, and their types. Build both
-from one contract and they do. If they do not, a client and a server built
-from two versions of a method, the call finds no method, rather than one end
+from one contract and they do. If they do not (a client and a server built
+from two versions of a method), the call finds no method, rather than one end
 reading the other's bytes as its own; see "What names a call", below.
 
 ## Contracts or `@:rpc` methods
@@ -436,7 +435,7 @@ class RoomHandler extends RPCHandler {
 ```
 
 The caller's `RPCResponse` then fails with `"A room needs a name."`. Anything
-else a handler throws, a null access, a database error, a bug, is the
+else a handler throws (a null access, a database error, a bug) is the
 handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
 stack trace or a file path never crosses to whoever made the call. The error
 itself goes to the session's `onHandlerError`, which logs it unless you
@@ -455,11 +454,11 @@ A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
 
 A call this side cannot take is answered or passed over, and the connection
-carries on. A request for a method its handler has not got, from a peer
+carries on. A request for a method its handler has not got (from a peer
 built from another version of the contract, or one calling a method added
-since, as in a rolling deploy, is answered `RPCError.UNKNOWN_METHOD_MESSAGE`,
-and one whose arguments do not read, they run past the end of their frame,
-or name more than it holds, `RPCError.UNREADABLE_MESSAGE`; a one-way call of
+since, as in a rolling deploy) is answered `RPCError.UNKNOWN_METHOD_MESSAGE`,
+and one whose arguments do not read (they run past the end of their frame,
+or name more than it holds) is answered `RPCError.UNREADABLE_MESSAGE`; a one-way call of
 either kind is dropped. An answer that does not read fails the call it
 answers, and a frame of a kind the session does not know is passed over. Every
 frame carries its length, so the next is read where it begins. The session's
@@ -484,12 +483,12 @@ and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
 sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
-`cause`, a one-way call throws one, and an answer too long is not sent, its
+`cause`, a one-way call throws one, and an answer too long is not sent: its
 caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
 Both ends of a connection should agree on the limit.
 
-A request to a session with no handler to answer it, one with only commands,
-calling out, is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
+A request to a session with no handler to answer it (one with only commands,
+calling out) is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
 one is dropped.
 
 ## Hooks: one place for every call
@@ -526,13 +525,13 @@ class GuardedChatHandler extends ChatHandler {
 ```
 
 `beforeCall` runs before the call's arguments are read, with the method's
-name, the request's id, 0 for a one-way call, and the bytes the arguments
+name, the request's id (0 for a one-way call) and the bytes the arguments
 take, so refusing an oversized call costs nothing. Return `null` to let the
 call run, or an `RPCError` to refuse it: a request is answered with its
 message, and a one-way call is dropped. Refusing by returning rather than
 throwing keeps a flood of refusals from costing an exception each.
 `afterCall` runs once the method has run and its answer has been sent; `error`
-is what it threw, as a `haxe.Exception`, wrapped in one when it was not one,
+is what it threw, as a `haxe.Exception` (wrapped in one when it was not one),
 or `null`. It is not given the result, which would mean boxing every `Int`
 a handler returns.
 
@@ -577,7 +576,7 @@ a contract, a method answered later returns `Future<T>`, and its commands class
 still gets a stub returning `RPCResponse<T>`.
 
 For a future of its own, a handler makes a `Completer`, returns its `future`,
-and completes it when it can, here, when four players are queued. One
+and completes it when it can: here, when four players are queued. One
 handler serves every player's session, so the fourth player's call completes
 all four futures, and each answer goes to the player who asked:
 
@@ -613,7 +612,7 @@ above passes an instance host's refusal on to its client word for word.
 `afterCall` runs when the future completes, with its failure, not when the
 method returned.
 
-A future complete already when the method returns, a cached answer, is
+A future complete already when the method returns (a cached answer) is
 answered at once, costing no more than a plain answer. One completed later on
 the session's own thread, as by an answer on another of its connections, is
 answered then. One completed on another thread is handed to the session's
@@ -696,8 +695,8 @@ Hooks overridden in a shared base handler apply to every handler built on it.
 
 ### What names a call
 
-Each call is named on the wire by its *op*, a 32-bit hash, FNV-1a, as
-`crossbyte.utils.Hash.fnv1a32` computes it, of its method's signature: the
+Each call is named on the wire by its *op*, a 32-bit hash (FNV-1a, as
+`crossbyte.utils.Hash.fnv1a32` computes it) of its method's signature: the
 method's name, the kinds of its arguments in order and, for a request, of its
 answer.
 
@@ -744,7 +743,7 @@ however they came to be in it, fails the build and names them.
 
 ## The runtime lane
 
-For calls chosen at run time, a plugin's, a script's, a console's, a
+For calls chosen at run time (a plugin's, a script's, a console's), a
 session can register a handler for a number of your choosing, and call one by
 number, with the arguments in an array:
 
@@ -767,16 +766,16 @@ session.call(LOG, ["one-way", 2, true]);
 
 Values on this lane carry a tag each, so an array can mix them: `null`,
 `Bool`, `Int`, `Float`, `String` and `haxe.io.Bytes`. A request to a number
-nobody registered is answered `RPCError.UNKNOWN_METHOD_MESSAGE`, by any
+nobody registered is answered `RPCError.UNKNOWN_METHOD_MESSAGE` by any
 session, whether or not it has runtime handlers, and a one-way call to one
 is dropped. A value whose tag the receiving side does not know makes a call it
 cannot read, answered `RPCError.UNREADABLE_MESSAGE`, rather than a connection
 it ends: a later release can add kinds of value. `deregister` removes a
 handler.
 
-A runtime handler fails the way a compiled one does, an `RPCError`'s message
+A runtime handler fails the way a compiled one does (an `RPCError`'s message
 is the answer, anything else is `INTERNAL_MESSAGE` and goes to
-`onHandlerError`: and it has the same hooks, set on the session since there
+`onHandlerError`), and it has the same hooks, set on the session since there
 is no class to override them in:
 
 ```haxe
@@ -813,7 +812,7 @@ at run time.
 A writer is valid until it is sent: it is the session's frame, being written.
 Send it once; a writer used after it was sent or cancelled throws an
 `IllegalOperationError`. One never sent keeps the session's buffer, and every
-call after it is framed in a fresh one, `cancel()` gives it back. A request's
+call after it is framed in a fresh one; `cancel()` gives it back. A request's
 id is taken as it begins, and it waits for its answer only once sent.
 On the answering side, `registerArgs` hands a handler an `RPCArgs` in place
 of the array: typed getters that read each value where it lies in the frame,
@@ -894,14 +893,14 @@ session throws.
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller
 can tell a peer that has gone from a peer that said no. Over a WebSocket the
-`Reason` is `Code` with the code and reason the peer closed with, 1001 for
-a server going away, 1008 for one refusing by policy, and `Closed` when the
+`Reason` is `Code` with the code and reason the peer closed with (1001 for
+a server going away, 1008 for one refusing by policy), and `Closed` when the
 connection ended with no code known.
 
 ### Hello
 
-Every session says hello as its connection starts, at once on a connection
-that is up already, as an accepted one is, or as one becomes ready, with the
+Every session says hello as its connection starts (at once on a connection
+that is up already, as an accepted one is, or as one becomes ready), with the
 protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
 capabilities it has (none are defined in 1.0), and a fingerprint of the
 methods its commands call and one of those its handler answers. The hello goes
@@ -925,14 +924,14 @@ session.onHello = () -> {
 };
 ```
 
-A feature added after 1.0, a new kind of frame or of value, compression,
+A feature added after 1.0 (a new kind of frame or of value, compression)
 is used towards a peer only once its hello has declared it, so that a 1.0
 session and a later one keep understanding each other.
 
 ## A client that comes back
 
-A client that must survive its server restarting, a gateway in front of a
-backend, dials with `RPCSession.dial` rather than making a connection itself.
+A client that must survive its server restarting (a gateway in front of a
+backend) dials with `RPCSession.dial` rather than making a connection itself.
 The session dials again whenever its connection ends: at once, and then after
 a wait that doubles from `MIN_REDIAL` to `MAX_REDIAL` while the server stays
 away. Its commands, handler, `data` and heartbeat stay with it from one
@@ -951,7 +950,7 @@ commands.join("lobby").then(count -> trace('$count in the room'), message -> {
 });
 ```
 
-While it is down, before its first connection, and between one and the next,
+While it is down (before its first connection, and between one and the next),
 a call fails as it is made, with a `Reason` as its `cause`. `up` says whether
 it is up now, `onUp` and `onDown` when it comes and goes, and `close()` ends it:
 it dials no more. It makes its first attempt at the next tick, so callbacks set
@@ -960,8 +959,8 @@ after `dial` returns hear it.
 ## Deadlines
 
 A peer that is still there can still leave a call unanswered. A call can be
-given a deadline, the session's `callTimeout` for every call it makes, or
-one of its own with `timeout`, in milliseconds, and past it the call fails
+given a deadline (the session's `callTimeout` for every call it makes, or
+one of its own with `timeout`, in milliseconds), and past it the call fails
 with an `RPCTimeoutError` as its `cause`. The connection is left as it was,
 and an answer arriving later is dropped.
 
@@ -1002,5 +1001,5 @@ session.handlerTimeout = 10000;
 ```
 
 An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
-timed out, as the hub above answers with an instance host's answer, tells
+timed out (as the hub above answers with an instance host's answer) tells
 its own caller that it timed out, and reports it on its side too.

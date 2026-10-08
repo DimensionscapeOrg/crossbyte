@@ -25,8 +25,8 @@ import crossbyte.net.Endpoint.__parseListenURL;
  */
 abstract NetHost(INetHost) from INetHost to INetHost {
 	/**
-		Creates a host from a transport URI, `tcp://`, `ws://`, `wss://` or
-		`rudp://`: binds it, and starts it listening if asked.
+		Creates a host from a transport URI (`tcp://`, `ws://`, `wss://` or
+		`rudp://`), binds it, and starts it listening if asked.
 
 		Port 0, as in `tcp://127.0.0.1:0`, binds a port the system chooses,
 		as `ServerSocket.bind(0)` does, and `localPort` says which: once the
@@ -35,8 +35,8 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 
 		A `wss://` host terminates TLS, and needs the certificate it presents
 		and its key in `cert`, which is installed before the host binds, as
-		a TLS server's material has to be. For anything more, client
-		certificates, SNI, make the `ServerWebSocket` and wrap it with
+		a TLS server's material has to be. For anything more (client
+		certificates, SNI), make the `ServerWebSocket` and wrap it with
 		`fromServerWebSocket`.
 
 		@throws crossbyte.errors.ArgumentError For a `wss://` host without a

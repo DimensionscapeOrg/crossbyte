@@ -60,14 +60,14 @@ import sys.net.Socket as SysSocket;
 
 	- `connect` once it is up (and, for a `secure` one, its TLS handshake
 	  done).
-	- `ioError` for a connect that failed, refused, a name that does not
+	- `ioError` for a connect that failed (refused, a name that does not
 	  resolve, a handshake that failed, or not made within `timeout`, whose
-	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`, and nothing
+	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and nothing
 	  after it, since no connection came up: no `close` follows, as in AIR.
 	  Once connected, for a write that failed; the connection's `close`
 	  follows.
 	- `close` once, when a connection that came up ends, whichever end ended
-	  it, `close()` included, after any data that arrived with the end.
+	  it (`close()` included), after any data that arrived with the end.
 	- `peerClose` when the peer stops sending and `peerShutdownPolicy` is
 	  `HALF_OPEN`.
 @event close    Dispatched once when a connection that came up ends, from either end.
@@ -83,8 +83,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		A slot for whatever the application wants this connection to carry.
 
 		Untouched by the framework, and it goes when the connection does.
-		Without one, an application holding per-connection state, a session,
-		a player, a room membership, keeps a `Map` beside the connection and
+		Without one, an application holding per-connection state (a session,
+		a player, a room membership) keeps a `Map` beside the connection and
 		has to remember to remove the entry on close. Forgetting is not
 		noisy: the connection is gone, the traffic stops, and the entry stays
 		until the process does.
@@ -132,7 +132,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		`Endian.LITTLE_ENDIAN`.
 
 		`ByteArray.defaultEndian` when the socket is made, as every CrossByte
-		socket's is, little-endian unless the application changed it, so a
+		socket's is (little-endian unless the application changed it), so a
 		number written into a new ByteArray at one end reads back as itself at
 		the other. Set `Endian.BIG_ENDIAN` for a protocol in network byte order.
 		@default ByteArray.defaultEndian
@@ -141,7 +141,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 	 * The IP address this socket is bound to on the local machine: null until
-	 * it has one, before `connect()`, after `close()`, and on the jvm, hl
+	 * it has one: before `connect()`, after `close()`, and on the jvm, hl
 	 * and neko while a connect is still under way.
 	**/
 	public var localAddress(get, never):String;
@@ -259,8 +259,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		connection fails. The default value is 20,000 (twenty seconds).
 
 		0 means no deadline: the connect is waited on for as long as the
-		system keeps trying, on every target. (It failed every native connect
-		at once, where on Node it meant no deadline.)
+		system keeps trying, on every target.
 
 		It counts a secure connection's TLS handshake, and a name's lookup,
 		with the connect. Not kept in a browser, whose WebSocket has its own.
@@ -272,17 +271,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		for no limit.
 
 		Writes are buffered until the operating system accepts them, so a
-		peer that stops reading, a stalled phone, a half-open connection,
-		a deliberately slow client, makes that buffer grow without bound.
+		peer that stops reading (a stalled phone, a half-open connection,
+		a deliberately slow client) makes that buffer grow without bound.
 		On a server fanning out to many connections, one such peer can
 		exhaust process memory.
 
 		Setting a limit bounds that exposure. When the buffer exceeds it
 		after a flush, `outputOverflowPolicy` decides what happens.
 
-		Defaults to `0`, preserving the historical behavior. Servers should
+		Defaults to `0`, no limit. Servers should
 		set a limit sized to the largest message they legitimately send,
-		with headroom, a few megabytes suits most protocols.
+		with headroom: a few megabytes suits most protocols.
 
 		A property rather than a plain field so subclasses that do not use
 		this buffer can redirect it to the one they do use, instead of
@@ -319,9 +318,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		`DEFAULT_MAX_INPUT_BUFFER_SIZE`, 16 MiB, by default: twice the largest
 		message any of CrossByte's transports takes as it comes (8 MiB, an
 		RPC frame or a reliable UDP message), so an application waiting for
-		a whole one is never held short. There was no limit: one peer
-		sending to a connection whose application read a message a tick made
-		a server hold 664 MB in a second. HTTP, WebSocket, RPC and
+		a whole one is never held short. Without one, a peer sending to a
+		connection whose application reads a message a tick made a server
+		hold 664 MB in a second. HTTP, WebSocket, RPC and
 		`NetConnection` read what arrives as it arrives, and never reach it.
 
 		Size it to the largest message the application waits for whole
@@ -346,7 +345,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		What happens when what this socket holds unread reaches
 		`maxInputBufferSize`: `PAUSE`, the default, stops reading until the
-		application has read below it, and the peer waits on TCP's window,
+		application has read below it, and the peer waits on TCP's window:
 		nothing lost, nothing more held; `CLOSE` closes the connection, with
 		an `ioError` saying why, as soon as a byte arrives past it. See
 		`InputOverflowPolicy` for when each fits.
@@ -381,14 +380,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		How many bytes arriving for this connection the operating system holds
 		until the application reads them (`SO_RCVBUF`), which sets the window
 		TCP offers the peer: once it is full, the peer stops sending. `0`
-		until one is asked for, when the system's own applies, Linux starts
+		until one is asked for, when the system's own applies: Linux starts
 		at 128 KB and grows it as the connection is used, to 6 MB by default
 		(`net.ipv4.tcp_rmem`); Windows grows its window the same way.
 
 		Asking for a size fixes it, and turns the system's growing off for
 		this socket. That bounds what a peer can make the kernel hold for the
-		connection while the application is not reading, the memory of a
-		server with many connections lies mostly here, outside the heap,
+		connection while the application is not reading (the memory of a
+		server with many connections lies mostly here, outside the heap)
 		and how far ahead of the reader it can send. Smaller is cheaper and
 		slower over a long path: a connection moves at most one buffer per
 		round trip.
@@ -414,8 +413,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		How many bytes written to this connection the operating system holds
 		until the peer has acknowledged them (`SO_SNDBUF`). What the system
-		will not hold waits in this socket's own output buffer, see
-		`bytesPending` and `maxOutputBufferSize`, so a smaller one moves the
+		will not hold waits in this socket's own output buffer (see
+		`bytesPending` and `maxOutputBufferSize`), so a smaller one moves the
 		backlog of a slow peer from the kernel to where the application can
 		see and bound it. `0` until one is asked for, when the system's own
 		applies: Linux starts at 16 KB and grows it to 4 MB
@@ -503,9 +502,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	/**
-		What happens when the peer stops sending, see `PeerShutdownPolicy`.
+		What happens when the peer stops sending: see `PeerShutdownPolicy`.
 
-		Defaults to `CLOSE`, which is what this has always done. Set
+		Defaults to `CLOSE`. Set
 		`HALF_OPEN` for a protocol where a half-close marks the end of a
 		request rather than the end of the conversation, and read the hazard
 		on that value first: a departed peer is indistinguishable from a
@@ -544,9 +543,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if nodejs
 		// Node takes every write whole and queues what the kernel will not,
 		// so this side's buffer is empty after each flush and the backlog is
-		// Node's. Counting only ours read 0 for a peer that had stopped
-		// reading with megabytes queued, and so maxOutputBufferSize, which
-		// is measured against this, could never be reached on Node.
+		// Node's, counted here too: counting only ours would read 0 for a
+		// peer that had stopped reading with megabytes queued, and
+		// maxOutputBufferSize, measured against this, could never be reached
+		// on Node.
 		if (__socket != null) {
 			buffered += __socket.writableLength;
 		}
@@ -578,7 +578,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		registration out from under the loop; closing the socket is fine.
 
 		On Node it runs after each pass's flush, and from the tick while it is
-		set, the one thing a Node socket is ticked for.
+		set: the one thing a Node socket is ticked for.
 	**/
 	@:noCompletion public var __onWritableDrain(default, set):Void->Void;
 
@@ -602,9 +602,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	/**
-	 * Bytes handed to one `readBytes` call. Larger than the 4 KB this used to
-	 * use, which cost a syscall every 4 KB: a megabyte arrived in 256 reads
-	 * where it now takes 16.
+	 * Bytes handed to one `readBytes` call: 64 KB rather than 4 KB, which
+	 * would cost a syscall every 4 KB, a megabyte in 256 reads where this
+	 * takes 16.
 	 */
 	@:noCompletion private static inline var READ_CHUNK:Int = 64 * 1024;
 
@@ -631,11 +631,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 	 * Consumed bytes tolerated at the front of `__input` before the unread
-	 * tail is moved down. Compacting on every arrival, which is what
-	 * rebuilding the buffer per read amounted to, costs a copy of the whole
-	 * unread backlog each time, so a consumer that reads slower than the peer
-	 * writes paid for its backlog again on every event. Measured at 50x the
-	 * arriving bytes after 200 events, and rising, because the cost is
+	 * tail is moved down. Compacting on every arrival costs a copy of the
+	 * whole unread backlog each time, so a consumer that reads slower than
+	 * the peer writes would pay for its backlog again on every event: 50x
+	 * the arriving bytes after 200 events, and rising, because the cost is
 	 * quadratic in the number of arrivals.
 	 */
 	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
@@ -659,8 +658,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * and find it changed underneath. Sharing it is what makes a large buffer
 	 * affordable: per socket, 64 KB across the default 256 connections would
 	 * be 16 MB of idle buffer, where one shared buffer is 64 KB no matter how
-	 * many connections a thread carries, less than the 1 MB those 256
-	 * sockets used to hold between them at 4 KB each.
+	 * many connections a thread carries.
 	 */
 	#if target.threaded
 	@:noCompletion private static final __readScratch:Tls<Bytes> = new Tls();
@@ -672,8 +670,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * Drops bytes already read out of `__input`, so appending does not grow
 	 * the buffer past what is still unread.
 	 *
-	 * A fully drained buffer, the common case, since most protocols consume
-	 * what they are given, resets in constant time. Otherwise the tail is
+	 * A fully drained buffer (the common case, since most protocols consume
+	 * what they are given) resets in constant time. Otherwise the tail is
 	 * moved only once the consumed prefix is worth the move, which is what
 	 * turns compaction from a per-arrival cost into an amortised one.
 	 */
@@ -732,9 +730,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// How much of the front of __output the system has already taken; see
 	// __retainPendingOutput.
 	@:noCompletion private var __outputSent:Int = 0;
-	// What the network has taken from this socket since it connected, on
+	// What the network has taken from this socket since it connected (on
 	// Node and in a page, what was handed to the platform's own queue, which
-	// outputBufferLength counts as still pending, for
+	// outputBufferLength counts as still pending), for
 	// OutputProgressEvent.bytesTotal.
 	@:noCompletion private var __bytesSent:Float = 0;
 	// An OUTPUT_PROGRESS owed for bytes that moved; whether one is queued for
@@ -775,10 +773,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	// Whether CLOSE has been dispatched for the connection this socket holds.
 	// A connection ends once, and is announced once: several paths can see
-	// the end of the same one, the read that met its FIN, a close() from a
-	// listener, Node's close event after its end event, and two of them
-	// firing turned one hang-up into two, so an application counting live
-	// connections drifted by one each time.
+	// the end of the same one (the read that met its FIN, a close() from a
+	// listener, Node's close event after its end event), and two of them
+	// firing would turn one hang-up into two, so an application counting
+	// live connections would drift by one each time.
 	@:noCompletion private var __closeAnnounced:Bool = false;
 
 	@:noCompletion private function __announceClose():Void {
@@ -800,8 +798,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// The socket's connect, close, ioError and socketData events, one of each,
 	// made when first dispatched and handed out again for every dispatch
 	// after: valid only during the listener call, as every event is (see
-	// Event). Each is taken afresh while it is out, a listener that pumps
-	// the runtime can be handed the next inside its own call, and made
+	// Event). Each is taken afresh while it is out (a listener that pumps
+	// the runtime can be handed the next inside its own call) and made
 	// afresh every time under -D crossbyte_fresh_events or
 	// -D crossbyte_check_events, the second killing it after its call.
 	@:noCompletion private var __pooledConnectEvent:Event;
@@ -841,20 +839,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		super();
 
 		endian = ByteArray.defaultEndian;
-		// It was never set: 0 natively and on the jvm, which is AMF0 and
-		// throws without -lib format, and null elsewhere, which throws too,
-		// so readObject and writeObject threw until an application chose.
+		// Set here: unset, it is 0 natively and on the jvm, which is AMF0 and
+		// throws without -lib format, and null elsewhere, which throws too.
 		objectEncoding = ObjectEncoding.DEFAULT;
 		timeout = 20000;
 		__connected = false;
 		__closed = false;
 		__isConnecting = false;
 
-		// 65535 inclusive, which is what connect() accepts. This read
-		// `port < 65535`, so the highest valid TCP port was the one port
-		// number for which the constructor quietly declined to connect,
-		// and any port out of range was declined as quietly, where the
-		// SecurityError above was promised.
+		// 65535 inclusive, which is what connect() accepts; any port out of
+		// range is refused with the SecurityError above, not quietly.
 		if (port < 0 || port > 65535) {
 			throw new SecurityError("Invalid socket port number specified.");
 		}
@@ -868,7 +862,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		`close()` method has been called.
 
 		The `close` event is dispatched for it, before this returns, if the
-		connection had come up, once, as for a close by the peer, so code
+		connection had come up (once, as for a close by the peer), so code
 		that lets go of a connection's resources on `close` does so whichever
 		end closed it. AIR dispatches `close` only for the peer's close;
 		CrossByte dispatches it for every end of a connection. A connect still
@@ -886,7 +880,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		over, and happens there after this returns: `close` is dispatched on
 		the runtime's thread, and a connection that has ended meanwhile is
 		left as it is. A runtime's sockets and listeners are not thread-safe,
-		and a close made elsewhere told the listeners on the wrong thread.
+		and a close made elsewhere would tell the listeners on the wrong thread.
 		@throws IOError The socket could not be closed, or the socket was not
 						open.
 	**/
@@ -924,8 +918,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		What was written goes before the connection closes, as far as the
 		system takes it now. Every write is sent at the end of the pass on its
-		own, and a close() in the same pass came first: what was written just
-		before it was thrown away, on every target.
+		own, and a close() in the same pass comes first, so what was written
+		just before it would otherwise be thrown away.
 	**/
 	@:noCompletion private function __sendBeforeClose():Void {
 		if (__output == null || __output.length <= __outputSent) {
@@ -979,9 +973,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__timestamp = Timer.stamp();
 		#else
 		// An address is taken as it is. A name is looked up off the runtime's
-		// thread, see below, where it used to be looked up here, holding
-		// every socket and timer on the runtime for as long as the resolver
-		// took: a second, for a name that does not exist.
+		// thread (see below), so no socket or timer on the runtime waits on
+		// the resolver: a second, for a name that does not exist.
 		var h:Host = null;
 
 		if (!crossbyte._internal.net.Resolver.needsLookup(host)) {
@@ -1056,7 +1049,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var node:NodeSocket = null;
 		var opened = function() {
 			// Only while this is the connection held: one given up for
-			// another, by close(), or connect() again, still opens.
+			// another (by close(), or connect() again) still opens.
 			if (__socket != node) {
 				return;
 			}
@@ -1140,10 +1133,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__socket.setBlocking(false);
 			// Before the connect rather than once it is under way: Windows
 			// refuses TCP_NODELAY on a socket whose connect is in progress,
-			// and hxcpp does not report the refusal, so set afterwards it was
-			// lost on every connect that took any time, every one over a
-			// network, and Nagle's algorithm held each small write behind
-			// the acknowledgement of the last.
+			// and hxcpp does not report the refusal, so set afterwards it would
+			// be lost on every connect that took any time (every one over a
+			// network), and Nagle's algorithm would hold each small write
+			// behind the acknowledgement of the last.
 			__socket.setFastSend(true);
 			__socket.connect(h, port);
 		} catch (e:Error) {
@@ -1156,7 +1149,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 			// A would-block is the normal case on a target with real non-blocking
 			// sockets: the connect is in flight, and the tick below waits for it to
-			// become writable. Nothing to record, both completions defer there.
+			// become writable. Nothing to record: both completions defer there.
 		} catch (e:Dynamic) {
 			// A TLS socket's connect reports the would-block as its TLS layer
 			// spells it, a string, which is as ordinary; anything else failed.
@@ -1179,13 +1172,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket.custom = this;
 
 		#if eval
-		// eval's sockets are blocking, setBlocking is a no-op there (see the
+		// eval's sockets are blocking (setBlocking is a no-op there; see the
 		// read loop), so a connect that returns has genuinely completed and the
 		// socket is writable now. There is no tick-driven writability signal to
 		// defer to, and forcing the connect through one hangs: the first read the
 		// completion tick makes would block on a socket with nothing to say yet.
-		// Announce the connect here, which is what every target did before the
-		// deferral below and what eval still needs.
+		// Announce the connect here, as eval needs.
 		#if !macro
 		if (secure) {
 			// And the TLS handshake the same way, held until it is done.
@@ -1203,8 +1195,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance.registerSocket(__socket);
 		__dispatchPooledSimpleEvent(Event.CONNECT);
 		#else
-		// Both completions, pending, and the immediate one a loopback connect
-		// can return on Windows, wait for the tick to confirm the socket is
+		// Both completions (pending, and the immediate one a loopback connect
+		// can return on Windows) wait for the tick to confirm the socket is
 		// writable before CONNECT is dispatched. The tick gates that dispatch on
 		// a select() for writability (see this_onTick); a non-blocking connect
 		// that returns success has not necessarily finished the handshake, so a
@@ -1308,10 +1300,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Keeps `timeout` on Node, which had no deadline of its own for a
-		connect: one that had not opened, a TLS one's handshake counted with
-		it, as natively, was waited on for as long as the system kept
-		trying, and a handshake the server never answered for good. At the
+		Keeps `timeout` on Node, which has no deadline of its own for a
+		connect: one that has not opened (a TLS one's handshake counted with
+		it, as natively) would be waited on for as long as the system kept
+		trying, and a handshake the server never answered, for good. At the
 		deadline the attempt is ended and reported as an `ioError`, as a
 		refused one is.
 	**/
@@ -1354,9 +1346,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Sends what has been written and not yet sent, now.
 
 		There is no need to call it for data to go. Every write is sent by
-		the runtime on its own, on every target and operating system,
-		natively the next time the runtime services its sockets, which its
-		own loop does within the frame, and on Node at the end of the pass,
+		the runtime on its own, on every target and operating system
+		(natively the next time the runtime services its sockets, which its
+		own loop does within the frame, and on Node at the end of the pass),
 		with the writes made meanwhile sent together. `flush()` sends straight
 		away instead, for a caller that wants the bytes handed to the system
 		before it goes on. Natively what the system will not take yet waits,
@@ -1383,8 +1375,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (!__connected) {
 			// Still connecting, or still looking the name up: what was
 			// written waits, and goes from the tick that announces CONNECT.
-			// Written now it failed, "not connected", on Windows, and the
-			// tick's own flush reported that as an ioError on every tick
+			// Written now it would fail ("not connected", on Windows), and the
+			// tick's own flush would report that as an ioError on every tick
 			// until the connect finished.
 			__enforceOutputLimit();
 			return;
@@ -1393,8 +1385,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (__output.length > __outputSent) {
 			#if (js && !nodejs)
-			// A page's WebSocket sends only once open. Until then, and it is
-			// what connect() leaves it as, the bytes wait here: send() on a
+			// A page's WebSocket sends only once open. Until then (and it is
+			// what connect() leaves it as) the bytes wait here: send() on a
 			// connecting WebSocket throws, and this runs from the tick.
 			if (__socket.readyState != WebSocket.OPEN) {
 				return;
@@ -1402,11 +1394,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			#end
 			try {
 				#if (js && !nodejs)
-				// Sent, then cleared. The buffer was never cleared, and the tick
-				// flushes every pass, so one write went out again on every
-				// tick for as long as the connection lasted: an 11-byte write
-				// reached the server as 25 messages in two seconds. send()
-				// copies what it is given, so a view is enough.
+				// Sent, then cleared, or the tick, which flushes every pass,
+				// would send one write again for as long as the connection
+				// lasted. send() copies what it is given, so a view is enough.
 				var pending:Int = __output.length;
 				__socket.send(new js.lib.Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending));
 				__bytesSent += pending;
@@ -1414,18 +1404,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif nodejs
 				// Copied, not viewed. Node holds what it is handed until the
 				// kernel takes it, and __output is cleared and refilled by the
-				// very next write, clear() resets the length and keeps the
-				// storage, so a view let later writes overwrite bytes still
-				// queued. A reader slower than the writer got the wrong data:
-				// ten 1 MB messages to a paused client arrived as the first
-				// five and then 5 MB of the last. __output keeps its capacity
-				// for the next write.
+				// very next write (clear() resets the length and keeps the
+				// storage), so a view would let later writes overwrite bytes
+				// still queued, and a reader slower than the writer would get
+				// the wrong data. __output keeps its capacity for the next write.
 				//
 				// Two ways to copy, by size, from measuring the write-and-flush
 				// loop over loopback: a small copy from Node's own pool costs
 				// half what a fresh one does, and from a kilobyte up a native
-				// slice was the quicker. Handing over __output's storage and
-				// starting a new one was slower than either.
+				// slice is the quicker. Handing over __output's storage and
+				// starting a new one is slower than either.
 				var pending:Int = __output.length;
 				var view = new Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending);
 				// Told when Node has passed them on to the system, which is
@@ -1451,16 +1439,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// From where the last partial write stopped; the JavaScript
 				// branches above take everything, so there it is always 0.
 				//
-				// And written until the socket will take no more, not once. A
-				// TLS socket takes one record a write, 16 KB, so a single
-				// write a flush sent 16 KB a pass whatever room the kernel had,
-				// and left the rest to wait for the next.
+				// And written until the socket will take no more, not once: a
+				// TLS socket takes one record a write (16 KB), so a single write
+				// a flush would send 16 KB a pass whatever room the kernel had,
+				// and leave the rest to wait for the next.
 				//
-				// A full send buffer is -1 here, not an exception. It was thrown
+				// A full send buffer is -1 here, not an exception: thrown
 				// natively, caught and thrown again as Blocked, and caught again
-				// below: 6.2 us for every pass that found a slow peer's window
-				// still shut, where the refused send itself is a few hundred ns.
-				// A real failure still throws, to the catch below.
+				// below, it cost 6.2 us for every pass that found a slow peer's
+				// window still shut, where the refused send itself is a few
+				// hundred ns. A real failure still throws, to the catch below.
 				var pendingLength:Int = __output.length - __outputSent;
 				var bytesWritten:Int = 0;
 				var refused:Bool = false;
@@ -1494,25 +1482,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				var throwError = false;
 				if (__isBlockedError(e)) {
 					flushFull = true;
-					// The same queue a partial write uses. This used to be
-					// Timer.delay(__tryFlush, 0): per-socket work routed
-					// through the global timer, when the socket already sits
-					// in a registry that drains a writable queue every pump.
-					// Two mechanisms for one job, and the timer was the one
-					// that could take the whole runtime loop down with it,
-					// because an exception there unwinds through the tick
-					// dispatch instead of failing the one connection.
+					// The same queue a partial write uses: per-socket work stays
+					// with the registry, which drains a writable queue every
+					// pump, rather than going through the global timer, where an
+					// exception would unwind through the tick dispatch instead
+					// of failing the one connection.
 					__queueWrite();
 				} else {
 					throwError = true;
 				}
 				if (throwError) {
-					// The real write error, not a fabricated one. This used to
-					// throw "Operation attempted on invalid socket." for every
-					// non-blocking-related failure, a message naming a cause
-					// (a null socket) that had nothing to do with what actually
-					// happened, which is why an intermittent write failure here
-					// was unreadable for so long. Surface what was caught.
+					// The real write error, not a fabricated one, so an
+					// intermittent write failure says what actually happened.
 					throw new IOError("Socket write failed: " + Std.string(e));
 				}
 			}
@@ -1694,9 +1675,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		// As a ByteArray reads one, in every encoding a ByteArray can, JSON
-		// always, AMF with -lib format, and one this build cannot do throws.
-		// Only HXSF was read: anything else read null, and said nothing.
+		// As a ByteArray reads one, in every encoding a ByteArray can (JSON
+		// always, AMF with -lib format), and one this build cannot do throws.
 		__input.objectEncoding = objectEncoding;
 		return __input.readObject();
 	}
@@ -1864,9 +1844,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		// Checked as DatagramSocket.send checks, against what is left after
-		// the offset, `offset + length` overflows. ByteArray.writeBytes
-		// clamps, so an offset or length past the bytes wrote whatever part
-		// of them there was, where a RangeError was promised. The whole of
+		// the offset (`offset + length` overflows), so an offset or length
+		// past the bytes is the RangeError promised rather than clamped, as
+		// ByteArray.writeBytes would. The whole of
 		// `bytes`, the usual call, has nothing to check; and the length is
 		// the field itself, not ByteArray's getter, which is a call.
 		if (offset != 0 || length != 0) {
@@ -2058,10 +2038,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __cleanSocket():Void {
 		#if !js
 		// Out of the poll set before the socket is closed, not after. A poll
-		// backend that holds each descriptor with the system, libuv's,
-		// must let go of one while it is still open: closed first, a
-		// descriptor a child process had inherited kept its registration,
-		// and the loop woke for it without sleeping for good.
+		// backend that holds each descriptor with the system (libuv's) must
+		// let go of one while it is still open: closed first, a descriptor a
+		// child process had inherited would keep its registration, and the
+		// loop would wake for it without sleeping, for good.
 		if (__cbInstance != null && __socket != null) {
 			@:privateAccess
 			__cbInstance.deregisterSocket(__socket);
@@ -2070,13 +2050,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		try {
 			#if nodejs
-			// A js.node.net.Socket has no close(). This called one anyway, and
-			// the catch below swallowed the TypeError, so closing a socket on
-			// Node did nothing at all: the peer was never sent a FIN and the
-			// handle went on holding the event loop open. end() flushes what
-			// Node still has queued, sends the FIN, and releases the handle
-			// once the peer answers, unless the queue is what is being
-			// reclaimed, when it goes at once.
+			// A js.node.net.Socket has no close(). end() flushes what Node
+			// still has queued, sends the FIN, and releases the handle once the
+			// peer answers, unless the queue is what is being reclaimed, when
+			// it goes at once.
 			if (__discardOnClose) {
 				__socket.destroy();
 			} else {
@@ -2132,7 +2109,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		The runtime this socket's connection runs on: the one polling it
 		natively, the one flushing its writes on Node, the page's in a
 		browser. `__cbInstance` is set only natively, and a WebSocket's on
-		Node; read on its own, it was null on a Node client.
+		Node, so read on its own it would be null on a Node client.
 	**/
 	@:noCompletion private inline function __runtime():Null<CrossByte> {
 		#if nodejs
@@ -2155,9 +2132,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isConnecting = true;
 		// One closure, kept, so the one removed is the one added. On eval two
 		// reads of `this_onTick` are two closures that do not compare equal,
-		// so removing a fresh one removed nothing and the socket went on
-		// being ticked, a blocking read there, on a socket with nothing to
-		// say, and the runtime hung.
+		// so removing a fresh one would remove nothing and the socket would
+		// go on being ticked (a blocking read there, on a socket with nothing
+		// to say), and the runtime would hang.
 		if (__connectingTick == null) {
 			__connectingTick = this_onTick;
 		}
@@ -2174,8 +2151,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		What a progress handler itself sends is reported at the next pass,
 		not this one. The runtime finishes everything a pass asked for before
 		it polls again, so otherwise a writer feeding a socket that never
-		fills, TLS, slower to encrypt than its reader is to read, was
-		told and wrote again until it had nothing left, with every other
+		fills (TLS, slower to encrypt than its reader is to read) would be
+		told and write again until it had nothing left, with every other
 		connection waiting.
 	**/
 	@:noCompletion private function __noteProgress():Void {
@@ -2231,8 +2208,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		What the network has taken since the connection opened, on Node
-		and in a page, what the platform's queue has, for bytesTotal.
+		What the network has taken since the connection opened (on Node
+		and in a page, what the platform's queue has), for bytesTotal.
 	**/
 	@:noCompletion private function __sentTotal():Float {
 		return __bytesSent;
@@ -2251,7 +2228,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		// This is the retry half of a blocked write, dispatched from the
 		// registry's writable queue, so the socket may have been closed in
-		// between, by the peer, by the application, or by the overflow
+		// between: by the peer, by the application, or by the overflow
 		// policy. There is nothing left to retry, and throwing here would
 		// escape into the runtime's dispatch and take down the caller's
 		// loop rather than the one connection.
@@ -2267,7 +2244,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// registry drain, where an escape costs every other connection
 			// in the loop rather than this one. The IO error is dispatched
 			// so the owner can react; the connection is left for the read
-			// side to reap, unless it has none, see __flushFailed.
+			// side to reap, unless it has none: see __flushFailed.
 			__flushFailed(Std.string(e));
 			return;
 		}
@@ -2281,11 +2258,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Accounts for a write that took `bytesWritten` of the `pendingLength`
 		bytes waiting, from `__outputSent` on.
 
-		What the system took is stepped over rather than cut off. This used to
-		copy everything still waiting into a new buffer on every partial write,
-		so a peer reading slowly behind a large backlog cost a copy of the
-		whole backlog per write the kernel only partly took, quadratic in
-		the backlog, where the input side had already been fixed. The buffer
+		What the system took is stepped over rather than cut off: copying
+		everything still waiting into a new buffer on every partial write
+		would cost, for a peer reading slowly behind a large backlog, a copy
+		of the whole backlog per write the kernel only partly took, quadratic
+		in the backlog. The buffer
 		is compacted only once what has gone is past the threshold and at
 		least as large as what remains, so moving the rest down costs no more
 		than the writes that emptied the front.
@@ -2354,8 +2331,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public inline function registryOnWritable():Void {
 		// `__isDirty` means "a writable retry is queued", so it is cleared
 		// as the queue dispatches. Without this a socket that blocks twice
-		// in a row never re-queues, __queueWrite() would see itself as
-		// already pending, and its buffered data is stranded silently.
+		// in a row never re-queues (__queueWrite() would see itself as
+		// already pending), and its buffered data is stranded silently.
 		__isDirty = false;
 
 		#if !js
@@ -2371,20 +2348,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		// __tryFlush rather than flush: flush() returns early while
 		// `flushFull` is set, so calling it here could never recover a
-		// fully blocked socket; only clearing that flag first does. That
-		// is why the timer was the sole recovery path for the blocked
-		// case even though the queue was already wired for the partial one.
+		// fully blocked socket; only clearing that flag first does.
 		__tryFlush();
 	}
 
 	// Event Handlers
 	@:noCompletion private function socket_onClose(_):Void {
 		#if (js && !nodejs)
-		// The page's WebSocket has closed, from either end. This dispatched
-		// CLOSE and left everything else as it was: still connected, still
-		// flushed from the tick, for as long as the page stayed open. It is
-		// cleaned up the way a native socket is, and CLOSE is announced only
-		// for a connection that came up, one that never opened has had its
+		// The page's WebSocket has closed, from either end. It is cleaned up
+		// the way a native socket is, and CLOSE is announced only for a
+		// connection that came up: one that never opened has had its
 		// ioError, as it would natively.
 		var wasConnected:Bool = __connected;
 		if (__socket != null) {
@@ -2394,13 +2367,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__announceClose();
 		}
 		#elseif nodejs
-		// Node's handle is gone, from either end. This dispatched CLOSE and
-		// left the rest as it was: still connected, still holding the handle,
-		// and still flushed from the tick, one tick listener left behind per
-		// connection, 200 of them after 200 HTTP clients had come and gone.
-		// Released now as a native socket is, and announced once, and only
-		// for a connection that came up: a connect that failed has had its
-		// ioError.
+		// Node's handle is gone, from either end. Released now as a native
+		// socket is, leaving no tick listener behind, and announced once,
+		// and only for a connection that came up: a connect that failed has
+		// had its ioError.
 		var wasConnected:Bool = __connected;
 		if (__socket != null) {
 			__releaseNode();
@@ -2418,8 +2388,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// The attempt is over, if it was one: reported here, and not again
 		// by its deadline before Node's close arrives.
 		__clearNodeConnectDeadline();
-		// What Node says went wrong, a refused connection, a certificate
-		// its TLS would not accept, where the ioError said nothing.
+		// What Node says went wrong (a refused connection, a certificate its
+		// TLS would not accept), for the ioError.
 		var message:Dynamic = e == null ? null : Reflect.field(e, "message");
 		__dispatchPooledIOError(message == null ? "" : Std.string(message));
 		#else
@@ -2428,9 +2398,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
-		// bytesLoaded is what arrived, as natively, where it was everything
-		// still unread: one event said 3 and the next 7 for the same 4 bytes,
-		// on Node and in a page alone.
+		// bytesLoaded is what arrived, as natively, not everything still
+		// unread.
 		#if (js && !nodejs)
 		if (__input.position == __input.length) {
 			__input.clear();
@@ -2458,8 +2427,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		// Node hands out Buffers backed by a shared pool, so only the chunk's
-		// own region is read, taking .buffer whole would pick up unrelated
-		// data either side of it, and it is copied straight into the input,
+		// own region is read (taking .buffer whole would pick up unrelated
+		// data either side of it), and it is copied straight into the input,
 		// once.
 		var chunk:Uint8Array = cast msg;
 		@:privateAccess (__input : ByteArrayData).__appendView(chunk);
@@ -2485,16 +2454,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		node.setNoDelay(true);
 
 		// Each one contained. These run from Node's event loop, not from
-		// anything of CrossByte's, so a listener that threw, a data handler
-		// meeting input it could not parse, say, threw into Node, which
-		// ended the process: every other connection with it.
+		// anything of CrossByte's, so a listener that threw (a data handler
+		// meeting input it could not parse, say) would throw into Node,
+		// which ends the process, and every other connection with it.
 		//
 		// And each one only while `node` is the connection held. A socket let
-		// go of goes on reporting, its close comes a turn after its error,
-		// and after close() or connect() its end and close, and these were
-		// taken for the connection that replaced it: a connect retried from
-		// the ioError of a refused one was released by the refused one's
-		// close, and connected with nothing to write to.
+		// go of goes on reporting (its close comes a turn after its error,
+		// and after close() or connect() its end and close), which must not
+		// be taken for the connection that replaced it: a connect retried
+		// from the ioError of a refused one would be released by the refused
+		// one's close, and connected with nothing to write to.
 		node.on(SocketEvent.Data, function(chunk) {
 			if (__socket != node) {
 				return;
@@ -2541,10 +2510,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		The peer's FIN: it will send nothing more. What happens next is
 		`peerShutdownPolicy`'s, as it is at the Eof a native read meets.
 
-		Node made the choice itself: a socket without `allowHalfOpen` ends its
-		own side as soon as the peer does, so `HALF_OPEN` was ignored and a
-		peer that half-closed to say "that is my request" never got its answer.
-		Every socket is made half-open now, and this decides.
+		Node makes the choice itself unless asked not to: a socket without
+		`allowHalfOpen` ends its own side as soon as the peer does, ignoring
+		`HALF_OPEN`, so a peer that half-closed to say "that is my request"
+		would never get its answer. Every socket is made half-open, and this
+		decides.
 	**/
 	@:noCompletion private function socket_onEnd():Void {
 		if (__socket == null) {
@@ -2603,8 +2573,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 *
 	 * `ServerSocket` reaches the same place on a native target by setting these
 	 * fields itself, because there the accepted thing is a `sys.net.Socket` and
-	 * has to be registered for polling. Here there is nothing to register,
-	 * Node delivers the bytes, so what is left is the state a connected
+	 * has to be registered for polling. Here there is nothing to register
+	 * (Node delivers the bytes), so what is left is the state a connected
 	 * socket has, and it is set here rather than there so that `connect()` and
 	 * `accept` produce the same object.
 	 *
@@ -2638,10 +2608,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Ticked only while a writer is feeding the socket through
 		`__onWritableDrain`, which it expects to be asked again whether or not
-		anything drained. Every Node socket used to be ticked for as long as it
-		was open, to flush what had been written, a visit a tick for each of
-		thousands of idle connections, where a write now asks for its own
-		flush at the end of the pass.
+		anything drained, rather than every Node socket for as long as it is
+		open (a visit a tick for each of thousands of idle connections): a
+		write asks for its own flush at the end of the pass.
 	**/
 	@:noCompletion private function __syncNodeTick():Void {
 		var wanted:Bool = __socket != null && __onWritableDrain != null && __nodeRuntime != null;
@@ -2658,8 +2627,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		The end of a pass in which something was written: flushed, and the
-		streaming writer, if there is one, offered the room, what the
-		registry's writable queue does natively. Contained, since this runs
+		streaming writer, if there is one, offered the room (what the
+		registry's writable queue does natively). Contained, since this runs
 		from Node's own loop.
 	**/
 	@:noCompletion public function __flushPass():Void {
@@ -2719,12 +2688,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// And then whoever is feeding this socket in slices. On the native
 			// targets that call comes from `registryOnWritable`, which the poll
 			// registry makes when the descriptor reports writable; Node has no
-			// registry and no descriptor, so nothing was making it at all. A
-			// streamed response therefore wrote its head and first slice and
-			// then stopped forever, waiting on a drain that could not arrive,
-			// so every identity response over the 256 KB streaming threshold
-			// hung its connection on Node, with the client left waiting on a
-			// body that was never coming.
+			// registry and no descriptor, so it is made here, or a streamed
+			// response would write its head and first slice and then wait
+			// forever on a drain that could not arrive.
 			//
 			// Once per tick rather than per write: the pump bounds itself by
 			// the watermark and by a burst budget, so it writes only what the
@@ -2740,7 +2706,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (__resolving) {
 			// The name is still being looked up, so there is no connect to
-			// ask the socket about yet, only the attempt's deadline, which
+			// ask the socket about yet: only the attempt's deadline, which
 			// counts the lookup. A resolver that never answers is not waited
 			// on past it.
 			if (__pastDeadline()) {
@@ -2761,9 +2727,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (!connected && !__tlsHandshaking) {
 			// Asked about on both sets. A connect that fails is reported in the
 			// exception set on Windows and never becomes writable, so watching
-			// writability alone could not see it: a refused connection sat here
-			// until the connect timeout, twenty seconds by default, for a
-			// refusal the operating system had reported in two.
+			// writability alone would leave a refused connection here until
+			// the connect timeout (twenty seconds by default, for a refusal
+			// the operating system reported in two).
 			//
 			// POSIX reports a failed connect as writable instead, so there the
 			// connect is announced and the failure surfaces on the first read.
@@ -2772,10 +2738,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var r = SysSocket.select([], [__socket], [__socket], 0);
 
 			#if ((java || jvm) && !macro)
-			// Settled by whichever select reached it first, the runtime's
-			// poll as often as this one, and that one filed the reason on the
-			// socket. NIO closes a channel whose connect failed, so this select
-			// found nothing, and the refusal waited out the connect deadline.
+			// Settled by whichever select reached it first (the runtime's
+			// poll as often as this one), and that one filed the reason on the
+			// socket: NIO closes a channel whose connect failed, so this select
+			// finds nothing, and the refusal would wait out the connect deadline.
 			if (r.write.length == 0 && r.others.length == 0 && __socket.__connectFailure != null) {
 				failure = __socket.__connectFailure;
 				doClose = true;
@@ -2784,10 +2750,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 			#if (cpp && !macro)
 			// Writable is not connected. POSIX makes a refused or unreachable
-			// connect writable too, so on Linux and macOS a refusal was
-			// announced as CONNECT and then, at the first read, a CLOSE, a
-			// hangup, which a caller does not retry, where Windows, which
-			// reports it in the exception set, said ioError. SO_ERROR tells
+			// connect writable too, so on Linux and macOS a refusal would be
+			// announced as CONNECT and then, at the first read, a CLOSE (a
+			// hangup, which a caller does not retry), where Windows, which
+			// reports it in the exception set, says ioError. SO_ERROR tells
 			// the two apart, and says why.
 			if (r.write.length > 0 && r.write[0] == __socket) {
 				failure = crossbyte._internal.net.NativeSocketAddress.connectError(__socket);
@@ -2855,9 +2821,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if ((connected || doConnect) && !__peerShutdown && !__inputPaused) {
 			// Arrivals are appended to the existing buffer, which grows
-			// geometrically and keeps its capacity. This used to allocate a
-			// fresh Bytes per arrival and copy the whole unread backlog into
-			// it, so the buffer was rebuilt from scratch on every event.
+			// geometrically and keeps its capacity, rather than a fresh Bytes
+			// per arrival with the whole unread backlog copied into it.
 			__compactInput();
 			readPos = __input.position;
 			room = __inputRoom(__input.length - readPos);
@@ -2903,7 +2868,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					}
 
 					if (l > 0) {
-						// As Bytes: writeBytes takes a ByteArray, and one was
+						// As Bytes: writeBytes takes a ByteArray, which would be
 						// made around the scratch for every read.
 						@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, l);
 						bLength += l;
@@ -2913,8 +2878,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// closes the connection, the same as a failed read.
 					//
 					// A full TLS record reads on as a full buffer does: it
-					// never fills the buffer, so every TLS read used to end
-					// its pass, and an upload was read a record a pass. Not on
+					// never fills the buffer, so otherwise every TLS read would
+					// end its pass, and an upload be read a record a pass. Not on
 					// eval, whose sockets block: a read past the last record
 					// there waits for the peer's next one.
 				} while (bLength < READ_BUDGET && bLength < room
@@ -2922,8 +2887,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					#if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				// The peer sent FIN. That is all this says: it will send no
-				// more. Whether it is still reading, half-closed and waiting
-				// for an answer, or gone entirely is not knowable here, and
+				// more. Whether it is still reading (half-closed and waiting
+				// for an answer) or gone entirely is not knowable here, and
 				// a write would succeed either way by reaching only the kernel
 				// send buffer. So the fact is recorded and the policy decides.
 				__peerShutdown = true;
@@ -2966,11 +2931,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// before anything below mutates it, so that ordering the three
 		// dispatches does not change which of them fires. A close decided
 		// while still connected is a peer hangup (CLOSE); one decided before
-		// the connection ever came up is a failure (ioError), the same split
-		// the single if/else chain here used to make.
+		// the connection ever came up is a failure (ioError).
 		// A connect that completes this tick counts as connected for the verdict
 		// below: the peer sent data, so the connection came up. Without the
-		// `|| doConnect` a one-shot peer, accept, write, close, whose data and
+		// `|| doConnect` a one-shot peer (accept, write, close) whose data and
 		// FIN arrive in the same tick the connect completes would be reported as a
 		// failed connection (ioError) rather than a hangup after a clean exchange
 		// (CLOSE).
@@ -2979,11 +2943,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// CONNECT, then any data, then CLOSE. A tick can legitimately carry
 		// all three: the handshake completes, the peer's first burst is
 		// already buffered, and its FIN is right behind it. The connect is
-		// announced even when the close is decided in the same tick, the
-		// connection did come up, and a listener that sets up its data handling
-		// on CONNECT must run before the data and the close reach it. The guard
-		// here used to also require `!doClose`, which silently dropped CONNECT for
-		// exactly that case and, with it, turned the close into an ioError.
+		// announced even when the close is decided in the same tick: the
+		// connection did come up, and a listener that sets up its data
+		// handling on CONNECT must run before the data and the close reach
+		// it, and without CONNECT the close would read as an ioError.
 		if (doConnect) {
 			__connected = true;
 			__stopConnecting();
@@ -3002,24 +2965,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__cbInstance.unwatchWritable(__socket);
 			__dispatchPooledSimpleEvent(Event.CONNECT);
 			// Closed by a listener: nothing more is announced, and what this
-			// tick decided, a close the peer's hangup asked for, in the same
-			// tick on macOS, is not acted on a second time. It cleaned the
-			// socket up again, and natively called close() on the one the
-			// listener's close had let go: a null dereference that ended the
-			// process.
+			// tick decided (a close the peer's hangup asked for, in the same
+			// tick on macOS) is not acted on a second time, which would
+			// natively call close() on the socket the listener's close had let
+			// go: a null dereference that ends the process.
 			if (__socket == null) {
 				return;
 			}
 		}
 
-		// Data is delivered before the close is announced. This block used to
-		// run after it, which lost the last bytes of every connection whose
-		// final payload arrived in the same tick as its FIN: a listener that
-		// tears down on CLOSE never saw them, and one that tried to read them
-		// from the CLOSE handler hit a socket already nulled by
-		// __cleanSocket() and threw IOError out of the tick dispatch, taking
-		// down the runtime loop rather than the one connection. Not an eval
-		// problem; every target read in that order.
+		// Data is delivered before the close is announced, or the last bytes
+		// of every connection whose final payload arrived in the same tick as
+		// its FIN would be lost: a listener that tears down on CLOSE would
+		// never see them, and one that tried to read them from the CLOSE
+		// handler would hit a socket already nulled by __cleanSocket() and
+		// throw IOError out of the tick dispatch, taking down the runtime
+		// loop rather than the one connection.
 		if (bLength > 0) {
 			__dispatchPooledSocketData(bLength, 0);
 			// As after CONNECT: a data listener may close it.
@@ -3092,8 +3053,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		Whether the attempt under way has run past `timeout`. A timeout of 0
-		or less is no deadline, as it was already on Node: natively it failed
-		every connect that took any time at all.
+		or less is no deadline, on every target.
 	**/
 	@:noCompletion private inline function __pastDeadline():Bool {
 		return timeout > 0 && haxe.Timer.stamp() - __timestamp > timeout / 1000;
@@ -3105,11 +3065,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		the writable queue does not ask the poll set.
 
 		A peer's end of stream is readable for good, so a half-open socket
-		left in the set was reported on every poll, a POLL loop spun a whole
-		core per connection held that way, re-entering a handler that had
-		nothing to read, and each report flushed again, so a write that
-		failed was reported again every time: 25,566 ioErrors in half a second
-		on a TLS 1.2 connection.
+		left in the set would be reported on every poll (a POLL loop spinning
+		a whole core per connection held that way, re-entering a handler
+		that had nothing to read), and each report would flush again, so a
+		write that failed would be reported again every time: 25,566
+		ioErrors in half a second on a TLS 1.2 connection.
 	**/
 	@:noCompletion private function __dropReadInterest():Void {
 		if (__cbInstance != null && __socket != null) {
@@ -3143,11 +3103,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Asked by the registry every few seconds while this socket holds
 		buffer storage. One that has read and written nothing since it was
-		last asked lets go of what its buffers hold, an idle connection
-		kept the largest message it had ever sent and received, about 49 KB
-		after one of 16 KB each way, for as long as it was open, unless
-		the application has left something unread or the peer has not taken
-		something written. Its pooled events go too. False once there is
+		last asked lets go of what its buffers hold (an idle connection
+		would otherwise keep the largest message it had ever sent and
+		received, about 49 KB after one of 16 KB each way, for as long as it
+		was open), unless the application has left something unread or the
+		peer has not taken something written. Its pooled events go too. False once there is
 		nothing more to let go of, or the socket has closed.
 	**/
 	@:noCompletion public function __releaseIfQuiet():Bool {
@@ -3259,9 +3219,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		Stops reading at `maxInputBufferSize` until the application has read
-		below it. Natively the socket leaves the poll set's reads, it would
+		below it. Natively the socket leaves the poll set's reads (it would
 		be reported readable on every pass, with nothing read, and spin a POLL
-		loop, and its registry asks it once a pass whether to go on; on Node
+		loop), and its registry asks it once a pass whether to go on; on Node
 		Node's socket is paused, and asked each tick. What arrives meanwhile
 		waits in the system's buffer, and TCP's window holds the peer back.
 		What is written still goes: the writable queue does not ask the poll
@@ -3298,8 +3258,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		Whether reading still waits on the application: asked once a pass by
-		the registry, and on Node each tick. Below the limit again, or the
-		connection gone, it reads again, and says so.
+		the registry, and on Node each tick. Below the limit again (or the
+		connection gone) it reads again, and says so.
 	**/
 	@:noCompletion public function __inputStillPaused():Bool {
 		if (!__inputPaused) {
@@ -3319,8 +3279,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif !js
 		if (__cbInstance != null && !__peerShutdown) {
 			// Back in the poll set, read in this pass's poll if anything is
-			// waiting, in the kernel, or on the jvm in the TLS session, which
-			// the registry asks every socket it polls about.
+			// waiting (in the kernel, or on the jvm in the TLS session, which
+			// the registry asks every socket it polls about).
 			@:privateAccess __cbInstance.registerSocket(__socket);
 			@:privateAccess __cbInstance.__noteMoreToRead();
 		}
@@ -3331,10 +3291,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		A flush that failed for a reason other than a full send buffer, from
 		inside the runtime's own dispatch: the owner is told. A socket still
-		reading is left for its read side to reap, as it always was, that
-		side sees the same end and reads whatever arrived before it. One that
-		reads nothing more is closed here, since nothing else ever would: it
-		was reported again at every chance, and held for good.
+		reading is left for its read side to reap: that side sees the same
+		end and reads whatever arrived before it. One that reads nothing more
+		is closed here, since nothing else ever would: it would be reported
+		again at every chance, and held for good.
 	**/
 	@:noCompletion private function __flushFailed(message:String):Void {
 		__dispatchPooledIOError(message);
@@ -3361,15 +3321,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		sys.net.Socket), the descriptor stays blocking, and that same extra
 		read parks the whole runtime thread until the peer sends more or
 		closes. Any inbound burst of exactly a multiple of the read buffer size
-		bytes therefore hung the interpreter. A zero-timeout select is the
+		bytes would therefore hang the interpreter. A zero-timeout select is the
 		only non-blocking readability signal the eval target offers, so loop
 		continuation is gated on it there, and on it alone, leaving the
 		Blocked-driven exit untouched everywhere else.
 
-		TLS is the exception, and deliberately keeps the old behaviour: a
+		TLS is the exception, and deliberately keeps the Blocked-driven exit: a
 		select on the raw descriptor reports the *socket*, not the TLS
 		session. mbedtls reads whole records at a time, so plaintext already
-		decrypted into its buffer is invisible to select, gating on it would
+		decrypted into its buffer is invisible to select: gating on it would
 		report "nothing pending" while a complete message sat decrypted and
 		unread, stranding it until the peer happened to send more. A read
 		that may block is recoverable; silently withheld payload is not.
@@ -3566,11 +3526,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __endian;
 	}
 
-	// The ends read null and 0 until the socket has them, before connect(),
+	// The ends read null and 0 until the socket has them (before connect(),
 	// after close(), and on the jvm, hl and neko while a connect is still
-	// under way, where the system has no local end to report yet, rather
-	// than dereferencing what is not there: an RPC session started on a
-	// connection still connecting threw a NullPointerException on the jvm.
+	// under way, where the system has no local end to report yet) rather
+	// than dereferencing what is not there: on the jvm an RPC session
+	// started on a connection still connecting would throw.
 
 	@:noCompletion private function get_localAddress():String {
 		#if nodejs
@@ -3579,11 +3539,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __refuseEndpoint("localAddress");
 		#else
 		// Canonical, because the platforms disagree: hxcpp renders `::1` and
-		// the jvm `0:0:0:0:0:0:0:1` for the same address. DatagramSocket has
-		// compressed since IPv6.compress was written, its doc names this very
-		// difference, and the TCP socket beside it never did, so an
+		// the jvm `0:0:0:0:0:0:0:1` for the same address. DatagramSocket
+		// compresses too (its doc names this very difference), so an
 		// application comparing what it bound against what it was told back
-		// worked over UDP and failed over TCP on the same target.
+		// gets the same over UDP and TCP.
 		var local = __localEnd();
 		return local == null ? null : crossbyte._internal.net.IPv6.compress(local.host.toString());
 		#end
@@ -3614,8 +3573,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	#if !js
 	// The far end of the connection, read once: it does not change while the
-	// connection lasts, and reading it was a getpeername call, a Host and a
-	// string each time, for every response an HTTP server sends. Kept
+	// connection lasts, and reading it is a getpeername call, a Host and a
+	// string each time (for every response an HTTP server sends). Kept
 	// against the socket it was read from, so a new connection, which is a
 	// new socket, reads it afresh; and only once connected, so an address
 	// asked for mid-connect is not the one kept.
@@ -3665,8 +3624,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// Through the type, kept from the macro context as
 		// registryHasBufferedInput is: naming JvmSslSocket pulls its java.nio
 		// imports into the initialisation macro's context, where the java
-		// package is unreachable. It was a dynamic call for that reason. A
-		// plain client socket is not one, and answers null.
+		// package is unreachable. A plain client socket is not one, and
+		// answers null.
 		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
 		if (tls == null) {
 			return null;
@@ -3695,10 +3654,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	#if (js && !nodejs)
 	/**
-	 * All four endpoint accessors called `host()` and `peer()` on the raw
-	 * socket, which a browser's WebSocket does not have, so each threw a
-	 * TypeError about a missing method rather than saying what was actually
-	 * wrong.
+	 * The four endpoint accessors refuse here in a browser, whose WebSocket
+	 * has no `host()` or `peer()`, saying what is wrong rather than throwing
+	 * a TypeError about a missing method.
 	 *
 	 * Typed as returning whatever the caller expects so one helper serves both
 	 * the String and the Int accessors. It never returns.
@@ -3712,12 +3670,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Whether the TLS layer is holding bytes `select` cannot see.
 
-		Asked through the jvm socket's type. It was asked dynamically, since
-		naming `JvmSslSocket` pulls `java.nio` into the macro context, where
-		Socket is typed too and the build fails on "cannot access the java
-		package while in a macro"; but the registry asks every TLS socket this
-		on every pump, and at 2,001 idle ones the dynamic call cost 150 to 245
-		us a pump. Kept from the macro context instead, where no socket runs.
+		Asked through the jvm socket's type, kept from the macro context
+		(where naming `JvmSslSocket` would pull `java.nio` in, and the build
+		fail on "cannot access the java package while in a macro"), rather
+		than dynamically: the registry asks every TLS socket this on every
+		pump, and at 2,001 idle ones a dynamic call costs 150 to 245 us a
+		pump.
 	**/
 	@:noCompletion public function registryHasBufferedInput():Bool {
 		#if ((java || jvm) && !macro)
@@ -3805,7 +3763,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (read) {
 			// Nothing more will be read, and the read loop must stop trying:
 			// on some targets a shut read direction reports Eof forever, which
-			// would otherwise re-enter the policy branch every tick, and
+			// would otherwise re-enter the policy branch every tick, and it is
 			// readable for good, so it leaves the poll set's reads too.
 			__peerShutdown = true;
 			#if !js
@@ -3821,8 +3779,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			#if nodejs
 			// end() is the write half, and it is the half that matters: it is
 			// the FIN that tells a peer no more requests are coming. Node has
-			// no read half to shut, there is no shutdown(SHUT_RD) on a
-			// stream, so pausing is the closest thing, and it at least stops
+			// no read half to shut (there is no shutdown(SHUT_RD) on a
+			// stream), so pausing is the closest thing, and it at least stops
 			// data arriving for a direction the caller has declared finished.
 			if (write) {
 				__socket.end();

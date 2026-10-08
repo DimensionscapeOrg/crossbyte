@@ -3,7 +3,7 @@ package crossbyte.net;
 // Needs a UDP socket, which a page has not got, so this follows
 // `DatagramSocket` and `StunClient`, which are absent on the browser rather
 // than present and refusing. A page has no routing table to ask in any case: it
-// learns its host addresses from RTCPeerConnection, and since 2019 gets them
+// learns its host addresses from RTCPeerConnection, and gets them
 // behind random `.local` mDNS names unless the user has granted camera or
 // microphone access, precisely because they are the fingerprint this class
 // takes care not to hand out.
@@ -28,14 +28,14 @@ import sys.net.UdpSocket;
 	## Why not just resolve the hostname
 
 	Because it is wrong on any machine with a virtual adapter, which is most of
-	them. On the machine this was written on, `Host.localhost()` resolves to
-	`172.28.192.1`: the WSL adapter. Nothing on the LAN can reach it. The real
-	address is `10.0.0.2`, and hostname resolution never mentions it.
+	them. On a Windows machine with WSL, `Host.localhost()` can resolve to the
+	WSL adapter's address (`172.28.192.1`, say), which nothing on the LAN can
+	reach, while the real address (`10.0.0.2`) is never mentioned.
 
 	## Why not enumerate the interfaces
 
 	That is what a full ICE agent does, and it is the right answer when you can
-	afford the consequences. The same machine enumerates nine IPv4 addresses:
+	afford the consequences. A developer's machine can enumerate nine IPv4 addresses:
 	Tailscale, two VMware adapters, four Hyper-V and WSL adapters, loopback, and
 	one real one. Offering all nine means a peer spends its connectivity checks
 	on eight addresses that cannot work, and it means handing that peer a map of
@@ -48,7 +48,7 @@ import sys.net.UdpSocket;
 	destination and reading back the source address the kernel chose. Connecting
 	a UDP socket transmits nothing; it sets a default destination, and choosing
 	one is what makes the kernel commit to an interface. So this is a local
-	lookup that sends no packet and tells the destination nothing, the address
+	lookup that sends no packet and tells the destination nothing: the address
 	passed in need not be reachable, or even exist.
 
 	```haxe
@@ -63,7 +63,7 @@ import sys.net.UdpSocket;
 	It returns one address: the one that destination would be reached on. A
 	genuinely multi-homed host that wants every path tried needs all of them, and
 	that needs interface enumeration this has not got. The single answer is the
-	right one for the case that actually bites, two peers on one LAN, whose
+	right one for the case that actually bites: two peers on one LAN, whose
 	reflexive addresses many NATs will not hairpin back to them.
 **/
 class LocalAddress {

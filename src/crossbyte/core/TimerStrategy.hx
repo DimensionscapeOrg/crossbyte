@@ -7,7 +7,7 @@ enum TimerStrategy {
 	 * almost everything.
 	 *
 	 * Orders timers exactly, and a delay of a microsecond costs what a delay
-	 * of six hours costs, there is no range beyond which it degrades and no
+	 * of six hours costs: there is no range beyond which it degrades and no
 	 * granularity below which it rounds. Arming, cancelling and rescheduling
 	 * are O(log n) with the position kept on the timer itself, which at thirty
 	 * thousand recurring timers is well under a millisecond per frame at sixty
@@ -20,8 +20,8 @@ enum TimerStrategy {
 	 *
 	 * Arming a timer inside the ring is an index calculation and a list link,
 	 * with nothing that grows as more timers are held. Worth choosing for a
-	 * runtime holding thousands of *short* timers it re-arms constantly, a
-	 * deadline per connection, a cooldown per entity, where measurement shows
+	 * runtime holding thousands of *short* timers it re-arms constantly (a
+	 * deadline per connection, a cooldown per entity), where measurement shows
 	 * the scheduler itself in the profile. Around five to six times the heap
 	 * on that workload.
 	 *

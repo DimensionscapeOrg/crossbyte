@@ -29,13 +29,13 @@ enum LoaderMessage {
  * its way back to the loader's runtime.
  *
  * Messages are queued here and delivered in batches through the runtime's
- * post queue, one post per batch, when its first message arrives, so a
+ * post queue (one post per batch, when its first message arrives), so a
  * download reporting progress per read costs a lock per read and a post per
  * runtime turn, not a post per read.
  *
  * The load's deadlines that its thread cannot keep are kept here, on the
  * loader's runtime: `URLRequest.totalTimeout`, and the wait for a thread,
- * which `URLRequest.idleTimeout` bounds, a load still queued has no
+ * which `URLRequest.idleTimeout` bounds: a load still queued has no
  * thread to notice it has waited too long. Each is a runtime timer, armed
  * only when the load has one, and checked against `haxe.Timer.stamp()` when
  * it fires, so a runtime whose clock runs ahead of the wall's does not end a
@@ -69,9 +69,9 @@ class LoaderRun {
 	private var __totalDeadline:Float = 0;
 
 	// The body, taken when the load began: a copy of bytes, which are the
-	// caller's again once `load` has returned, a datagram's payload handed
+	// caller's again once `load` has returned (a datagram's payload handed
 	// on from its listener, say, which the socket empties as the listener
-	// returns. They were read here on a pool thread, later, and went out as
+	// returns). Read here on a pool thread, later, they would go out as
 	// whatever they had become: empty, or another datagram.
 	private final __body:Dynamic;
 
@@ -166,8 +166,8 @@ class LoaderRun {
 
 	/**
 		Ends the load at a deadline: what its thread says from now on is
-		dropped, its request is cancelled where it stands, the thread
-		unwinds as it does for `close()`, and the loader is told.
+		dropped, its request is cancelled where it stands (the thread
+		unwinds as it does for `close()`), and the loader is told.
 	**/
 	private function __expire(message:String):Void {
 		abandon();
@@ -201,8 +201,8 @@ class LoaderRun {
 			var request:URLRequest = __request;
 
 			// "Name: value", as HTTPRequestContext.headers promises a backend.
-			// They went as URLRequestHeader.toString() writes them, with no
-			// space, so a backend splitting at ": " as told found no value.
+			// Not as URLRequestHeader.toString() writes them, with no space,
+			// which a backend splitting at ": " as told would find no value in.
 			var requestHeaders:Array<String> = [];
 			for (header in request.requestHeaders) {
 				requestHeaders.push(header.name + ": " + header.value);
@@ -236,8 +236,7 @@ class LoaderRun {
 			// Created on the loader's thread before the load was queued, so
 			// close() can reach a request that has already started.
 			http.cancelToken = __token;
-			// The request's own limits, which were the client's statics, the
-			// same for every request in the process.
+			// The request's own limits, not statics shared by every request.
 			http.maxDecompressedSize = request.maxDecompressedSize;
 			http.maxBodySize = request.maxBodySize;
 			http.maxRedirects = request.maxRedirects;
@@ -286,8 +285,8 @@ class LoaderRun {
 
 		Progress takes the place of progress not yet told: only the latest
 		is worth telling, and the client reports it per read and per chunk,
-		so a body arriving faster than the runtime drains, or while it is
-		busy, queued a message for each, without bound: about 300,000 in
+		so a body arriving faster than the runtime drains (or while it is
+		busy) would queue a message for each, without bound: about 300,000 in
 		two seconds for one load, measured. Nothing else is folded, nor the
 		first report of a body, at nothing loaded, which is where a listener
 		learns its total before any of it.

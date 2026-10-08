@@ -80,17 +80,12 @@ class GZCompressor {
 	/**
 		Inflates a gzip stream (RFC 1952): every member of it, in order.
 
-		Each member's header is read in full, an extra field, a name, a
-		comment and a header CRC, which is checked, and each member's CRC and
+		Each member's header is read in full (an extra field, a name, a
+		comment and a header CRC, which is checked), and each member's CRC and
 		length are checked against what it inflated to. Members follow one
 		another as gzip writes them when files are concatenated, and are
 		returned joined. Zero bytes after the last member are padding and are
 		ignored; anything else there is refused, as Node's gunzip refuses it.
-
-		It read a name and nothing else: a header with an extra field, a
-		comment or a header CRC was refused as unsupported, and the trailer
-		was taken to be the last eight bytes of the input, so a second member
-		failed its CRC.
 
 		@param maxOutputSize Bytes to produce before giving up, or `0` for no
 		       limit, across all the members together. A gzip member says

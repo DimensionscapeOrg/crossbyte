@@ -41,12 +41,9 @@ class RingBuffer
 	/**
 	 * @param exact_size When at least 0, the whole input is this many bytes
 	 *        and arrives in writes that never wrap: the buffer is allocated at
-	 *        that size rather than at the window's, and the tail, a copy of
-	 *        the start for reads that cross the end, is never needed.
-	 *
-	 *        The window's size was allocated whatever the input: 2^23 + 2^16
-	 *        entries for a two-byte body, per call, which is most of what
-	 *        compressing a small response cost.
+	 *        that size rather than at the window's (2^23 + 2^16 entries, most
+	 *        of what compressing a small response would cost), and the tail, a
+	 *        copy of the start for reads that cross the end, is never needed.
 	 */
 	public function new(window_bits:Int, tail_bits:Int, exact_size:Int = -1)
 	{

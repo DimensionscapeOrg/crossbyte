@@ -19,13 +19,13 @@ class WebSocketReuseTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
 	/**
 		A compressed message is inflated into a buffer made for it, handed
-		out in the session's one `WebSocketMessageEvent`, and left there once
-		the call has returned: neither emptied, as `data`'s doc says every
-		message is, nor let go past `Arrivals.KEEP`, as `Event`'s doc and the
-		CHANGELOG say every payload is. The event keeps it until the next
-		message, a whole `MAX_MESSAGE_SIZE` for each connection, for as
-		long as its peer stays quiet, from a message of a few kilobytes on
-		the wire.
+		out in the session's one `WebSocketMessageEvent`, and must not be left
+		there once the call has returned: it is emptied, as `data`'s doc says
+		every message is, and let go past `Arrivals.KEEP`, as `Event`'s doc
+		and the CHANGELOG say every payload is. Kept by the event until the
+		next message, it would hold a whole `MAX_MESSAGE_SIZE` for each
+		connection, for as long as its peer stays quiet, from a message of a
+		few kilobytes on the wire.
 	**/
 	@:timeout(20000)
 	public function testACompressedMessageIsLetGoOnceItsCallReturns(async:Async):Void {
@@ -91,10 +91,10 @@ class WebSocketReuseTest extends utest.Test {
 	/**
 		Every message reads objects as a `ByteArray` made for it would, in
 		`ByteArray.defaultObjectEncoding`, as every datagram does. A message
-		is read into the session's one buffer, and its `objectEncoding` was
-		never set again: one listener reading JSON left every message after
-		it reading JSON, and an object sent in the default encoding was read
-		as JSON.
+		is read into the session's one buffer, so its `objectEncoding` has to
+		be set again for each: one listener reading JSON would otherwise leave
+		every message after it reading JSON, and an object sent in the default
+		encoding would be read as JSON.
 	**/
 	@:timeout(20000)
 	public function testEveryMessageReadsObjectsInTheDefaultEncoding(async:Async):Void {

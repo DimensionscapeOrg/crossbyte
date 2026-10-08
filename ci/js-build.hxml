@@ -7,7 +7,7 @@
 # else, because every other target has a Sys.
 #
 # `include` pulls in the whole package tree, so a module excluded from the
-# browser build is skipped rather than failing: which is what makes the pass
+# browser build is skipped rather than failing, which is what makes the pass
 # meaningful: everything not excluded has to compile.
 -cp src
 --macro include('crossbyte')

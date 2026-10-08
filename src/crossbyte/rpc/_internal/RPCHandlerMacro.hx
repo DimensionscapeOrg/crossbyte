@@ -15,8 +15,8 @@ class RPCHandlerMacro {
 	// On a generated dispatch(): the signature of every method it dispatches,
 	// for a handler that extends this one to dispatch as well. Read from here,
 	// untyped, and never from the parent's fields: following a parent method's
-	// type during the child's build types that method there and then, body
-	// and all, when it declares no return type, before the classes it uses
+	// type during the child's build types that method there and then (body
+	// and all, when it declares no return type) before the classes it uses
 	// have finished building, and the error that comes of it names a field
 	// that is really there.
 	static inline final DISPATCHED_META:String = ":rpcDispatched";
@@ -36,9 +36,8 @@ class RPCHandlerMacro {
 		final dispatchField = findField(fields, "dispatch");
 		final usesManualDispatch = dispatchField != null;
 		// Every handler answers `ping`; one is made for the first class in a
-		// line of them that has none. Made again in a subclass, it was a
-		// field redefined without `override`, and no handler could extend
-		// another.
+		// line of them that has none, since one made again in a subclass
+		// would be a field redefined without `override`.
 		final needsPing = findField(fields, "ping") == null && ancestorField(ancestors, "ping") == null;
 
 		if (usesManualDispatch) {
@@ -138,9 +137,9 @@ class RPCHandlerMacro {
 					switch f.kind {
 						case FFun(fn):
 							// Its answer is encoded as its return type, which is not
-							// known until the method is typed, after this build.
-							// Left undeclared it was taken for Void, and the answer
-							// was never sent.
+							// known until the method is typed, after this build. Left
+							// undeclared it would be taken for Void, and the answer
+							// never sent.
 							if (fn.ret == null && returnsValue(fn.expr)) {
 								Context.error("RPC method '" + f.name + "' returns a value, so it must declare its return type.", f.pos);
 							}
@@ -193,7 +192,7 @@ class RPCHandlerMacro {
 		}
 		// The ops dispatch answers, each a method's: its own, and for a method
 		// with an answer also the op of a one-way call to it, which has none
-		// in its signature, run as ever, its answer sent nowhere.
+		// in its signature: run as usual, its answer sent nowhere.
 		final entries = new Array<DispatchEntry>();
 		for (method in methods) {
 			entries.push({op: method.op, method: method});
@@ -216,7 +215,7 @@ class RPCHandlerMacro {
 		}
 
 		var newFields:Array<Field> = [];
-		// By how many methods, as it was before a method could have two ops.
+		// By how many methods, not how many ops.
 		final usePerfectHash = (methods.length > DIRECT_SWITCH_MAX_METHODS);
 
 		if (usePerfectHash) {
@@ -391,8 +390,7 @@ class RPCHandlerMacro {
 
 		// Arguments that do not read are a call this side cannot take, not a
 		// connection that has to end: the frame carries its length, so the next
-		// begins where it says. A request is answered so. They ended the
-		// connection, and every call still waiting on it failed.
+		// begins where it says. A request is answered so.
 		stmts.push(macro var __read:Bool = false);
 		stmts.push(macro try {
 			$b{reads};
@@ -424,7 +422,7 @@ class RPCHandlerMacro {
 		if (later == null) {
 			// The arguments are read above, outside this: a frame that does not
 			// decode is the peer's, and is answered so. What the method throws
-			// once they have, or its answer failing to encode, is this side's,
+			// once they have (or its answer failing to encode) is this side's,
 			// and becomes an error answer instead; see `__rpc_fail`.
 			var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
 			if (callsAfter) {
@@ -478,8 +476,8 @@ class RPCHandlerMacro {
 			// Inlined into dispatch, the call it would cost saved, when it is
 			// small: numbers, strings and bytes. One that reads or answers an
 			// array or a structure is a call of its own, where its code would
-			// make dispatch larger for every method, natively a one-Int
-			// call to a contract with arrays in it took 54 ns, where 40.
+			// make dispatch larger for every method: natively a one-Int
+			// call to a contract with arrays in it takes 54 ns with them inlined, 40 without.
 			access: carriesCompound(m) ? [APrivate] : [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
@@ -512,7 +510,7 @@ class RPCHandlerMacro {
 	/**
 		The call to a method that answers with a `Future<T>`: sent at once if
 		the future is complete when the method returns, as a plain call's
-		answer is, nothing registered, nothing allocated, and otherwise
+		answer is (nothing registered, nothing allocated), and otherwise
 		settled by `__rpc_later` once it completes. What the method throws is
 		answered as any throw is. Refused first, as `beforeCall` refuses, when
 		the session already has `maxCallsWaiting` calls waiting.
@@ -795,7 +793,7 @@ class RPCHandlerMacro {
 	/**
 		A dispatched method's signature, as a handler extending this one reads
 		it: a function expression, never typed, whose types are written out in
-		full, they are read in the child's module, which need not import, nor
+		full: they are read in the child's module, which need not import, nor
 		see the typedefs of, this one's. Resolving a type path types no method.
 	**/
 	static function signatureOf(method:MethodInfo):Expr {
@@ -915,9 +913,9 @@ class RPCHandlerMacro {
 	**/
 	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position, ?session:Expr):Expr {
 		// A `Null<T>` answer says first whether it is there, as its caller
-		// reads it. It was written bare: the caller read the answer's first
-		// byte as the presence byte, misread the rest, and ended the
-		// connection, and a null String could not be written at all.
+		// reads it; written bare, the caller would read the answer's first
+		// byte as the presence byte and misread the rest, and a null String
+		// could not be written at all.
 		final optional:Bool = RPCContractMacroTools.isNullable(ret, pos);
 		final kind = RPCKinds.of(unwrapNull(ret), pos);
 		// Begun with room for the most the answer can hold, as a call's frame

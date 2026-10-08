@@ -7,11 +7,11 @@ import utest.Async;
 /**
 	A listener started without a backlog, as nearly every one is.
 
-	The default was the largest Int, which neko's integers, 31 bits,
-	cannot carry, so `listen()` threw there and no `ServerSocket`,
-	`HTTPServer` or `FlexSocket` listener could start. Any backlog past the
-	system's own maximum is granted as that maximum, so the default now fits
-	every target's Int and asks for the same thing.
+	The default must fit every target's Int: the largest Int is more than
+	neko's 31-bit integers can carry, and `listen()` would throw there, so
+	no `ServerSocket`, `HTTPServer` or `FlexSocket` listener could start.
+	Any backlog past the system's own maximum is granted as that maximum,
+	so a default that fits asks for the same thing.
 **/
 class ServerSocketBacklogTest extends utest.Test {
 	public function testTheDefaultBacklogFitsEveryTargetsInt():Void {

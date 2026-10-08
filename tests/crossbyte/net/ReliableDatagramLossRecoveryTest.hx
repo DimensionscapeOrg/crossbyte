@@ -72,10 +72,9 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 	}
 
 	/**
-		A frame that arrives again, sent again by a peer whose first copy's
-		acknowledgement was held or lost, draws an acknowledgement that says
-		so, with the bit an ACK never set before; one drawn by anything new
-		does not.
+		A frame that arrives again (sent again by a peer whose first copy's
+		acknowledgement was held or lost) draws an acknowledgement that says
+		so, with the duplicate bit; one drawn by anything new does not.
 	**/
 	public function testADuplicateIsSaidInTheAcknowledgementItDraws():Void {
 		var receiver = RecordingSocket.make();
@@ -153,18 +152,17 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		var mapAt:Float = Timer.stamp();
 		sender.__acceptFrame(ack(1000, [0]));
 
-		// Past its allowance, the round trip of the frame that arrived,
-		// and a quarter of the fastest round trip, by the time the clock
-		// next looks, if not already when the map arrived. The timeout, a
-		// second on a session this new, is not what sends it.
+		// Past its allowance (the round trip of the frame that arrived, and a
+		// quarter of the fastest round trip) by the time the clock next looks,
+		// if not already when the map arrived. The timeout, a second on a
+		// session this new, is not what sends it.
 		waitFor(0.005);
 		sender.__checkRetransmits();
 
 		// One resend. And, if a loaded machine stretched the 5 ms past the
-		// tail probe's floor, the probe that follows a silence that long,
-		// which resends the same frame: neko on a Linux runner once saw two
-		// frames here, and so did cpp in WSL beside a running build. With no
-		// probe, a second frame is a resend repeated, which is a fault.
+		// tail probe's floor, the probe that follows a silence that long, which
+		// resends the same frame. With no probe, a second frame is a resend
+		// repeated, which is a fault.
 		var frames = described(sender.take());
 		if (sender.__probes == 0) {
 			Assert.same(["PACKET 1000 resend"], frames, "the frames sent: " + frames.join(", "));
@@ -187,19 +185,19 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		Assert.same(["PACKET 1000 resend"], described(sender.take()));
 		var resentAt:Float = Timer.stamp();
 
-		// The same map again, later: nothing the peer holds was sent after
-		// the resend, so nothing says the resend was lost. It was sent once
-		// per acknowledgement before, which a burst of them made a flood.
+		// The same map again, later: nothing the peer holds was sent after the
+		// resend, so nothing says the resend was lost. Sending it once per
+		// acknowledgement would make a burst of them a flood.
 		waitFor(0.005);
 		var resends:Int = sender.__fastResends;
 		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
 		sender.__checkRetransmits();
 		var sent:Array<String> = described(sender.take());
 		Assert.equals(resends, sender.__fastResends, "a resend went again with nothing to say it was lost");
-		// And nothing else, unless the wait ran past the floor on a tail
-		// probe, which a loaded machine can make of 5 ms, and so can a clock
-		// that moves a system tick at a time, as neko's does on Windows. A
-		// silence that long is what the probe is for.
+		// And nothing else, unless the wait ran past the floor on a tail probe,
+		// which a loaded machine can make of 5 ms, and so can a clock that moves
+		// a system tick at a time, as neko's does on Windows. A silence that
+		// long is what the probe is for.
 		if (Timer.stamp() - resentAt < ReliableDatagramSocket.MIN_PROBE_TIMEOUT) {
 			Assert.same([], sent, "a frame went out with nothing to say it was lost");
 		} else {
@@ -250,15 +248,15 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 	}
 
 	/**
-		RUDP-1's leftover, and RFC 8985's gap: a frame sent again whose first
-		copy had arrived, only its acknowledgement held up on the way. That
-		acknowledgement comes back faster than any round trip, so it is the
-		first copy's, and RACK takes nothing from it, what was sent after the
-		first copy may still be on its way. But the copy sent again arrives as
-		a duplicate, the peer says so, and that copy is then known delivered:
-		what was sent before it and is still missing goes at once. It waited
-		for the tail probe, two round trips and twice the peer's hold after
-		the last delivery, or the timeout.
+		RFC 8985's gap: a frame sent again whose first copy had arrived, only
+		its acknowledgement held up on the way. That acknowledgement comes back
+		faster than any round trip, so it is the first copy's, and RACK takes
+		nothing from it: what was sent after the first copy may still be on its
+		way. But the copy sent again arrives as a duplicate, the peer says so,
+		and that copy is then known delivered: what was sent before it and is
+		still missing goes at once, rather than waiting for the tail probe (two
+		round trips and twice the peer's hold after the last delivery) or the
+		timeout.
 	**/
 	public function testWhatWentBeforeACopyThePeerAlreadyHadGoesWhenItSaysSo():Void {
 		var sender = RecordingSocket.make();
@@ -317,9 +315,9 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.take();
 		Assert.isTrue(sender.__smoothedRtt >= 0, "holding frames measured nothing");
 
-		// The gap fills a tenth of a second later. The four held frames
-		// arrived when the map said so; timed at their release, they made
-		// the wait for the gap a round trip.
+		// The gap fills a tenth of a second later. The four held frames arrived
+		// when the map said so; timed at their release, they would make the wait
+		// for the gap a round trip.
 		waitFor(0.1);
 		sender.__acceptFrame(ack(1005, []));
 
@@ -351,8 +349,8 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		Assert.equals(10, sender.take().length);
 
 		// Eight held, two lost: two in the network, and the halved window of
-		// five has room for three. Counted as ten outstanding, it had none,
-		// and the session sat on its queue until the gap filled.
+		// five has room for three. Counted as ten outstanding, it would have
+		// none, and the session would sit on its queue until the gap filled.
 		sender.__acceptFrame(ack(1000, [1, 2, 3, 4, 5, 6, 7, 8]));
 
 		Assert.same(["PACKET 1000 resend", "PACKET 1001 resend", "PACKET 1010", "PACKET 1011", "PACKET 1012"], described(sender.take()));
@@ -496,10 +494,10 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 
 	/**
 		A policy changed while messages wait for the window takes over with
-		them still first in line. The setter left the queue where it was, so
-		a new policy with room let the next message out ahead of the ones
-		waiting, RELIABLE out of order, and with nothing in flight to be
-		acknowledged, nothing ever sent the waiting ones at all.
+		them still first in line: left where it was, the queue would let a new
+		policy with room send the next message out ahead of the ones waiting
+		(RELIABLE out of order), and with nothing in flight to be acknowledged,
+		nothing would ever send the waiting ones at all.
 	**/
 	public function testAPolicyChangedMidSessionKeepsTheOrder():Void {
 		var sender = RecordingSocket.make();
@@ -552,11 +550,11 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		if (session == null) return;
 
 		// Connected, expecting 1000 from the peer. A repeat naming somewhere
-		// else is not taken: that was how frames still on their way were
-		// skipped, never delivered and all acknowledged.
+		// else is not taken: that would skip frames still on their way, never
+		// delivered and all acknowledged.
 		session.__acceptFrame(new ReliableDatagramFrame(HANDSHAKE, 1100, new ByteArray(), false, 7000));
 		Assert.equals(1000, (session.__inSequence : Int));
-		// The sender has this side's sequence, it acknowledges it, so the
+		// The sender has this side's sequence (it acknowledges it), so the
 		// answer is an acknowledgement, which draws nothing back.
 		Assert.same(["ACK 1000"], described(session.take()));
 

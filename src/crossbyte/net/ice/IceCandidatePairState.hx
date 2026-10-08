@@ -13,7 +13,7 @@ enum abstract IceCandidatePairState(Int) {
 
 		ICE freezes pairs so that several media streams sharing a path do not
 		each pay for discovering it. A single data transport has one stream and
-		nothing to wait for, so pairs here start `WAITING`, this exists
+		nothing to wait for, so pairs here start `WAITING`; this exists
 		because the state is part of the model, not because anything sets it
 		yet.
 	**/

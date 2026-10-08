@@ -5,7 +5,7 @@ import utest.Assert;
 /**
 	Which node owns a key, agreed without anyone being asked.
 
-	Pure arithmetic, so every target runs these, and two targets disagreeing
+	Pure arithmetic, so every target runs these; and two targets disagreeing
 	would be two nodes disagreeing about who owns a key, which is the one
 	thing this may not do.
 **/

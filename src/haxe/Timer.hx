@@ -67,17 +67,12 @@ import sys.thread.Mutex;
 	A `haxe.Timer` implementation backed by CrossByte's runtime.
 
 	A timer is a timer on the runtime's own scheduler, the one
-	`crossbyte.Timer` uses. It used to count tick deltas down itself and reset
-	to the full interval after each run, dropping whatever the tick had
-	overshot by, so every period rounded up to a whole number of ticks: at the
-	default twelve ticks a second a 100ms timer ran every 167ms, 60% of the
-	rate it asked for, and `GlobalTimer.setInterval` with it. It also kept
-	every timer in a map by a counter that wrapped after 2^32 timers and let a
-	new one evict a live one, and copied every live timer into a new array on
-	every tick. Now each run is due one interval after the last one was due,
-	so the rate is the one asked for; a timer that has fallen behind, a
-	stall, an interval shorter than a frame, runs once a frame until it
-	catches up rather than in a burst.
+	`crossbyte.Timer` uses. Each run is due one interval after the last one
+	was due, so the rate is the one asked for, rather than each period
+	rounding up to a whole number of ticks (at the default twelve ticks a
+	second a 100ms timer would run every 167ms); a timer that has fallen
+	behind (a stall, an interval shorter than a frame) runs once a frame
+	until it catches up rather than in a burst.
 
 	It runs on the runtime of the thread that made it: the primordial one on
 	the primordial thread, a child runtime on that child's thread. A timer
@@ -87,13 +82,12 @@ import sys.thread.Mutex;
 
 	A timer made before any runtime exists waits for one: it joins the
 	primordial runtime when that is set up, and counts from then. That is the
-	standard library's contract, a timer fires once the event loop runs,
+	standard library's contract (a timer fires once the event loop runs),
 	and libraries rely on it from their static initializers, which run before
 	`main`. hxcpp's VS Code debugger is one: its server, compiled into every
 	debug build that includes `hxcpp-debug-server`, polls for a late attach
 	with a timer it makes during static initialization when no debugger is
-	listening. This used to throw there, so every such build died before
-	`main` unless the debugger was already attached.
+	listening.
 **/
 #if cpp
 @:cppFileCode("
@@ -217,8 +211,8 @@ class Timer {
 
 	/**
 		Called as a primordial runtime is set up, on its thread, so the timers
-		made before it, while the program's statics were initialized, before
-		`main`: start counting on its scheduler.
+		made before it (while the program's statics were initialized, before
+		`main`) start counting on its scheduler.
 	**/
 	@:noCompletion private static function __primordialReady(runtime:CrossByte):Void {
 		var waiting:Array<Timer> = null;
@@ -262,9 +256,8 @@ class Timer {
 
 	/**
 		Does nothing. A timer runs from construction until `stop()`, as the
-		standard library's does, and cannot be restarted once stopped; this is
-		kept for code written against CrossByte's earlier version, where it
-		was equally without effect.
+		standard library's does, and cannot be restarted once stopped; this
+		is kept for code that calls it.
 	**/
 	public function start():Void {}
 
@@ -291,7 +284,7 @@ class Timer {
 		something took and for when something is due, never for the time of
 		day, which is `Sys.time()` or `Date.now()`.
 
-		Monotonic wherever the platform offers one, QueryPerformanceCounter
+		Monotonic wherever the platform offers one: QueryPerformanceCounter
 		on Windows native, CLOCK_MONOTONIC on Linux, macOS and other native
 		POSIX, `System.nanoTime` on the jvm, `performance.now()` on both
 		JavaScript targets. A clock that is the time of day moves when the time
@@ -334,22 +327,11 @@ class Timer {
 	#if js
 	/**
 	 * `performance.now()`, which every browser and every Node since 16 has as
-	 * a global.
-	 *
-	 * The branch above used to be `js && !nodejs` and read `Date.now()`, which
-	 * left Node falling through to the `sys` branch, and `sys` is not defined
-	 * for hxnodejs, even though `Sys` itself is there. So Node landed on the
-	 * final `return 0`, and every stamp came back as the same number. Nothing
-	 * failed: an interval measured against a constant is simply zero, so the
-	 * runtime reported no frame cost, the timer schedulers based themselves at
-	 * zero, and `Random`'s default seed, which is a stamp, was the same
-	 * value on every run of every program.
-	 *
-	 * `performance.now()` rather than `Date.now()` for both targets now. It is
-	 * monotonic, so a clock adjustment cannot make an elapsed interval come out
-	 * negative, and it is sub-millisecond, which matters when what is being
-	 * measured is the cost of one frame. That also puts the two JavaScript
-	 * targets on the same clock, which is the point of having both.
+	 * a global, on both JavaScript targets rather than `Date.now()`: it is
+	 * monotonic, so a clock adjustment cannot make an elapsed interval come
+	 * out negative, and it is sub-millisecond, which matters when what is
+	 * being measured is the cost of one frame. That also puts the two
+	 * JavaScript targets on the same clock.
 	 */
 	private static inline function __jsStamp():Float {
 		return js.Syntax.code("(typeof performance !== 'undefined' ? performance.now() : Date.now())");

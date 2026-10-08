@@ -19,11 +19,8 @@ import haxe.ds.Map;
  *
  * **Removing while iterating.** Removing the entry a loop is on is safe:
  * the entry moved into its place is visited next, and every other entry
- * once. The iterators counted the entries when they were made, so a
- * removal left them reading past the end, `iterator()` threw on every
- * target, or, re-reading the count, skipped the entry moved into the
- * removed one's place. Removing an entry the loop has already passed moves
- * one it has not yet reached behind it, which is then skipped.
+ * once. Removing an entry the loop has already passed moves one it has not
+ * yet reached behind it, which is then skipped.
  *
  * @param K The type of keys stored in the map.
  * @param V The type of values associated with the keys.
@@ -278,11 +275,10 @@ class ListedMapValueIterator<K:Dynamic, V> {
  * A key and its value, as `ListedMap` keeps them and `OrderedMap` hands them
  * out.
  *
- * A class, built from a literal as the structure it was: `{key: k, value: v}`
- * still makes one. It was an anonymous structure, whose fields hxcpp reads by
- * name, on every access to an entry and every step of an iteration. It still
- * fits where `{key:K, value:V}` is asked for, so `for (k => v in ...)` and
- * code typed against the structure are unchanged.
+ * A class that a literal builds: `{key: k, value: v}` makes one, and hxcpp
+ * reads its fields directly rather than by name. It fits where
+ * `{key:K, value:V}` is asked for, so `for (k => v in ...)` and code typed
+ * against the structure work with it.
  *
  * @param K The type of the key.
  * @param V The type of the value.

@@ -9,10 +9,10 @@ import crossbyte.net._internal.reliable.FrameWindow;
 import utest.Assert;
 
 /**
-	Exercises the pure out-of-order delivery-window logic added to
-	`ReliableDatagramSocket` as part of the RUDP hardening pass. These cases
-	drive the buffering decision and the cache cap directly, without any live
-	socket I/O, so they run under the eval/interp target.
+	Exercises the pure out-of-order delivery-window logic of
+	`ReliableDatagramSocket`. These cases drive the buffering decision and
+	the cache cap directly, without any live socket I/O, so they run under
+	the eval/interp target.
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
 @:access(crossbyte.net.CongestionControl)
@@ -111,9 +111,9 @@ class RUDPHardeningTest extends utest.Test {
 	public function testRandomSequenceSeedSpansFull32BitRange():Void {
 		var socket = makeSocket();
 
-		// Seeds must be well-distributed across the full unsigned 32-bit space.
-		// Verify that repeated seeds are not all clustered in the low 31 bits,
-		// which was the defect with the old Std.random(MAX_INT_32) seeding.
+		// Seeds must be well-distributed across the full unsigned 32-bit space,
+		// not all clustered in the low 31 bits, as Std.random(MAX_INT_32) would
+		// seed them.
 		var sawHighBit:Bool = false;
 		// Float is not a valid Map key, so key the distinctness set by the seed's
 		// decimal string form. This still proves the generator is not a constant.
@@ -146,19 +146,19 @@ class RUDPHardeningTest extends utest.Test {
 	// skips field initializers, so the fields these tests touch are seeded
 	// defensively here rather than relying on the constructor.
 	/**
-		The timeout is measured, where it used to be assumed.
+		The timeout is measured, not assumed.
 
-		`RETRANSMIT_INTERVAL` was a flat 3 seconds, which is wrong in both
-		directions. On a local path it made a lost frame wait three seconds
-		for nothing; on a path slower than three seconds it declared loss that
-		had not happened and sent the frame again, which is how a congested
-		link is made worse by the thing meant to be reliable over it.
+		A flat retransmit interval of 3 seconds would be wrong in both
+		directions: on a local path a lost frame would wait three seconds for
+		nothing; on a path slower than three seconds it would declare loss that
+		had not happened and send the frame again, which is how a congested link
+		is made worse by the thing meant to be reliable over it.
 	**/
 	public function testTheRetransmitTimeoutIsMeasuredNotAssumed():Void {
 		var socket = makeSender();
 
 		// A fast path: the timeout should come down near the round trip,
-		// nowhere near the three seconds it used to be.
+		// nowhere near three seconds.
 		for (_ in 0...20) {
 			socket.__sampleRoundTrip(0.010, 0);
 		}
@@ -180,10 +180,10 @@ class RUDPHardeningTest extends utest.Test {
 	/**
 		The window opens on delivery and halves on loss.
 
-		It was a constant 500 frames that took no notice of whether any of it
-		was arriving. A sender that keeps 500 frames in flight down a path
-		already dropping them makes the drops worse and does not stop, which
-		is how one bad path costs a server the bandwidth of many good ones.
+		A constant window that took no notice of whether any of it was
+		arriving would keep frames in flight down a path already dropping them,
+		making the drops worse without stopping, which is how one bad path
+		costs a server the bandwidth of many good ones.
 	**/
 	public function testTheWindowOpensOnDeliveryAndHalvesOnLoss():Void {
 		var socket = makeSender();
@@ -209,9 +209,9 @@ class RUDPHardeningTest extends utest.Test {
 	/**
 		The window is what bounds what is in flight, not a constant.
 
-		`__windowExceeded` used to compare against `DELIVERY_WINDOW`, so the
-		send side was bounded by the receiver's buffer and by nothing about
-		the path between them.
+		`__windowExceeded` compares against the congestion window, not
+		`DELIVERY_WINDOW`, which would bound the send side by the receiver's
+		buffer and by nothing about the path between them.
 	**/
 	public function testWhatIsInFlightIsBoundedByTheWindow():Void {
 		var socket = makeSender();
@@ -228,10 +228,9 @@ class RUDPHardeningTest extends utest.Test {
 	/**
 		What waits for the window is bounded and says so.
 
-		Before the window could close this queue could not grow, because the
-		window never closed. Now that it does, an application writing faster
-		than the path will carry has to be told rather than have the queue
-		grow until the process dies. Same bound and policies as `Socket`.
+		The window can close, so an application writing faster than the path
+		will carry has to be told rather than have the queue grow until the
+		process dies. Same bound and policies as `Socket`.
 	**/
 	public function testTheSendQueueIsBounded():Void {
 		var socket = makeSender();
@@ -258,11 +257,9 @@ class RUDPHardeningTest extends utest.Test {
 	/**
 		Only the oldest frame is resent, and only once its own time is up.
 
-		There was no test for retransmission of a data frame at all, which is
-		how the old shape kept a repeating timer per packet without anyone
-		noticing what that costs a server. What replaced it is one clock for
-		the session comparing against each frame's deadline, so the deadline
-		is what needs to be right.
+		One clock for the session compares against each frame's deadline,
+		rather than a repeating timer per packet, which costs a server more than
+		anyone notices; so the deadline is what needs to be right.
 	**/
 	public function testOnlyTheOldestOverdueFrameIsResent():Void {
 		var socket = makeSender();
@@ -378,10 +375,10 @@ class RUDPHardeningTest extends utest.Test {
 
 	/**
 		An ACK's map of the frames held past a gap is read from a ring of bits
-		kept beside the cache, where it was built by walking the cache's keys.
-		It names exactly what the walk named, frames held, by their offset
-		past the next expected, for any next expected, the 32-bit wrap
-		included, and as frames are delivered and the cache drains.
+		kept beside the cache, not built by walking the cache's keys. It names
+		exactly what the walk would name (frames held, by their offset past the
+		next expected) for any next expected, the 32-bit wrap included, and as
+		frames are delivered and the cache drains.
 	**/
 	public function testTheAckMapNamesExactlyTheFramesHeld():Void {
 		var seed:Int = 12345;
@@ -424,8 +421,8 @@ class RUDPHardeningTest extends utest.Test {
 	}
 
 	/**
-		A frame left in the cache behind the next expected, which delivery
-		keeps from happening, but an in-order FIN moves on without draining,
+		A frame left in the cache behind the next expected (which delivery
+		keeps from happening, but an in-order FIN moves on without draining)
 		shares a slot of the ring with the frame 511 ahead, and must not make
 		the ACK say that one arrived: the peer would give up sending it.
 	**/
@@ -441,10 +438,10 @@ class RUDPHardeningTest extends utest.Test {
 	}
 
 	/**
-		The receive ring's window moves only as frames are held. After more
+		The receive ring's window moves only as frames are held, so after more
 		than 2^31 frames in order with none held, the next held past a gap
-		read as older than the window, and was refused: counted as held, never
-		kept. The ring starts again whenever nothing is held.
+		would read as older than the window, and be refused: counted as held,
+		never kept. The ring starts again whenever nothing is held.
 	**/
 	public function testAFrameHeldAfterALongCleanStretchIsKept():Void {
 		var socket = makeSocket();
@@ -471,7 +468,7 @@ class RUDPHardeningTest extends utest.Test {
 		return [for (i in 0...length) bytes.get(i)];
 	}
 
-	/** The map as it was built before: from the frames held, as the cache's keys were walked. **/
+	/** The map as the walk would build it: from the frames held, as the cache's keys are walked. **/
 	private static function heldMap(socket:ReliableDatagramSocket, held:Array<Int>):Array<Int> {
 		var map:Array<Int> = [for (_ in 0...ReliableDatagramProtocol.SACK_BYTES) 0];
 		var base:Int = ((socket.__inSequence : Int) + 1) | 0;
@@ -491,8 +488,8 @@ class RUDPHardeningTest extends utest.Test {
 
 	/**
 		Sessions are filed by host, and a host's entry goes once its last
-		session does: counted, where the host's map was asked whether it was
-		empty, which copied the whole of it, on every close.
+		session does: counted, rather than asking the host's map whether it is
+		empty, which would copy the whole of it on every close.
 	**/
 	public function testAHostIsForgottenWithItsLastSession():Void {
 		if (!ReliableDatagramServerSocket.isSupported) {

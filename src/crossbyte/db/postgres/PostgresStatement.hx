@@ -37,7 +37,7 @@ class PostgresStatement extends EventDispatcher {
 
 		Substituted, not bound: the value becomes part of the statement, so it
 		is only ever as safe as `quote()` makes it, and no quoting can carry a
-		NUL byte, a blob written this way is truncated at its first zero with
+		NUL byte: a blob written this way is truncated at its first zero with
 		nothing reported. Use `executeParams()` for anything carrying data that
 		did not come from your own source code.
 	**/
@@ -61,8 +61,7 @@ class PostgresStatement extends EventDispatcher {
 
 	// Pages read and not yet taken by getResult(), oldest first. A statement
 	// runs on the thread that calls it, so a plain Array serves every
-	// target. It was a Deque on cpp and, elsewhere, an Array read with pop(),
-	// which hands back the newest page first.
+	// target.
 	@:noCompletion private var __resultQueue:Array<Array<Dynamic>> = [];
 
 	public function new() {
@@ -119,11 +118,10 @@ class PostgresStatement extends EventDispatcher {
 
 	/**
 		Reports a failed statement both ways, as MySQL's does: as the
-		`SQLErrorEvent` it always was, and as the `SQLError` it now throws. It
-		dispatched the event and returned, so to a caller not listening, an
-		`AsyncDatabase` task among them, a failed statement read as one that
-		had run. The detail is made a string here, where it is whatever the
-		driver threw.
+		`SQLErrorEvent`, and as the `SQLError` it throws, so to a caller not
+		listening (an `AsyncDatabase` task among them) a failed statement
+		does not read as one that had run. The detail is made a string here,
+		where it is whatever the driver threw.
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var error:SQLError;
@@ -234,8 +232,7 @@ class PostgresStatement extends EventDispatcher {
 	public function getResult():SQLResult {
 		var results:Array<Dynamic> = __resultQueue.shift();
 		// The last page is the one read as the rows ran out, with none behind
-		// it. This was !__executing alone, which called every page still
-		// waiting complete once the last had been read.
+		// it.
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
@@ -246,9 +243,7 @@ class PostgresStatement extends EventDispatcher {
 
 	/**
 		Takes the statement's counts from the connection as it runs, before
-		another statement there replaces them. `rowsAffected` was the rows the
-		result held, 0 for every write, and the connection's last OID was
-		read as each page was taken.
+		another statement there replaces them.
 	**/
 	@:noCompletion private function __noteCounts():Void {
 		var connection:PostgresConnection = __sqlConnection;
@@ -258,8 +253,7 @@ class PostgresStatement extends EventDispatcher {
 
 	/**
 		`query` with `parameters` substituted. A parameter set to null is
-		written as `NULL`, as MySQL's statements write it; it was taken for one
-		never set and left in the SQL as `:name`, which the server refused.
+		written as `NULL`, as MySQL's statements write it.
 		Backslashes are not escapes in a PostgreSQL literal, with
 		`standard_conforming_strings` on as it has been by default since 9.1,
 		except in an `E'...'` string; and nothing inside a dollar-quoted
@@ -351,9 +345,8 @@ class PostgresStatement extends EventDispatcher {
 				}
 			}
 			// Asked after the page as well as during it. The rows are all in
-			// hand, so the page that takes the last of them can say so; asked
-			// only when a page came up short, a result that divided evenly
-			// into pages had none that was complete.
+			// hand, so the page that takes the last of them can say so, even
+			// when a result divides evenly into pages.
 			if (!__resultSet.hasNext()) {
 				__executing = false;
 			}

@@ -18,10 +18,10 @@ import sys.thread.Thread;
 /**
  * RSA and EC keys parsed once into mbedTLS and held natively.
  *
- * Every sign and verify used to parse its PEM afresh: a copy of the private
- * key in freed memory per signature, the EC comb table rebuilt per operation,
- * and, since the parse and the signature ran outside a GC-free zone, a
- * 4096-bit RSA signature on a worker held every collection for its 25 ms.
+ * Parsing the PEM afresh for every sign and verify would leave a copy of the
+ * private key in freed memory per signature and rebuild the EC comb table per
+ * operation, and, with the parse and the signature outside a GC-free zone, a
+ * 4096-bit RSA signature on a worker would hold every collection for its 25 ms.
  * Keys come from `PkKeyFixture`, generated with the openssl CLI; the cases
  * pass without asserting when it is missing, as the JWT ones do.
  */
@@ -34,9 +34,9 @@ class SignatureKeyTest extends utest.Test {
 		Assert.isFalse(PublicKeySignature.isAvailable());
 		Assert.raises(() -> SignatureKey.fromPublicPem(pem), crossbyte.errors.IllegalOperationError);
 		Assert.raises(() -> SignatureKey.fromPrivatePem(""), crossbyte.errors.IllegalOperationError);
-		// Each answered as though the key or signature were at fault: UNKNOWN,
-		// -1, and false, the answer for a forged signature, so every
-		// signature was refused, genuine ones included.
+		// Each throws, rather than answering as though the key or signature were
+		// at fault: UNKNOWN, -1, and false (the answer for a forged signature,
+		// which would refuse every signature, genuine ones included).
 		Assert.raises(() -> PublicKeySignature.keyType(pem), crossbyte.errors.IllegalOperationError);
 		Assert.raises(() -> PublicKeySignature.joseSignatureLength(pem), crossbyte.errors.IllegalOperationError);
 		Assert.raises(() -> PublicKeySignature.verify(pem, Bytes.ofString("m"), Bytes.alloc(64)), crossbyte.errors.IllegalOperationError);

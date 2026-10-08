@@ -74,22 +74,20 @@ private enum LocalConnectionDispatch {
  * two users never do, nor can another user listen on it, or put anything in
  * its place, to take its clients. On Linux and macOS the name's socket lives
  * in `/tmp/crossbyte-<uid>`, which is made 0700 and must be a directory the
- * user owns that nobody else can enter, not a link, and not one another
- * user made first; a client also refuses anything at the socket's path that
+ * user owns that nobody else can enter (not a link, and not one another
+ * user made first); a client also refuses anything at the socket's path that
  * is not a socket of the user's, a link included. On Windows the name's pipe
  * carries the user's SID, admits the user and SYSTEM alone, and refuses
  * clients on other machines; a client refuses a pipe under the name that
  * another user made. What is found not to be the user's own is refused with
- * an `IOError` saying so, by `listen` and `connect` alike. Names used to be
- * one namespace for every user of the machine, where whoever listened first,
- * or put a link at a name's socket path, had its clients.
+ * an `IOError` saying so, by `listen` and `connect` alike.
  *
  * A callback that throws is reported as a socket handler's failure is:
  * logged with `Logger.error`, and dispatched as
  * `UncaughtErrorEvent.UNCAUGHT_ERROR` (source `SOCKET`, origin this
  * connection) on the runtime the connection was made on, or only logged
- * where it has none. One the runtime delivers, `onData`, `onReady`, or
- * `onClose` and `onError` for a connection that ended, also ends the
+ * where it has none. One the runtime delivers (`onData`, `onReady`, or
+ * `onClose` and `onError` for a connection that ended) also ends the
  * connection, as a socket's would, and `onError` is told why; one that
  * `close()` calls is reported and nothing more.
  */
@@ -132,10 +130,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 		`send` does not wait for the peer. It writes what the channel takes
 		and queues the rest, which the reader thread writes as the peer reads
-		it. It used to write on the runtime's thread until everything was
-		gone, for up to five seconds on Windows and without limit elsewhere,
-		holding the lock its own reader needed, so two processes that
-		filled each other's channels each waited on the other for good. A
+		it, so two processes that fill each other's channels never wait on
+		each other for good. A
 		peer that has left more than this unread is taken to be stuck: the
 		connection is closed, with an error saying so, and what was queued is
 		dropped. A sender with more than this to send at once paces itself on
@@ -172,7 +168,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	 *
 	 * 0 (or less) means no deadline: `connect()` waits until something
 	 * listens, however long that is, as a connect with `timeout = 0` does
-	 * everywhere in CrossByte. It used to make a single try. One try is what
+	 * everywhere in CrossByte. One try is what
 	 * any timeout of 50 or less makes, 50 ms being the pause between tries.
 	 */
 	public var timeout:Int = 5000;
@@ -217,8 +213,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	@:noCompletion private var __inQueued:Int = 0;
 	// What send() has framed that the peer has not taken: one buffer, each
 	// frame written into it where it ends, and the channel written from
-	// __outSent. Under __handleLock. Each send was a frame of its own, a
-	// buffer made, grown twice and copied into, and a write.
+	// __outSent. Under __handleLock. One buffer for every send, rather than
+	// a buffer made, grown and copied into for each.
 	@:noCompletion private var __outBuffer:ByteArray = null;
 	@:noCompletion private var __outSent:Int = 0;
 	@:noCompletion private var __outQueued:Int = 0;
@@ -302,7 +298,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 			if (notOwned) {
 				throw __notOwnedError(connectionName);
 			}
-			// Another listener has the name, on either platform now, or it
+			// Another listener has the name (on either platform), or it
 			// cannot be used.
 			throw new ArgumentError("Connection name is already in use or invalid");
 		}
@@ -347,9 +343,9 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		__activePipe = handle;
 		__connected = true;
 		__running = true;
-		// Told at the next tick, not from inside connect(): a callback set
-		// once connect() has returned, as `new NetConnection("local://...")`
-		// leaves one to be, missed a Ready it had already been sent.
+		// Told at the next tick, not from inside connect(), so a callback set
+		// once connect() has returned (as `new NetConnection("local://...")`
+		// leaves one to be) does not miss a Ready already sent.
 		#if (cpp || neko || hl)
 		if (__runtime != null) {
 			__queueDispatch(Ready, __session);
@@ -445,9 +441,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		Writes as much of what is queued as the channel takes now, without
 		waiting; `false` when the connection is gone. Under __handleLock.
 
-		A frame is written whole or left queued from where it stopped: the
-		write that waited used to give up part way through a frame after five
-		seconds, and the peer's next read began in the middle of it.
+		A frame is written whole or left queued from where it stopped, so the
+		peer's next read never begins in the middle of one.
 	**/
 	@:noCompletion private function __flushOutput(pipe:LocalConnectionHandle):Bool {
 		while (__outQueued > 0) {
@@ -517,10 +512,11 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 		What the channel does not take is tried again at the runtime's next
 		frame, once a frame until it is all written, as well as by the reader
-		thread, which waits a sleep between tries, on Windows a millisecond
-		at least: a burst larger than the pipe's buffer crossed a buffer a
-		sleep, 4 KB messages at 20 MB/s. Once a frame, not at once: a peer
-		that is not reading costs a runtime a write a frame, not a spin.
+		thread, which waits a sleep between tries (on Windows a millisecond
+		at least, so a burst larger than the pipe's buffer would cross a
+		buffer a sleep, 4 KB messages at 20 MB/s). Once a frame, not at
+		once: a peer that is not reading costs a runtime a write a frame, not
+		a spin.
 	**/
 	@:noCompletion public function __flushPass():Void {
 		var failure:LocalConnectionDispatch = null;
@@ -657,10 +653,10 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	 *
 	 * It acts only for that session. close() ends a session and listen() or
 	 * connect() start the next at once, while this thread sleeps between
-	 * polls: it used to wake to find `__running` true again and carry on
-	 * beside the next session's reader, reading its pipe, splitting its
+	 * polls, so it must not wake to find `__running` true again and carry
+	 * on beside the next session's reader (reading its pipe, splitting its
 	 * bytes, tearing it down when the read that lost the race found nothing,
-	 * and making it a listener of its own. So what this thread does to the
+	 * and making it a listener of its own). So what this thread does to the
 	 * connection it does under `__handleLock` having checked the session is
 	 * still its own, and what it hands on carries the session and is refused
 	 * once it has ended.
@@ -727,9 +723,9 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 				} else if (available > 0 && !full) {
 					busy = true;
 					// At most READ_PER_PASS at a time; the next pass, at once,
-					// reads on. It failed the connection as "an oversized frame"
-					// whenever more than one frame's worth had arrived, which a
-					// reader paused while the application catches up lets happen.
+					// reads on, so more than one frame's worth having arrived,
+					// which a reader paused while the application catches up
+					// lets happen, is no failure.
 					// A frame too long is caught where it is framed.
 					var bytesRemaining = available > READ_PER_PASS ? READ_PER_PASS : available;
 					// One buffer of the size known, filled a chunk at a time: a
@@ -782,10 +778,10 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 			idle = busy ? POLL_MIN : (idle * 2 > POLL_MAX ? POLL_MAX : idle * 2);
 			// A pass that read, wrote or took a client is followed by another at
-			// once, which finds out whether there is more. It waited first,
-			// on Windows a Sleep of a millisecond at least, and up to the 15.6
-			// of the system's clock, so a peer sending steadily was read a
-			// pass a sleep: 4 KB messages crossed at 20 MB/s.
+			// once, which finds out whether there is more, rather than a sleep
+			// first (on Windows a millisecond at least, and up to the 15.6 of
+			// the system's clock), at which a peer sending steadily would be
+			// read a pass a sleep: 4 KB messages at 20 MB/s.
 			if (busy) {
 				wokeForWork = false;
 				continue;
@@ -867,12 +863,11 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		has not: all of it once all is framed, and otherwise only once it is
 		at least as much as what is left, which is then moved to the front.
 
-		What was left was copied out to a new array and back every pass, so a
-		frame arriving a little at a time was copied whole once per arrival:
-		8 KB at a time, as macOS's local sockets give it, a 3 MB frame 384
-		times over, 1.2 GB copied and as much allocated, and three of them
-		took longer than ten seconds. Moved only when what went before it is
-		as large, each byte is moved a bounded number of times.
+		Copying what is left out to a new array and back every pass would
+		copy a frame arriving a little at a time whole once per arrival: 8 KB
+		at a time, as macOS's local sockets give it, a 3 MB frame 384 times
+		over (1.2 GB copied and as much allocated). Moved only when what went
+		before it is as large, each byte is moved a bounded number of times.
 	**/
 	@:noCompletion private function __compactReceiveBuffer(framing:ByteArray):Void {
 		final framed:Int = framing.position;
@@ -912,8 +907,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		var relistenFailed = false;
 		if (__mode == SERVER && __running) {
 			// The same listener takes the next client: the one that went is
-			// let go and the name is kept. It closed the listener and made
-			// another, and in between the name was anyone's.
+			// let go and the name is kept, never anyone's in between.
 			if (__activePipe != null && __disconnect(__activePipe)) {
 				__listeningPipe = __activePipe;
 				__activePipe = null;
@@ -990,9 +984,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	@:noCompletion private function __dispatchFromReader(message:LocalConnectionDispatch, session:Int):Void {
 		#if (cpp || neko || hl)
 		// A reader thread is never its runtime's: with a runtime, what it
-		// reads is handed over, and nothing need be asked. It asked which
-		// runtime this thread had, and the answer, none, was an exception
-		// thrown and caught for every frame.
+		// reads is handed over, and nothing need be asked. Asking which
+		// runtime this thread has would throw and catch for every frame.
 		if (__runtime != null) {
 			__queueDispatch(message, session);
 			return;
@@ -1075,8 +1068,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 	/**
 		Reports what a callback threw as the runtime reports a socket
-		handler's failure, logged, and dispatched as
-		`UncaughtErrorEvent.UNCAUGHT_ERROR`: on the runtime of the thread
+		handler's failure (logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR`) on the runtime of the thread
 		that called it; logged alone on a reader thread, where there is none.
 	**/
 	@:noCompletion private function __callbackThrew(error:Dynamic):Void {
@@ -1182,14 +1175,13 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	 * and a delivery posted to the runtime (`CrossByte.__post`, its one
 	 * thread-safe way in) unless one is on its way already.
 	 *
-	 * It was delivered by a listener on the runtime's tick, which had to be
-	 * attached on the runtime's thread, `EventDispatcher` is not
-	 * thread-safe, and a reader thread's attach racing a listener change
-	 * there could be lost for good, and taken off again, and it ran every
-	 * tick for every connection, idle or not. A post runs only when there is
-	 * something to deliver. It is delivered at the runtime's next tick; a
-	 * runtime asleep between ticks is not woken for it until posting wakes
-	 * one, which the core's C5 fix provides.
+	 * Not a listener on the runtime's tick: that would have to be attached
+	 * on the runtime's thread (`EventDispatcher` is not thread-safe, and a
+	 * reader thread's attach racing a listener change there could be lost
+	 * for good) and would run every tick for every connection, idle or not.
+	 * A post runs only when there is something to deliver. It is delivered
+	 * at the runtime's next tick; a runtime asleep between ticks is woken by
+	 * the post.
 	 *
 	 * Queued only while `session` is current, checked under the lock close()
 	 * ends it under: a dispatch refused here is one close() would otherwise
@@ -1446,8 +1438,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	}
 
 	@:noCompletion private static function __notOwnedError(name:String):IOError {
-		return new IOError('LocalConnection "$name": what is under the name is not this user\'s own, and is not used '
-			+ '-- another user made it, or others can reach it (on Linux and macOS, /tmp/crossbyte-<uid> must be a directory '
+		return new IOError('LocalConnection "$name": what is under the name is not this user\'s own, and is not used'
+			+ ': another user made it, or others can reach it (on Linux and macOS, /tmp/crossbyte-<uid> must be a directory '
 			+ 'of this user\'s with mode 0700)');
 	}
 

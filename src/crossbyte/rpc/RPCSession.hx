@@ -112,8 +112,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * answer at once: calls whose handler answered with a `Future` not yet
 	 * complete. Each holds whatever it is waiting on, so without a limit a
 	 * peer could make this side hold as much as it liked. A call past it is
-	 * refused before its method runs, a request answered
-	 * `RPCError.BUSY_MESSAGE`, a one-way call dropped, as `beforeCall`
+	 * refused before its method runs (a request answered
+	 * `RPCError.BUSY_MESSAGE`, a one-way call dropped), as `beforeCall`
 	 * refuses one, and like a refusal it is not reported. On the runtime lane,
 	 * where which handlers answer later is not known before they run, every
 	 * call is refused while the limit is reached. `0` removes it.
@@ -124,8 +124,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var callsWaiting(get, never):Int;
 
 	/**
-		How long, in milliseconds, each request this session makes, through
-		its commands or with `request`, may wait for its answer before it
+		How long, in milliseconds, each request this session makes (through
+		its commands or with `request`) may wait for its answer before it
 		fails with an `RPCTimeoutError`. `0`, as it starts, is no deadline: a
 		call waits for as long as the connection lasts. A call can have a
 		deadline of its own instead; see `RPCResponse.timeout`.
@@ -158,15 +158,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		The most bytes a frame may hold, after its 4-byte length: what this
 		session will read, and what it will send. A frame read past it ends
 		the connection, since nothing after it can be trusted to line up. A
-		call past it fails before it is sent, a request's `RPCResponse` with
-		an `ArgumentError` as its cause, a one-way call by throwing one, and
+		call past it fails before it is sent (a request's `RPCResponse` with
+		an `ArgumentError` as its cause, a one-way call by throwing one), and
 		an answer past it is not sent: its caller is answered
 		`RPCError.INTERNAL_MESSAGE` and `onHandlerError` is told.
 
-		It was a constant, 8 MiB, and checked only as frames arrived, so a
-		larger call went out without complaint and ended the connection on
-		the other side, failing every call waiting on it. Both ends of a
-		connection should agree on it. `0` removes the limit.
+		8 MiB by default. Both ends of a connection should agree on it: a call
+		larger than the other side's limit ends the connection there, failing
+		every call waiting on it. `0` removes the limit.
 	**/
 	public var maxFrameLength:Int = RPCHandler.MAX_FRAME_LEN;
 
@@ -310,10 +309,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		this.commands = commands;
 		this.handler = handler;
 		// Told as the connection ends, whenever and whether the application
-		// sets onClose. A call still waiting on an answer used to wait for good
-		// once the connection went: only stop(), a heartbeat timeout or an
-		// unreadable frame failed it. And told, the same way, as it becomes
-		// ready, for a heartbeat started before it was.
+		// sets onClose, so a call still waiting on an answer fails once the
+		// connection goes. And told, the same way, as it becomes ready, for a
+		// heartbeat started before it was.
 		(connection : NetConnectionBase).__observeClose(__connectionEnded);
 		(connection : NetConnectionBase).__observeReady(__connectionReady);
 		// Connected already, as an accepted connection is: hello now. One not
@@ -330,8 +328,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public static inline final MAX_REDIAL:Float = 30.0;
 
 	/**
-		Called when the connection becomes ready: connected, or, for a
-		listening `LocalConnection`, or a session made by `dial`, connected
+		Called when the connection becomes ready: connected, or (for a
+		listening `LocalConnection`, or a session made by `dial`) connected
 		again. Not for a connection ready before the session was made, as an
 		accepted one is.
 	**/
@@ -357,8 +355,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		The protocol version the peer's hello declared: 1 for a peer of 1.0.
 
-		Every session says hello as its connection starts, at once on one
-		connected already, or as one becomes ready, a frame of its own sent
+		Every session says hello as its connection starts (at once on one
+		connected already, or as one becomes ready): a frame of its own sent
 		ahead of its calls and never waited for. A peer from before 1.0 sends
 		none, and its version stays 0, as it is until a hello arrives. Back to
 		0 as the connection ends: a session made by `dial` hears a hello from
@@ -368,8 +366,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		The capabilities the peer's hello declared, a bit each. None are
-		defined in 1.0, so 0. A feature added after 1.0, a flag, a kind of
-		frame or of value, compression, is to be used towards a peer only
+		defined in 1.0, so 0. A feature added after 1.0 (a flag, a kind of
+		frame or of value, compression) is to be used towards a peer only
 		once its hello has declared it.
 	**/
 	public var peerCapabilities(default, null):Int = 0;
@@ -401,8 +399,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		`peerVersion`, `peerCapabilities` and the peer's fingerprints set.
 
 		The fingerprints are for a log line: two that differ say the sides
-		were built from different methods, one has a method more, or a
-		signature changed, not that any call will fail, and nothing is
+		were built from different methods (one has a method more, or a
+		signature changed), not that any call will fail, and nothing is
 		refused for it. A call for a method the other side has not got is
 		answered `RPCError.UNKNOWN_METHOD_MESSAGE` whatever the fingerprints
 		say.
@@ -427,8 +425,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-		Says hello: a response frame under request id 0, which answers no call,
-		a session from before 1.0 passes over it, as it does a pong, with
+		Says hello: a response frame under request id 0, which answers no call
+		(a session from before 1.0 passes over it, as it does a pong), with
 		this side's protocol version, capabilities and fingerprints. Sent and
 		never waited for: a call made next goes right behind it. A send that
 		throws here is the connection's to report, not the start's.
@@ -479,8 +477,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 	}
 
-	// Whether the connection has been ready since it last ended, from the
-	// start, for one ready before the session was made, so that being told
+	// Whether the connection has been ready since it last ended (from the
+	// start, for one ready before the session was made), so that being told
 	// twice, as a connection ready as the session takes it may tell it
 	// again, is one onUp.
 	@:noCompletion private var __isUp:Bool = false;
@@ -494,22 +492,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __closed:Bool = false;
 
 	/**
-		A client session that dials `uri`, as `NetConnection` does, `tcp://`,
-		`ws://`, `wss://`, `rudp://` or `local://`, and dials it again whenever
+		A client session that dials `uri` (as `NetConnection` does, `tcp://`,
+		`ws://`, `wss://`, `rudp://` or `local://`) and dials it again whenever
 		its connection ends, until `close()`: at once after an end, then waiting
 		from `MIN_REDIAL` up to `MAX_REDIAL` seconds, doubling, between attempts
 		that fail.
 
-		While it is down, before its first connection is up, and between one
-		connection and the next, a call through it fails as it is made, with a
+		While it is down (before its first connection is up, and between one
+		connection and the next), a call through it fails as it is made, with a
 		`Reason` as its `cause`: why the last connection ended, or why the last
 		attempt failed. A call waiting when a connection ends fails with that
 		connection's reason. `onUp` and `onDown` say when it comes and goes, and
 		`up` whether it is up now.
-
-		A gateway to a backend used to build this itself: dial, back off, bind
-		a new session to each new connection, and check it was up before each
-		call, since a call on a closed TCP connection threw out of its stub.
 
 		Its `connection` is each connection in turn. Its commands, handler,
 		`data` and hooks stay with it across them, and so does `start()`: a
@@ -522,7 +516,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		session.__ended = true;
 		session.__endReason = Reason.Error("Not connected to " + uri + " yet");
 		// The first attempt at the next tick, not in here: a connect that
-		// finishes as it is made, local IPC, or anything on eval, would
+		// finishes as it is made (local IPC, or anything on eval) would
 		// be up, and have told onUp, before the caller could set it.
 		session.__redialTimer = Timer.setTimeout(0, session.__dial);
 		return session;
@@ -531,7 +525,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		Ends the session: it stops its heartbeat, dials no more if it was made
 		by `dial`, and closes its connection, whose end its calls waiting and
-		`onDown` hear as ever.
+		`onDown` hear as usual.
 	**/
 	public function close():Void {
 		__closed = true;
@@ -544,8 +538,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		try {
 			__connection.close();
 		} catch (_:Dynamic) {}
-		// A connection whose close says nothing, some of an application's
-		// own, has ended all the same.
+		// A connection whose close says nothing (some of an application's
+		// own) has ended all the same.
 		if (!__ended) {
 			__connectionEnded(Reason.Closed);
 		}
@@ -564,7 +558,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			// not 0, which LocalConnection takes for no deadline.
 			connection = new NetConnection(__dialUri, null, null, null, null, false, 1);
 		} catch (error:Dynamic) {
-			// Refused as it was made, a local:// name nobody listens on.
+			// Refused as it was made: a local:// name nobody listens on.
 			__endReason = Reason.Error("Could not connect to " + __dialUri + ": " + Std.string(error));
 			__redialLater();
 			return;
@@ -606,8 +600,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		(connection : NetConnectionBase).__observeClose(__connectionEnded);
 		(connection : NetConnectionBase).__observeReady(__connectionReady);
 		__syncOnDataBinding();
-		// Connected already, a connect that finishes as it is made, as on
-		// eval, told whoever was listening before this was.
+		// Connected already (a connect that finishes as it is made, as on
+		// eval) told whoever was listening before this was.
 		if (connection.connected) {
 			__connectionReady();
 		}
@@ -655,8 +649,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-	 * Asked before each inbound call on the runtime lane, to a handler
-	 * added with `register`, or to an op with none, before its arguments are
+	 * Asked before each inbound call on the runtime lane (to a handler
+	 * added with `register`, or to an op with none), before its arguments are
 	 * read: the op, the request's id (0 for a one-way call) and the bytes its
 	 * arguments take. Return `null` to let it run, or an `RPCError` to refuse
 	 * it: a request is answered with the error's message, and a one-way call
@@ -688,16 +682,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * handler's method name, or `null` for a runtime handler, which has only
 	 * its `op`.
 	 *
-	 * The connection has stayed up. A handler failing is not the peer sending
-	 * something unreadable, and it used to be treated as if it were: the
-	 * connection closed and every call still waiting on it failed.
+	 * The connection has stayed up: a handler failing is not the peer
+	 * sending something unreadable.
 	 *
 	 * Logs by default. Replace it to count failures, raise an alert or keep
 	 * the stack. Whatever it throws is ignored, so a report failing cannot
 	 * close the connection either.
 	 *
-	 * `error` is a `haxe.Exception`: what was thrown, if it was one, an
-	 * `RPCError`, an `RPCTimeoutError`, and otherwise a `haxe.ValueException`
+	 * `error` is a `haxe.Exception`: what was thrown, if it was one (an
+	 * `RPCError`, an `RPCTimeoutError`), and otherwise a `haxe.ValueException`
 	 * holding what was thrown in its `value`, its `stack` there to read.
 	 */
 	public dynamic function onHandlerError(op:Int, method:Null<String>, error:haxe.Exception):Void {
@@ -728,8 +721,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Registers a runtime handler for `op` that reads its arguments where
-		they lie, through `RPCArgs`' typed getters, `args.int(0)`,
-		`args.string(1)`: in place of the `Array<Dynamic>` that `register`
+		they lie, through `RPCArgs`' typed getters (`args.int(0)`,
+		`args.string(1)`) in place of the `Array<Dynamic>` that `register`
 		builds: no array, and no number boxed. It answers as a `register`
 		handler does: what it returns is the answer of a request (a `Future`
 		answered once it completes), and nothing for a one-way call.
@@ -834,8 +827,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Sends a one-way runtime RPC call on the dynamic lane. Each argument is
-		`null`, a `Bool`, an `Int`, a `Float`, a `String` or `haxe.io.Bytes`,
-		a `ByteArray` among them, sent as its `length` bytes, and arrives
+		`null`, a `Bool`, an `Int`, a `Float`, a `String` or `haxe.io.Bytes`
+		(a `ByteArray` among them, sent as its `length` bytes) and arrives
 		as the same, `Bytes` for either of the last.
 
 		@throws ArgumentError When the call is over `maxFrameLength`.
@@ -882,8 +875,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		Gives `response` the session's deadline, `milliseconds` from now, in
 		the queue one timer keeps for all of them; one that would fall before
-		the last queued, `callTimeout` lowered between calls, arms its own.
-		Each call armed a timer of its own: a closure and a timer node a call.
+		the last queued (`callTimeout` lowered between calls) arms its own,
+		rather than each call arming a timer of its own, a closure and a timer
+		node a call.
 	**/
 	@:noCompletion private function __queueDeadline(response:RPCResponse<Dynamic>, milliseconds:Int):Void {
 		var queue:Null<RPCDeadlines> = __deadlines;
@@ -905,8 +899,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Whether the session reads its connection: while it has anything that
-		reads, a handler, commands, runtime handlers or runtime calls
-		waiting, or a heartbeat, which reads the answers to its pings. A
+		reads (a handler, commands, runtime handlers or runtime calls
+		waiting) or a heartbeat, which reads the answers to its pings. A
 		session with none leaves what arrives unread until it has.
 
 		Called as each of those changes, which on the runtime lane is every
@@ -936,8 +930,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		would line up; and so does a send that throws while a frame is
 		answered, and anything a hand-written dispatch throws.
 
-		The handler is bound to this session for as long as its calls run,
-		a field write per call, and put back as it was once the delivery
+		The handler is bound to this session for as long as its calls run
+		(a field write per call), and put back as it was once the delivery
 		has been read. One handler can serve any number of sessions, so it
 		answers on, and names as `session`, whichever is dispatching to it
 		now. Put back rather than cleared: over a connection that delivers at
@@ -965,24 +959,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		Every whole frame in `input`, on both lanes.
 
-		There were three readers, one for each thing a session might have
-		bound, and each knew only its own: a runtime call to a session with
-		no runtime handlers ended its connection, the reader for a
-		compiled handler took it for garbage, where the guide promised an
-		error answer, and a compiled request to a session with no handler
-		was dropped, with its caller left waiting on a connection that was
-		up. Now any runtime call is answered as the runtime lane answers, and
-		a request with nothing to answer it is answered
+		One reader for everything a session might have bound: a runtime call
+		to a session with no runtime handlers is answered as the runtime lane
+		answers, and a request with nothing to answer it is answered
 		`RPCError.NO_HANDLER_MESSAGE`.
 
 		Every frame carries its length, so one this session cannot read is
 		passed over, and the next is read where it begins: a call for a
-		method it has not got, or whose arguments do not read, a request
-		answered saying so, an answer that does not read, and a frame of a
-		kind it does not know. Each is told to `onUnreadableFrame`. They
-		ended the connection, so in a rolling deploy a client calling a
-		method its server did not have yet was disconnected. Only a length
-		that cannot be trusted still ends it.
+		method it has not got, or whose arguments do not read (a request
+		answered saying so), an answer that does not read, and a frame of a
+		kind it does not know. Each is told to `onUnreadableFrame`, so in a
+		rolling deploy a client calling a method its server does not have yet
+		stays connected. Only a length that cannot be trusted ends it.
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
 		final maxLength:Int = maxFrameLength;
@@ -1072,21 +1060,20 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Told of each frame this session could not read and passed over, the
-		connection staying up: a call for a method it has not got, from a
+		connection staying up: a call for a method it has not got (from a
 		peer built from another version of the contract, or after a method
-		was added, as in a rolling deploy, or for an op no runtime handler
+		was added, as in a rolling deploy), or for an op no runtime handler
 		is registered under, or reaching a session with nothing to answer
 		calls; a call whose arguments did not read; an answer whose value did
 		not read; and a frame of a kind it does not know. `requestId` is a
-		call's id, 0 for a one-way call, and for a frame that is not a call,
+		call's id (0 for a one-way call, and for a frame that is not a call),
 		and `reason` says which it was.
 
 		A request among them has been answered by then, with
 		`RPCError.UNKNOWN_METHOD_MESSAGE`, `RPCError.UNREADABLE_MESSAGE` or
 		`RPCError.NO_HANDLER_MESSAGE`, and the call an unreadable answer was
-		for has failed; a one-way call has been dropped. They ended the
-		connection, where only a frame whose length cannot be trusted does
-		now.
+		for has failed; a one-way call has been dropped. Only a frame whose
+		length cannot be trusted ends the connection.
 
 		Does nothing unless set: a server can count them, and close a peer
 		that sends too many. What it throws is ignored.
@@ -1102,8 +1089,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		A compiled call for a method the handler has not got: a request is
-		answered `RPCError.UNKNOWN_METHOD_MESSAGE`, a one-way call dropped. It
-		was thrown, and ended the connection.
+		answered `RPCError.UNKNOWN_METHOD_MESSAGE`, a one-way call dropped.
 	**/
 	@:noCompletion private function __unknownCall(op:Int, requestId:Int):Void {
 		if (requestId != 0) {
@@ -1305,9 +1291,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__sendRuntimeResponse(op, requestId, result);
 			}
 		} catch (error:haxe.Exception) {
-			// The caller was sent `Std.string(error)`, whatever it held, a
-			// path, a query, a stack, and a one-way call rethrew, which
-			// closed the connection. The same rules as the compiled lane now.
+			// The caller is not sent `Std.string(error)`, whatever it holds
+			// (a path, a query, a stack), and a one-way call does not
+			// rethrow: the same rules as the compiled lane.
 			failure = error;
 			__answerRuntimeFailure(op, requestId, error, __epoch);
 		}
@@ -1359,8 +1345,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Whether a call's failure is reported on this side: when its caller is
-		not told what it was, anything but an `RPCError`, or anything from a
-		one-way call, and when it timed out, which its caller is told and
+		not told what it was (anything but an `RPCError`, or anything from a
+		one-way call), and when it timed out, which its caller is told and
 		which is news here as well.
 	**/
 	@:noCompletion private static inline function __reported(answer:Null<String>, requestId:Int, error:haxe.Exception):Bool {
@@ -1391,8 +1377,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		a send that delivers at once, a fresh one. Every frame taken goes
 		back through `__sent`, sent or not.
 
-		Each frame was a `ByteArrayOutput` of its own, a call's and its
-		answer's alike: most of what a call allocated.
+		A `ByteArrayOutput` of its own for each frame, a call's and its
+		answer's alike, would be most of what a call allocates.
 	**/
 	@:noCompletion private inline function __takeFrame(room:Int, flags:Int, op:Int, requestId:Int):RPCFrame {
 		var frame:Null<RPCFrame> = __frame;
@@ -1455,7 +1441,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__sent(framed);
 			throw new ArgumentError(message);
 		}
-		// An answer for a connection that has ended, its handler closed it,
+		// An answer for a connection that has ended (its handler closed it)
 		// has nobody to go to.
 		if (__ended) {
 			__sent(framed);
@@ -1477,10 +1463,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		Sends a request's frame, or fails `response` at once when it cannot go:
 		the connection has ended, the frame is over `maxFrameLength`, or the
 		send throws. Nothing is left waiting on an answer that cannot come.
-
-		Over TCP a send on a closed connection threw out of the call, and left
-		its response waiting; over local IPC it was reported to `onError`, and
-		the response waited for good.
 	**/
 	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		var message:Null<String> = null;
@@ -1549,8 +1531,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-		Frames and sends an error answer. A message too long to send, an
-		`RPCError`'s, is not the caller's to see in part, and is answered
+		Frames and sends an error answer. A message too long to send (an
+		`RPCError`'s) is not the caller's to see in part, and is answered
 		`RPCError.INTERNAL_MESSAGE` instead.
 	**/
 	@:noCompletion private function __sendError(flags:Int, op:Int, requestId:Int, message:String):Void {
@@ -1564,7 +1546,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private function __errorFrame(flags:Int, op:Int, requestId:Int, message:String):RPCFrame {
 		final framed:RPCFrame = __takeFrame(4 + RPCWire.MIN_PAYLOAD_LEN + 5 + 5 + message.length * 3, flags, op, requestId);
-		// Its id even when it is 0, which no answer has: an error answer was
+		// Its id even when it is 0, which no answer has: an error answer is
 		// always framed so.
 		if (requestId == 0) {
 			framed.putVarUInt(0);
@@ -1595,7 +1577,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 	 * Has `settle` run for `future` on this session's thread once it
 	 * completes: at once if it has, or when it completes on this thread, and
-	 * posted to this thread's runtime when it completes on another, a
+	 * posted to this thread's runtime when it completes on another: a
 	 * connection is not thread-safe, and neither is anything this does in
 	 * answer. Until then the call counts against `maxCallsWaiting`.
 	 *
@@ -1808,11 +1790,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		A response under `response`'s id for another op, `op`, is not its
 		answer, and its value is not of its type.
 
-		Responses were matched by id alone. Each caller numbers its calls from
-		1, so a peer answering one caller's call on another's connection, as
-		one handler bound to two sessions did, completed that caller's own
-		call with the wrong answer: a `String` call resolved with an `Int`. The
-		call fails instead, since the one answer it could have had is spent.
+		Responses are matched by id and checked by op. Each caller numbers its
+		calls from 1, so a peer answering one caller's call on another's
+		connection would complete that caller's own call with the wrong answer
+		(a `String` call resolved with an `Int`). The call fails instead, since
+		the one answer it could have had is spent.
 	**/
 	@:noCompletion private static function __answeredForAnotherOp(response:RPCResponse<Dynamic>, op:Int):Void {
 		response.__fail('RPC response for op $op does not answer call ${response.requestId}, which was for op ${response.op}', null);
@@ -1925,10 +1907,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Stops the heartbeat `start()` began, without closing the connection,
-		and fails every call this session has waiting on an answer, on
-		both lanes, with "RPC session stopped": an answer arriving for one
+		and fails every call this session has waiting on an answer (on
+		both lanes) with "RPC session stopped": an answer arriving for one
 		later is dropped. Calls made after this go out and are answered as
-		ever. A session with nothing else to read for stops reading its
+		usual. A session with nothing else to read for stops reading its
 		connection.
 	**/
 	public function stop():Void {
@@ -1940,14 +1922,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		The connection has become ready: a heartbeat asked for before it was
-		starts now, and a connection that had ended, a `LocalConnection`
-		listening again, which takes its next peer on the same object, is
+		starts now, and a connection that had ended (a `LocalConnection`
+		listening again, which takes its next peer on the same object) is
 		answered on again.
 
-		The session stayed ended once its connection first closed: for every
-		peer after the first, each error answer and each answer given later was
-		dropped, and the heartbeat stayed off. What was waiting from the last
-		peer stays on its own life of the connection, and answers nobody.
+		What was waiting from the last peer stays on its own life of the
+		connection, and answers nobody.
 	**/
 	@:noCompletion private function __connectionReady():Void {
 		if (__isUp) {
@@ -1975,8 +1955,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// Guard against clearing an unstarted/already-cleared handle, which keeps
 		// stop() safe and idempotent even when no heartbeat was ever scheduled.
 		// The sentinel is TimerHandle.INVALID, not 0: slot 0 of generation 0 is
-		// handle 0, so a session whose heartbeat was the scheduler's first timer
-		// could never be stopped, and went on pinging a closed connection.
+		// handle 0, so with 0 as the sentinel a session whose heartbeat was the
+		// scheduler's first timer could never be stopped.
 		if (__heartbeatTimerHandle != TimerHandle.INVALID) {
 			Timer.clear(__heartbeatTimerHandle);
 			__heartbeatTimerHandle = TimerHandle.INVALID;
@@ -1990,9 +1970,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		do not all fall on one tick.
 
 		What it has heard is counted from now as well as from the last
-		arrival. A connection starts having heard nothing, at 0, and a peer
-		that never sent a byte was compared against a deadline that moved
-		with the clock: it was never timed out.
+		arrival: a connection starts having heard nothing, at 0, so a peer
+		that never sent a byte is timed out too.
 	**/
 	@:noCompletion private function __resumeHeartbeat():Void {
 		__hasHeartbeat = true;
@@ -2038,10 +2017,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 		// An interval less a millisecond: the beat after a ping is an interval
-		// after it, and the clock's rounding put that a hair short, 2.8 - 1.8
-		// is 0.99999999999999978, so a ping went every other beat. A session
-		// pinging at 45 seconds against a 90-second timeout heard its pongs 90
-		// seconds apart, and could time out a healthy peer.
+		// after it, and the clock's rounding can put that a hair short (2.8 -
+		// 1.8 is 0.99999999999999978), which would send a ping every other
+		// beat: a session pinging at 45 seconds against a 90-second timeout
+		// would hear its pongs 90 seconds apart, and could time out a healthy
+		// peer.
 		if (now - __connection.outTimestamp >= __intervalSec - BEAT_SLACK) {
 			__sendPing();
 		}
@@ -2064,9 +2044,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Answers a ping with a pong: a response frame for `ping` under request
-		id 0. Pings were one-way and nobody answered them, so a client
-		heartbeating a server that only answers calls heard nothing between
-		calls and closed a healthy connection.
+		id 0, so a client heartbeating a server that only answers calls hears
+		from it between calls.
 	**/
 	@:noCompletion private function __answerPing():Void {
 		if (__ended) {
@@ -2081,9 +2060,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		Nothing has arrived for the heartbeat's timeout: the calls waiting
 		fail, saying so, and the connection is closed, which tells the
-		application, once, with the reason its transport gives for a close.
-		The session used to report `Timeout` itself after `close()` had
-		reported `Closed`, so `onClose` ran twice.
+		application once, with the reason its transport gives for a close.
 	**/
 	@:noCompletion private function __timedOut(silence:Float):Void {
 		__stopHeartbeat();
@@ -2097,8 +2074,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		try {
 			(__connection : NetConnectionBase).__closeWith(Reason.Timeout);
 		} catch (_:Dynamic) {}
-		// A connection whose close says nothing, some of an application's
-		// own, has ended all the same.
+		// A connection whose close says nothing (some of an application's
+		// own) has ended all the same.
 		if (!__ended) {
 			__connectionEnded(Reason.Timeout);
 		}
@@ -2120,10 +2097,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	once, by the future completing or the deadline passing, whichever is
 	first. Both are told on the session's thread.
 
-	A future that never completed held its place among the calls waiting,
-	and its caller, for as long as the connection lasted. An object of its
-	own rather than state its closures share, which hxcpp would box a field
-	at a time, and only for a session with a deadline.
+	Without it, a future that never completed would hold its place among
+	the calls waiting, and its caller, for as long as the connection lasted.
+	An object of its own rather than state its closures share, which hxcpp
+	would box a field at a time, and only for a session with a deadline.
 **/
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.Future)
@@ -2186,16 +2163,16 @@ private class HandlerDeadline<T> {
 }
 
 /**
-	A session's `handlerTimeout` deadlines, in the order their calls came,
-	which, with one timeout for all of them, is the order they fall due,
-	and one timer for them all, set for the first. Each armed a timer of its
-	own: a closure and a timer node a call. A call settled leaves the list
+	A session's `handlerTimeout` deadlines, in the order their calls came
+	(which, with one timeout for all of them, is the order they fall due),
+	and one timer for them all, set for the first, rather than a timer, a
+	closure and a timer node for each call. A call settled leaves the list
 	at once.
 
 	The timer, when it fires, answers for the calls that are due, at the
 	time a timer of their own would have fired, and is set for the next. A
-	deadline that would fall before the last one, `handlerTimeout`
-	lowered between calls, is not queued, and arms its own.
+	deadline that would fall before the last one (`handlerTimeout`
+	lowered between calls) is not queued, and arms its own.
 **/
 @:access(crossbyte.rpc.RPCSession)
 private class HandlerDeadlines {

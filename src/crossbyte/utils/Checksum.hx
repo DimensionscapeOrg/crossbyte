@@ -31,7 +31,7 @@ import haxe.io.Bytes;
 final class Checksum {
 	/**
 		The checksum of `bytes`, from `offset` for `length` bytes, as the bytes
-		of its value, most significant first, the order it prints in: four
+		of its value, most significant first (the order it prints in): four
 		for `CRC32` and `ADLER32`, one for `XOR`, sixteen for `MD5` and twenty
 		for `SHA1`.
 

@@ -11,16 +11,16 @@ import utest.Async;
 	A `Socket` with `secure` set connects over TLS, and checks whom it is
 	talking to.
 
-	It did neither: on a client `Socket`, `secure` was read only to report it,
-	so a client asking for TLS spoke plain TCP, into a TLS listener, which
-	could make nothing of it, and there was no certificate to check. A
-	protocol that runs over TLS on a plain stream, TURN over TLS among them,
-	had no way to have it.
+	On a client `Socket`, `secure` must do more than report itself: a
+	client asking for TLS would otherwise speak plain TCP into a TLS
+	listener, which could make nothing of it, with no certificate to check,
+	and a protocol that runs over TLS on a plain stream (TURN over TLS
+	among them) would have no way to have it.
 
 	Each case runs a TLS `ServerSocket` presenting a self-signed certificate
 	and answering what it reads in capitals, so the client's settings are
 	the only thing that differs between them. A refusal proves little on its
-	own, a client that cannot connect at all refuses too, which is why
+	own (a client that cannot connect at all refuses too), which is why
 	it sits beside the cases showing the same server is reachable once the
 	client is told to trust it.
 
@@ -77,8 +77,7 @@ class SocketTLSClientTest extends utest.Test {
 	/**
 		A listener that takes the connection and never answers the hello: the
 		client gives up at its `timeout`, which counts the handshake, rather
-		than waiting on it for good. On Node too, where no connect had a
-		deadline at all.
+		than waiting on it for good, on Node as everywhere else.
 	**/
 	@:timeout(30000)
 	public function testAHandshakeNobodyAnswersEndsAtTheTimeout(async:Async):Void {

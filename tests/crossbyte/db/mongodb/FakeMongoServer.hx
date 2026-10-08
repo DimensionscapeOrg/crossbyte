@@ -54,7 +54,7 @@ class FakeMongoServer {
 	/** The wire version the hello reports. **/
 	public var maxWireVersion:Int = 21;
 
-	/** Answer `hello` with CommandNotFound, as MongoDB before 4.4.2 did. **/
+	/** Answer `hello` with CommandNotFound, as MongoDB before 4.4.2 does. **/
 	public var legacyHello:Bool = false;
 
 	/** Refuse commands on a connection that has not authenticated. **/
@@ -197,9 +197,9 @@ class FakeMongoServer {
 
 		// Shut down, not closed, and under the lock: a serve thread removes its
 		// connection under the same lock before closing it, so none can close a
-		// socket, and let its handle be reused by another, while this uses
-		// it. On eval too, where a read shut down under it once raised an
-		// error no catch saw.
+		// socket (and let its handle be reused by another) while this uses it.
+		// On eval too, where a read shut down under it can raise an error no
+		// catch sees.
 		for (client in __clients) {
 			try client.shutdown(true, true) catch (_:Dynamic) {}
 		}

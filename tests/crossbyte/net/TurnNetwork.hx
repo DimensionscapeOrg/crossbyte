@@ -94,8 +94,8 @@ class TurnNetwork {
 
 	/**
 		A client whose datagrams leave from `clientAddress` and a port of its
-		own, pointed at `server`, the first relay's address unless a test
-		names something else.
+		own, pointed at `server` (the first relay's address unless a test
+		names something else).
 
 		@param sharePort The port an earlier client used, for one that takes
 		over its socket; a new port when 0.

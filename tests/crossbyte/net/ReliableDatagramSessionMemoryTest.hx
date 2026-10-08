@@ -41,7 +41,7 @@ class ReliableDatagramSessionMemoryTest extends utest.Test {
 		session.__acceptFrame(packet(1003, "d"));
 		var ring = session.__inFrameCache;
 		Assert.notNull(ring);
-		// Sixteen slots, where every session held 512.
+		// Sixteen slots, rather than 512 for every session.
 		Assert.equals(16, ring.capacity);
 
 		// One 300 past the gap: the ring grows to reach it, the two held
@@ -103,8 +103,8 @@ class ReliableDatagramSessionMemoryTest extends utest.Test {
 	}
 
 	/**
-		A session that sent a large bundle once and has been quiet since,
-		nothing sent for a whole keepalive period, lets the buffer it grew
+		A session that sent a large bundle once and has been quiet since
+		(nothing sent for a whole keepalive period) lets the buffer it grew
 		for it go; the keepalive it then sends makes a small one.
 	**/
 	public function testAQuietSessionLetsAGrownBufferGo():Void {
@@ -126,7 +126,44 @@ class ReliableDatagramSessionMemoryTest extends utest.Test {
 		session.abort();
 	}
 
+	/**
+		A sequenced channel's counters are kept for the channels a session
+		uses, eight at a time, not all 256 each way for each session that
+		sequenced anything; growing keeps what each channel had seen.
+	**/
+	public function testSequencedCountersAreKeptForTheChannelsUsed():Void {
+		var session = MemoryWire.make();
+		if (session == null) return;
+		var message = new ByteArray();
+		message.length = 10;
+		session.send(message, 0, 0, DeliveryMode.sequenced(0));
+		session.send(message, 0, 0, DeliveryMode.sequenced(0));
+		Assert.equals(8, session.__sequencedOut.length, "one channel's counters held all 256");
+		session.send(message, 0, 0, DeliveryMode.sequenced(200));
+		Assert.equals(208, session.__sequencedOut.length);
+		session.send(message, 0, 0, DeliveryMode.sequenced(0));
+		var fields = [for (frame in session.take()) if (frame.type == ReliableDatagramFrameType.SEQUENCED) (frame.sequence : Int)];
+		Assert.same([0, 1, (200 << 24) | 0, 2], fields, "a channel's counter did not carry across the growth");
+
+		// Arriving: channel 3, then 100, then a stale one on 3, which is dropped.
+		session.__acceptFrame(sequenced(3, 5, "a"));
+		Assert.equals(8, session.__sequencedIn.length);
+		session.__acceptFrame(sequenced(100, 1, "b"));
+		Assert.equals(104, session.__sequencedIn.length);
+		session.__acceptFrame(sequenced(3, 4, "stale"));
+		session.__acceptFrame(sequenced(3, 6, "c"));
+		Assert.same(["a", "b", "c"], session.delivered);
+		session.abort();
+	}
+
 	// ------------------------------------------------------------- helpers
+
+	private static function sequenced(channel:Int, counter:Int, value:String):ReliableDatagramFrame {
+		var bytes = new ByteArray();
+		bytes.writeUTFBytes(value);
+		bytes.position = 0;
+		return new ReliableDatagramFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, false);
+	}
 
 	private static function packet(sequence:Int, value:String):ReliableDatagramFrame {
 		var bytes = new ByteArray();

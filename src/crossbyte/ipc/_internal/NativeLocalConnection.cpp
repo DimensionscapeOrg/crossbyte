@@ -52,8 +52,8 @@ namespace
 	}
 
 	// A connect's deadline is `timeoutMs` from now, or none at all with 0 or
-	// less: then it tries until something listens. 0 made a single try,
-	// where a connect everywhere else in CrossByte waits without a deadline.
+	// less: then it tries until something listens, as a connect everywhere
+	// else in CrossByte does without a deadline.
 	bool anotherTry(bool forever, std::chrono::steady_clock::time_point deadline)
 	{
 		return forever || sliceLeft(deadline);
@@ -104,10 +104,10 @@ namespace
 	}
 
 	// The pipe for `name`: this user's, by the user's SID in it. Pipe names
-	// are one namespace for every user of the machine, so two users' names
-	// were one pipe, and whoever made it first had the other's clients. A
-	// name of another user's cannot be this one. Empty when the user cannot
-	// be read.
+	// are one namespace for every user of the machine, so without the SID
+	// two users' names would be one pipe, and whoever made it first would
+	// have the other's clients. A name of another user's cannot be this one.
+	// Empty when the user cannot be read.
 	std::string makePipeName(const char* name)
 	{
 		const ProcessUser& user = processUser();
@@ -141,19 +141,17 @@ namespace
 
 	// The one instance of the name, or nothing if the name is taken.
 	//
-	// The pipe was made with PIPE_UNLIMITED_INSTANCES, so a second listen()
-	// on a name in use made a second instance beside the first, and clients
-	// went to whichever the system picked. FILE_FLAG_FIRST_PIPE_INSTANCE
-	// refuses a name any instance of which exists, another user's put
-	// there first included, and one instance is all a listener needs: it
-	// takes each client in turn, and native_disconnect makes it ready for
-	// the next.
+	// FILE_FLAG_FIRST_PIPE_INSTANCE refuses a name any instance of which
+	// exists (another user's put there first included), so a second listen()
+	// on a name in use does not make a second instance beside the first for
+	// clients to go to whichever the system picks. One instance is all a
+	// listener needs: it takes each client in turn, and native_disconnect
+	// makes it ready for the next.
 	//
 	// It admits this user and SYSTEM alone, and no client on another
-	// machine. It was made with the default security, which lets everyone,
-	// the anonymous user included, open a pipe to read: another user
-	// could take what the listener sent. Its owner is this user, set here,
-	// so a client can tell it from another user's.
+	// machine, where the default security would let everyone (the anonymous
+	// user included) open a pipe to read what the listener sent. Its owner
+	// is this user, set here, so a client can tell it from another user's.
 	extern "C" void* native_createInboundPipe(const char* name)
 	{
 		lastError = LOCAL_CONNECTION_ERROR_FAILED;
@@ -256,9 +254,9 @@ namespace
 
 		// ERROR_NO_DATA: a client came and went before this looked. It is
 		// taken like any other: what it wrote is read, its leaving is found,
-		// and native_disconnect readies the instance for the next. It was
-		// taken for "nobody yet", and the instance stayed closing for good,
-		// every later client finding it busy.
+		// and native_disconnect readies the instance for the next. Taken for
+		// "nobody yet", the instance would stay closing for good, every later
+		// client finding it busy.
 		DWORD error = GetLastError();
 		return error == ERROR_PIPE_CONNECTED || error == ERROR_NO_DATA;
 	}
@@ -368,12 +366,10 @@ namespace
 	// All of `buffer`, waiting up to CONNECT_TIMEOUT_MS: for tests that write a
 	// raw frame. LocalConnection writes through native_writeSome.
 	//
-	// It waits outside the collector's reach. LocalConnection.send wrote
-	// through this, on the runtime's thread, and a collection another thread
-	// started meanwhile waited for it, the peer's reader among them, so a
-	// frame larger than the pipe waited on a reader that waited on it, until
-	// the five seconds were up. `buffer` stays where it is: the caller holds
-	// it, and hxcpp's collector does not move objects.
+	// It waits outside the collector's reach, so a collection another
+	// thread starts meanwhile does not wait for it: the peer's reader among
+	// them, which this may be waiting on. `buffer` stays where it is: the
+	// caller holds it, and hxcpp's collector does not move objects.
 	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
 	{
 		HANDLE handle = static_cast<HANDLE>(pipe);
@@ -582,8 +578,8 @@ namespace
 	};
 
 	// How often, at most, a listener's lock file has its times brought up to
-	// date: often enough that a cleaner of old files in /tmp, macOS's
-	// takes what nobody has touched for three days, systemd's for ten,
+	// date: often enough that a cleaner of old files in /tmp (macOS's
+	// takes what nobody has touched for three days, systemd's for ten)
 	// never finds a listener's old.
 	constexpr long LOCK_FILE_REFRESH_SECONDS = 3600;
 
@@ -606,18 +602,17 @@ namespace
 		setNonBlocking(fd);
 	}
 
-	// A connected socket, and one about to connect, never makes its
-	// caller wait: each read, write and connect takes what the socket can
-	// do now, and what has to wait does so in poll(), with a deadline.
+	// A connected socket, and one about to connect, never makes its caller
+	// wait: each read, write and connect takes what the socket can do now,
+	// and what has to wait does so in poll(), with a deadline.
 	//
-	// The socket was left blocking, and a write relied on MSG_DONTWAIT not
-	// to wait. Linux honours that for a send; macOS's kernel does not, a
-	// send there gives up rather than waits only on a socket set
-	// non-blocking, so a send to a peer that had stopped reading, once
-	// the 8 KB macOS gives a local socket was full, waited for good, on
-	// the runtime's thread and holding the lock the reader thread and
-	// close() need. And a connect to a listener whose backlog was full
-	// waited in Linux's kernel for it to take someone, past any timeout.
+	// A blocking socket with MSG_DONTWAIT would not do: Linux honours that
+	// for a send, but macOS's kernel gives up rather than waits only on a
+	// socket set non-blocking, so a send to a peer that had stopped reading,
+	// once the 8 KB macOS gives a local socket was full, would wait for good
+	// on the runtime's thread, holding the lock the reader thread and
+	// close() need. And a connect to a listener whose backlog is full waits
+	// in Linux's kernel for it to take someone, past any timeout.
 	// Tests only: the buffer size asked of each socket connected or taken
 	// from now on, in each direction; 0 leaves the system's. A Linux build
 	// asks for macOS's small one with it.
@@ -721,11 +716,10 @@ namespace
 
 	// The socket's name for `name`, in the user's directory.
 	//
-	// It was the name with everything outside [A-Za-z0-9_-] made '_' and cut to
-	// 48 characters, so "a.b" and "a_b", or two long names alike for their
-	// first 48, were one socket, and the second to listen took the first's
-	// clients. A name that needs neither keeps its path; any other is a
-	// readable part of it and a 64-bit FNV-1a hash of the whole.
+	// A name of [A-Za-z0-9_-] alone, 48 characters or fewer, keeps its
+	// path; any other is a readable part of it and a 64-bit FNV-1a hash of
+	// the whole, so "a.b" and "a_b", or two long names alike for their first
+	// 48 characters, are not one socket.
 	std::string sanitizePipeName(const char* name)
 	{
 		const size_t budget = 48;
@@ -803,12 +797,10 @@ namespace
 	// listener closing removes it: a lock on one already removed holds
 	// nothing.
 	//
-	// It was in /tmp, where any user can put something at a name first, and
-	// it was opened following a link, another user's link there made this
-	// process make or lock a file wherever it pointed, and taken whatever
-	// it was. It is in the user's own directory now, and still a link is not
-	// followed, a FIFO is not waited on, and only a regular file this user
-	// owns is taken. Its times are brought up to date as it is taken.
+	// In the user's own directory, not /tmp, where any user can put
+	// something at a name first; a link there is not followed, a FIFO is not
+	// waited on, and only a regular file this user owns is taken. Its times
+	// are brought up to date as it is taken.
 	int lockName(const std::string& path)
 	{
 		std::string lockPath = path + ".lock";
@@ -838,10 +830,9 @@ namespace
 
 	// The listener for `name`, or nothing if another listener has it.
 	//
-	// It removed whatever socket file was at the path before binding, so a
-	// second listen() on a name in use took the first's place, and its
-	// clients. The name is now held by a lock: a live listener's name is
-	// refused, and only a stale file, from a listener that has gone, is
+	// The name is held by a lock: a live listener's name is refused, so a
+	// second listen() on a name in use cannot take the first's place and its
+	// clients, and only a stale file (from a listener that has gone) is
 	// removed.
 	//
 	// In the user's own directory, made if it is not there yet; refused if
@@ -1056,8 +1047,9 @@ namespace
 				continue;
 			}
 			// Full for now. macOS may also say ENOBUFS of a local socket
-			// whose peer has not caught up, "the operation may succeed when
-			// buffers become available", which ended the connection.
+			// whose peer has not caught up ("the operation may succeed when
+			// buffers become available"), which is not the end of the
+			// connection.
 			if (sendResult < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS))
 			{
 				break;
@@ -1070,8 +1062,8 @@ namespace
 
 	// All of `buffer`, waiting up to CONNECT_TIMEOUT_MS: for tests that write
 	// a raw frame. LocalConnection writes through native_writeSome. It waits
-	// outside the collector's reach; see the Windows version. It waited
-	// without a deadline for a peer that had stopped reading.
+	// outside the collector's reach; see the Windows version. It does not
+	// wait without a deadline for a peer that has stopped reading.
 	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
 	{
 		auto* handle = static_cast<NativeLocalConnectionHandle*>(pipe);
@@ -1151,9 +1143,9 @@ namespace
 	}
 
 	// Whether what is at `path` may be connected to: 1 if a socket of this
-	// user's is there, 0 if nothing is, -1 if anything else is, a link,
+	// user's is there, 0 if nothing is, -1 if anything else is (a link,
 	// which connect() would follow wherever it led, or something another
-	// user made, lastError saying so.
+	// user made), lastError saying so.
 	int checkSocketPath(const std::string& path)
 	{
 		struct stat info;
@@ -1177,7 +1169,7 @@ namespace
 	// A connect to the user's own listener on `name`: the user's directory
 	// and the socket in it are checked before each try, and anything not the
 	// user's own is refused at once rather than waited out. Nothing there
-	// yet, the directory or the socket, is a name nobody listens on.
+	// yet (the directory or the socket) is a name nobody listens on.
 	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
 		lastError = LOCAL_CONNECTION_ERROR_FAILED;
@@ -1343,11 +1335,9 @@ namespace
 	// the collector's reach: whether it woke for that. A plain wait for
 	// `fd` -1 or nothing asked.
 	//
-	// The reader thread slept between passes instead, from 1 ms to 10 ms as
-	// passes found nothing to do: a pass moved at most what the socket held
-	// and a pass that found it still full, or still empty, waited longer.
-	// Through the 8 KB macOS gives a local socket, the two sides took turns
-	// at 8 KB a turn, and three 3 MB frames took longer than ten seconds.
+	// The reader thread waits here rather than sleeping between passes,
+	// which through the 8 KB macOS gives a local socket would have the two
+	// sides take turns at 8 KB a sleep.
 	extern "C" bool native_waitForWork(int fd, bool read, bool write, int timeoutMs)
 	{
 		hx::AutoGCFreeZone waiting;

@@ -90,8 +90,8 @@ class OrderedMapTest extends utest.Test {
 
 	/**
 		Removing entries while iterating visits every entry once, in order.
-		The iterators walked the array of keys, which a removal shifted under
-		them: removing every even value visited 3 of 6.
+		Iterators walking the array of keys, which a removal shifts under them,
+		would visit 3 of 6 when every even value is removed.
 	**/
 	public function testRemovingWhileIteratingVisitsEveryEntryOnce():Void {
 		var map = new crossbyte.ds.OrderedMap<String, Int>();
@@ -156,10 +156,11 @@ class OrderedMapTest extends utest.Test {
 
 	/**
 		`remove` unlinks an entry rather than searching and shifting an array
-		of keys, whose search from the front made removing the newest first
-		the worst case: 20,000 removals took 332 ms on the jvm and 802 ms on
-		Node, where a linked removal takes 3 ms on the jvm and 9 on eval. The
-		bound sits between the two, fifteen times above the slowest target's.
+		of keys, whose search from the front would make removing the newest
+		first the worst case: 20,000 such removals take 332 ms on the jvm and
+		802 ms on Node, where a linked removal takes 3 ms on the jvm and 9 on
+		eval. The bound sits between the two, fifteen times above the slowest
+		target's.
 	**/
 	public function testRemovingIsNotAPassOverTheKeys():Void {
 		var map = new crossbyte.ds.OrderedMap<String, Int>();

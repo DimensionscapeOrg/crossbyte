@@ -8,9 +8,9 @@ import haxe.io.Bytes;
  * filesystem, so that `crossbyte.io.File` keeps its type and its whole API on
  * a target that cannot back them.
  *
- * The alternative was to compile `File` out of the browser build entirely, but
- * the type is threaded through the framework, `FileListEvent` carries them,
- * and half a dozen packages reference it, so removing it would take those
+ * Compiling `File` out of the browser build entirely would not do: the
+ * type is threaded through the framework (`FileListEvent` carries them,
+ * and half a dozen packages reference it), so removing it would take those
  * with it and there would be nothing left to unify. Keeping the class and
  * refusing the operation costs one shim instead of a stub per method, and the
  * refusal lands where the caller can see which call failed.
@@ -19,8 +19,8 @@ import haxe.io.Bytes;
  * an `exists()` answering `false` reads as "no such file" rather than "this
  * target has no files", and a caller would go on to create it.
  *
- * A browser does have storage, IndexedDB, and the origin-private file system
- * behind `showSaveFilePicker`, but neither is a synchronous POSIX-shaped
+ * A browser does have storage (IndexedDB, and the origin-private file system
+ * behind `showSaveFilePicker`), but neither is a synchronous POSIX-shaped
  * filesystem, and pretending otherwise underneath a synchronous API is how a
  * write silently goes nowhere. Backing `File` with those is a real piece of
  * design, not a shim.

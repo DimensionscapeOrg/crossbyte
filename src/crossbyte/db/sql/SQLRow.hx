@@ -12,9 +12,9 @@ import haxe.io.Bytes;
 	value taken out of it (a `String`, `Bytes`) is the caller's to keep.
 
 	Rows read this way cost what the database costs to read them. The same
-	SELECT of 20,000 rows of 8 columns, natively on SQLite, took 199-330 ns
+	SELECT of 20,000 rows of 8 columns, natively on SQLite, takes 199-330 ns
 	a row this way and 539-775 ns as an object per row with its fields read
-	by name (the audit's SqlitePerf).
+	by name.
 
 	Conversions follow the driver: on SQLite, as `sqlite3_column_*` converts
 	(the text "12" read as an Int is 12); on MySQL and Postgres, from the

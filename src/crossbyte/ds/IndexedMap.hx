@@ -162,7 +162,7 @@ class IndexedMap<T> {
 /**
  * Walks an `IndexedMap`'s values in their current order, with the entry just
  * returned free to be removed: if another was swapped into its place, that
- * place is visited again. Keys, not values, say whether it was, two keys
+ * place is visited again. Keys, not values, say whether it was: two keys
  * can hold one value.
  */
 @:noCompletion

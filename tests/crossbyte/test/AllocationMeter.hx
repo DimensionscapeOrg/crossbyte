@@ -96,7 +96,7 @@ class AllocationMeter {
 	private static function __run(op:Void->Void, count:Int):Run {
 		#if cpp
 		// A heap the suite has fragmented leaves small holes, which more of the
-		// operations cross: in the full suite a fifth to a third of them were
+		// operations cross: in the full suite a fifth to a third of them are
 		// counted, against nine in ten alone. Too few to trust is run again,
 		// on the holes the next collection leaves.
 		var run:Run = null;
@@ -287,8 +287,8 @@ private class Run {
 
 #if jvm
 /**
-	HotSpot's own thread bean, which every JDK this runs on, Temurin 8 in
-	CI, has: it counts what each thread allocated.
+	HotSpot's own thread bean, which every JDK this runs on (Temurin 8 in
+	CI) has: it counts what each thread allocated.
 **/
 @:native("com.sun.management.ThreadMXBean")
 private extern interface AllocatingThreadBean {

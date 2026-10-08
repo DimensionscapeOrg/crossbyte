@@ -291,8 +291,8 @@ class HashLongestMatch
   num_=new Vector<UInt>(kBucketSize);
   // Each bucket's block is made when something is first stored in it (see
   // Store): a bucket nothing hashed to is never read, since num_ says it is
-  // empty. Allocating all of them up front was 2^15 vectors of 2^8 entries
-  // at quality 9, per call, whatever the input.
+  // empty. Allocating all of them up front would be 2^15 vectors of 2^8
+  // entries at quality 9, per call, whatever the input.
   buckets_ = new Vector<Vector<Int>>(kBucketSize);// [kBucketSize][kBlockSize];
 
     Reset();

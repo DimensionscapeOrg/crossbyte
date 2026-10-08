@@ -134,8 +134,8 @@ class HTTPServerSpreadTest extends utest.Test {
 			statuses.push(HttpWire.get(client, '/n$i').status);
 		}
 
-		// A refusal is a 503, or, when the server's close lands on the
-		// request it never read, a reset that loses the 503 on its way.
+		// A refusal is a 503, or, when the server's close lands on the request
+		// it never read, a reset that loses the 503 on its way.
 		Assert.same([200, 200, 200], statuses.slice(0, 3), "the connections within the limit were not all served: " + statuses);
 		for (i in 3...5) {
 			Assert.isTrue(statuses[i] == 503 || statuses[i] == 0, 'connection $i past the limit across the runtimes was served: $statuses');
@@ -382,8 +382,8 @@ class HTTPServerSpreadTest extends utest.Test {
 	/**
 		A server on one runtime, drained from another thread: the drain is
 		handed to the server's runtime, as `ServerWebSocket.drain()` hands
-		its own over, and finishes there. It ran on the calling thread,
-		closing the runtime's connections and calling back from there.
+		its own over, and finishes there, not on the calling thread, closing
+		the runtime's connections and calling back from there.
 	**/
 	@:timeout(30000)
 	public function testDrainFromAnotherThreadRunsOnTheServersRuntime():Void {
@@ -654,7 +654,7 @@ class HttpWire {
 		var status:Int = 0;
 		// A head cut short is no response: a refusal closed under the request
 		// it never read can reset the connection mid-head, leaving "HTTP/1.1 5",
-		// which once parsed as status 5.
+		// which must not parse as status 5.
 		if (head.endsWith("\r\n\r\n") && head.startsWith("HTTP/1.1 ")) {
 			var parsed:Null<Int> = Std.parseInt(head.substr(9, 3));
 			status = parsed == null ? 0 : parsed;

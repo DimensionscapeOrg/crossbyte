@@ -37,8 +37,8 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	Every layer below this was built without a socket so that they could all
 	share one. This is the class that owns that socket and does the sharing:
 	connectivity checks, encrypted records and everything inside them travel
-	over a single UDP port, told apart by RFC 7983's rule, a first byte under
-	4 is STUN and one from 20 to 63 is DTLS, which exists precisely so that
+	over a single UDP port, told apart by RFC 7983's rule (a first byte under
+	4 is STUN and one from 20 to 63 is DTLS), which exists precisely so that
 	one port can carry all of it.
 
 	```haxe
@@ -77,8 +77,8 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	it drives all of them from `haxe.Timer.stamp()` on the runtime tick. That is
 	not bookkeeping trivia. The layers schedule retransmissions against the
 	timestamps they were handed, so two layers fed from clocks with different
-	epochs would disagree about how old every unacknowledged packet is, one
-	retransmitting everything instantly, the other never, and nothing would
+	epochs would disagree about how old every unacknowledged packet is (one
+	retransmitting everything instantly, the other never), and nothing would
 	name the cause.
 
 	## Who is what: two roles, not one
@@ -92,8 +92,8 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	during checking, if both peers turn out to have claimed it and the
 	tiebreakers say otherwise.
 
-	**The DTLS role** is negotiated in the description. An offer says `actpass`,
-	whichever you like, and the answer chooses `active` or `passive`. The
+	**The DTLS role** is negotiated in the description. An offer says `actpass`
+	(whichever you like), and the answer chooses `active` or `passive`. The
 	DTLS client is the one that sends the ClientHello, and everything above DTLS
 	follows *it* rather than the ICE role: RFC 8831 has the DTLS client open the
 	SCTP association, and RFC 8832 gives it the even data channel streams.
@@ -108,7 +108,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 
 	A browser does not publish the addresses of the machine it runs on. Every
 	host candidate it offers is a random name ending in `.local`, registered with
-	the local multicast DNS responder and meaningless anywhere else, a privacy
+	the local multicast DNS responder and meaningless anywhere else: a privacy
 	measure, so that a page cannot learn a visitor's network layout simply by
 	opening a peer connection.
 
@@ -142,7 +142,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 
 	It is asked for last and used last on purpose. Every byte crosses a third
 	party twice and somebody pays for the bandwidth, so ICE prefers any direct
-	path it can prove, a relayed candidate carries the lowest priority there
+	path it can prove: a relayed candidate carries the lowest priority there
 	is. It is worth having because the alternative is no connection at all.
 
 	Gathering it does not commit the connection to it. Relayed, reflexive and
@@ -152,7 +152,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
-	yields nothing at all, since none of them resolve, ask `LocalAddress` for
+	yields nothing at all, since none of them resolve; ask `LocalAddress` for
 	the default route as well, as the example above does. A connection bound
 	to the wildcard and told no address advertises none: the browser has
 	nothing to check, and nothing here can reach a name, so they never meet.
@@ -211,7 +211,7 @@ class PeerConnection {
 
 	/**
 		Resolves when data channels can be created, or fails when any layer
-		cannot get there, no path, a certificate that is not the one the peer
+		cannot get there: no path, a certificate that is not the one the peer
 		signalled, an association nobody answered.
 	**/
 	public var ready(default, null):Future<PeerConnection>;
@@ -231,12 +231,6 @@ class PeerConnection {
 	/**
 		Called once when the connection closes, with the same reason `closed`
 		resolves with.
-
-		A peer that went away used to be reported by nothing at all. An
-		application had to poll `connected` on every connection every tick to
-		notice, and even then learned of a browser's `pc.close()` only when ICE
-		consent ran out half a minute later, because the ABORT and close_notify
-		that said so on the wire were swallowed below this class.
 	**/
 	public dynamic function onClose(reason:String):Void {}
 
@@ -254,13 +248,13 @@ class PeerConnection {
 		ICE restart has, from `restartIce` or the peer's restart offer, to
 		find its path before it is given up (see `restartIce`).
 
-		Every phase had its own ending except the ones that waited on the
-		peer to go first: a DTLS server waits for a ClientHello with no timer
-		running, an SCTP listener for an INIT, and a peer whose tab closed
-		just after ICE left this end holding a socket, a tick listener and a
-		TLS session for as long as the process ran. The reason `ready` fails
-		with names the phase that did not finish. Read at every poll, so it
-		can be changed after `connect`.
+		Every phase has its own ending except the ones that wait on the peer
+		to go first: a DTLS server waits for a ClientHello with no timer
+		running, an SCTP listener for an INIT, and without this a peer whose
+		tab closed just after ICE would leave this end holding a socket, a
+		tick listener and a TLS session for as long as the process ran. The
+		reason `ready` fails with names the phase that did not finish. Read
+		at every poll, so it can be changed after `connect`.
 
 		Thirty seconds fails a connection with no path about when a browser
 		reports one failed. It is shorter than one ICE check's whole schedule
@@ -272,14 +266,13 @@ class PeerConnection {
 		0 for no deadline, as `IceAgent.timeout` and every other timeout here
 		read it. Then only the agent's own `timeout` ends a connect or a
 		restart that finds no path, and nothing ends one whose peer stops
-		after ICE, a DTLS server waiting for a ClientHello, an SCTP listener
-		for an INIT, so a connection given no deadline is one the
-		application closes itself. 0 used to fail the connection at the first
-		poll after `connect`.
+		after ICE (a DTLS server waiting for a ClientHello, an SCTP listener
+		for an INIT), so a connection given no deadline is one the
+		application closes itself.
 
-		@throws ArgumentError When negative or not a number. NaN compared
-		false with every elapsed time, so the deadline it was given never
-		came; a negative one failed every connection at once.
+		@throws ArgumentError When negative or not a number: NaN compares
+		false with every elapsed time, so its deadline would never come, and
+		a negative one would fail every connection at once.
 	**/
 	public var readyTimeout(default, set):Float = DEFAULT_READY_TIMEOUT;
 
@@ -306,10 +299,10 @@ class PeerConnection {
 
 		Each channel the peer opens costs this end the channel, its label and
 		protocol, and a stream's sequence numbers, for as long as the peer
-		leaves it open, and costs the peer an OPEN of a few bytes: there was
-		no bound but the stream numbers. One past this is refused as RFC 8832
-		refuses a channel, no acknowledgement, and the stream reset, which
-		closes the peer's end; `onChannel` is not called, and counted in
+		leaves it open, and costs the peer an OPEN of a few bytes.
+		One past this is refused as RFC 8832
+		refuses a channel (no acknowledgement, and the stream reset, which
+		closes the peer's end; `onChannel` is not called) and counted in
 		`refusedChannels`. Channels this end creates are not counted.
 	**/
 	public var maxPeerChannels(get, set):Int;
@@ -368,8 +361,8 @@ class PeerConnection {
 		`bind` names one, a reflexive or relayed one as a server grants it, and
 		any passed to `addLocalCandidate`.
 
-		For trickle ICE: send each to the peer as it arrives, written with
-		`SessionDescription.writeCandidate` for a browser, instead of waiting
+		For trickle ICE: send each to the peer as it arrives (written with
+		`SessionDescription.writeCandidate` for a browser) instead of waiting
 		to put them all in a description. A candidate already in a description
 		the peer has is harmless to send again.
 	**/
@@ -379,8 +372,8 @@ class PeerConnection {
 		A slot for whatever the application wants this connection to carry.
 
 		Untouched by the framework, and it goes when the connection does. The
-		same as `DataChannel.userData`: without one, per-peer state, a
-		session, a player, lives in a map beside the connection that has to be
+		same as `DataChannel.userData`: without one, per-peer state (a
+		session, a player) lives in a map beside the connection that has to be
 		cleaned up by hand when it closes.
 	**/
 	public var userData:Any = null;
@@ -403,8 +396,8 @@ class PeerConnection {
 	@:noCompletion private var __isOfferer:Bool;
 
 	/**
-		Whether the next description this side writes is an offer, which
-		leaves the DTLS role open, or an answer, which states it. The first
+		Whether the next description this side writes is an offer (which
+		leaves the DTLS role open) or an answer, which states it. The first
 		exchange decides it, and each ICE restart again: an answer to a
 		restart the peer offered says `active` or `passive` whoever offered
 		first, since a browser refuses an answer saying `actpass`.
@@ -436,7 +429,7 @@ class PeerConnection {
 	/**
 		@param isOfferer Whether this peer produces the offer. The two peers must
 		pass opposite values. It makes this peer ICE-controlling, and it decides
-		what `description()` proposes for the DTLS role, an offerer proposes
+		what `description()` proposes for the DTLS role: an offerer proposes
 		`actpass` and takes whatever the answer leaves it, while an answerer
 		takes the client role unless the offer has already claimed it.
 		@param certificate An existing identity to present, generated when
@@ -445,7 +438,7 @@ class PeerConnection {
 	**/
 	public function new(isOfferer:Bool, ?certificate:DtlsCertificate, ?credentials:IceCredentials) {
 		if (!isSupported) {
-			throw new ArgumentError("A peer connection cannot run on this target: it needs a UDP socket, a CSPRNG and mbedTLS, and one of them is missing here. Check PeerConnection.isSupported. In a browser, use RTCPeerConnection, this class is what it talks to.");
+			throw new ArgumentError("A peer connection cannot run on this target: it needs a UDP socket, a CSPRNG and mbedTLS, and one of them is missing here. Check PeerConnection.isSupported. In a browser, use RTCPeerConnection, which is what this class talks to.");
 		}
 
 		this.__isOfferer = isOfferer;
@@ -494,22 +487,20 @@ class PeerConnection {
 			__send(payload, address, port);
 		};
 
-		// A role conflict changes which peer nominates, and nothing else. It
-		// used to overwrite the DTLS role too, on the assumption that the two
-		// were the same bit, they are not, and a peer that rewrote its DTLS
-		// role here would abandon a handshake already agreed in the
-		// description over an ICE detail settled afterwards.
+		// A role conflict changes which peer nominates, and nothing else, not
+		// the DTLS role: the two are not the same bit, and a peer that
+		// rewrote its DTLS role here would abandon a handshake already agreed
+		// in the description over an ICE detail settled afterwards.
 		made.onRoleChanged = function(nowControlling:Bool):Void {
 			if (made == agent) {
 				iceControlling = nowControlling;
 			}
 		};
 
-		// The controlling peer nominated another pair, a browser whose
-		// network changed nominates the pair from its new address, and the
-		// session goes where the agent now points. It used to stay on the
-		// first pair for good, sending into an address that had gone until
-		// consent to it ran out.
+		// The controlling peer nominated another pair (a browser whose
+		// network changed nominates the pair from its new address), and the
+		// session goes where the agent now points rather than sending into
+		// an address that has gone until consent to it runs out.
 		made.onSelectedPairChanged = function(pair:IceCandidatePair):Void {
 			if (__closed || __dtls == null || made != agent) {
 				return;
@@ -549,8 +540,8 @@ class PeerConnection {
 		Opens the socket everything will share, and starts the clock.
 
 		@param localAddress Binding to a concrete address also records it as a
-		host candidate. A wildcard bind does not, `0.0.0.0` names every
-		interface and so names none, so a caller behind one should ask
+		host candidate. A wildcard bind does not (`0.0.0.0` names every
+		interface and so names none), so a caller behind one should ask
 		`LocalAddress` which interface reaches the peer and pass the answer to
 		`addLocalCandidate`, or the description carries no address at all.
 		Reflexive and relayed candidates come from `gatherReflexive` and
@@ -609,10 +600,10 @@ class PeerConnection {
 		@throws ArgumentError For a relayed candidate. A relayed address works
 		only through the allocation that lent it, made from this connection's
 		socket: checks from it are wrapped for the relay to forward, and what
-		the relay forwards comes back through it. One added here had neither.
-		It was taken in silence and its checks went straight at the peer from
-		this socket, while the peer was told to answer the relay. Ask
-		`gatherRelayed` or `gatherRelayedFrom` for one.
+		the relay forwards comes back through it. One added here would have
+		neither, and its checks would go straight at the peer from this socket
+		while the peer was told to answer the relay. Ask `gatherRelayed` or
+		`gatherRelayedFrom` for one.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
 		if (candidate != null && candidate.type == IceCandidateType.RELAYED) {
@@ -632,12 +623,11 @@ class PeerConnection {
 		Adds a candidate the peer trickled, before or after `connect`.
 
 		What arrives from a browser's `onicecandidate` is a line; read it with
-		`SessionDescription.readCandidate` first. The agent had to be reached
-		directly for this, through a field documented as being for inspection.
+		`SessionDescription.readCandidate` first.
 
-		@return Whether it was taken. One that cannot be used, a name rather
+		@return Whether it was taken. One that cannot be used (a name rather
 		than an address, which is what a browser hiding its addresses sends,
-		or a port that cannot be dialled, is skipped, the way a
+		or a port that cannot be dialled) is skipped, the way a
 		description's are, since the candidates are the peer's to choose.
 	**/
 	public function addRemoteCandidate(candidate:CandidateDescription):Bool {
@@ -674,7 +664,7 @@ class PeerConnection {
 	/**
 		Everything the peer needs to reach this connection.
 
-		Sent over the application's own signalling channel, the one part of
+		Sent over the application's own signalling channel: the one part of
 		WebRTC that is deliberately not CrossByte's to carry.
 	**/
 	public function description():PeerDescription {
@@ -696,8 +686,8 @@ class PeerConnection {
 			// What the receiver here reassembles, which is what a peer may send.
 			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY,
 			// An answer repeats the offer's section id, which a browser matches
-			// the two by; it was always "0", so an offer that said "data" got
-			// an answer it could not place.
+			// the two by, so an offer that said "data" gets an answer it can
+			// place.
 			mid: __remote != null ? __remote.mid : null
 		};
 	}
@@ -705,8 +695,8 @@ class PeerConnection {
 	/**
 		The largest message the peer takes, in bytes, or 0 for any size.
 
-		From its description's `maxMessageSize`, `a=max-message-size` in SDP,
-		64 KB when a document leaves it out, and `send` on a channel refuses
+		From its description's `maxMessageSize` (`a=max-message-size` in SDP,
+		64 KB when a document leaves it out), and `send` on a channel refuses
 		anything larger, as RFC 8841 says a sender must. Known once `connect`
 		has been given the description.
 	**/
@@ -755,23 +745,21 @@ class PeerConnection {
 		}
 
 		// Built before the agent is touched. IceCredentials validates the
-		// fragment and the password, and a description that fails that used to
-		// throw below, after every candidate had been added and before
-		// agent.start was reached, leaving the agent configured for a
-		// connection that could never be started.
+		// fragment and the password, and a description that fails that has to
+		// throw before any candidate is added, not after, which would leave
+		// the agent configured for a connection that could never be started.
 		var credentials = new IceCredentials(remote.usernameFragment, remote.password);
 
 		for (candidate in remote.candidates) {
 			// Skipped rather than thrown on, which is what SessionDescription
 			// already does for a line it cannot use: "skipped rather than
 			// accepted into a check that could only fail". Constructing one of
-			// these validates the port and the component, so a description
-			// carrying a single unusable candidate used to abort this loop
-			// part-way, some candidates added, the rest not, and the
-			// agent.start below never reached, leaving a connection that could
-			// never come up and said nothing about why. The candidates are the
-			// peer's to choose, so one bad one is not the application's fault
-			// to catch.
+			// these validates the port and the component, so a single unusable
+			// candidate would otherwise abort this loop part-way (some
+			// candidates added, the rest not, and agent.start below never
+			// reached), leaving a connection that could never come up and said
+			// nothing about why. The candidates are the peer's to choose, so one
+			// bad one is not the application's fault to catch.
 			try {
 				agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
 			} catch (_:Dynamic) {}
@@ -791,7 +779,7 @@ class PeerConnection {
 		Restarts ICE from this side: new credentials, and a new agent that
 		finds a path afresh while the session carries on over the old one.
 
-		For when the path may have gone, this device changed network, say,
+		For when the path may have gone: this device changed network, say,
 		and its old address is no longer anywhere. Send `description()` to the
 		peer as a new offer and give its answer to `connect`; once the new agent
 		has a path the session moves to it. DTLS and SCTP carry on untouched:
@@ -803,14 +791,14 @@ class PeerConnection {
 		the answer to send back. A browser does that after `restartIce()`.
 
 		A restart that has not found a path within `readyTimeout` seconds of
-		beginning, the peer never answered the offer, or its checks failed,
+		beginning (the peer never answered the offer, or its checks failed)
 		is given up, and the connection is where it would be without it:
 		carrying on over the old path while the peer answers consent checks
 		there, and closing when it does not. `iceRestarting` goes false with
 		`agent` unchanged, and `description()` describes the session as it
-		was. Nothing ended a restart before, and while one was under way the
-		old path's consent closed nothing, so a restart toward a peer that had
-		gone held the connection open for good.
+		was. Without this, since the old path's consent closes nothing while
+		a restart is under way, a restart toward a peer that had gone would
+		hold the connection open for good.
 
 		@throws ArgumentError Before `connect`, or once closed.
 	**/
@@ -862,8 +850,8 @@ class PeerConnection {
 		}
 
 		// One that cannot find a path is given up, and the old path decides,
-		// as it would have without a restart. It used to fail the connection,
-		// however well the old path was still doing.
+		// as it would have without a restart, rather than the connection
+		// failing however well the old path is still doing.
 		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
 			if (restarting == __restartAgent) {
 				__abandonRestart("The ICE restart found no path to the peer: " + error);
@@ -955,10 +943,10 @@ class PeerConnection {
 
 		The old path then decides, as it would have with no restart: the
 		session carries on there while the peer answers consent checks, and
-		the connection closes if it has stopped. That is the case a deadline
-		was missing for, a restart toward a peer that had gone, which held
-		the connection open for good, since consent lost on the old path
-		closes nothing while a restart is under way.
+		the connection closes if it has stopped. That is what the deadline is
+		for: a restart toward a peer that had gone would otherwise hold the
+		connection open for good, since consent lost on the old path closes
+		nothing while a restart is under way.
 	**/
 	@:noCompletion private function __abandonRestart(reason:String):Void {
 		var restarting = __restartAgent;
@@ -1001,7 +989,7 @@ class PeerConnection {
 		one, and `ready.then` makes waiting explicit and cheap.
 
 		@param maxRetransmits How many times a message may be sent again
-		before it is given up on, 0 sends each once, for a channel that
+		before it is given up on (0 sends each once), for a channel that
 		would rather lose a message than wait for it, as a game's state
 		channel does. See `DataChannel.maxRetransmits`. -1, unless given, for
 		no limit.
@@ -1026,11 +1014,11 @@ class PeerConnection {
 
 		@param now `haxe.Timer.stamp()`'s time, the one clock every layer here
 		is driven from (see "One clock" above), not a clock of the caller's
-		own, which this used to say would do. A datagram arrives with no time
-		attached, so the paths it takes read `haxe.Timer.stamp()` themselves,
-		and a clock of another epoch would put every retransmission due at
-		once or never. Public so a test can pass a later time on it, and move
-		every timer past its deadline in one call.
+		own. A datagram arrives with no time attached, so the paths it takes
+		read `haxe.Timer.stamp()` themselves, and a clock of another epoch
+		would put every retransmission due at once or never. Public so a test
+		can pass a later time on it, and move every timer past its deadline
+		in one call.
 	**/
 	public function poll(now:Float):Void {
 		if (__closed) {
@@ -1077,10 +1065,11 @@ class PeerConnection {
 
 		// Consent is the agent's to lose and this connection's to act on, and
 		// from the moment the path is found rather than once everything above
-		// it is up: a peer that went away mid-handshake was ignored until the
-		// association opened, which it never would. RFC 7675 asks the sender
-		// to stop, which is something only the layer that sends can do, and
-		// stopping includes the goodbyes: nothing is sent on the way out.
+		// it is up: a peer that went away mid-handshake would otherwise be
+		// ignored until the association opened, which it never would. RFC
+		// 7675 asks the sender to stop, which is something only the layer that
+		// sends can do, and stopping includes the goodbyes: nothing is sent on
+		// the way out.
 		//
 		// Except while an ICE restart is under way. The old path going is often
 		// why there is one, and the new agent decides: it replaces this one if
@@ -1101,8 +1090,8 @@ class PeerConnection {
 			__dtls.poll(now);
 		}
 
-		// Each layer below can end the connection, a close_notify read, an
-		// association the peer stopped answering, and the rest are then
+		// Each layer below can end the connection (a close_notify read, an
+		// association the peer stopped answering), and the rest are then
 		// closed and have nothing to do.
 		if (__closed) {
 			return;
@@ -1138,7 +1127,7 @@ class PeerConnection {
 		asks a sender whose consent has expired to stop sending, and the relay
 		a path ran through cannot carry a goodbye once it has gone.
 		@param local Whether this end asked. It decides only how a `ready` still
-		waiting is settled, a close the caller asked for is a cancellation,
+		waiting is settled: a close the caller asked for is a cancellation,
 		anything else a failure with its reason.
 	**/
 	@:noCompletion private function __shutdown(reason:String, notifyPeer:Bool, local:Bool):Void {
@@ -1193,9 +1182,9 @@ class PeerConnection {
 		__settleRelayed(null, "The connection closed before the relay answered.");
 
 		// And `ready`. Those two above only exist when the caller asked for
-		// them, so leaving this one out was invisible unless someone awaited
-		// the connection itself and then closed it, after which neither
-		// handler could ever run.
+		// them, so leaving this one out would be invisible unless someone
+		// awaited the connection itself and then closed it, after which
+		// neither handler could ever run.
 		if (!wasConnected) {
 			if (local) {
 				@:privateAccess ready.__cancel("The connection was closed before it was ready.");
@@ -1254,7 +1243,7 @@ class PeerConnection {
 		One socket, three protocols, told apart by the first byte.
 
 		RFC 7983: under 4 is STUN, 20 to 63 is DTLS. SCTP never appears here
-		raw, it lives inside the DTLS records. Anything else is noise on a
+		raw: it lives inside the DTLS records. Anything else is noise on a
 		public port, and is dropped rather than guessed at.
 	**/
 	/**
@@ -1267,7 +1256,7 @@ class PeerConnection {
 
 		The question is asked through the socket this connection already owns,
 		and it has to be. A NAT keeps its translation per socket, so an address
-		discovered on a socket of its own, which is what `StunClient` binds,
+		discovered on a socket of its own (which is what `StunClient` binds)
 		answers a question about a mapping this connection does not have and no
 		peer will ever send to.
 
@@ -1310,8 +1299,8 @@ class PeerConnection {
 
 		var now:Float = haxe.Timer.stamp();
 
-		// The schedule is RFC 5389's, ask, and if nothing comes back ask
-		// again after twice as long each time, because a single datagram
+		// The schedule is RFC 5389's (ask, and if nothing comes back ask
+		// again after twice as long each time) because a single datagram
 		// carrying the only question this connection asks about its own
 		// address is a thing to lose to one dropped packet, and a deadline
 		// alone would report the loss as a server that is not there.
@@ -1358,13 +1347,11 @@ class PeerConnection {
 		TLS, for a network that lets nothing else out. What it relays is UDP
 		either way.
 		@param certAuthority For a relay reached over TLS whose certificate
-		chains to an authority the system does not trust, a private relay's
-		own, that authority; see `TurnServer.certAuthority`.
+		chains to an authority the system does not trust (a private relay's
+		own), that authority; see `TurnServer.certAuthority`.
 		@param verifyCert For a relay reached over TLS: false to accept its
 		certificate unchecked, for a test against a relay with a throwaway one
-		and never otherwise; see `TurnServer.verifyCert`. These two were
-		`gatherRelayedFrom`'s alone, so a private relay over TLS could not be
-		reached through this.
+		and never otherwise; see `TurnServer.verifyCert`.
 		@return The candidate that was added, or a failure naming why none was,
 		whose `cause` is a `TurnError` with the relay's code.
 	**/
@@ -1395,18 +1382,12 @@ class PeerConnection {
 		Asks each relay in turn until one lends an address, and keeps one lent
 		for as long as the connection lasts.
 
-		A connection got one attempt at a relay, for life. A relay that was full
-		(486), out of capacity (508), silent, or refused the credentials left it
-		with no relay and no way to ask another, asking again was refused as
-		"already has a relay", and a relay that later went away, after a
-		network change or a restart of its own, was not replaced either.
-
 		- Each server is asked in order, the next when one refuses or does not
 		  answer. A relay redirecting with 300 Try Alternate is followed by
 		  `TurnClient`.
 		- The future fails only when every one has, with every reason in its
-		  message and the last relay's `TurnError`, its code, its reason, and
-		  where it redirected to, as its `cause`.
+		  message and the last relay's `TurnError` (its code, its reason, and
+		  where it redirected to) as its `cause`.
 		- A relay that goes away is replaced, from the top of the list, and the
 		  new relayed candidate announced through `onLocalCandidate` for the peer
 		  to be told of. A connection whose path ran through the lost relay
@@ -1476,8 +1457,8 @@ class PeerConnection {
 		list `gatherRelayedFrom` was given, and the one holding the allocation.
 
 		For credentials that expire, as the TURN REST convention's do: fetch new
-		ones before they lapse and pass them here, so the next relay asked, a
-		replacement, or one for an ICE restart, is not refused. A relay ties an
+		ones before they lapse and pass them here, so the next relay asked (a
+		replacement, or one for an ICE restart) is not refused. A relay ties an
 		allocation to the username that made it, so the one held now takes a new
 		password for the same username and keeps its old username otherwise.
 
@@ -1499,11 +1480,11 @@ class PeerConnection {
 			}
 		}
 
-		// Against the username the allocation was made with, kept apart. It was
-		// read from the list entry the allocation came from, after the loop
-		// above had rewritten it, so it always matched: a new username went to
-		// the allocation held, the relay refused its next Refresh with 441,
-		// and the allocation was lost, at the first renewal of TURN REST
+		// Against the username the allocation was made with, kept apart: the
+		// list entry the allocation came from has been rewritten by the loop
+		// above, so it always matches, and a new username sent to the
+		// allocation held would have the relay refuse its next Refresh with
+		// 441 and the allocation lost, at the first renewal of TURN REST
 		// credentials, whose usernames carry their expiry.
 		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnUsername == username) {
 			__turn.setCredentials(username, password);
@@ -1611,7 +1592,7 @@ class PeerConnection {
 			__relayLost(relay, reason);
 		};
 
-		// One peer address the relay will not forward to, a hardened relay
+		// One peer address the relay will not forward to: a hardened relay
 		// refuses private ones, and ICE pairs the relayed candidate with the
 		// peer's host addresses first. Those pairs are dead, and the rest of the
 		// relay is fine; said to the agents so they stop checking into nothing.
@@ -1681,8 +1662,8 @@ class PeerConnection {
 
 		A path through the relay ends with the relay, with no goodbye: what
 		would carry it is what just went. Unless an ICE restart is under way,
-		which is often why the relay went, a network change moves the 5-tuple
-		it knew this connection by, and the restart decides. Otherwise the
+		which is often why the relay went (a network change moves the 5-tuple
+		it knew this connection by), and the restart decides. Otherwise the
 		connection loses a candidate it no longer needs and asks for another,
 		so a later restart, or checking still under way, has one.
 	**/
@@ -1746,8 +1727,8 @@ class PeerConnection {
 
 		// Every time, which costs a lookup: TurnClient sends nothing for a
 		// permission already in place, already being asked for, or refused.
-		// It was asked once per address here, so a request the relay never
-		// answered, or one dropped from a full queue, was never asked again.
+		// So a request the relay never answered, or one dropped from a full
+		// queue, is asked again.
 		// Renewal is TurnClient's too, on its own tick, so that a connection
 		// that only receives keeps its peer permitted.
 		__turn.permit(address, now);
@@ -1847,7 +1828,7 @@ class PeerConnection {
 		if (__reflexiveQuery.expired(now)) {
 			var damage:Null<String> = __reflexiveQuery.damage();
 			__settleReflexive(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + __reflexiveServer + ":"
-				+ __reflexivePort + " within the time allowed" + (damage != null ? ", " + damage + ", " : "")
+				+ __reflexivePort + " within the time allowed" + (damage != null ? " (" + damage + ")" : "")
 				+ ", so this connection still has no address to advertise beyond its own network.");
 			return;
 		}
@@ -1906,7 +1887,7 @@ class PeerConnection {
 		// With the host candidate as its base, so that pairing collapses the
 		// two rather than sending every check twice from the one socket. Null
 		// when the bind was a wildcard, which leaves the reflexive candidate
-		// standing on its own, there is no recorded address it is a view of.
+		// standing on its own: there is no recorded address it is a view of.
 		var candidate = IceCandidate.serverReflexive(mapped, IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE,
 			__hostCandidate);
 		addLocalCandidate(candidate);
@@ -1936,8 +1917,8 @@ class PeerConnection {
 
 		if (first < 4) {
 			// Decoded once, here, and the message shown to each of the three
-			// that might want it. Each used to decode it again for itself, up
-			// to four times a datagram, every one before any integrity check.
+			// that might want it, rather than each decoding it again for itself
+			// (up to four times a datagram, every one before any integrity check).
 			var message = decoded != null ? decoded : StunMessage.decode(data);
 
 			if (message == null) {

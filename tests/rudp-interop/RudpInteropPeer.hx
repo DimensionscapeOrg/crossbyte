@@ -25,7 +25,7 @@ import haxe.io.Bytes;
 	back, reliably, and exits 0 once that session has closed. The client
 	sends messages of every size the protocol treats differently, reliable
 	and unreliable, checks every echo byte for byte, closes gracefully and
-	exits 0, or, with `refused`, exits 0 only if its attempt ends with the
+	exits 0; or, with `refused`, exits 0 only if its attempt ends with the
 	ioError a key mismatch gives. Anything else exits non-zero.
 **/
 class RudpInteropPeer extends HostApplication {

@@ -33,10 +33,10 @@ class MySQLStatement extends EventDispatcher {
 		Named values substituted into `text` by `execute()`, as `:name`, each
 		written as the MySQL literal for its type:
 
-		- `null` as `NULL`, where the placeholder used to stay in the SQL;
-		- `Int`, `Float` and `haxe.Int64` as numbers, so `LIMIT :n` works,
-		  a number went out quoted, and MySQL refuses `LIMIT '50'`; a `Float`
-		  that is NaN or infinite has no literal and throws `ArgumentError`;
+		- `null` as `NULL`;
+		- `Int`, `Float` and `haxe.Int64` as numbers, so `LIMIT :n` works
+		  (MySQL refuses `LIMIT '50'`); a `Float` that is NaN or infinite has
+		  no literal and throws `ArgumentError`;
 		- `Bool` as `TRUE` or `FALSE`;
 		- `haxe.io.Bytes` as a hex literal, `X'00ff...'`, which carries a NUL
 		  byte, where a string is cut at its first one;
@@ -51,8 +51,8 @@ class MySQLStatement extends EventDispatcher {
 		  which follows the session's `NO_BACKSLASH_ESCAPES`.
 
 		Substituted, not bound: the text is scanned for placeholders outside
-		literals, identifiers and comments, with backslash escapes read as
-		the session reads them, and the value spliced in. There is no bound
+		literals, identifiers and comments (with backslash escapes read as
+		the session reads them) and the value spliced in. There is no bound
 		alternative: the client speaks the text protocol only.
 	**/
 	public var parameters(default, null):FieldStruct<SQLValue>;
@@ -74,8 +74,7 @@ class MySQLStatement extends EventDispatcher {
 
 	// Pages read and not yet taken by getResult(), oldest first. Only the
 	// thread running the statement touches it, so a plain Array serves every
-	// target. It was a Deque on cpp and, elsewhere, an Array read with pop(),
-	// which hands back the newest page first.
+	// target.
 	private var __resultQueue:Array<Array<Dynamic>> = [];
 
 	// `text` split at its placeholders, kept while it and the session's
@@ -107,9 +106,9 @@ class MySQLStatement extends EventDispatcher {
 		`-1`) for `getResult()`, then dispatches `SQLEvent.RESULT`.
 
 		A statement the server refuses throws an `SQLError`, after dispatching
-		it as an `SQLErrorEvent` too. It used to dispatch the event and return,
-		so to a caller not listening, an `AsyncDatabase` task among them, a
-		failed INSERT read as one that had run.
+		it as an `SQLErrorEvent` too, so to a caller not listening (an
+		`AsyncDatabase` task among them) a failed INSERT does not read as one
+		that had run.
 	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__live() == null) {
@@ -129,7 +128,7 @@ class MySQLStatement extends EventDispatcher {
 
 		try {
 			// Read as the rows are asked for: a page of a million-row result
-			// no longer waits for, and holds, all million.
+			// does not wait for, and hold, all million.
 			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __live().request(sql);
 			__noteCounts();
 			__queueResult();
@@ -146,11 +145,11 @@ class MySQLStatement extends EventDispatcher {
 	}
 
 	/**
-		Reports a failed statement both ways: as the `SQLErrorEvent` it always
-		was, and as the `SQLError` it now throws. The detail is made a string
-		here, where it is known to be whatever the driver threw, on the jvm a
-		`java.sql.SQLException`, which `SQLError` took where it expects a
-		`String` and turned into a `ClassCastException`.
+		Reports a failed statement both ways: as the `SQLErrorEvent`, and as
+		the `SQLError` it throws. The detail is made a string here, where it
+		is known to be whatever the driver threw (on the jvm a
+		`java.sql.SQLException`, which `SQLError` would take where it expects a
+		`String` and turn into a `ClassCastException`).
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var detail:String = Std.string(e);
@@ -263,7 +262,7 @@ class MySQLStatement extends EventDispatcher {
 		var more:Bool;
 
 		// The rows come from the server as they are asked for, so reading
-		// them can fail as a statement does, the connection lost part way.
+		// them can fail as a statement does: the connection lost part way.
 		try {
 			more = __resultSet.hasNext();
 
@@ -291,32 +290,27 @@ class MySQLStatement extends EventDispatcher {
 		`complete`.
 
 		Its `rowsAffected` is the rows the statement changed, as the server
-		counts them, a `Float`, exact to 2^53, and 0 for a statement that
+		counts them (a `Float`, exact to 2^53), and 0 for a statement that
 		returns rows, as AIR's has it. Natively it comes from the statement's
 		own answer. Elsewhere it is the driver's count where that can be
 		right, and is asked in SQL otherwise: after every write on the jvm,
 		whose binding keeps no count. On hl and neko, whose drivers read it
 		in 32 bits, a count past 2^32 wraps back into range there and is
-		taken as it is. It was the length of the driver's result: for a
-		write its `Int`, held at 2^31 - 1 natively, and for a SELECT read a
-		page at a time, the rows read so far.
+		taken as it is.
 
 		Natively `lastInsertRowID` is the statement's own as well, read as it
-		ran. Elsewhere it is the connection's as the page is taken, asked in
-		SQL on hl and neko, so another statement run in between answers
+		ran. Elsewhere it is the connection's as the page is taken (asked in
+		SQL on hl and neko), so another statement run in between answers
 		for it there.
 	**/
 	public function getResult():SQLResult {
 		var results:Array<Dynamic> = __resultQueue.shift();
 		// The last page is the one read as the rows ran out, with none behind
-		// it. This was !__executing alone, which called every page still
-		// waiting complete once the last had been read.
+		// it.
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
-			// From the statement's answer. This was a SELECT LAST_INSERT_ID()
-			// on every call, a round trip per page, after which the
-			// connection's affectedRows read as that SELECT's.
+			// From the statement's answer, with no round trip per page.
 			var lastId:Float = __rowIdNoted ? __rowId : (__sqlConnection != null ? __sqlConnection.__insertIdFloat() : (__connection != null ? __connection.lastInsertId() : 0));
 
 			return new SQLResult(results, __affected, complete, lastId);
@@ -327,9 +321,7 @@ class MySQLStatement extends EventDispatcher {
 	/**
 		Takes the statement's counts as it runs, before another statement on
 		the connection replaces them: what it changed, and natively the id it
-		generated, both from its own answer at no cost. They were read from
-		the connection as each page was taken, after a paged SELECT had run
-		in between, the id read 0.
+		generated, both from its own answer at no cost.
 	**/
 	@:noCompletion private function __noteCounts():Void {
 		var connection:MySQLConnection = __sqlConnection;
@@ -461,9 +453,8 @@ class MySQLStatement extends EventDispatcher {
 	}
 
 	/**
-		The connection's handle as it is now. It was copied when
-		`sqlConnection` was set, so a statement given its connection before
-		`open()` held none and refused to run, as SQLite's did.
+		The connection's handle as it is now, read at each use, so a
+		statement given its connection before `open()` runs once it is open.
 	**/
 	@:noCompletion private inline function __live():Connection {
 		return __sqlConnection != null ? __sqlConnection.__connection : __connection;

@@ -173,8 +173,8 @@ class MulticoreSample extends ServerApplication {
 		}
 		// The verdict is flushed as it is printed. To a pipe, as in CI, stdout
 		// is buffered until the process exits, so a process that then failed
-		// on its way out lost the verdict with it, and its log could not say
-		// whether the sample or the exit had gone wrong.
+		// on its way out would lose the verdict with it, and its log could not
+		// say whether the sample or the exit had gone wrong.
 		if (__failures.length > 0) {
 			for (failure in __failures) {
 				Sys.println('FAIL: $failure');

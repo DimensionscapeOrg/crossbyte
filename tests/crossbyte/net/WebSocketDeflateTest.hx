@@ -13,11 +13,10 @@ import utest.Async;
 /**
 	permessage-deflate (RFC 7692), from a server's side and a client's.
 
-	There was none: a server declined every browser's offer, so an 18 KB JSON
-	frame went out raw at 5.7 times its deflated size, and a compressed frame,
-	RSV1 set, closed the connection with 1002. Opt in with
-	`perMessageDeflate`, on a `ServerWebSocket` or a client `WebSocket`.
-	Each message is compressed on its own, in both directions.
+	Opt in with `perMessageDeflate`, on a `ServerWebSocket` or a client
+	`WebSocket`, and each message is compressed on its own, in both
+	directions. Without it a server declines every browser's offer, and an
+	18 KB JSON frame goes out raw at 5.7 times its deflated size.
 
 	The compressed frames sent here are RFC 7692's own examples, the output
 	of zlib, so what is checked is what browsers send rather than what this
@@ -528,7 +527,7 @@ private class HandServer {
 
 	/**
 		Takes the connection and whatever has arrived on it, answering the
-		upgrade, with `extensions` as its `Sec-WebSocket-Extensions`,
+		upgrade (with `extensions` as its `Sec-WebSocket-Extensions`)
 		once the request is whole.
 	**/
 	public function poll(extensions:String):Void {
@@ -607,9 +606,9 @@ private class HandServer {
 	}
 
 	/**
-		The first whole data message the client sent, whether its first
-		frame was marked compressed, and its payload unmasked and joined,
-		or null while it is still arriving. Control frames are passed over.
+		The first whole data message the client sent (whether its first frame
+		was marked compressed, and its payload unmasked and joined), or null
+		while it is still arriving. Control frames are passed over.
 	**/
 	public function message():Null<{rsv1:Bool, payload:Bytes}> {
 		var at:Int = 0;

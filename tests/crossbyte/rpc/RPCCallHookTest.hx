@@ -93,8 +93,8 @@ class RPCCallHookTest extends utest.Test {
 
 	/**
 		What a handler threw reaches `afterCall` and `onHandlerError` as a
-		`haxe.Exception`: the very one, when it was one, an `RPCError`,
-		and otherwise wrapped, the thrown value in its `value`.
+		`haxe.Exception`: the very one, when it was one (an `RPCError`), and
+		otherwise wrapped, the thrown value in its `value`.
 	**/
 	public function testAFailureArrivesAsAnException():Void {
 		var link = LinkedConnection.pair();

@@ -13,13 +13,13 @@ import utest.Async;
 	Connecting to a name, and sending to one, without the runtime waiting on
 	the resolver.
 
-	A name was looked up in the call, on the runtime's thread, so every socket
-	and timer on it waited for as long as the resolver took: a second, for a
-	name that does not exist, measured. A datagram socket looked its
-	destination up again for every datagram. Now a name is looked up on a
-	thread of its own and the answer handed back to the runtime, so a call
-	given one returns at once, and a name that does not resolve is reported
-	afterwards rather than from inside the call.
+	A name is looked up on a thread of its own and the answer handed back to
+	the runtime, so a call given one returns at once, and a name that does
+	not resolve is reported afterwards rather than from inside the call; and
+	a datagram socket does not look its destination up again for every
+	datagram. Looked up in the call, on the runtime's thread, every socket
+	and timer on it would wait for as long as the resolver took: a second,
+	for a name that does not exist.
 
 	The names that do not resolve are under `.invalid`, which never does (RFC
 	6761), and fresh each run, so no resolver has the answer cached.
@@ -27,7 +27,7 @@ import utest.Async;
 class NameLookupTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
 	// Long enough for a thread to start on a loaded machine, and well short
-	// of the second a failing lookup took on the runtime's thread.
+	// of the second a failing lookup can take.
 	private static inline var PROMPT:Float = 0.5;
 
 	@:timeout(20000)
@@ -68,9 +68,9 @@ class NameLookupTest extends utest.Test {
 
 		A single label with no domain is the slow case on Windows: when DNS
 		has no answer the resolver tries LLMNR and NetBIOS as well, and a name
-		nobody has took 6.8 seconds to fail, all of it spent inside
-		`connect()`, with every socket and timer on the runtime waiting. Where
-		the resolver answers quickly this passes either way.
+		nobody has can take seconds to fail, which inside `connect()` would be
+		spent with every socket and timer on the runtime waiting. Where the
+		resolver answers quickly this passes either way.
 	**/
 	@:timeout(40000)
 	public function testTheRuntimeRunsWhileASlowLookupDoes(async:Async):Void {
@@ -196,13 +196,13 @@ class NameLookupTest extends utest.Test {
 	}
 
 	// Every threaded target with real threads in the suite: `current()`
-	// throws on a thread without a runtime there too, since M3.
+	// throws on a thread without a runtime there too.
 	#if (cpp || java || jvm)
 	/**
 		A thread with no runtime has nowhere to hand an answer back to, so a
-		name is looked up there in the call, as it always was. Asking whether
-		there is a runtime must not itself fail: `CrossByte.current()` throws
-		on such a thread, and the send failed with that where it used to work.
+		name is looked up there in the call. Asking whether there is a runtime
+		must not itself fail: `CrossByte.current()` throws on such a thread, and
+		the send must not fail with that.
 	**/
 	@:timeout(15000)
 	public function testADatagramToANameFromAThreadWithoutARuntime(async:Async):Void {
@@ -383,9 +383,9 @@ class NameLookupTest extends utest.Test {
 
 	/**
 		`DatagramSocket.connect()` to a name returns at once, and a name that
-		does not resolve is reported afterwards, as `send()` to one is. It was
+		does not resolve is reported afterwards, as `send()` to one is, not
 		looked up in the call, holding the runtime for as long as the resolver
-		took, and one that did not resolve was thrown.
+		took, and thrown.
 
 		The socket reads as connected meanwhile, so a datagram sent with no
 		destination is taken and waits for the answer, and goes with the
@@ -530,9 +530,9 @@ class NameLookupTest extends utest.Test {
 	/**
 		`ReliableDatagramServerSocket.connect()` to a name returns its session
 		at once, and a name that does not resolve is reported on the session,
-		which then closes, as `ReliableDatagramSocket.connect()` does. The
-		server looked the name up in the call, holding every session it
-		carries, and threw `ArgumentError` for one that did not resolve.
+		which then closes, as `ReliableDatagramSocket.connect()` does, rather
+		than looked up in the call, holding every session the server carries,
+		with `ArgumentError` thrown for one that does not resolve.
 	**/
 	@:timeout(20000)
 	public function testAServerDiallingAMissingNameIsNotHeldByTheLookup(async:Async):Void {
@@ -579,8 +579,8 @@ class NameLookupTest extends utest.Test {
 		one lookup off the runtime's thread, and the session is filed under
 		the address the name resolved to: the peer's replies reach it, and a
 		second session to that endpoint is refused, thrown when it is asked
-		for by address, as it always was, and reported on the session when by
-		name, once the name is looked up.
+		for by address, and reported on the session when by name, once the
+		name is looked up.
 	**/
 	@:timeout(15000)
 	public function testAServerDialsAName(async:Async):Void {
@@ -640,10 +640,10 @@ class NameLookupTest extends utest.Test {
 
 	/**
 		A session dialled to an IPv6 address is filed under the address the
-		way replies arrive from it. It was filed as `Host.toString()` spells
-		it, which on the jvm is expanded, `0:0:0:0:0:0:0:1`, while datagrams
-		arrive from `::1`, so the peer's replies reached no session and the dial
-		never connected. Dials by name compressed the address already.
+		way replies arrive from it, not as `Host.toString()` spells it, which on
+		the jvm is expanded (`0:0:0:0:0:0:0:1`) while datagrams arrive from
+		`::1`, so the peer's replies would reach no session and the dial would
+		never connect. Dials by name compress the address already.
 	**/
 	#if (cpp || java || jvm)
 	@:timeout(15000)
@@ -741,8 +741,8 @@ class NameLookupTest extends utest.Test {
 		The runtime goes on while a datagram socket's peer, and a peer a
 		server dials, are looked up slowly: a single label, which on Windows
 		the resolver asks LLMNR and NetBIOS about too before it gives up, as
-		in `testTheRuntimeRunsWhileASlowLookupDoes`. Both were looked up in
-		the call, with every socket and timer on the runtime waiting.
+		in `testTheRuntimeRunsWhileASlowLookupDoes`, rather than in the call,
+		with every socket and timer on the runtime waiting.
 	**/
 	@:timeout(40000)
 	public function testTheRuntimeRunsWhileDatagramPeersAreLookedUp(async:Async):Void {
@@ -787,11 +787,10 @@ class NameLookupTest extends utest.Test {
 
 	/**
 		A server asked for its public address by a STUN server's name that
-		does not resolve fails the question at once. The send looked the name
-		up off the runtime's thread, and a name that did not resolve failed as
-		an `ioError` on the socket every session shares, which nothing told
-		the question of, so it waited out its whole deadline, as
-		`StunClient` did until it listened for one.
+		does not resolve fails the question at once. The send looks the name
+		up off the runtime's thread, and a name that does not resolve fails as
+		an `ioError` on the socket every session shares, which must reach the
+		question, or it would wait out its whole deadline.
 	**/
 	@:timeout(20000)
 	public function testAServerAskingAMissingNameForItsAddressFailsAtOnce(async:Async):Void {

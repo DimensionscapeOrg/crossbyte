@@ -16,9 +16,8 @@ import sys.thread.Thread;
  * drive the native client, and records every packet it is sent.
  *
  * The native suite has no database, and the one CI job that does runs a
- * single server version with its defaults. What the client sends, byte for
- * byte, and what it makes of an answer, a status flag, an auth switch, a
- * column of a type the server chose, are only observable against a server
+ * byte, and what it makes of an answer (a status flag, an auth switch, a
+ * column of a type the server chose) are only observable against a server
  * the test controls, so this is that server: a listener on 127.0.0.1, port 0,
  * with a thread per connection, answering from `onQuery` and falling back to
  * a small model of MySQL's own session state.
@@ -126,8 +125,8 @@ class FakeMySQLServer {
 
 	/**
 	 * When not 0, a packet longer than this many bytes stops its session
-	 * reading as soon as the packet's header arrives, a server that takes
-	 * no more of what it is sent, for write timeouts, and the session
+	 * reading as soon as the packet's header arrives (a server that takes
+	 * no more of what it is sent, for write timeouts), and the session
 	 * closes `stallSeconds` later.
 	 */
 	public var stallOnPacketsOver:Int = 0;
@@ -232,7 +231,7 @@ class FakeMySQLServer {
 
 	/**
 	 * Waits, on the calling thread, until `predicate` holds for the log or
-	 * `seconds` pass. For what a client does after its call has returned,
+	 * `seconds` pass. For what a client does after its call has returned:
 	 * a COM_QUIT sent by `close()`, a second connection sent by `cancel()`.
 	 */
 	public function waitFor(predicate:Array<FakeMySQLEvent>->Bool, seconds:Float = 5.0):Bool {

@@ -13,11 +13,9 @@
 // a mutex member to mbedtls_ctr_drbg_context and mbedtls_entropy_context among
 // others. A translation unit that disagrees with the library about the size of
 // those structs declares a smaller one than the library then writes into, and
-// the overrun reports success and kills the process somewhere else entirely,
-// which is exactly how this file behaved before it was built against hxcpp's
-// mbedTLS configuration. Failing the build is the cheaper outcome by a wide
-// margin. Checked after the includes, which are what bring the configuration
-// in.
+// the overrun reports success and kills the process somewhere else entirely.
+// Failing the build is the cheaper outcome by a wide margin. Checked after the
+// includes, which are what bring the configuration in.
 #ifndef MBEDTLS_THREADING_C
 #error "NativeDtlsBuild.xml must compile this against hxcpp's mbedtls-flags.xml, which sets MBEDTLS_THREADING_C as hxcpp builds mbedtls, or every struct shared with it is the wrong size."
 #endif
@@ -28,14 +26,14 @@
 
 // hxcpp's own SSL initialiser, which installs the alt mutex callbacks that
 // MBEDTLS_THREADING_ALT leaves unset. Until it runs, mbedtls_mutex_lock is a
-// stub that *fails*, so every call that touches a mutex-bearing struct,
-// ctr_drbg, entropy, the hmac_drbg deterministic ECDSA uses internally,
+// stub that *fails*, so every call that touches a mutex-bearing struct
+// (ctr_drbg, entropy, the hmac_drbg deterministic ECDSA uses internally)
 // refuses with an error that looks nothing like its cause.
 //
 // It is idempotent and guarded by its own flag, so calling it is free. Not
-// calling it is what made this bridge work in one program and fail in another
-// built from the same source: whether hxcpp had already initialised depended on
-// static initialiser order across translation units, which nothing here
+// calling it would make this bridge work in one program and fail in another
+// built from the same source: whether hxcpp had already initialised depends
+// on static initialiser order across translation units, which nothing here
 // controls.
 extern void _hx_ssl_init();
 

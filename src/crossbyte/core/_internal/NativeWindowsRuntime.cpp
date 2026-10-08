@@ -22,7 +22,7 @@ extern "C" void crossbyte_windows_end_timing_period(int milliseconds)
 }
 
 // The class the process had before it was raised, so lowering it again puts
-// back what the process was started with, a `start /low` included,
+// back what the process was started with (a `start /low` included)
 // rather than assuming normal. Zero while the process is not raised.
 static DWORD crossbyte_windows_class_before_raise = 0;
 

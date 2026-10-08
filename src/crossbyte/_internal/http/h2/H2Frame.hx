@@ -45,9 +45,7 @@ class H2Frame {
 	 */
 	/**
 		A whole frame in one allocation: its header, then `length` bytes of
-		`payload` from `offset` (all of it when `length` is negative). Frames
-		were built in a BytesBuffer that grew a byte at a time and copied out,
-		from a payload already cut out of its source with sub().
+		`payload` from `offset` (all of it when `length` is negative).
 	**/
 	public static function encode(type:H2FrameType, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int = 0, length:Int = -1):Bytes {
 		var size:Int = payload == null ? 0 : (length < 0 ? payload.length - offset : length);
@@ -137,7 +135,7 @@ class H2Frame {
 	 *
 	 * The first octet is the pad length, and it is counted against the frame
 	 * size but not against flow control's view of the content. A pad length
-	 * that meets or exceeds the remaining payload is a connection error,
+	 * that meets or exceeds the remaining payload is a connection error:
 	 * §6.1 is explicit that it must not be treated as an empty frame, because
 	 * the arithmetic would otherwise underflow into a huge length.
 	 */

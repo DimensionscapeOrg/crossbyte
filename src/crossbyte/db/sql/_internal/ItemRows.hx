@@ -15,12 +15,9 @@ import haxe.ds.StringMap;
 	Fields are set by reflection, so under `-dce full` keep the class
 	(`@:keep`) or its fields are removed as unused.
 
-	What is the same for every row is worked out once a page: which columns
-	the class takes, and, for an SQL result, whose rows all have the same
-	columns, the columns themselves. Each row asked for its field names, and
-	each name was looked for along the class's field list, and again with
-	"set_" put in front, which cost more than the rest of the page's reading
-	(+300-500 ns a row of 8 columns, the audit's SqlitePerf).
+	What is the same for every row is worked out once a page, rather than
+	for each row: which columns the class takes, and (for an SQL result,
+	whose rows all have the same columns) the columns themselves.
 **/
 @:noCompletion
 class ItemRows {

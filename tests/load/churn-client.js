@@ -9,8 +9,8 @@
 //     [--resume 0]
 //
 // A session connects, does --ops (5 to 50) requests or messages with up to --think ms
-// between them, leaves politely, `Connection: close` on its last request, a
-// GOAWAY, a close frame answered, and is replaced. --plan is
+// between them, leaves politely (`Connection: close` on its last request, a
+// GOAWAY, a close frame answered) and is replaced. --plan is
 // concurrency:seconds, phase after phase. Source addresses rotate over
 // 127.0.0.1 .. 127.0.0.<ips>, each with its own ephemeral ports, so TIME_WAIT
 // does not run a long churn out of them.
@@ -249,7 +249,7 @@ function worker(index) {
       time(name, now() - sent);
       count(name + '.ops');
       if (response.closing && !last) {
-        // The server retiring the connection, keepAliveMaxRequests, which
+        // The server retiring the connection (keepAliveMaxRequests), which
         // a browser answers with a new one.
         count(name + '.retired');
         break;
@@ -316,7 +316,7 @@ function worker(index) {
     }
     const client = http2.connect((secure ? 'https' : 'http') + '://localhost:' + port, { createConnection: () => socket });
     let failed = null;
-    // The server retiring the connection, keepAliveMaxRequests, ends the
+    // The server retiring the connection (keepAliveMaxRequests) ends the
     // session early, as a browser would move to a new connection.
     let retired = false;
     client.on('goaway', () => { retired = true; });

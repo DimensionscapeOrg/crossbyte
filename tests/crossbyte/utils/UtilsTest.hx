@@ -27,13 +27,12 @@ private typedef PooledState = {
 
 class UtilsTest extends utest.Test {
 	public function testASeededRandomGivesTheSameSequenceOnEveryTarget():Void {
-		// The one promise this class makes, "reproducible results when
-		// seeded", in its own documentation, and it was not keeping it. Its
-		// mixer multiplies by two constants chosen to overflow, and on js
-		// nothing overflowed, so seed 12345 produced a different sequence
-		// there than anywhere else. Reproducible per target is not
-		// reproducible; a replay, a procedural world or a shared simulation
-		// crossing targets would have diverged silently.
+		// The one promise this class makes ("reproducible results when seeded",
+		// in its own documentation). Its mixer multiplies by two constants chosen
+		// to overflow, and on js nothing overflows unless wrapped, so seed 12345
+		// would produce a different sequence there than anywhere else.
+		// Reproducible per target is not reproducible; a replay, a procedural
+		// world or a shared simulation crossing targets would diverge silently.
 		Random.reseed(12345);
 
 		Assert.equals(1200724404, Random.nextU32());
@@ -46,10 +45,11 @@ class UtilsTest extends utest.Test {
 	/**
 		A range of more than 2^31 values draws from all of it.
 
-		How many values a range held was counted in Int, which overflowed from
-		2^31 up: Random.int(0, 0x7FFFFFFF) came out 0 every time on eval and
-		the jvm, and the full Int range gave only negative numbers everywhere.
-		The counts are known answers: every target draws the same ones.
+		How many values a range holds is not counted in Int, which overflows
+		from 2^31 up: counted that way, Random.int(0, 0x7FFFFFFF) would come out
+		0 every time on eval and the jvm, and the full Int range would give only
+		negative numbers everywhere. The counts are known answers: every target
+		draws the same ones.
 	**/
 	public function testAWideRangeDrawsFromAllOfIt():Void {
 		var random = new Random(99);
@@ -90,9 +90,9 @@ class UtilsTest extends utest.Test {
 	}
 
 	/**
-		Every range narrow enough to have worked draws exactly what it drew
-		before the wide ones were fixed, so a seeded sequence, a replay, a
-		generated world, still reads the same.
+		Every range narrow enough not to overflow draws exactly the known values
+		it always has, so a seeded sequence (a replay, a generated world) still
+		reads the same.
 	**/
 	public function testANarrowRangeDrawsWhatItAlwaysDid():Void {
 		Random.reseed(12345);
@@ -108,10 +108,10 @@ class UtilsTest extends utest.Test {
 	/**
 		The shared generator's own seed differs from one moment to the next.
 
-		It was `Std.int(stamp * 1e6)`, which saturates on the jvm once its
-		boot-relative clock passes 2^31 microseconds, 36 minutes, so every
-		jvm run started from 0x7FFFFFFF and drew one sequence; hl and neko got
-		INT_MIN the same way.
+		It is not `Std.int(stamp * 1e6)`, which saturates on the jvm once its
+		boot-relative clock passes 2^31 microseconds (36 minutes), so every jvm
+		run would start from 0x7FFFFFFF and draw one sequence; hl and neko would
+		get INT_MIN the same way.
 	**/
 	public function testTheUnseededSeedMovesWithTheClock():Void {
 		var first:Int = @:privateAccess Random.defaultSeed();
@@ -125,12 +125,13 @@ class UtilsTest extends utest.Test {
 		// Known answers, not self-consistency. Every hash here multiplies by a
 		// constant chosen to overflow, and that overflow is the mixing step,
 		// so a target that does not wrap computes a different function while
-		// looking perfectly healthy from inside. JavaScript did: fnv1a32 of
-		// "sendData" came back as -20905118279726560 rather than 622618135,
-		// and nothing noticed until two targets had to agree on an RPC opcode.
+		// looking perfectly healthy from inside. On JavaScript, unwrapped,
+		// fnv1a32 of "sendData" comes back as -20905118279726560 rather than
+		// 622618135, which shows only once two targets have to agree on an RPC
+		// opcode.
 		//
-		// A test that hashed something and compared it to itself would have
-		// passed throughout. These are the values every other target produces.
+		// A test that hashed something and compared it to itself would pass
+		// regardless. These are the values every other target produces.
 		Assert.equals(622618135, Hash.fnv1a32String("sendData"));
 		Assert.equals(1603980681, Hash.fnv1a32String("crossbyte"));
 		Assert.equals(-2128831035, Hash.fnv1a32String("")); // the FNV offset basis, unchanged by an empty input
@@ -171,9 +172,7 @@ class UtilsTest extends utest.Test {
 	}
 
 	/**
-		Each `ChecksumAlgorithm`, computed. The enum named five algorithms and
-		nothing anywhere took one: a placeholder for an RPC header field that
-		was never built. These are the published check values.
+		Each `ChecksumAlgorithm`, computed, against the published check values.
 	**/
 	public function testChecksumComputesEachAlgorithm():Void {
 		var digits = haxe.io.Bytes.ofString("123456789");
@@ -252,10 +251,10 @@ class UtilsTest extends utest.Test {
 
 	/**
 		`nextPow2` answers the same on every target at the top of the range.
-		Past 2^30 the answer is 2^31, which native targets wrapped to
-		-2147483648 and JavaScript, whose Int does not wrap, gave as
-		2147483648. `INT32_MIN` answers 0, as all below zero do: it answered
-		2^31 by wrapping `n - 1`, which C++ leaves undefined.
+		Past 2^30 the answer is 2^31, which native targets wrap to -2147483648
+		and JavaScript, whose Int does not wrap, gives as 2147483648.
+		`INT32_MIN` answers 0, as all below zero do, rather than 2^31 by
+		wrapping `n - 1`, which C++ leaves undefined.
 	**/
 	public function testNextPow2AgreesAcrossTargetsAtTheTop():Void {
 		Assert.equals(1, MathUtil.nextPow2(1));
@@ -275,8 +274,8 @@ class UtilsTest extends utest.Test {
 		Assert.equals(0, MathUtil.wrap(10, 0, 10));
 		Assert.equals(5, MathUtil.wrap(5, 0, 10));
 
-		// Wide range where (max - min) overflows 32-bit Int when computed naively.
-		// Previously this collapsed to `min`; now it must wrap correctly.
+		// Wide range where (max - min) overflows 32-bit Int when computed naively:
+		// it must wrap correctly, not collapse to `min`.
 		var min:Int = MathUtil.INT32_MIN;
 		var max:Int = MathUtil.INT32_MAX;
 		Assert.isFalse(MathUtil.wrap(0, min, max) == min);
@@ -316,8 +315,8 @@ class UtilsTest extends utest.Test {
 	}
 
 	public function testAVersionSegmentTooBigForAnIntReadsTheSameOnEveryTarget():Void {
-		// Std.parseInt gave 0 on Linux native, 2147483647 on Windows native,
-		// threw on the jvm and gave a wider-than-Int number on JavaScript.
+		// Std.parseInt gives 0 on Linux native, 2147483647 on Windows native,
+		// throws on the jvm and gives a wider-than-Int number on JavaScript.
 		var huge:Version = "1.4294967296.0";
 		Assert.equals(1, huge.major);
 		Assert.equals(999, huge.minor);
@@ -379,9 +378,9 @@ class UtilsTest extends utest.Test {
 	}
 
 	/**
-		An object released twice is not lent to two owners. A release build
-		kept both releases, so the next two acquires returned one object.
-		Debug builds check every release and throw.
+		An object released twice is not lent to two owners: a release build does
+		not keep both releases, which would make the next two acquires return
+		one object. Debug builds check every release and throw.
 	**/
 	public function testADoubleReleaseDoesNotLendOneObjectTwice():Void {
 		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
@@ -425,9 +424,9 @@ class UtilsTest extends utest.Test {
 	}
 
 	/**
-		A pool keeps 10,000 free objects unless told otherwise. It kept every
-		one released, so a burst left all of it behind, for the collector to
-		walk at every collection from then on.
+		A pool keeps 10,000 free objects unless told otherwise, rather than
+		every one released, which would leave a whole burst behind for the
+		collector to walk at every collection from then on.
 	**/
 	public function testAPoolKeepsTenThousandFreeByDefault():Void {
 		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
@@ -473,7 +472,7 @@ class UtilsTest extends utest.Test {
 		Assert.equals(19800, pool.capacity);
 	}
 
-	/** A negative bound read as "keep nothing", without a word. **/
+	/** A negative bound is refused, not read as "keep nothing" without a word. **/
 	public function testANegativeMaxFreeIsRefused():Void {
 		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
 		Assert.raises(() -> pool.maxFree = -1, crossbyte.errors.ArgumentError);
@@ -503,9 +502,9 @@ class UtilsTest extends utest.Test {
 		Assert.equals(0, recycler.localSize());
 
 		// Acquired from the pool, not built here. A pool only accepts back what
-		// it handed out, `release` checks that, so recycling a foreign
-		// object throws "foreign or already-released object". The check is
-		// `#if debug`, so this passed in release builds and made the whole
+		// it handed out (`release` checks that), so recycling a foreign object
+		// throws "foreign or already-released object". The check is `#if debug`,
+		// so a foreign object would pass in release builds and make the whole
 		// suite unrunnable in a debug one, which is where a GC investigation
 		// most needs it.
 		var second:PooledState = pool.acquire();

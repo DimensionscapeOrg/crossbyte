@@ -15,12 +15,9 @@ import sys.thread.Thread;
  * `idleSeconds` without one.
  *
  * A load is a blocking request, so it has a thread to itself while it runs.
- * It used to have a new one: every `load()` started a thread and let it end,
- * so a hundred loads a second were a hundred thread starts, and on the jvm
- * each of those threads also opened a selector for its reads that nothing
- * ever closed, two loopback sockets per load, left open until the process
- * ended, and enough of them ran the machine out of ports. Here a thread
- * finishing a load takes the next one waiting.
+ * A thread finishing a load takes the next one waiting, rather than a thread
+ * being started for every load and let end: a hundred loads a second would
+ * be a hundred thread starts.
  *
  * Shared by every loader in the process. The queue is first come, first
  * served: past `maxThreads` loads at once, a load waits for one to finish.
@@ -31,7 +28,7 @@ class LoadPool {
 	 * their turn in the order they were made. Defaults to 16.
 	 *
 	 * Each running load holds a thread for as long as its server takes, so a
-	 * program that keeps many slow requests open at once, long polls, say,
+	 * program that keeps many slow requests open at once (long polls, say)
 	 * should raise this to at least that many.
 	 */
 	public static var maxThreads:Int = 16;

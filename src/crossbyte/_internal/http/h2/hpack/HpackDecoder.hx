@@ -10,8 +10,8 @@ import haxe.io.Bytes;
  *
  * Everything here parses bytes the peer chose, so each bound is enforced
  * rather than assumed. The decompression ratio of HPACK is unbounded in
- * principle, a few bytes of indexed references can name arbitrarily many
- * table entries, so `maxHeaderListSize` caps the decoded total and stops a
+ * principle (a few bytes of indexed references can name arbitrarily many
+ * table entries), so `maxHeaderListSize` caps the decoded total and stops a
  * small block from expanding into an allocation the process cannot survive.
  */
 class HpackDecoder {
@@ -22,9 +22,9 @@ class HpackDecoder {
 	 * in step with the peer's, but fields past the limit are dropped rather
 	 * than returned, and `truncated` says so. RFC 9113 10.5.1 asks exactly
 	 * that of a receiver that means to keep the connection: the section is
-	 * processed, and the message refused, a server answers `431`. Throwing
-	 * here instead made every oversized block fatal to the connection and to
-	 * every other request on it.
+	 * processed, and the message refused (a server answers `431`), rather
+	 * than every oversized block being fatal to the connection and to every
+	 * other request on it.
 	 */
 	public var maxHeaderListSize:Int;
 
@@ -104,14 +104,14 @@ class HpackDecoder {
 			var field:HpackHeader;
 
 			if ((first & 0x80) != 0) {
-				// 1xxxxxxx, indexed header field.
+				// 1xxxxxxx: indexed header field.
 				field = __resolve(__readInteger(cursor, 7));
 			} else if ((first & 0x40) != 0) {
-				// 01xxxxxx, literal, added to the dynamic table.
+				// 01xxxxxx: literal, added to the dynamic table.
 				field = __readLiteral(cursor, 6, false);
 				__table.add(field);
 			} else if ((first & 0x20) != 0) {
-				// 001xxxxx, dynamic table size update.
+				// 001xxxxx: dynamic table size update.
 				if (!updatesStillAllowed) {
 					throw new HpackError("Dynamic table size update must precede the header fields in a block");
 				}
@@ -155,7 +155,7 @@ class HpackDecoder {
 
 		if (index <= HpackStaticTable.LENGTH) {
 			// Made once, not per reference: a static entry is the commonest
-			// field in a block, and each was a new object measuring its two
+			// field in a block, and a new object for each would measure its two
 			// strings again.
 			return HpackStaticTable.FIELDS[index - 1];
 		}
@@ -224,10 +224,10 @@ class HpackDecoder {
 
 	/**
 		`bytes` as text, every byte of it. On JavaScript and on hl
-		`Bytes.toString` stops at the first NUL, so a field holding one
-		arrived as the part before it: the NUL that makes the field malformed
-		(RFC 9113, 8.2.1) was never seen, and neither was the rest of the
-		value. An HTTP/2 server on hl took `a`, NUL, `b` as the value `a`.
+		`Bytes.toString` stops at the first NUL, so a field holding one would
+		arrive as the part before it: the NUL that makes the field malformed
+		(RFC 9113, 8.2.1) would never be seen, and neither would the rest of
+		the value.
 	**/
 	private static function __text(bytes:Bytes):String {
 		#if (js || hl)

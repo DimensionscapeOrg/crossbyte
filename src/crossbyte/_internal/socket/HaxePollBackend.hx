@@ -109,10 +109,10 @@ class HaxePollBackend implements PollBackend {
 	private function __fillIndexes(indexes:Array<Int>, at:haxe.ds.ObjectMap<Socket, Int>, ready:Array<Socket>):Void {
 		var count:Int = 0;
 
-		// Was a scan of the registered set per ready socket, so a busy pass
-		// cost registered x ready comparisons, 65,536 of them for 256 sockets
-		// all readable at once, every pump. The positions are fixed until the
-		// set changes, so they are looked up instead.
+		// Looked up rather than found by a scan of the registered set per
+		// ready socket, which would cost registered x ready comparisons
+		// (65,536 of them for 256 sockets all readable at once) every pump.
+		// The positions are fixed until the set changes.
 		for (socket in ready) {
 			var i:Null<Int> = at.get(socket);
 			if (i != null) {

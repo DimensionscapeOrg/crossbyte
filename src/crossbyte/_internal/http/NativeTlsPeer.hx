@@ -9,8 +9,8 @@ package crossbyte._internal.http;
 
 	`sys.ssl.Socket.peerCertificate()` hands back a certificate that can name
 	its subject and dates and nothing else: no bytes, and so no key to pin.
-	mbedTLS has kept the DER all along; this reaches it, as NativeAlpn reaches
-	the protocol list.
+	mbedTLS keeps the DER; this reaches it, as NativeAlpn reaches the
+	protocol list.
 **/
 @:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/_internal/http/NativeTlsPeerBuild.xml"/>')
 @:include("./NativeTlsPeer.h")

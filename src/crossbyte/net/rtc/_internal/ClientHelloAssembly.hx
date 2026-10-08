@@ -8,7 +8,7 @@ import haxe.io.Bytes;
 	## Why this exists
 
 	DTLS runs over datagrams, so a handshake message larger than the path MTU
-	has to be split by the handshake layer itself rather than by IP, RFC 6347
+	has to be split by the handshake layer itself rather than by IP: RFC 6347
 	gives every handshake message a fragment offset and length for exactly that
 	reason. A ClientHello carrying a modern cipher suite list and its extensions
 	is comfortably over a kilobyte, and Chrome fragments it at around 1175
@@ -16,8 +16,8 @@ import haxe.io.Bytes;
 
 	mbedtls reassembles fragmented handshake messages in general, but not the
 	ClientHello: reassembly needs handshake state, and the ClientHello is what
-	creates it. Its parser says so in as many words, "We don't support
-	fragmentation of ClientHello", and rejects a first fragment because the
+	creates it. Its parser says so in as many words ("We don't support
+	fragmentation of ClientHello") and rejects a first fragment because the
 	record is shorter than the message length it declares.
 
 	So a browser offering a data channel to CrossByte cannot complete a
@@ -26,8 +26,8 @@ import haxe.io.Bytes;
 	ClientHello. The two directions fail and pass for that one reason.
 
 	Reassembling here is the natural place. This stack already owns every
-	datagram between the socket and the DTLS implementation, and the alternative,
-	carrying a patch against a vendored mbedtls, buys nothing that this
+	datagram between the socket and the DTLS implementation, and the alternative
+	(carrying a patch against a vendored mbedtls) buys nothing that this
 	does not.
 
 	## What it does and does not touch
@@ -38,7 +38,7 @@ import haxe.io.Bytes;
 	untouched path: encrypted records at a later epoch, alerts, and the whole of
 	the client direction never reach the rebuilding code at all.
 
-	The message is rebuilt as though it had been sent in one piece, fragment
+	The message is rebuilt as though it had been sent in one piece: fragment
 	offset zero, fragment length equal to the message length. That is not a
 	convenience: RFC 6347 requires the handshake hash to be computed over that
 	form, so a reassembly that preserved the original fragment headers would
@@ -108,7 +108,7 @@ class ClientHelloAssembly {
 
 		Zero between messages. Worth being able to see: the difference between
 		refusing an impossible length and believing it is not in what `accept`
-		returns, both hold the fragment, but in whether sixteen megabytes
+		returns (both hold the fragment) but in whether sixteen megabytes
 		were set aside on the strength of one unauthenticated packet.
 	**/
 	public var pending(get, never):Int;
@@ -274,7 +274,7 @@ class ClientHelloAssembly {
 		}
 
 		// A different message, or the same one at a different size, means the
-		// peer started over, so does the assembly. Retransmitted fragments of
+		// peer started over, and so does the assembly. Retransmitted fragments of
 		// the message in hand land on top of what is already there.
 		if (sequence != __messageSequence || declared != __length || __body == null) {
 			__body = Bytes.alloc(declared);
@@ -320,7 +320,7 @@ class ClientHelloAssembly {
 		Adds a range, merging it with anything it meets or overlaps.
 
 		@return Whether it was recorded. False when it touches nothing already
-		held and there is no room for another run, see `MAX_RUNS`.
+		held and there is no room for another run (see `MAX_RUNS`).
 	**/
 	@:noCompletion private function __cover(start:Int, end:Int):Bool {
 		if (end <= start) {
@@ -356,7 +356,7 @@ class ClientHelloAssembly {
 		}
 
 		if (last == first) {
-			// Touches nothing, so the list grows, the only case that can
+			// Touches nothing, so the list grows: the only case that can
 			// run away, and the only one worth refusing.
 			if (__covered.length >= MAX_RUNS) {
 				return false;

@@ -7,17 +7,16 @@ import crossbyte.sys.System;
 /**
  * Wire-level helpers shared by the HTTP server tests.
  *
- * These lived separately in every suite in this package, and the copies had
- * already drifted: five pump loops, three response parsers, two completeness
- * predicates that disagreed about whether a response missing `Content-Length`
- * was finished. A predicate fixed in one copy left the others deciding
- * completeness by pump timeout instead, which reads as a slow test rather
- * than a wrong one, so it goes unnoticed.
+ * One copy of each, since copies in every suite drift: pump loops,
+ * response parsers and completeness predicates that disagree about whether
+ * a response missing `Content-Length` is finished, where a predicate fixed in
+ * one copy leaves the others deciding completeness by pump timeout instead,
+ * which reads as a slow test rather than a wrong one, so it goes unnoticed.
  *
  * What is deliberately not here is the server-and-client scaffold each suite
- * builds around these. Those differ in ways that matter, the fixtures they
- * write, the configuration they apply, whether they hold the connection open,
- * and folding them together would mean a parameter per difference.
+ * builds around these. Those differ in ways that matter (the fixtures they
+ * write, the configuration they apply, whether they hold the connection
+ * open), and folding them together would mean a parameter per difference.
  *
  * Not a `utest.Test`, so the suite coverage macro has nothing to register.
  */
@@ -50,10 +49,8 @@ class HTTPTestSupport {
 
 		Through `System.sleep`, not `Sys.sleep`: on the interpreter under
 		Windows a sleep of a millisecond or two can be left a negative
-		remainder, which OCaml hands to `Sleep()` as about 49 days. That was
-		the interpreter's intermittent hang in
-		`URLLoaderHttpTest.testClosingALoadInFlightEndsItQuietly`, which
-		stalled in its pump loop's sleep with every other thread idle.
+		remainder, which OCaml hands to `Sleep()` as about 49 days, and a pump
+		loop would stall in its sleep with every other thread idle.
 	**/
 	public static inline function nap(seconds:Float):Void {
 		System.sleep(seconds);
@@ -67,15 +64,15 @@ class HTTPTestSupport {
 	 * fail there in a way anyone would notice. Node delivers socket I/O by
 	 * returning to its event loop, and a `while` loop holding the thread never
 	 * returns to it, so nothing arrives, `done` stays false, and the loop
-	 * spends its whole timeout before reporting a clean "timed out". Measured
-	 * rather than assumed: a probe doing this could not even read the port off
-	 * a listening server, because `listen()` resolves asynchronously there too.
+	 * spends its whole timeout before reporting a clean "timed out". Such a
+	 * loop cannot even read the port off a listening server, because
+	 * `listen()` resolves asynchronously there too.
 	 *
 	 * So on Node the pumping is spread across event loop turns. On every other
 	 * target this delegates to `pumpUntil` and calls `then` inline, which keeps
-	 * the native tests exactly as fast and exactly as debuggable as they were:
-	 * a failing assertion still unwinds through the test body rather than
-	 * arriving on some later turn with no stack.
+	 * the native tests as fast and as debuggable as a plain loop: a failing
+	 * assertion still unwinds through the test body rather than arriving on
+	 * some later turn with no stack.
 	 */
 	public static function pumpUntilAsync(done:Void->Bool, timeout:Float, then:Bool->Void, step:Float = 1 / 60):Void {
 		#if nodejs
@@ -97,7 +94,7 @@ class HTTPTestSupport {
 
 			// setTimeout rather than setImmediate: an immediate runs before
 			// the loop polls for I/O, so a tight chain of them starves the
-			// very sockets being waited on, the same failure as the while
+			// very sockets being waited on: the same failure as the while
 			// loop, only harder to see.
 			js.Node.setTimeout(turn, 1);
 		}
@@ -115,12 +112,12 @@ class HTTPTestSupport {
 	 *
 	 * A fixed step cannot: what a millisecond's sleep takes differs, a
 	 * millisecond on Linux and up to a timer tick of 15.6 ms on Windows, so a
-	 * step of a millisecond ran the runtime's clock fifteen times slower than
+	 * step of a millisecond runs the runtime's clock fifteen times slower than
 	 * the wall there and a sixtieth fifteen times faster on Linux. The server's
 	 * sweep runs on that clock and its deadlines on the wall's, so a case
-	 * waiting for a deadline to be enforced saw the sweep come seconds late on
-	 * one system, and spent utest's timeout, which also runs on that clock,
-	 * fifteen times over on the other.
+	 * waiting for a deadline to be enforced would see the sweep come seconds
+	 * late on one system, and spend utest's timeout, which also runs on that
+	 * clock, fifteen times over on the other.
 	 */
 	public static function pumpWallUntilAsync(done:Void->Bool, timeout:Float, then:Bool->Void):Void {
 		var runtime:CrossByte = CrossByte.current();
@@ -317,11 +314,10 @@ class HTTPTestSupport {
 		for (line in raw.substring(start, headerEnd).split("\r\n")) {
 			var lower:String = StringTools.trim(line).toLowerCase();
 			if (lower.indexOf("content-length:") == 0) {
-				// Parsed from the trimmed, lowercased copy rather than sliced
-				// out of the original at a fixed offset: a leading space made
-				// that arithmetic produce null, which then read as a
-				// zero-length body and declared a response complete before any
-				// of it had arrived.
+				// Parsed from the trimmed, lowercased copy rather than sliced out of
+				// the original at a fixed offset: a leading space would make that
+				// arithmetic produce null, which would read as a zero-length body and
+				// declare a response complete before any of it had arrived.
 				var len:Null<Int> = Std.parseInt(StringTools.trim(lower.substr(15)));
 				if (len == null) {
 					return -1;

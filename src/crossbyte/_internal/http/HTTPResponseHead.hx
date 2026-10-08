@@ -6,7 +6,7 @@ import crossbyte.url.URLRequestHeader;
  * A response's status and header fields, before any protocol frames them.
  *
  * This is the seam between deciding a response and writing one. Everything
- * above it, routing, static files, content negotiation, CORS, PHP, works
+ * above it (routing, static files, content negotiation, CORS, PHP) works
  * in these terms; everything below turns them into either an HTTP/1.1 header
  * block or an HTTP/2 HEADERS frame.
  *
@@ -17,8 +17,8 @@ import crossbyte.url.URLRequestHeader;
  * because §8.2.2 makes `Connection` malformed and DATA framing carries the
  * length implicitly.
  *
- * A class, built from the same literal: an anonymous structure here was read
- * field by field through a lookup by name natively, seven times a response.
+ * A class, built from the same literal, so natively its fields are read
+ * directly rather than looked up by name, seven times a response.
  */
 @:structInit
 final class HTTPResponseHead {

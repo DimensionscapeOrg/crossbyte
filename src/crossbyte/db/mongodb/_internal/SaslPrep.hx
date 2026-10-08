@@ -6,15 +6,15 @@ import haxe.io.Bytes;
 /**
 	SASLprep (RFC 4013) for SCRAM-SHA-256 passwords, as UTF-8 bytes.
 
-	A password of printable ASCII, nearly every password, is returned as
+	A password of printable ASCII (nearly every password) is returned as
 	it is, which is exactly what SASLprep makes of it. Otherwise the mapping
 	step runs (the characters mapped to nothing are dropped, and non-ASCII
 	spaces become a space) and the prohibited characters are refused.
 
 	Two steps are not done, because they need Unicode tables this does not
 	carry: NFKC normalisation, and the bidirectional-text check. So a
-	password that NFKC would change, a compatibility character such as a
-	full-width letter or a ligature, is used as typed, where the server,
+	password that NFKC would change (a compatibility character such as a
+	full-width letter or a ligature) is used as typed, where the server,
 	which prepared it when the user was created, used its normal form, and
 	authentication fails. A password typed in the usual precomposed (NFC)
 	form, `Zürich` included, is unaffected.

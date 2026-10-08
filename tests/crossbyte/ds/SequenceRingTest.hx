@@ -121,7 +121,7 @@ class SequenceRingTest extends utest.Test {
 	/**
 		A receive window, as a reliable protocol keeps one: what arrived past
 		a gap is held, taken out as the gap fills, and acknowledged by a map
-		of bits, bit k of byte i for `from + 8i + k`.
+		of bits: bit k of byte i for `from + 8i + k`.
 	**/
 	public function testBitsSayWhatIsHeldFromANumberOn():Void {
 		var ring = new SequenceRing<String>(64);

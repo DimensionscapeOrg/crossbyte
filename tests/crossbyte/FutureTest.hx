@@ -8,12 +8,11 @@ import crossbyte.test.Require;
 /**
  * `crossbyte.Future`.
  *
- * There were no tests for this class at all, which is not incidental to what
- * they found: `then` replaced the previous handler instead of adding to it, a
- * throwing handler escaped into whoever resolved the future and stopped every
- * other handler and every event listener with it, and `f.then(a).then(b)`,
- * the shape the fluent return type advertises, ran only `b`. All four are
- * one-line demonstrations, and none of them had one.
+ * Each case below holds one of the promises `Future` makes: `then` adds a
+ * handler rather than replacing the previous one, a throwing handler does
+ * not escape into whoever resolved the future or stop every other handler
+ * and every event listener with it, and `f.then(a).then(b)` (the shape the
+ * fluent return type advertises) runs both `a` and `b`.
  *
  * Needs no socket and no filesystem, so it runs on every target including the
  * browser. One case is the exception and says why: a future is finished by one
@@ -24,8 +23,8 @@ import crossbyte.test.Require;
 @:access(crossbyte.Future)
 class FutureTest extends utest.Test {
 	public function testEveryRegisteredHandlerRuns():Void {
-		// `then` adds; it does not replace. It replaced, silently, so a future
-		// observed by a caller and by a logger lost one of them at random,
+		// `then` adds; it does not replace. A replacing `then` would make a future
+		// observed by a caller and by a logger lose one of them at random:
 		// whichever registered first.
 		var future = new Future<Int>();
 		var seen:Array<String> = [];
@@ -39,9 +38,9 @@ class FutureTest extends utest.Test {
 	}
 
 	public function testChainedThenCallsRunInOrder():Void {
-		// `then` returns the future, which invites this. It used to run only
-		// the last one, so the expression the API's own shape suggested was
-		// the expression that lost handlers.
+		// `then` returns the future, which invites this. Running only the last
+		// one would make the expression the API's own shape suggests the
+		// expression that loses handlers.
 		var future = new Future<Int>();
 		var seen:Array<String> = [];
 
@@ -61,10 +60,10 @@ class FutureTest extends utest.Test {
 	}
 
 	public function testAThrowingHandlerIsContained():Void {
-		// Three failures in one: the throw escaped into the resolver, which
-		// for the PHP bridge is the runtime tick, where an escape costs every
-		// other connection, it stopped the handlers after it, and it skipped
-		// the event dispatch, so anyone observing by RESULT never heard.
+		// Three promises in one: the throw does not escape into the resolver
+		// (which for the PHP bridge is the runtime tick, where an escape costs
+		// every other connection), it does not stop the handlers after it, and it
+		// does not skip the event dispatch, so anyone observing by RESULT hears.
 		var future = new Future<Int>();
 		var afterRan = false;
 		var listenerRan = false;
@@ -99,9 +98,9 @@ class FutureTest extends utest.Test {
 
 	public function testFailureCarriesItsCause():Void {
 		// The reason this field exists: code that has to decide something from
-		// a failure was reading the message to do it. `HTTPRequestHandler`
-		// picked 504 over 502 by searching for "did not respond within", so
-		// rewording an exception would have changed a status code.
+		// a failure would otherwise read the message to do it. `HTTPRequestHandler`
+		// picks 504 over 502 from it, so that rewording an exception cannot change
+		// a status code.
 		var boom = new ArgumentError("no");
 		var future = Future.failed("it went wrong", boom);
 
@@ -257,9 +256,9 @@ class FutureTest extends utest.Test {
 	/**
 		Handlers attached on one thread while another resolves.
 
-		This is the ordinary way to use a future, finish it on a worker, read
-		it on the runtime thread, and before `Future` took a lock it was
-		unsafe in the worst way. `then` pushes onto a handler array while
+		This is the ordinary way to use a future (finish it on a worker, read
+		it on the runtime thread), and without the lock `Future` takes it would
+		be unsafe in the worst way. `then` pushes onto a handler array while
 		resolution walks that same array, and a push that has to grow it frees
 		the buffer the walk is still reading. The symptom is not a lost
 		callback; it is heap corruption, surfacing later and somewhere else as a

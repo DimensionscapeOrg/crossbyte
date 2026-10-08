@@ -26,7 +26,7 @@ import haxe.io.BytesBuffer;
  *
  * Errors follow the split in §5.4. A malformed *message* is a stream error, so
  * the offending stream is reset and the connection carries on. Anything that
- * desynchronizes shared state, framing, or the HPACK table, is a
+ * desynchronizes shared state (framing, or the HPACK table) is a
  * connection error and takes everything down, because no later frame on any
  * stream could be trusted.
  */
@@ -56,20 +56,18 @@ class H2ServerConnection {
 	 * accounting (each field's two strings and 32 more), before it is
 	 * answered `431`. Advertised as SETTINGS_MAX_HEADER_LIST_SIZE.
 	 *
-	 * The limit an HTTP/1.1 request's header block is held to. The decoder
-	 * allowed eight megabytes and nothing said so, and a block of 200,000
-	 * one-byte references to a single cookie crumb, about 200 KB on the
-	 * wire, decoded under it and then held the runtime's thread for 23.5
-	 * seconds while the crumbs were joined.
+	 * The limit an HTTP/1.1 request's header block is held to. Without it
+	 * HPACK lets a small block decode to a great deal: 200,000 one-byte
+	 * references to a single cookie crumb, about 200 KB on the wire, would
+	 * hold the runtime's thread for seconds while the crumbs were joined.
 	 */
 	public static inline var DEFAULT_MAX_HEADER_LIST_SIZE:Int = 64 * 1024;
 
 	/**
 		The most window a stream receiving a body is opened to at once, as
 		far as `requestBodyBudget` allows: enough that an upload over a long
-		path is not held to a window a round trip. The protocol's 64 KB was
-		all any stream had, so one upload over a 50 ms path went at about a
-		megabyte a second.
+		path is not held to a window a round trip. At the protocol's 64 KB,
+		one upload over a 50 ms path would go at about a megabyte a second.
 	**/
 	public static inline var STREAM_WINDOW_GOAL:Int = 1024 * 1024;
 
@@ -105,8 +103,8 @@ class H2ServerConnection {
 	 * SETTINGS_MAX_CONCURRENT_STREAMS does not provide one: a stream that is
 	 * reset is closed, so it frees its slot immediately. A peer that opens a
 	 * stream and resets it at once therefore never approaches the limit while
-	 * still making the server do the work of every request, routing,
-	 * allocation, a handler each, without bound. Counting the abandonments
+	 * still making the server do the work of every request (routing,
+	 * allocation, a handler each) without bound. Counting the abandonments
 	 * is what the concurrency limit cannot see.
 	 */
 	public var maxResetStreams:Int = DEFAULT_MAX_RESET_STREAMS;
@@ -122,11 +120,11 @@ class H2ServerConnection {
 	 * Compressed bytes a single header block may occupy across all of its
 	 * CONTINUATION frames. Negative disables the check.
 	 *
-	 * SETTINGS_MAX_FRAME_SIZE bounds each frame and nothing bounded the run:
-	 * a peer could send a HEADERS without END_HEADERS and then CONTINUATION
-	 * frames forever, and every one of them was appended to a buffer that only
-	 * grew. SETTINGS_MAX_HEADER_LIST_SIZE does not help either, it limits
-	 * what the block decodes to, and this never reaches the decoder.
+	 * SETTINGS_MAX_FRAME_SIZE bounds each frame and nothing else bounds the
+	 * run: a peer could send a HEADERS without END_HEADERS and then
+	 * CONTINUATION frames forever, each appended to a buffer that only grows.
+	 * SETTINGS_MAX_HEADER_LIST_SIZE does not help either: it limits what the
+	 * block decodes to, and this never reaches the decoder.
 	 */
 	public var maxHeaderBlockSize:Int = DEFAULT_MAX_HEADER_BLOCK;
 
@@ -135,8 +133,8 @@ class H2ServerConnection {
 	 * `resetWindowSeconds`, after which the connection is closed with
 	 * ENHANCE_YOUR_CALM. Negative disables the check.
 	 *
-	 * Both are answered the moment they arrive, 6.5.3 requires a SETTINGS
-	 * ACK and 6.7 a PING ACK, so a peer sending them faster than this side
+	 * Both are answered the moment they arrive (6.5.3 requires a SETTINGS
+	 * ACK and 6.7 a PING ACK), so a peer sending them faster than this side
 	 * drains its socket grows the outgoing buffer with nothing to stop it.
 	 * Neither frame opens a stream, so none of the limits above can see it:
 	 * MAX_CONCURRENT_STREAMS counts streams, the reset budget counts
@@ -154,9 +152,8 @@ class H2ServerConnection {
 	 * Negative disables the check, leaving the body held only to
 	 * `requestBodyBudget`. Read as the preface ends.
 	 *
-	 * DATA was appended with no limit while window kept being granted, so one
-	 * stream could make the server hold as much as it cared to send: a 3 MB
-	 * upload reached a route the HTTP/1.1 path would have refused. Past this,
+	 * Without it one stream could make the server hold as much as it cared
+	 * to send while window kept being granted. Past this,
 	 * the request is delivered at once with `tooLarge` set and no body, so it
 	 * can be answered `413`; once that has gone out the stream is reset with
 	 * NO_ERROR, which is §8.1's way of asking a client to stop sending, its
@@ -174,7 +171,7 @@ class H2ServerConnection {
 
 		Held to it by flow control, not by refusing what arrives. The
 		connection's window is opened to the budget and given back only for
-		bytes let go, a body handed over, dropped or reset, so a client
+		bytes let go (a body handed over, dropped or reset), so a client
 		that keeps to its windows never sends more, and one that does not
 		is a FLOW_CONTROL_ERROR. Each stream's first window, which a client
 		may use unasked, is made small enough that every stream's fits with
@@ -184,15 +181,10 @@ class H2ServerConnection {
 		always finish, and the others wait for window rather than each
 		taking a share and none of them finishing.
 
-		Every stream let its body grow to `maxRequestBodySize` and both
-		windows were opened again as each byte arrived, so a client
-		uploading slowly on all 128 streams made the server hold 128 bodies,
-		and nothing checked that a client kept to its windows at all.
-
 		A stream left waiting for window ends rather than waits for good:
 		once `stallSeconds` pass with no body arriving and none let go on
-		the connection, it is reset with REFUSED_STREAM, never handed to
-		the application, so safe to send again (`expireWaiting`). And when
+		the connection, it is reset with REFUSED_STREAM (never handed to
+		the application, so safe to send again; `expireWaiting`). And when
 		the oldest stream cannot go on at all, which a client that keeps to
 		the SETTINGS never brings about, the newest gives way the same way
 		(`__unblockOldest`).
@@ -224,9 +216,8 @@ class H2ServerConnection {
 	 * are refused with REFUSED_STREAM, which tells it they are safe to send
 	 * elsewhere, and `onDrained` is called once the last open one ends.
 	 *
-	 * `HTTPServerConfig.keepAliveMaxRequests`, and `1` for `keepAlive` off:
-	 * HTTP/2 took no notice of either, so a connection lived for as long as
-	 * its client kept it.
+	 * Set from `HTTPServerConfig.keepAliveMaxRequests`, and `1` for
+	 * `keepAlive` off, so an HTTP/2 connection ends as an HTTP/1.1 one does.
 	 */
 	public var maxRequests:Int = 0;
 
@@ -242,17 +233,16 @@ class H2ServerConnection {
 	 * INTERNAL_ERROR. `true` lets the body come, and the request reaches
 	 * `onRequest` once it has, carrying whatever this put in its `context`.
 	 *
-	 * HTTP/1.1 refuses a request on its headers, too large by its
-	 * `Content-Length`, or turned away by `Expect: 100-continue`, before a
-	 * byte of the body is read. HTTP/2 had no such moment: a request was seen
-	 * only once its body was in.
+	 * HTTP/1.1 refuses a request on its headers (too large by its
+	 * `Content-Length`, or turned away by `Expect: 100-continue`) before a
+	 * byte of the body is read; this is HTTP/2's moment for the same.
 	 */
 	public var onRequestHead:H2ServerRequest->Bool = _ -> true;
 
 	/**
 	 * Called once the connection is going away and the last stream it let
 	 * finish has ended, so its owner can close it. Called from inside
-	 * whatever ended that stream, a response's last write, a reset, so
+	 * whatever ended that stream (a response's last write, a reset), so
 	 * the owner closes it later rather than there.
 	 */
 	public var onDrained:Void->Void = () -> {};
@@ -268,9 +258,8 @@ class H2ServerConnection {
 	 * `haxe.Timer.stamp()` when the connection last had no stream open: when
 	 * it was made, or when the last open stream ended. Only streams count.
 	 * A PING, a SETTINGS or a WINDOW_UPDATE asks nothing of the server, and a
-	 * peer sending only those is as idle as one sending nothing; counting
-	 * them let one hold a connection past its idle allowance for as long as
-	 * it kept pinging.
+	 * peer sending only those is as idle as one sending nothing, and cannot
+	 * hold a connection past its idle allowance by pinging.
 	 */
 	public var idleSince(default, null):Float;
 
@@ -284,10 +273,11 @@ class H2ServerConnection {
 		queue for `notifyWritable`.
 
 		The owner's socket buffer, held to a watermark. Without one, whatever
-		the client's window allowed went straight into the socket's buffer: a
-		client granting large windows over a slow network piled responses up
-		there past the socket's output cap, which closes the connection, and
-		what was queued could not be told from what had been sent.
+		the client's window allowed would go straight into the socket's
+		buffer: a client granting large windows over a slow network would
+		pile responses up there past the socket's output cap, which closes
+		the connection, and what was queued could not be told from what had
+		been sent.
 	**/
 	public var outputRoom:Null<Void->Int> = null;
 
@@ -365,9 +355,9 @@ class H2ServerConnection {
 	//
 	// A section with a body to come is held until the body has arrived, and
 	// HPACK makes one cheap to send: 128 streams, each a 4 KB cookie fifteen
-	// times over, grew the heap by 9.3 MB from 318 KB on the wire, and with
-	// requestTimeout off for good. Flow control cannot hold back a HEADERS,
-	// so one past this is refused, REFUSED_STREAM, never having reached the
+	// times over, are 9.3 MB of heap from 318 KB on the wire, held for good
+	// with requestTimeout off. Flow control cannot hold back a HEADERS, so
+	// one past this is refused, REFUSED_STREAM, never having reached the
 	// application. Answered and bodiless requests are not counted: they are
 	// handed over at once.
 	private var __headersHeld:Int = 0;
@@ -583,10 +573,10 @@ class H2ServerConnection {
 
 		if (endStream) {
 			// Through __finishStream, which releases the stream's concurrency
-			// slot. This removed the stream from the map without it, so every
-			// response with no body, a 204, a 304, any HEAD, kept its slot
-			// for good, and a connection that had answered 128 of them refused
-			// every stream after.
+			// slot. Removed from the map without it, every response with no body
+			// (a 204, a 304, any HEAD) would keep its slot for good, and a
+			// connection that had answered 128 of them would refuse every stream
+			// after.
 			__finishStream(target);
 		}
 	}
@@ -596,7 +586,7 @@ class H2ServerConnection {
 	 *
 	 * Whatever flow control permits goes out now; the rest waits for a
 	 * WINDOW_UPDATE. So this returning does not mean the bytes were sent, only
-	 * that they were accepted, `queuedFor` is how a caller applying
+	 * that they were accepted; `queuedFor` is how a caller applying
 	 * backpressure finds out the difference.
 	 *
 	 * `body` is kept as it is until it has been sent, not copied, so it must
@@ -653,10 +643,9 @@ class H2ServerConnection {
 
 		A stream whose own window has kept its response from moving for
 		`stallSeconds` is reset, INTERNAL_ERROR, and what it held let go; the
-		connection carries on. A response written whole waited on its client's
-		WINDOW_UPDATE with no deadline at all, so a client that paused a stream,
-		or opened one and never meant to read it, held its response here
-		for as long as the connection lasted. When it is the connection's
+		connection carries on. Without this a client that paused a stream,
+		or opened one and never meant to read it, would hold its response
+		here for as long as the connection lasted. When it is the connection's
 		window that has been spent, with nothing sent on the connection for
 		`stallSeconds`, nothing on it can move until the client gives more,
 		and every stream waiting is reset the same way. A stream waiting only
@@ -746,8 +735,8 @@ class H2ServerConnection {
 	}
 
 	/**
-	 * Calls `callback` if `streamId` is reset before it ends, by the peer,
-	 * the client abandoning a response, or by this side with `resetStream`:
+	 * Calls `callback` if `streamId` is reset before it ends, by the peer
+	 * (the client abandoning a response) or by this side with `resetStream`:
 	 * either way the response is over, which a producer writing one as it
 	 * goes has to hear about. Called once; dropped, uncalled, when the stream
 	 * ends normally.
@@ -876,7 +865,7 @@ class H2ServerConnection {
 	 *
 	 * Counted rather than derived from the map, which has no size, and routed
 	 * through one place because a removal that forgets to decrement makes the
-	 * concurrency limit tighten permanently, a connection that serves fewer
+	 * concurrency limit tighten permanently: a connection that serves fewer
 	 * and fewer requests until it serves none.
 	 */
 	private function __forget(streamId:Int):Void {
@@ -914,11 +903,10 @@ class H2ServerConnection {
 	 * reset with NO_ERROR to stop the rest of it. The connection and its
 	 * other streams carry on.
 	 *
-	 * The deadline is the stream's own, fixed when it opened. The connection
-	 * had one clock, which every frame read or written set back, so a client
-	 * sending a byte of body every 0.4 s held a request open under a
-	 * `requestTimeout` of one second for as long as it liked, where HTTP/1.1
-	 * answered it 408.
+	 * The deadline is the stream's own, fixed when it opened, and frames read
+	 * or written do not move it, so a client sending a byte of body every
+	 * 0.4 s cannot hold a request open past `requestTimeout`; it is answered
+	 * 408, as HTTP/1.1 answers it.
 	 *
 	 * @return false when one of them is a header block still arriving: no
 	 *         other frame may be read until it ends (6.10), so the connection
@@ -990,11 +978,11 @@ class H2ServerConnection {
 	 * Resets one stream, leaving the connection running, and calls what
 	 * `setAbandonedCallback` registered for it, as a reset from the peer does.
 	 *
-	 * Whoever resets it, the response being written on it is over. Only the
-	 * peer's reset said so, so a stream this side reset, the peer sending
-	 * DATA after ending it, a WINDOW_UPDATE of nothing, left its producer
-	 * writing into a stream that refused it, and a file being pumped out on
-	 * it open, its pump waiting on a window that could no longer come.
+	 * Whoever resets it, the response being written on it is over, so a
+	 * stream this side reset (the peer sending DATA after ending it, a
+	 * WINDOW_UPDATE of nothing) does not leave its producer writing into a
+	 * stream that refuses it, or a file being pumped out on it open, its
+	 * pump waiting on a window that can no longer come.
 	 */
 	public function resetStream(streamId:Int, code:H2ErrorCode):Void {
 		var payload:Bytes = Bytes.alloc(4);
@@ -1024,10 +1012,9 @@ class H2ServerConnection {
 	 * given up on it) and `openStreams` has reached zero, for the owner to
 	 * close it, or the owner closes it with `goAway` at a deadline.
 	 *
-	 * What a server shutting down owes its HTTP/2 clients up front. They saw a
-	 * GOAWAY only at the drain's deadline, so for the whole drain they kept
-	 * opening streams on a connection about to go, and whatever was in flight
-	 * at the deadline was cut off without warning.
+	 * What a server shutting down owes its HTTP/2 clients up front, so they
+	 * stop opening streams on a connection about to go, and what is in flight
+	 * at the deadline is not cut off without warning.
 	 */
 	public function goAwayGracefully():Void {
 		if (closed || __goingAway) {
@@ -1040,10 +1027,8 @@ class H2ServerConnection {
 		// taken. The PING after it comes back once the client has read it,
 		// and so once every stream it sent before then has arrived: only then
 		// does the final GOAWAY name the last stream taken (__finishRetiring).
-		// The one GOAWAY named the last stream at once, so the streams a busy
-		// client already had in flight were refused, REFUSED_STREAM: 42 of
-		// 12,001 small requests from eight concurrent clients, with a
-		// connection ended every thousand requests (keepAliveMaxRequests).
+		// Naming the last stream at once would refuse, REFUSED_STREAM, the
+		// streams a busy client already had in flight.
 		__retiring = true;
 		__retireDeadline = haxe.Timer.stamp() + RETIRE_GRACE_SECONDS;
 		try {
@@ -1261,11 +1246,11 @@ class H2ServerConnection {
 		}
 
 		// A refused stream is never opened, but its header block is still
-		// decoded, __completeHeaders decodes and discards a block for a
-		// stream it does not hold, before the reset goes out. HPACK is
+		// decoded (__completeHeaders decodes and discards a block for a
+		// stream it does not hold) before the reset goes out. HPACK is
 		// connection state: a block skipped leaves every later one decoded
-		// against the wrong table. The concurrency refusal used to throw before
-		// the block was read, which did exactly that.
+		// against the wrong table, so no refusal may throw before the block
+		// is read.
 		var refusal:Null<H2ErrorCode> = null;
 		if (!__streams.exists(frame.streamId)) {
 			var limit:Int = localSettings.maxConcurrentStreams;
@@ -1449,13 +1434,11 @@ class H2ServerConnection {
 		A second header block on a stream: its trailer section (RFC 9113 8.1),
 		checked and dropped, as the HTTP/1.1 server drops a chunked body's.
 
-		It used to replace the request's header section. The request was then
-		read from the trailers, found to have no `:method`, and reset, so a
-		request sent with trailers never reached a handler. A trailer section
-		must end the stream and carry no pseudo-header, and its fields are held
-		to 8.2.1 as any are; one that fails is malformed, a stream error. One
-		after the stream has ended is on a stream half-closed to the peer
-		(5.1).
+		A trailer section must end the stream and carry no pseudo-header, and
+		its fields are held to 8.2.1 as any are; one that fails is malformed,
+		a stream error. One after the stream has ended is on a stream
+		half-closed to the peer (5.1). The request keeps the header section it
+		began with, so a request sent with trailers reaches its handler.
 	**/
 	private function __completeTrailers(target:H2Stream, decoded:Array<HpackHeader>, endStream:Bool):Void {
 		if (target.endOfStream) {
@@ -1512,15 +1495,15 @@ class H2ServerConnection {
 		}
 
 		// Counted whole, padding included, and counted even for a stream we no
-		// longer have (§6.9.1). Skipping it on an unknown stream drifts the
-		// connection window down until everything stalls.
+		// longer have (§6.9.1). Skipping it on an unknown stream would drift the
+		// connection window down until everything stalled.
 		var counted:Int = frame.payload.length;
 		// An empty DATA may be sent into no window at all (6.9.1): it is how a
 		// stream whose window the SETTINGS shrank below nothing still ends.
 		if (counted > 0 && counted > __recvWindow) {
-			// 6.9.1: a sender keeps to both windows. Nothing checked, so a
-			// client that ignored them sent as much as it liked whatever
-			// the windows said, and the budget they keep meant nothing.
+			// 6.9.1: a sender keeps to both windows. Checked, or a client that
+			// ignored them could send as much as it liked whatever the windows
+			// said, and the budget they keep would mean nothing.
 			throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, 'DATA of $counted bytes on stream ${frame.streamId} past the $__recvWindow the connection window had left');
 		}
 		__recvWindow -= counted;
@@ -1543,8 +1526,8 @@ class H2ServerConnection {
 
 		if (target != null && target.endOfStream) {
 			// 5.1: the peer ended this stream, so it is half-closed on its
-			// side and DATA on it is a stream error. It was appended, and a
-			// second END_STREAM delivered the request again, a second
+			// side and DATA on it is a stream error. Appended, a second
+			// END_STREAM would deliver the request again, to a second
 			// handler answering a stream the first was answering.
 			throw new H2StreamError(frame.streamId, H2ErrorCode.STREAM_CLOSED, "DATA after the end of the stream");
 		}
@@ -1608,14 +1591,14 @@ class H2ServerConnection {
 		which §8.1 allows after a complete response. What arrives for the
 		stream meanwhile is counted for the connection's window and dropped.
 
-		Sent the moment the refusal was handed over, the reset ended the
-		stream there, and with it whatever of the answer flow control was
-		still holding: an error page past the client's window was cut off
-		after its first 64 KB. It now waits for the answer to end. And a
-		refusal whose answer threw before anything went out, its `500`
-		too, was reset NO_ERROR all the same, telling the client a response
-		was complete that never began: that is INTERNAL_ERROR, as for a
-		request whose serving throws after its body is in.
+		The reset waits for the answer to end: sent the moment the refusal
+		was handed over, it would end the stream there, and with it whatever
+		of the answer flow control was still holding, so an error page past
+		the client's window would be cut off after its first 64 KB. A refusal
+		whose answer threw before anything went out, its `500` too, is reset
+		INTERNAL_ERROR, as for a request whose serving throws after its body
+		is in: NO_ERROR would tell the client a response was complete that
+		never began.
 	**/
 	private function __stopBody(target:H2Stream):Void {
 		__release(target);
@@ -1706,10 +1689,10 @@ class H2ServerConnection {
 
 		var now:Float = haxe.Timer.stamp();
 		// >= rather than >: a window of W seconds has elapsed *at* W, and it
-		// makes a window of zero mean what it reads like, every reset starts
-		// its own, so nothing accumulates. With > that depended on whether the
-		// clock had ticked between two calls, which it does natively and does
-		// not on the interpreter.
+		// makes a window of zero mean what it reads like (every reset starts
+		// its own, so nothing accumulates) whether or not the clock has
+		// ticked between two calls, which it does natively and does not on
+		// the interpreter.
 		if (__resetWindowStart < 0 || (now - __resetWindowStart) >= resetWindowSeconds) {
 			__resetWindowStart = now;
 			__resetCount = 0;
@@ -1760,8 +1743,8 @@ class H2ServerConnection {
 		them comes back. Each still receiving a body is offered its window
 		again, oldest first, since the shrinking can leave one with less than
 		nothing, short of a body it was opened enough for: an upload sent
-		before the client had read the SETTINGS stopped a byte short, its
-		window below zero, and nothing opened it again.
+		before the client had read the SETTINGS would stop a byte short, its
+		window below zero, with nothing to open it again.
 	**/
 	private function __acknowledged():Void {
 		__settingsAcked = true;
@@ -1812,13 +1795,12 @@ class H2ServerConnection {
 		}
 
 		// The client's HEADER_TABLE_SIZE is the most its decoder holds, and an
-		// encoder may use less (RFC 7541 4.2). This one held whatever it was
-		// told: a client saying a megabyte kept every distinct response field
-		// in the server's memory for the connection's life, each searched for
-		// every field after, and one saying 2^31 or more, which reads
-		// negative, spun the thread reading it forever, shrinking the table
-		// toward a size below nothing. Held to the default, as the client
-		// holds its own (H2Connection).
+		// encoder may use less (RFC 7541 4.2). Held to the default, as the
+		// client holds its own (H2Connection): a client saying a megabyte would
+		// otherwise keep every distinct response field in the server's memory
+		// for the connection's life, each searched for every field after, and
+		// one saying 2^31 or more (which reads negative) would spin the thread
+		// reading it forever, shrinking the table toward a size below nothing.
 		var capacity:Int = remoteSettings.headerTableSize;
 		if (capacity < 0 || capacity > H2Connection.MAX_ENCODER_TABLE_SIZE) {
 			capacity = H2Connection.MAX_ENCODER_TABLE_SIZE;
@@ -1837,19 +1819,14 @@ class H2ServerConnection {
 
 	/**
 		The client's GOAWAY (§6.8). Its last stream id names the last stream
-		*this* side opened that the client will process, a push, which this
-		never sends, so it says nothing about the streams the client opened:
+		*this* side opened that the client will process (a push, which this
+		never sends), so it says nothing about the streams the client opened:
 		those are still answered, and what the client sends on them still
 		read. It opens no more, one it opens anyway is refused as after a
 		GOAWAY of this side's, and once the last open one has ended
 		`onDrained` is called for the owner to close the connection. A GOAWAY
 		carrying an error says the client is closing the connection now
 		(§5.4.1), and it fails at once.
-
-		It was read as the end of the connection: `closed` was set, so nothing
-		the client sent after it was read and no response went out after it,
-		not one being worked on, nor one whose body was still arriving,
-		while the socket itself was kept, for as long as a stream stayed open.
 	**/
 	private function __onGoAway(frame:H2Frame):Void {
 		if (frame.streamId != 0) {
@@ -1950,16 +1927,15 @@ class H2ServerConnection {
 		before the SETTINGS that carries it goes out.
 
 		That first window is the client's to use on every stream it opens,
-		unasked, and nothing can take it back. Left at the protocol's 64 KB,
-		128 streams' worth was 8 MB: a client opening a few more uploads than
-		the budget held spent the connection's window on their first 64 KB
-		each and left the oldest unable to finish. So it is the largest of
+		unasked, and nothing can take it back. At the protocol's 64 KB, 128
+		streams' worth is 8 MB: a client opening a few more uploads than the
+		budget held would spend the connection's window on their first 64 KB
+		each and leave the oldest unable to finish. So it is the largest of
 		64, 32 or 16 KB for which every stream's first window, and one whole
-		body besides, fits the budget, 16 KB at the defaults, and a budget
+		body besides, fits the budget (16 KB at the defaults), and a budget
 		too small even for that is raised until it fits. A body past it is
 		opened the rest of its way as its HEADERS arrive, so it costs a round
-		trip only between 16 and 64 KB, and a large one far fewer than the
-		64 KB a round trip it was held to.
+		trip only between 16 and 64 KB.
 	**/
 	private function __fixBudget():Void {
 		var budget:Float = requestBodyBudget > 0 ? requestBodyBudget : H2Settings.MAX_WINDOW_SIZE;
@@ -2203,14 +2179,14 @@ class H2ServerConnection {
 		Lets the oldest stream still receiving a body go on when nothing else
 		will: its own window spent with no budget to open it, or the
 		connection's spent with every byte of the budget held. The newest
-		stream gives way, with REFUSED_STREAM, its request never reached
-		the application, so the client may send it again, and the next
+		stream gives way, with REFUSED_STREAM (its request never reached
+		the application, so the client may send it again), and the next
 		newest, until the oldest can move.
 
 		A client that keeps to the SETTINGS never comes here: every first
 		window is set aside before anything is opened beyond one, and every
 		older body before a newer one. It is what is left for one that does
-		not, concurrency without a limit, say, and is not asked before
+		not (concurrency without a limit, say), and is not asked before
 		the client has acknowledged the SETTINGS: until then each stream is
 		counted at the protocol's 64 KB, more than it can have, and the
 		acknowledgement is on its way.

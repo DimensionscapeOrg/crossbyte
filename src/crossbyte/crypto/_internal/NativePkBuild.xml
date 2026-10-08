@@ -5,11 +5,9 @@
 	     mbedtls_mpi_*, and mbedtls_asn1_* symbols in the link. -->
 	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
 
-	<!-- No mbedTLS version or path is pinned here. Pinning MBEDTLS_DIR once
-	     overrode the one hxcpp sets, and when hxcpp moved on the include path
-	     stopped existing: the native build only kept working because
-	     NativePk.obj was already in the object cache, and a clean tree could
-	     not build at all.
+	<!-- No mbedTLS version or path is pinned here. A pinned MBEDTLS_DIR
+	     overrides the one hxcpp sets, and stops existing when hxcpp moves
+	     on, so a clean tree cannot build.
 
 	     hxcpp's mbedtls-flags.xml gives the include path for whichever
 	     mbedTLS it ships, 2.28 or 3.6, and the configuration it builds the
@@ -30,10 +28,8 @@
 
 		<!-- hxcpp_ssl is deliberately NOT listed here. The ssl Build.xml
 		     included above already adds it to this same target, so naming it
-		     again passed SSL.obj to the linker twice and every full link
-		     warned LNK4042. The include is what puts the mbedtls_pk_*,
-		     mbedtls_mpi_* and mbedtls_asn1_* symbols in; this line only
-		     duplicated them. -->
+		     again passes SSL.obj to the linker twice and every full link
+		     warns LNK4042. -->
 
 		<lib name="advapi32.lib" if="windows" unless="static_link"/>
 		<lib name="crypt32.lib" if="windows" unless="static_link"/>

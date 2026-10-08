@@ -13,8 +13,8 @@ import utest.Async;
 	order, every line below the cap, a count of the lines dropped past it, and
 	everything queued written when the server drains or closes.
 
-	On a target without threads the lines go through `Logger` as they always
-	did, and the cases check that instead.
+	On a target without threads the lines go through `Logger`, and the
+	cases check that instead.
 **/
 @:timeout(20000)
 class HTTPAccessLogTest extends utest.Test {

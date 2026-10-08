@@ -6,7 +6,7 @@ import crossbyte.io.ByteArray;
 	One frame that has gone out and not been acknowledged.
 
 	It carries when it was sent and when it is next due, because both are
-	needed and neither was kept before: the send time is the round trip
+	needed: the send time is the round trip
 	measurement that sets the retransmission timeout, and the deadline is what
 	the session's single retransmission clock compares against, in place of
 	every frame having a repeating timer of its own.

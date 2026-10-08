@@ -5,11 +5,10 @@ import utest.Assert;
 
 /**
 	The event-type constants say which event they carry, so a listener of
-	the wrong type is refused where it is added. They were Strings, from
-	which `addEventListener` took the type from the listener, so any
-	listener fit, and a wrong one failed only when the event arrived.
-
-	These cases fail before: each listener named here compiled.
+	the wrong type is refused where it is added. If they were plain Strings,
+	`addEventListener` would take the type from the listener, so any
+	listener would fit, and a wrong one would fail only when the event
+	arrived.
 **/
 class EventTypesTest extends utest.Test {
 	public function testAListenerOfTheWrongEventIsRefused():Void {
@@ -22,7 +21,7 @@ class EventTypesTest extends utest.Test {
 		Assert.notNull(TypeCheck.errorOf(dispatcher.addEventListener(Event.CLOSE, (e:TickEvent) -> {})), "a TickEvent listener fit CLOSE");
 	}
 
-	/** What fits is unchanged: the event itself, or any type it extends. **/
+	/** What fits: the event itself, or any type it extends. **/
 	public function testTheRightListenerAndItsSupertypesStillFit():Void {
 		var dispatcher = new EventDispatcher();
 		var delta:Float = -1;
@@ -43,8 +42,9 @@ class EventTypesTest extends utest.Test {
 
 	#if (sys && !(js || php))
 	/**
-		`ServerSocket` took any listener for any type, `Dynamic->Void`, where
-		every other dispatcher checks it against the type.
+		`ServerSocket` checks a listener against the type, as every other
+		dispatcher does, rather than taking any listener (`Dynamic->Void`) for
+		any type.
 	**/
 	public function testAServerSocketChecksItsListenersToo():Void {
 		var server = new crossbyte.net.ServerSocket();

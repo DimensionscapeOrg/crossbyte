@@ -3,17 +3,15 @@
 
 	`JsTestMain` runs the same cases on Node, and that is not the same test.
 	Node has no `window`, no `document`, and none of a page's restrictions,
-	so a browser build Node runs happily can still fail to load in a page. It
-	did: `Random`'s seed was a `haxe.atomic.AtomicInt`, Haxe implements that on
-	js with a `SharedArrayBuffer`, and an ordinary page is not given one. Being
-	a static initialiser, it threw while the bundle loaded, before any
-	application code ran, and every js build stayed green.
+	so a browser build Node runs happily can still fail to load in a page: a
+	static initialiser that needs something a page is not given (a
+	`SharedArrayBuffer`, say, behind a `haxe.atomic.AtomicInt`) throws while
+	the bundle loads, before any application code runs, and every js build
+	stays green.
 
 	Registration goes through `TestHarness` like every other entry point, not
 	around it: the harness establishes the primordial runtime first, and
 	without that every case needing a timer or `CrossByte.current()` fails.
-	Skipping it cost thirteen failures and two hundred and fifty missing
-	assertions on the first run of this file.
 
 	The result goes on `window` rather than to stdout, because a page has not
 	got one. `ci/browser/run.js` reads it.
@@ -40,24 +38,24 @@ class BrowserTestMain {
 							successes++;
 						case Failure(message, pos):
 							failures++;
-							detail.push(where + ", " + message + " (" + pos.fileName + ":" + pos.lineNumber + ")");
+							detail.push(where + ": " + message + " (" + pos.fileName + ":" + pos.lineNumber + ")");
 						case Error(error, _):
 							failures++;
-							detail.push(where + ", error: " + Std.string(error));
+							detail.push(where + ": error: " + Std.string(error));
 						case SetupError(error, _):
 							failures++;
-							detail.push(where + ", setup error: " + Std.string(error));
+							detail.push(where + ": setup error: " + Std.string(error));
 						case TeardownError(error, _):
 							failures++;
-							detail.push(where + ", teardown error: " + Std.string(error));
+							detail.push(where + ": teardown error: " + Std.string(error));
 						case TimeoutError(missed, _):
 							failures++;
-							detail.push(where + ", timed out with " + missed + " async call(s) outstanding");
+							detail.push(where + ": timed out with " + missed + " async call(s) outstanding");
 						case AsyncError(error, _):
 							failures++;
-							detail.push(where + ", async error: " + Std.string(error));
+							detail.push(where + ": async error: " + Std.string(error));
 						case Warning(message):
-							detail.push("warning: " + where + ", " + message);
+							detail.push("warning: " + where + ": " + message);
 						case Ignore(_):
 					}
 				}

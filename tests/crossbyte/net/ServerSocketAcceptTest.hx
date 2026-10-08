@@ -10,11 +10,11 @@ import utest.Async;
 	What a listener does with connections it cannot take, and with the
 	listeners it tells about them.
 
-	A connection the system would not hand over, the process out of
-	descriptors, was swallowed natively, leaving a server that looked idle,
-	and closed the server on the jvm. A TLS handshake that failed left no
-	trace. And removing any one `connect` listener stopped the server
-	accepting, though others were still listening.
+	A connection the system will not hand over (the process out of
+	descriptors) is reported, not swallowed, leaving a server that looked
+	idle, nor taken as a reason to close the server. A TLS handshake that
+	fails leaves a trace. And removing one `connect` listener does not stop
+	the server accepting while others are still listening.
 **/
 class ServerSocketAcceptTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
@@ -98,15 +98,14 @@ class ServerSocketAcceptTest extends utest.Test {
 
 	#if (cpp || java || jvm || eval)
 	/**
-		A server whose `connect` listener arrives after `listen()`, the order
-		NetHost uses, and then closes. It held the accept tick twice, since
-		each path that wanted it ran added it again, and close() took one
-		away: the other called `accept()` on the closed listener every frame
-		for good. Once a new listener took over its descriptor number that was
-		the new server's socket, its connections taken, or on eval, where a
-		socket cannot be made non-blocking, the runtime stopped for good,
-		waiting on a connection nobody made. That was the interpreter suite
-		hanging on Linux.
+		A server whose `connect` listener arrives after `listen()` (the order
+		NetHost uses) and then closes. Its accept tick must be held once, not
+		added again by each path that wanted it, with close() taking one away:
+		the other would call `accept()` on the closed listener every frame for
+		good, and once a new listener took over its descriptor number that
+		would be the new server's socket, its connections taken, or on eval,
+		where a socket cannot be made non-blocking, the runtime stopped for
+		good, waiting on a connection nobody made.
 	**/
 	@:timeout(15000)
 	public function testAClosedServerStopsAccepting(async:Async):Void {
@@ -144,8 +143,8 @@ class ServerSocketAcceptTest extends utest.Test {
 
 	#if (cpp || java || jvm || nodejs)
 	/**
-		A client that is not speaking TLS at all, and, natively, where the
-		server keeps the deadline, one that says nothing.
+		A client that is not speaking TLS at all, and (natively, where the
+		server keeps the deadline) one that says nothing.
 	**/
 	@:timeout(20000)
 	public function testFailedHandshakesAreCounted(async:Async):Void {
@@ -190,8 +189,8 @@ class ServerSocketAcceptTest extends utest.Test {
 
 	/**
 		A `handshakeTimeout` of 0 sets no deadline, as every other timeout
-		does and as `ServerWebSocket`'s does. It failed every handshake at
-		the first accept tick natively, and at 1 ms on Node.
+		does and as `ServerWebSocket`'s does, rather than failing every
+		handshake at once.
 	**/
 	@:timeout(20000)
 	public function testAHandshakeTimeoutOfZeroWaits(async:Async):Void {
@@ -261,8 +260,8 @@ private class ClosingCountServerWebSocket extends ServerWebSocket {
 
 /**
 	A server whose system refuses the first `refusals` connections it is
-	asked for, the way one out of descriptors does, hxcpp raises that as a
-	bare string, the jvm as an I/O error, then hands them over.
+	asked for, the way one out of descriptors does (hxcpp raises that as a
+	bare string, the jvm as an I/O error), then hands them over.
 **/
 private class RefusingServerSocket extends ServerSocket {
 	private var __refusals:Int;

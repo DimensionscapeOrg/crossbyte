@@ -54,7 +54,7 @@ class RPCCommandMacro {
 
 				final metaName = "meta_" + method.name;
 				// From the answer's type, which a contract method returning
-				// Future<T>, answered later by its handler, has as T.
+				// Future<T> (answered later by its handler) has as T.
 				final wrapperReturnType = commandReturnType(method.responseType != null ? method.responseType : macro :Void);
 				final wrapper = createWrapperFunction({
 					name: method.name,
@@ -123,9 +123,9 @@ class RPCCommandMacro {
 	/**
 		What every commands class ends with: `ping`, unless a class it extends
 		made one, and the reader of responses, for this class's methods and
-		for every one it inherits, which it overrides. Each class made both
-		again, which Haxe refused in a subclass, so no commands class could
-		extend another.
+		for every one it inherits, which it overrides. Made in each class
+		again, both would be refused by Haxe in a subclass, and no commands
+		class could extend another.
 	**/
 	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sent:Array<String>,
 			ancestors:Array<ClassType>):Array<Field> {
@@ -249,8 +249,8 @@ class RPCCommandMacro {
 	/**
 		A response as a commands class extending this one reads it: a function
 		expression, never typed, taking the call's arguments and returning the
-		response's type, every type written out in full, the arguments are
-		in its op. That class reads it in its own module, which need not
+		response's type, every type written out in full (the arguments are
+		in its op). That class reads it in its own module, which need not
 		import, nor see the typedefs of, this one's.
 	**/
 	private static function responseSignature(method:ResponseMethod):Expr {
@@ -278,7 +278,7 @@ class RPCCommandMacro {
 		// and op, the request id at its longest, each fixed-size argument's
 		// bytes, and for a string or bytes what its length allows. Sized from
 		// the arguments before anything is framed, which is where a value that
-		// cannot be sent, a null String, is refused.
+		// cannot be sent (a null String) is refused.
 		var fixed:Int = FRAME_HEAD;
 		var sized:Null<Expr> = null;
 		final writes:Array<Expr> = [];
@@ -433,7 +433,7 @@ class RPCCommandMacro {
 				expr: macro {
 					// Read whole and within the frame before the caller is
 					// answered with it: an answer that does not read fails its
-					// call, where it ended the connection.
+					// call, and the connection carries on.
 					if (failed) {
 						$readMessage;
 					} else {

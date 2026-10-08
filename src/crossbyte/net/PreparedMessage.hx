@@ -11,10 +11,10 @@ import crossbyte.io.ByteArray;
 /**
 	A WebSocket message made ready once to send to many sessions: a chat
 	room's line, a match's state, a dashboard's update. Its frames are built
-	when it is made, the header and the payload, as a server sends them,
-	unmasked, so each session it goes to only copies them into what its
-	pass sends, where a `sendText` or `sendBinary` per session encoded,
-	framed and copied the message again for every one.
+	when it is made (the header and the payload, as a server sends them,
+	unmasked), so each session it goes to only copies them into what its
+	pass sends, rather than encoding, framing and copying the message again
+	for every one as a `sendText` or `sendBinary` per session would.
 
 	```haxe
 	// Given server:ServerWebSocket, room:Array<WebSocket>.
@@ -29,7 +29,7 @@ import crossbyte.io.ByteArray;
 	}
 	```
 
-	Who receives a message, rooms, topics, areas of interest, is the
+	Who receives a message (rooms, topics, areas of interest) is the
 	application's: a prepared message is only the message.
 
 	**Its bytes are its own.** Making one copies what it is given, so the
@@ -53,8 +53,8 @@ import crossbyte.io.ByteArray;
 	  output once, and encrypted there.
 	- **Clients.** A client masks every frame it sends with a key of its
 	  own (RFC 6455 5.3), so a client's `sendPrepared` frames and masks the
-	  payload as `sendBinary` would: it shares the encoding, a text's
-	  UTF-8, a compressed form, and not the frames. Preparing is for a
+	  payload as `sendBinary` would: it shares the encoding (a text's
+	  UTF-8, a compressed form) and not the frames. Preparing is for a
 	  server's sessions.
 **/
 final class PreparedMessage {

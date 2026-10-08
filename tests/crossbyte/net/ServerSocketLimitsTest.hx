@@ -12,10 +12,10 @@ import utest.Async;
 	What a raw `ServerSocket`, and a `NetHost` built on one, holds at most:
 	`maxConnections` connections open, and of a TLS server's handshakes,
 	`maxPendingHandshakesPerAddress` from one address once half the places
-	are taken. Before, only `HTTPServer` and `ServerWebSocket` held any
-	count, and a game server built on a raw listener accepted without bound;
-	one address opening TLS connections and saying nothing held every place
-	for handshakes, and every real client waited behind it.
+	are taken. Without these a game server built on a raw listener would
+	accept without bound, and one address opening TLS connections and
+	saying nothing could hold every place for handshakes, with every real
+	client waiting behind it.
 **/
 @:access(crossbyte.net.ServerSocket)
 class ServerSocketLimitsTest extends utest.Test {
@@ -130,8 +130,8 @@ class ServerSocketLimitsTest extends utest.Test {
 
 	/**
 		A host's `maxConnections` is its server's: it serves no more, and
-		says how many it refused. It was the backlog a host asked for, and
-		limited nothing it served.
+		says how many it refused, rather than taking it as the backlog it asks
+		for, which limits nothing it serves.
 	**/
 	@:timeout(20000)
 	public function testANetHostServesNoMoreThanItsMaxConnections(async:Async):Void {

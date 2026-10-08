@@ -36,12 +36,10 @@ class PHPBridge {
 	/**
 		Seconds a single FastCGI exchange may take before it is abandoned.
 
-		`0` disables the deadline, which is what this class did unconditionally
-		before: no socket timeout, and a read loop that would wait for a peer
-		that had stopped talking. A CrossByte runtime serves every one of its
-		connections from one tick, so that was not one slow request, it was
-		the server, stopped, until the backend came back or the process was
-		killed.
+		`0` disables the deadline. A CrossByte runtime serves every one of its
+		connections from one tick, so without one a backend that stopped
+		talking would stop the server, not one request, until the backend
+		came back or the process was killed.
 	**/
 	public final timeoutSeconds:Float;
 
@@ -61,8 +59,8 @@ class PHPBridge {
 	public final autoIndex:Array<String>;
 
 	/**
-		The most bytes one response may take, the script's CGI header block
-		and body together, before its exchange fails; `0` or less for no
+		The most bytes one response may take (the script's CGI header block
+		and body together) before its exchange fails; `0` or less for no
 		limit. `PHPExchange.DEFAULT_MAX_RESPONSE_SIZE`, 8 MB, unless the
 		server's `phpMaxResponseSize` says otherwise.
 	**/
@@ -72,9 +70,9 @@ class PHPBridge {
 		Exchanges with the backend at once, at most, each holding a connection
 		to it; `0` or less for no limit. More wait their turn, first come first
 		served, within their own deadlines, and past `MAX_WAITING` of those a
-		new one is refused with a `PHPBusy`. Nothing bounded them: every
-		request for a script opened a connection to the backend, however many
-		were already waiting on it, and a `php-cgi -b` answers one at a time.
+		new one is refused with a `PHPBusy`. A `php-cgi -b` answers one at a
+		time, so this keeps requests for scripts from each opening a
+		connection however many are already waiting on it.
 	**/
 	public final maxExchanges:Int;
 
@@ -90,10 +88,10 @@ class PHPBridge {
 	/**
 		Bytes read from one exchange's connection in one pass, at most, before
 		the rest is left for the next, as a `Socket` leaves it, and for the
-		same reason: a backend sending fast held the runtime, and every other
-		connection on it, for as long as it kept sending. The loop is told to
-		poll again before it waits, so the rest is read at once, not a frame
-		later.
+		same reason: a backend sending fast would hold the runtime, and every
+		other connection on it, for as long as it kept sending. The loop is
+		told to poll again before it waits, so the rest is read at once, not
+		a frame later.
 	**/
 	public static inline var READ_BUDGET:Int = 1024 * 1024;
 
@@ -204,11 +202,9 @@ class PHPBridge {
 	/**
 	 * Starts a FastCGI exchange and hands back its eventual response.
 	 *
-	 * This returned a `PHPResponse` before, and that signature was the whole
-	 * problem. A blocking round trip inside a tick stops the runtime for every
-	 * connection it serves, not just this one, and it cannot exist at all on a
-	 * target with no synchronous socket read, which is why PHP was the last
-	 * thing unavailable on Node.
+	 * A blocking round trip inside a tick would stop the runtime for every
+	 * connection it serves, not just this one, and could not exist at all on
+	 * a target with no synchronous socket read, such as Node.
 	 *
 	 * `Future` rather than a callback pair, because the framework already has
 	 * one way of saying "later" and a second would be a second.
@@ -333,11 +329,10 @@ class PHPBridge {
 	 * The FastCGI records for one request: BEGIN_REQUEST, the parameters, and
 	 * the body as STDIN.
 	 *
-	 * A record's length field is sixteen bits, and both halves used to go in
-	 * one record each: a 100,000-byte POST declared 34,464 bytes, and php-fpm
-	 * then read the rest of the body as record headers. The body is now split
-	 * across as many STDIN records as it needs, which php-fpm reads as one
-	 * stream.
+	 * A record's length field is sixteen bits, so the body is split across as
+	 * many STDIN records as it needs, which php-fpm reads as one stream. In
+	 * one record, a 100,000-byte POST would declare 34,464 bytes, and php-fpm
+	 * would read the rest of the body as record headers.
 	 *
 	 * Parameters are split too, but only between pairs. php-fpm parses each
 	 * PARAMS record on its own, so a pair split across two would be malformed
@@ -394,8 +389,8 @@ class PHPBridge {
 	 * The two targets differ only in how they learn that bytes have come
 	 * back: Node by an event, a native build from the runtime's poll set,
 	 * which its socket joins the way `crossbyte.net.Socket`'s do. Everything
-	 * else, the parser, the deadline, the table, is shared, and that is
-	 * the point of the split.
+	 * else (the parser, the deadline, the table) is shared, and that is the
+	 * point of the split.
 	 *
 	 * Sets `tracked.release`, which lets the transport go, before anything
 	 * can settle the exchange.
@@ -470,8 +465,8 @@ class PHPBridge {
 		#if target.threaded
 		__connectOffThread(outbound);
 		#else
-		// No thread to connect on, so it is made here, as it always was,
-		// within what is left of the exchange's deadline.
+		// No thread to connect on, so it is made here, within what is left of
+		// the exchange's deadline.
 		var socket:Null<Socket> = null;
 		var failure:Dynamic = null;
 
@@ -525,14 +520,12 @@ class PHPBridge {
 	 * Hands the exchange's connect to the bridge's connector thread, starting
 	 * it with the first one.
 	 *
-	 * The connect was made here, on the runtime's thread, for every request:
-	 * a lookup of the backend's name and then a blocking connect, and every
-	 * socket and timer on the runtime waited for both. For a backend given
-	 * by name, a container's name, `localhost`, the lookup was repeated
-	 * each time; for one that is slow to answer, or does not exist, the wait
-	 * was as long as the resolver or the connect cared to take. Now this call
-	 * costs a queue append, and the socket comes back through the runtime's
-	 * post queue, which wakes the runtime for it.
+	 * The connect is made off the runtime's thread. Made on it, a lookup of
+	 * the backend's name and then a blocking connect would make every socket
+	 * and timer on the runtime wait for both, for as long as the resolver or
+	 * the connect cared to take, on every request. This call costs a queue
+	 * append, and the socket comes back through the runtime's post queue,
+	 * which wakes the runtime for it.
 	 *
 	 * One thread, taking connects in turn: a connect to a backend that is up
 	 * takes a fraction of a millisecond, and one to a backend that is not
@@ -563,8 +556,8 @@ class PHPBridge {
 	 * runtime's post queue.
 	 *
 	 * The address a name resolves to is kept, and looked up again only after
-	 * a connect to it fails: a backend that moved, a container restarted
-	 * under a new address, is found at its new one on the next request,
+	 * a connect to it fails: a backend that moved (a container restarted
+	 * under a new address) is found at its new one on the next request,
 	 * and one that stays put is looked up once. Kept here, on this thread,
 	 * so it needs no lock.
 	 */
@@ -590,9 +583,9 @@ class PHPBridge {
 
 			try {
 				// Within what is left of the exchange's deadline, the lookup
-				// and the connect both: neither had a bound, and a backend
-				// whose host dropped the connect held this thread, and every
-				// exchange queued behind it, for as long as the system tried.
+				// and the connect both, so a backend whose host drops the
+				// connect cannot hold this thread, and every exchange queued
+				// behind it, for as long as the system tries.
 				var timeout:Float = outbound.exchange.remaining();
 				if (resolved == null || resolvedName != outbound.host) {
 					__lookups++;
@@ -686,9 +679,9 @@ class PHPBridge {
 			socket.setBlocking(false);
 			// Most requests fit the socket's send buffer and leave in this
 			// call. A larger body goes out over the passes that follow, as the
-			// backend reads it. It used to be written in one burst, and a
-			// non-blocking socket with a full send buffer refuses the rest:
-			// the upload failed as though the backend were down.
+			// backend reads it: a non-blocking socket with a full send buffer
+			// refuses the rest of a write, which would fail the upload as
+			// though the backend were down.
 			__send(outbound);
 		} catch (e:Dynamic) {
 			exchange.fail("Could not reach the PHP backend at " + outbound.host + ":" + outbound.port + ": " + Std.string(e));
@@ -703,8 +696,8 @@ class PHPBridge {
 	 * Puts the exchange's socket in the runtime's poll set, so the reply is
 	 * read the moment it arrives.
 	 *
-	 * It was read from the tick instead, which the runtime dispatches twelve
-	 * times a second by default: every PHP response waited for the next one,
+	 * Read from the tick instead, which the runtime dispatches twelve times
+	 * a second by default, every PHP response would wait for the next one,
 	 * up to 84ms and 42ms on average, whatever the backend took. A server's
 	 * loop spends the time between ticks waiting in poll, and a socket in its
 	 * set ends that wait when data arrives.
@@ -785,7 +778,7 @@ class PHPBridge {
 
 		try {
 			// Read first, so a backend that answered before taking the whole
-			// body, a missing script, say, is still heard.
+			// body (a missing script, say) is still heard.
 			__drain(entry);
 		} catch (e:Dynamic) {
 			__abandon(entry, e);
@@ -802,8 +795,8 @@ class PHPBridge {
 	/**
 	 * Fails an exchange whose handling threw. Settled here rather than left to
 	 * the registry, which reports a throw and keeps the socket: still
-	 * readable, so handled, and thrown, again on every pass until the
-	 * deadline.
+	 * readable, it would be handled, and thrown, again on every pass until
+	 * the deadline.
 	 */
 	private function __abandon(entry:Outbound, error:Dynamic):Void {
 		if (!entry.exchange.settled) {
@@ -897,7 +890,7 @@ class PHPBridge {
 
 	/**
 		Lets an exchange that has settled go: its transport, its place among
-		those with the backend, which the next waiting takes, or its place
+		those with the backend (which the next waiting takes), or its place
 		in the queue.
 	**/
 	private function __finish(exchange:PHPExchange, ?socket:Dynamic):Void {

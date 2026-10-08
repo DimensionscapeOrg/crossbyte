@@ -21,13 +21,9 @@ private enum TaskDispatch<T> {
 /**
 	Promise-like unit of work scheduled and completed through `TaskPool`.
 
-	Its events, `TaskEvent.COMPLETE`, `ERROR`, `CANCEL`, are dispatched on
+	Its events (`TaskEvent.COMPLETE`, `ERROR`, `CANCEL`) are dispatched on
 	the runtime of the thread that made it. A task finished on a pool thread
-	hands them to that runtime's post queue, which wakes the runtime for them;
-	each pending task used to hold a tick listener of its own instead, polled
-	every tick, and adding and removing one copied the runtime's whole list of
-	them, so submitting a burst of tasks took time in proportion to the square
-	of its size and every idle tick paid for every task still waiting.
+	hands them to that runtime's post queue, which wakes the runtime for them.
 
 	A task made on a thread no runtime belongs to has no runtime to hand its
 	events to: they are dispatched on the pool thread that finishes it, or on
@@ -39,9 +35,9 @@ private enum TaskDispatch<T> {
 	can miss the event.
 
 	A listener or handler that throws is reported as a callback the runtime
-	runs is, logged with `Logger.error`, and dispatched as
+	runs is (logged with `Logger.error`, and dispatched as
 	`UncaughtErrorEvent.UNCAUGHT_ERROR` (source `POSTED`, origin the task) on
-	the runtime delivering it; only logged on a pool thread, and the other
+	the runtime delivering it; only logged on a pool thread), and the other
 	listeners and handlers still hear the outcome. `cancel()` does not throw
 	what a `CANCEL` listener threw.
 
@@ -60,9 +56,9 @@ class Task<T> extends EventDispatcher {
 	public var isFailed(get, never):Bool;
 
 	// Null from the start: a neko object gains a field when it is first set,
-	// which can move its field table, and the pool thread set this one
-	// first as the submitting thread added its listener, which was lost,
-	// and its caller waited for good.
+	// which can move its field table, and the pool thread setting this one
+	// first as the submitting thread added its listener would lose the
+	// listener, and its caller would wait for good.
 	@:noCompletion private var __cancelHook:Void->Void = null;
 	// The pool that keeps this task alive until it is done, told when it is.
 	@:noCompletion private var __pool:Null<TaskPool>;
@@ -72,10 +68,10 @@ class Task<T> extends EventDispatcher {
 	// What onComplete, onError and onCancel were given before the task was
 	// done, each told the outcome. Taken under the lock by the step that
 	// makes the task done, so a handler is either here then or finds the
-	// task done and is called at once. They were event listeners, added
-	// after the state was read, and a task made off any runtime finished on
-	// the pool thread in between: the handler was never called. Null from
-	// the start, for the reason __cancelHook is.
+	// task done and is called at once; as event listeners added after the
+	// state was read, a task made off any runtime could finish on the pool
+	// thread in between and the handler never be called. Null from the
+	// start, for the reason __cancelHook is.
 	@:noCompletion private var __waiting:Array<TaskDispatch<T>->Void> = null;
 
 	/**
@@ -421,9 +417,9 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private function __dispatchTerminalEvent(event:TaskDispatch<T>, waiting:Array<TaskDispatch<T>->Void>):Void {
 		#if js
 		// In a later turn, as a pool thread's completion arrives elsewhere.
-		// With no thread the job runs inside submit(), and this was delivered
-		// there too: before submit() had returned the task, so no listener
-		// could be on it yet, and none ever heard it.
+		// With no thread the job runs inside submit(), and delivered there
+		// it would come before submit() had returned the task, so no
+		// listener could be on it yet.
 		CrossByte.__nextTurn(() -> __deliver(event, waiting));
 		#else
 		#if target.threaded
@@ -443,11 +439,10 @@ class Task<T> extends EventDispatcher {
 
 	/**
 		What a listener or a handler throws is reported, and the rest still
-		run and the task is still let go of by its pool. A throw used to end
-		the delivery where it was: the runtime reported it, but nothing after
-		it ran and the pool held the task for good; and on a pool thread,
-		with no runtime, the pool took it for the job's failure, which a
-		finished task ignores, so it went without a word.
+		run and the task is still let go of by its pool. Ending the delivery
+		at a throw would leave what comes after it unrun and the task held by
+		the pool for good; and on a pool thread, with no runtime, the pool
+		would take it for the job's failure, which a finished task ignores.
 	**/
 	@:noCompletion private function __deliver(event:TaskDispatch<T>, waiting:Array<TaskDispatch<T>->Void>):Void {
 		// Each listener's failure to __listenerThrew, below.
@@ -472,8 +467,8 @@ class Task<T> extends EventDispatcher {
 	}
 
 	/**
-		As a posted callback's failure is reported, logged, and dispatched
-		as `UncaughtErrorEvent.UNCAUGHT_ERROR`, on the runtime of the thread
+		As a posted callback's failure is reported (logged, and dispatched
+		as `UncaughtErrorEvent.UNCAUGHT_ERROR`) on the runtime of the thread
 		delivering, which is the task's own when it has one; logged alone on a
 		pool thread.
 	**/

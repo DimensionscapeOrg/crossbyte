@@ -8,17 +8,17 @@ import sys.thread.Thread;
  *
  * Invariant: every timer is armed, once, with a scheduler handle of its own.
  *
- * This case caught a real bug: `haxe.Timer` allocated its id from a static
- * counter *outside* the lock guarding the timer map, so two threads could
- * take the same id and the second registration evicted the first, leaving
- * a timer that silently never fired.
+ * `haxe.Timer` must not allocate an id from a static counter outside the
+ * lock guarding its timer map, or two threads could take the same id and
+ * the second registration evict the first, leaving a timer that silently
+ * never fired.
  *
- * `haxe.Timer` has no id of its own now. A timer made on a thread without a
+ * `haxe.Timer` has no id of its own. A timer made on a thread without a
  * runtime is handed to the primordial one through its post queue and armed
- * there, taking a handle from that runtime's scheduler, so the old race has
+ * there, taking a handle from that runtime's scheduler, so that race has
  * no counter to happen on. What can still go wrong is the same failure by
- * another route, a handoff lost between threads, or two timers given one
- * handle, and either shows here as a timer that never got a handle, or a
+ * another route (a handoff lost between threads, or two timers given one
+ * handle), and either shows here as a timer that never got a handle, or a
  * handle held twice.
  */
 @:access(haxe.Timer)

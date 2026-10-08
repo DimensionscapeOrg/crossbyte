@@ -287,8 +287,8 @@ class SodiumExpansionTest extends utest.Test {
 		#else
 		Assert.isFalse(Argon2id.isAvailable());
 		Assert.isTrue(throwsIllegalOperation(() -> Argon2id.hash("pw")));
-		// Throws as hash does. Answering false here refused every password on
-		// a target that could not check one, and looked like a working check.
+		// Throws as hash does. Answering false here would refuse every password
+		// on a target that could not check one, and look like a working check.
 		Assert.isTrue(throwsIllegalOperation(() -> Argon2id.verify("$argon2id$bogus", "pw")));
 		#end
 	}

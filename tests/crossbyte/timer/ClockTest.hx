@@ -7,12 +7,12 @@ import utest.Assert;
 	by. These cases hold it to being a clock of elapsed time and not of the time
 	of day, and hold the framework to reading no other.
 
-	The HTTP/2 idle sweep closed every connection a quarter second in, on cpp
-	and Node, because it subtracted a stamp from `Sys.time()`: two clocks, one
-	counting from boot or the first call and one from 1970, so every connection
-	looked idle for fifty-six years. No behavioural test saw it until one held a
-	connection open past the first sweep. The last case here is the cheaper
-	guard, it reads the source.
+	Two clocks, one counting from boot or the first call and one from 1970,
+	must never be mixed: an HTTP/2 idle sweep that subtracts a stamp from
+	`Sys.time()` sees every connection idle for fifty-six years, and closes
+	it a quarter second in, which only a test holding a connection past the
+	first sweep would see. The last case here is the cheaper guard: it reads
+	the source.
 
 	Apart from `TimerStampTest` because these need `sys`: a sleep, the time of
 	day, and the file system.
@@ -79,15 +79,14 @@ class ClockTest extends utest.Test {
 	}
 
 	/**
-		The tests, the suite, and the stress, soak, benchmark and interop
-		programs beside it, wait and measure by the same clock.
+		The tests (the suite, and the stress, soak, benchmark and interop
+		programs beside it) wait and measure by the same clock.
 
-		About a hundred of their waits and timings read `Sys.time()`: a
-		deadline in seconds of the time of day, which the system may set
-		forward or back while a test waits, ending the wait early, or
-		holding it past any deadline, where utest's own timeout does not
-		reach a thread busy in its loop, and which is coarse on some
-		targets. Only `NetTestClockTest` held the networking tests to it.
+		None of their waits and timings reads `Sys.time()`: a deadline in
+		seconds of the time of day, which the system may set forward or back
+		while a test waits (ending the wait early, or holding it past any
+		deadline, where utest's own timeout does not reach a thread busy in its
+		loop), and which is coarse on some targets.
 	**/
 	public function testNoTestWaitsByTheTimeOfDay():Void {
 		var root = __sourceRoot();

@@ -52,8 +52,8 @@ extern class NativeFileSync {
 	public static function created(path:String):Float;
 
 	/**
-		The file system's own path for `path`, links followed, names in
-		their case on disk, or `""` if there is no such file.
+		The file system's own path for `path` (links followed, names in
+		their case on disk), or `""` if there is no such file.
 	**/
 	@:native("crossbyte_file_real_path")
 	public static function realPath(path:String):String;

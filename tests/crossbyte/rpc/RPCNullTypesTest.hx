@@ -10,8 +10,8 @@ import utest.Assert;
 typedef MaybePoint = Null<StructPoint>;
 
 /**
-	`Null<T>` of every kind the compiled lane carries, compact numbers,
-	arrays, structures, enums, as arguments, as answers, inside arrays and
+	`Null<T>` of every kind the compiled lane carries (compact numbers,
+	arrays, structures, enums) as arguments, as answers, inside arrays and
 	structures, and named through a typedef: a byte saying whether the value
 	is there, then the value if it is.
 **/

@@ -1,13 +1,13 @@
 name: CrossByte hl and neko
 run-name: CrossByte hl and neko | ${{ github.event_name }} | ${{ github.ref_name }}
 
-# hl and neko are listed as targets, and neither was built here: from
-# 2026-04-28 neither compiled at all: CrossByte's own sys.net.Socket had no
-# branch for them, and each target's sys.ssl.Socket extends it: and nothing
-# said so for five months. These jobs build the whole suite for both and run
-# it wherever a runtime can be had: neko arrives with Haxe; HashLink comes
-# from its release zip on Windows and is built from the same tag on Linux,
-# since its releases carry no Linux binary.
+# hl and neko are listed as targets, so these jobs build the whole suite for
+# both and run it wherever a runtime can be had: neko arrives with Haxe;
+# HashLink comes from its release zip on Windows and is built from the same
+# tag on Linux, since its releases carry no Linux binary. Without them
+# nothing would say if either stopped compiling (CrossByte's own
+# sys.net.Socket needs a branch for each, and each target's sys.ssl.Socket
+# extends it).
 #
 # utest comes through .github/actions/haxelibs, from a cache or GitHub, so
 # these jobs do not depend on lib.haxe.org. ci.yml's header says how a
@@ -28,11 +28,10 @@ concurrency:
 env:
   HAXE_VERSION: "4.3.7"
   # 1.13 is the floor: haxe.atomic does not compile for hl below it, and
-  # ci/hl-tests.hxml passes -D hl-ver=1.13.0 to match. The suite was brought
-  # up on 1.14, whose collector now and then marked a block that was never
-  # allocated and died in gc_flush_mark on Linux: two runs on main in seven.
-  # 1.15 has HashLink's fix for that (#756); thirty runs of the suite on it,
-  # and thirty on 1.14 with #756 alone, never crashed. Move the two together.
+  # ci/hl-tests.hxml passes -D hl-ver=1.13.0 to match. 1.15 is used for
+  # HashLink's fix #756: 1.14's collector now and then marks a block that
+  # was never allocated and dies in gc_flush_mark on Linux. Move the two
+  # together.
   HASHLINK_TAG: "1.15"
   HASHLINK_VERSION: "1.15.0"
 
@@ -61,7 +60,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Neko comes with Haxe, haxelib runs on it, so there is nothing
+      # Neko comes with Haxe (haxelib runs on it), so there is nothing
       # else to install for this target.
       - name: Setup Haxe
         uses: krdlab/setup-haxe@v1
@@ -123,7 +122,7 @@ jobs:
       # dialog box, which on a runner nobody can dismiss, so the job would
       # sit there until it timed out. So the libraries the suite loads are
       # checked for here, and a missing one fails the step by name. The trap
-      # puts what failed, a throw below, or a cmdlet's error, on the run
+      # puts what failed (a throw below, or a cmdlet's error) on the run
       # page as well as in the log.
       - name: Install HashLink ${{ env.HASHLINK_VERSION }}
         run: |
@@ -172,8 +171,8 @@ jobs:
       - name: Build hl suite
         run: haxe ci/hl-tests.hxml
 
-      # Only the libraries the suite loads, ssl, fmt, sqlite and mysql, all
-      # four resolved at load, and what they link against: mbedTLS for ssl,
+      # Only the libraries the suite loads (ssl, fmt, sqlite and mysql, all
+      # four resolved at load) and what they link against: mbedTLS for ssl,
       # zlib and the image and audio codecs fmt also carries, SQLite. uv is
       # built too, and SDL, OpenAL and ui are left out.
       - name: Build HashLink ${{ env.HASHLINK_TAG }}

@@ -12,12 +12,12 @@ import utest.Async;
 	that runtime.
 
 	There is one thread, and a socket's callbacks run as the application's
-	runtime, not the child's. A WebSocket session and a reliable one took
-	their timers from whichever runtime was current: one armed in a
-	callback, a heartbeat as the upgrade completed, a keepalive as the
-	session connected, went on the application's scheduler, and was
-	cleared on the child's, by handle, where the same number named some
-	other timer or none.
+	runtime, not the child's. A WebSocket session and a reliable one take
+	their timers from the runtime that accepted them, not whichever runtime
+	is current: one armed in a callback (a heartbeat as the upgrade
+	completes, a keepalive as the session connects) would otherwise go on
+	the application's scheduler, and be cleared on the child's, by handle,
+	where the same number names some other timer or none.
 
 	Node only: elsewhere a child has a thread of its own, and its callbacks
 	run there.

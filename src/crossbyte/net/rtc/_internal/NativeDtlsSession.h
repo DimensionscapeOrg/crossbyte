@@ -5,9 +5,9 @@
 // mbedTLS normally drives a file descriptor itself. That is the wrong shape
 // here twice over: the socket a WebRTC peer would use is already carrying ICE
 // checks and will later carry SCTP, and CrossByte drives its own I/O from a
-// tick rather than blocking in a library. So this installs memory callbacks,
-// datagrams that arrive are fed in, datagrams mbedTLS wants to send are queued
-// and taken out, and the caller decides when anything moves.
+// tick rather than blocking in a library. So this installs memory callbacks
+// (datagrams that arrive are fed in, datagrams mbedTLS wants to send are queued
+// and taken out), and the caller decides when anything moves.
 //
 // That is the same arrangement `IceAgent` and `TurnClient` use, for the same
 // reason, and it means the transport can be exercised by handing two sessions
@@ -25,7 +25,7 @@
 // and the first thing on the include path is hxcpp's own __pch directory,
 // which holds hxcpp.h.gch rather than hxcpp.h, so the build stops at
 // "fatal error: .../__pch/haxe/hxcpp.h: No such file or directory". MSVC
-// resolves it differently, which is why this only ever broke on Linux.
+// resolves it differently, so only GCC builds need the guard.
 #ifndef HXCPP_H
 #include <hxcpp.h>
 #endif
@@ -40,8 +40,8 @@
 //
 // A server here does not run the cookie exchange DTLS normally uses to prove a
 // client is reachable at the address it claims. ICE has already done exactly
-// that, a peer that answered a connectivity check demonstrated the round trip
-// the cookie exists to demonstrate, and running it twice would cost another.
+// that (a peer that answered a connectivity check demonstrated the round trip
+// the cookie exists to demonstrate), and running it twice would cost another.
 //
 // Certificates are not verified against any chain either, because WebRTC has no
 // authority to verify against: the peer is identified by the fingerprint it

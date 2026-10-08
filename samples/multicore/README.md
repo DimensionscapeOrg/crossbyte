@@ -13,9 +13,18 @@ threads at once.
 
 The middleware shows the rule a spread server's code follows: what it only
 reads once built can be shared, and what several runtimes change needs a
-lock. See "Using more than one core" in the repository README.
+lock. See "Using more than one core" in [docs/runtime.md](../../docs/runtime.md).
 
-Raw HXML entrypoints, from `samples/multicore`:
+Useful commands from `samples/multicore`:
+
+```sh
+aedifex task sample-multicore-check <project-root>
+aedifex task sample-multicore-cpp <project-root>
+```
+
+From `samples/multicore`, `<project-root>` is `../..`.
+
+Raw HXML entrypoints:
 
 ```sh
 haxe check.hxml

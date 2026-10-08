@@ -11,7 +11,7 @@ import crossbyte.test.Require;
 /**
 	The STUN wire format.
 
-	Needs no socket, these are bytes in and bytes out, so it runs wherever
+	Needs no socket (these are bytes in and bytes out), so it runs wherever
 	CrossByte does, including the browser, even though the client that uses it
 	needs UDP and does not.
 
@@ -169,10 +169,11 @@ class StunMessageTest extends utest.Test {
 		An address is written only when it is an IPv4 one, and then exactly as
 		written.
 
-		The octets were read with `Std.parseInt` and written modulo 256, so
-		1.2.3.999 went out as 1.2.3.231; an IPv6 address as whatever its first
-		group read as, which on the jvm is an exception rather than a number;
-		and 010 as ten, where `inet_addr` reads it as octal eight.
+		The octets must be checked, not read with `Std.parseInt` and written
+		modulo 256: 1.2.3.999 would go out as 1.2.3.231; an IPv6 address as
+		whatever its first group read as, which on the jvm is an exception
+		rather than a number; and 010 as ten, where `inet_addr` reads it as
+		octal eight.
 	**/
 	public function testOnlyAnIPv4AddressIsWrittenAsOne():Void {
 		for (address in ["1.2.3.999", "256.0.0.1", "1.2.3.4294967296", "010.1.1.1", "1.2.3.00", "1.2.3", "1.2.3.4.5", "1.2.3.-4",
@@ -207,8 +208,8 @@ class StunMessageTest extends utest.Test {
 		// Computed from RFC 5389 rather than from the encoder: X-Port is the
 		// port XOR the top half of the cookie, and each address octet is XORed
 		// with the cookie byte at its own position. If the encoder ever stopped
-		// XORing, the round-trip case above would still pass, decode would
-		// simply undo nothing twice, and only this one would notice.
+		// XORing, the round-trip case above would still pass (decode would
+		// simply undo nothing twice), and only this one would notice.
 		var attribute = StunMessage.xorMappedAddress("192.168.1.100", 54321);
 
 		attribute.value.endian = Endian.BIG_ENDIAN;
@@ -370,7 +371,7 @@ class StunMessageTest extends utest.Test {
 		The key a long-term credential produces, against the published sample.
 
 		MD5 of "username:realm:password", and every part of that is a decision
-		something else has to have made the same way, the order, the colons, and
+		something else has to have made the same way: the order, the colons, and
 		that it is the raw digest rather than its hex.
 	**/
 	public function testTheLongTermKeyMatchesThePublishedSample():Void {
@@ -406,7 +407,7 @@ class StunMessageTest extends utest.Test {
 
 		The stronger direction. Verifying proves this can read what somebody else
 		wrote; reproducing proves a relay reading what this writes sees what it
-		expects, the attribute encoding, the padding, and the length field
+		expects: the attribute encoding, the padding, and the length field
 		counting the integrity attribute that has not been appended yet.
 	**/
 	public function testALongTermRequestIsBuiltByteForByte():Void {
@@ -636,11 +637,11 @@ class StunMessageTest extends utest.Test {
 	/**
 		A message of more attributes than anything sends is not read.
 
-		The count was the sender's: one unauthenticated 64 KB datagram of empty
-		attributes is sixteen thousand of them, each an allocation and a copy,
-		527 microseconds a decode on cpp, 4.4 ms on Node, twenty to a hundred
-		times an ordinary datagram of the same size. Up to `MAX_ATTRIBUTES` is
-		read as ever.
+		The count is the sender's to choose: one unauthenticated 64 KB datagram
+		of empty attributes is sixteen thousand of them, each an allocation and
+		a copy (527 microseconds a decode on cpp, 4.4 ms on Node, twenty to a
+		hundred times an ordinary datagram of the same size). Up to
+		`MAX_ATTRIBUTES` is read as usual.
 	**/
 	public function testAMessageOfTooManyAttributesIsNotRead():Void {
 		Assert.isNull(StunMessage.decode(emptyAttributes(16000)), "sixteen thousand empty attributes were read");
@@ -666,11 +667,12 @@ class StunMessageTest extends utest.Test {
 	/**
 		An IPv6 mapped address is read, pinned to RFC 5769's sample.
 
-		It was read as no address at all: the family byte was 2 and only 1 was
-		understood, so a STUN server answering over IPv6 reported "no mapped
-		address" and a TURN relay granting an IPv6 allocation had "allocated
-		nothing". An IPv6 address is XORed with the transaction id as well as
-		the cookie, which is the part a decoder that only knows IPv4 gets wrong.
+		The family byte is 2 for IPv6, and a decoder that understands only 1
+		reads no address at all: a STUN server answering over IPv6 would report
+		"no mapped address", and a TURN relay granting an IPv6 allocation
+		"allocated nothing". An IPv6 address is XORed with the transaction id
+		as well as the cookie, which is the part a decoder that only knows IPv4
+		gets wrong.
 	**/
 	public function testTheRfcSampleIPv6ResponseVerifies():Void {
 		var message = StunMessage.decode(fromHex(RFC5769_IPV6_RESPONSE));
@@ -721,7 +723,7 @@ class StunMessageTest extends utest.Test {
 		RFC 8489's SHA-256 long-term credentials, pinned to arithmetic done
 		outside Haxe: the key, the USERHASH, and a whole signed request, each
 		computed with Node's crypto over the same attributes. Nothing here would
-		otherwise check the SHA-256 path against anything but itself, the
+		otherwise check the SHA-256 path against anything but itself: the
 		suite's relay verifies with the code that signs.
 	**/
 	public function testSha256CredentialsMatchArithmeticDoneElsewhere():Void {

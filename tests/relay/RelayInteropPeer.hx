@@ -11,8 +11,8 @@ import crossbyte.net.rtc.PeerDescription;
 	repository, which is worth having and cannot answer one question: that
 	server verifies a request with the very code that produced it, so the two
 	agree perfectly about anything they are both wrong about. Long-term
-	credentials are the obvious place for that, the key is MD5 of username,
-	realm and password rather than the password itself, but it applies just as
+	credentials are the obvious place for that (the key is MD5 of username,
+	realm and password rather than the password itself), but it applies just as
 	well to permissions, to Send indications and to how relayed data is wrapped.
 
 	Driven by `ci/relay/run.js`, which starts the server and checks what it

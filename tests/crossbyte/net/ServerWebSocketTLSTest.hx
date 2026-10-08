@@ -24,9 +24,8 @@ class ServerWebSocketTLSTest extends utest.Test {
 		secure server will not listen without one.
 
 		Natively the TLS configuration is built in `bind()`, so a `cert`
-		assigned afterwards was taken without a word and never presented, and
-		`listen()` did not ask whether there was one: the server listened, and
-		every handshake failed silently.
+		assigned afterwards would be taken without a word and never presented,
+		and a server listening with none would fail every handshake silently.
 	**/
 	public function testTheCertificateIsWantedBeforeBind():Void {
 		var fixture = TLSTestFixture.trusted();
@@ -68,11 +67,10 @@ class ServerWebSocketTLSTest extends utest.Test {
 		`certAuthority` asks every client for a certificate that authority
 		issued, and lets in only those that present one.
 
-		Natively it installed the authority and left verification off, the
-		constructor turned it off, so that ordinary clients would not be asked,
-		so a server told to require client certificates let in a client
-		that presented none. Node asked and refused, so the one setting meant
-		two different things depending on where the server ran.
+		Natively that means turning verification on, which the constructor
+		leaves off so that ordinary clients are not asked: installing the
+		authority alone would let in a client that presented none, and the one
+		setting would mean one thing natively and another on Node.
 	**/
 	@:timeout(30000)
 	public function testCertAuthorityLetsInOnlyClientsWithACertificateItIssued(async:Async):Void {
@@ -106,10 +104,10 @@ class ServerWebSocketTLSTest extends utest.Test {
 		`setCertificate()`, inherited from `ServerSocket`, installs the
 		certificate a `ServerWebSocket` presents, and `cert` reads it back.
 
-		It reached into the listener `ServerSocket` builds, which a
-		`ServerWebSocket` never does, a null dereference natively, which on
-		hxcpp ends the process, and on Node it was stored where this
-		server's listener never looked, so listen() refused for want of a
+		It must not reach into the listener `ServerSocket` builds, which a
+		`ServerWebSocket` never does (natively a null dereference, which on
+		hxcpp ends the process), and on Node it must be stored where this
+		server's listener looks, or `listen()` would refuse for want of a
 		certificate it had been given.
 	**/
 	@:timeout(30000)
@@ -142,7 +140,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 		Checked by the client verifying what it is shown: a certificate
 		naming `alt.example` verifies only when asked for by that name, so a
-		server that ignored the name, or never installed the entry, is
+		server that ignored the name (or never installed the entry) is
 		refused.
 	**/
 	@:timeout(30000)
@@ -202,7 +200,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 	/**
 		A session a secure server accepted says it is secure, as a socket a
-		secure `ServerSocket` accepted does. It said false.
+		secure `ServerSocket` accepted does.
 	**/
 	@:timeout(30000)
 	public function testASecureServersSessionsSayTheyAreSecure(async:Async):Void {
@@ -232,9 +230,9 @@ class ServerWebSocketTLSTest extends utest.Test {
 		A peer that connects and never starts TLS is dropped at
 		`handshakeTimeout`, and counted in `handshakeFailures`.
 
-		Node's TLS server was never given `handshakeTimeout`, so it waited its
-		own default of two minutes; and natively the session was closed but
-		the failure never counted.
+		On Node that means giving the TLS server `handshakeTimeout` rather
+		than leaving it its own default of two minutes; natively, counting the
+		failure as well as closing the session.
 	**/
 	@:timeout(20000)
 	public function testASilentPeerIsDroppedAtHandshakeTimeout(async:Async):Void {
@@ -260,9 +258,8 @@ class ServerWebSocketTLSTest extends utest.Test {
 	}
 
 	/**
-		A TLS handshake is given the whole of `handshakeTimeout`, not the
-		three seconds an accepted session used to give itself whatever the
-		server said.
+		A TLS handshake is given the whole of `handshakeTimeout`, not some
+		shorter time of the accepted session's own, whatever the server said.
 	**/
 	@:timeout(20000)
 	public function testATlsHandshakeIsGivenAllOfHandshakeTimeout(async:Async):Void {
@@ -339,8 +336,8 @@ class ServerWebSocketTLSTest extends utest.Test {
 	/**
 		A TLS handshake that finishes after `stopAccepting()` opens no
 		session. Node carries a handshake in flight on past a server's close,
-		and hands the connection over when it is done: it was taken on and
-		upgraded, on a server that had stopped.
+		and hands the connection over when it is done; it must not be taken on
+		and upgraded by a server that has stopped.
 	**/
 	@:timeout(20000)
 	public function testATlsHandshakeFinishingAfterStopAcceptingOpensNothing(async:Async):Void {
@@ -377,7 +374,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 	/**
 		`requireClientCertificate()`, inherited from `ServerSocket`, is
-		`certAuthority` by another name: it reached into the listener
+		`certAuthority` by another name, and must not reach into the listener
 		`ServerSocket` builds, which a `ServerWebSocket` never does.
 	**/
 	@:timeout(30000)
@@ -413,8 +410,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 	}
 
 	/**
-		What a probe met, for a failure to say. These cases failed now and
-		then on Linux with only the status line printed, `null`, which
+		What a probe met, for a failure to say. The status line alone (`null`)
 		does not tell a refused handshake from a reset, a timeout or a server
 		that never answered.
 	**/

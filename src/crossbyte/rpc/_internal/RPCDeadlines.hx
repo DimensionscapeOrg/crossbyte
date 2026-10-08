@@ -6,9 +6,9 @@ import haxe.ds.Vector;
 
 /**
 	The deadlines of a session's calls made under its `callTimeout`, in the
-	order the calls were made, which, with one timeout for all of them, is
-	the order they fall due, and one timer for them all, set for the
-	first. Each call armed a timer of its own: a closure and a timer node a
+	order the calls were made (which, with one timeout for all of them, is
+	the order they fall due), and one timer for them all, set for the
+	first, rather than a timer for each call: a closure and a timer node a
 	call, a heap kept in order, and a slot of the 524,288 timers one runtime
 	can hold at once.
 
@@ -16,15 +16,15 @@ import haxe.ds.Vector;
 	`TimerHandle.INVALID` (see `deadlineOf`), so it gains no field for it.
 	One answered, failed or given a deadline of its own leaves its place
 	empty at once, letting go of the call; and the empty places at the front
-	go with it, so calls answered in the order they were made, as a peer
-	answers them, keep the queue as long as the calls in flight. Empty
+	go with it, so calls answered in the order they were made (as a peer
+	answers them) keep the queue as long as the calls in flight. Empty
 	places behind a call still waiting are closed up when the queue would
 	otherwise grow.
 
 	The timer, when it fires, fails the calls that are due, at the time a
 	timer of their own would have fired, and is set for the next one. A
-	call whose deadline would fall before the last one queued,
-	`callTimeout` lowered between calls, is not queued, and arms its own.
+	call whose deadline would fall before the last one queued
+	(`callTimeout` lowered between calls) is not queued, and arms its own.
 **/
 @:noCompletion
 @:access(crossbyte.rpc.RPCResponse)
@@ -137,8 +137,8 @@ final class RPCDeadlines {
 
 	/**
 		The empty places at the front go, and so does any call there that no
-		longer names its place, left by a way that could not find this
-		queue, so the first is a call still waiting, or there is none.
+		longer names its place (left by a way that could not find this
+		queue), so the first is a call still waiting, or there is none.
 	**/
 	function __dropEmpty():Void {
 		while (__count > 0) {

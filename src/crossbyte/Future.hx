@@ -11,18 +11,11 @@ import sys.thread.Mutex;
 #end
 
 /**
- * The eventual result of something that has not finished yet.
- *
- * This was `crossbyte.rpc.RPCResponse`, and nothing about it was ever
- * RPC-specific: a value that arrives later, callbacks for the two ways that can
- * go, and events for anyone who would rather observe than be called. Promoting
- * it is not tidying. It is the difference between a framework with one way of
- * saying "later" and a framework with four, events on `URLLoader`, threads on
- * `Task`, `then` on RPC, and whatever the next asynchronous API invented for
- * itself.
- *
- * `RPCResponse` remains, extending this and adding the two fields that really
- * are about RPC, so nothing on that side moves.
+ * The eventual result of something that has not finished yet: a value that
+ * arrives later, callbacks for the two ways that can go, and events for anyone
+ * who would rather observe than be called. It is CrossByte's one way of saying
+ * "later". `crossbyte.rpc.RPCResponse` extends it with the two fields that are
+ * about RPC.
  *
  * Resolution is deliberately not public. A `Future` handed to a caller is
  * something they read; the code that created it keeps the ability to complete
@@ -33,15 +26,11 @@ import sys.thread.Mutex;
  *
  * ## `then` adds a handler; it does not replace one
  *
- * This is worth stating because the first version of this class did replace,
- * and did it silently. `f.then(a); f.then(b);` ran only `b`, so a future
- * observed by two places, a caller and a logger, a handler and a metric,
- * quietly lost one of them. Worse, `then` returns the future, which invites
- * `f.then(a).then(b)`, and that expression ran only `b` as well: the shape the
- * API advertised was the shape it punished.
- *
- * `then` now means "also do this". For "do this to the value", see `map`, and
- * for "then start this other thing", `flatMap`.
+ * `f.then(a); f.then(b);` runs both, in that order, and so does
+ * `f.then(a).then(b)`, so a future observed by two places (a caller and a
+ * logger, a handler and a metric) reaches both. `then` means "also do this".
+ * For "do this to the value", see `map`, and for "then start this other
+ * thing", `flatMap`.
  */
 @:allow(crossbyte)
 class Future<T> implements IEventDispatcher {
@@ -67,16 +56,14 @@ class Future<T> implements IEventDispatcher {
 	 * What went wrong, as the thing itself rather than as prose.
 	 *
 	 * `error` is a message for a human. This is for the code that has to
-	 * decide something, and code that has to decide something from a message
-	 * ends up matching on its wording, which is how a `504 Gateway Timeout`
-	 * turns into a `502 Bad Gateway` the day somebody rewords an exception.
-	 * That exact match existed here before this field did.
+	 * decide something: code that decides from a message ends up matching on its
+	 * wording, and breaks the day somebody rewords an exception.
 	 *
 	 * Null when the failure had nothing structured to offer.
 	 */
 	public var cause(default, null):Null<Dynamic>;
 
-	// Where this stands, 0 pending, 1 succeeded, 2 failed, stored as the
+	// Where this stands (0 pending, 1 succeeded, 2 failed), stored as the
 	// last thing completing does, with a barrier, and read with one: a reader
 	// that sees it complete sees everything written before it. A field and not
 	// an AtomicInt, which on cpp is an array: two allocations on every future,
@@ -88,8 +75,7 @@ class Future<T> implements IEventDispatcher {
 	#end
 	// The handlers registered, in order: the first of each kind in a field of
 	// its own, since most futures have one, and any after it in a list made
-	// only then. Two lists were made for every future, and so for every RPC
-	// request, whether or not anything was ever registered.
+	// only then, so a future nobody registers on allocates no list.
 	@:noCompletion private var __onResult1:Null<T->Void> = null;
 	@:noCompletion private var __onError1:Null<String->Void> = null;
 	@:noCompletion private var __onResultMore:Null<Array<T->Void>> = null;
@@ -104,25 +90,23 @@ class Future<T> implements IEventDispatcher {
 		Guards the completion state and the handler lists.
 
 		A future exists to be finished by one piece of code and read by another,
-		and there is nothing in that shape which keeps the two on one thread,
-		resolving from a worker and calling `then` from the runtime thread is
-		the obvious way to use this. Without a lock those two race: `then`
-		pushes onto a handler array while resolution walks it, and a push that
-		grows the array frees the buffer the walk is still reading. That is not
-		a lost callback, it is heap corruption.
+		and nothing in that shape keeps the two on one thread: resolving from a
+		worker and calling `then` from the runtime thread is the obvious way to
+		use this. Without a lock those two race. `then` pushes onto a handler
+		array while resolution walks it, and a push that grows the array frees
+		the buffer the walk is still reading, which corrupts the heap.
 
 		Handlers never run while it is held. They are the caller's code, they
-		are allowed to call back into this future, registering from inside a
-		handler is expected here, and holding a lock across code we do not
+		are allowed to call back into this future (registering from inside a
+		handler is expected here), and holding a lock across code we do not
 		control invites a deadlock. So state changes under the lock, the handler
 		list is swapped out, and the calls happen after the release.
 
 		On cpp it is a word of this object's own, taken with an atomic
-		compare-and-swap and let go with an atomic store; see `__acquire`. It
-		was a `sys.thread.Mutex`: an object with a finalizer made for every
-		future, and so for every RPC request, and taken twice on each round
-		trip, by `then` and by the answer, at about 250ns a time, since
-		taking one enters and leaves a GC-free zone.
+		compare-and-swap and let go with an atomic store; see `__acquire`. A
+		`sys.thread.Mutex` would be an object with a finalizer made for every
+		future, and so for every RPC request, at about 250ns a time to take,
+		since taking one enters and leaves a GC-free zone.
 	**/
 	#if cpp
 	@:noCompletion private var __lockWord:Int = 0;
@@ -247,10 +231,6 @@ class Future<T> implements IEventDispatcher {
 	 * transformation has nothing to say about why the thing it was going to
 	 * transform never arrived. A `transform` that throws fails the new future
 	 * rather than escaping, for the same reason handlers are isolated.
-	 *
-	 * `Store.getString` was this written by hand, make a future, forward one
-	 * arm through a conversion and the other arm unchanged, and so is every
-	 * function that adapts one asynchronous result into another.
 	 */
 	public function map<U>(transform:T->U):Future<U> {
 		var mapped = new Future<U>();
@@ -272,7 +252,7 @@ class Future<T> implements IEventDispatcher {
 	 * The difference from `map` is what the function returns: `map` produces a
 	 * value, this produces something else that has not finished either. Without
 	 * it, one asynchronous step after another nests one indentation level per
-	 * step, which is how `StoreTest` ended up five deep.
+	 * step.
 	 */
 	public function flatMap<U>(next:T->Future<U>):Future<U> {
 		var chained = new Future<U>();
@@ -301,7 +281,7 @@ class Future<T> implements IEventDispatcher {
 	/**
 	 * One future for several, resolved with their values in the order given.
 	 *
-	 * Fails as soon as any of them fails, carrying that failure, there is no
+	 * Fails as soon as any of them fails, carrying that failure: there is no
 	 * partial success to report, because the caller asked for all of them.
 	 * An empty list resolves immediately, which is the answer to "wait for
 	 * nothing" that does not require the caller to special-case it.
@@ -355,8 +335,8 @@ class Future<T> implements IEventDispatcher {
 		or `succeeded` plainly can see one set before `result` is, while
 		another thread is completing this. The state is published with a
 		barrier after everything else and read with one, which costs an atomic
-		load; taking the lock instead cost an RPC call about 250ns on cpp,
-		where acquiring a Mutex enters and leaves a GC-free zone.
+		load where a lock would cost about 250ns on cpp, since acquiring a Mutex
+		there enters and leaves a GC-free zone.
 	**/
 	@:noCompletion public function __stateNow():Int {
 		#if cpp
@@ -455,10 +435,10 @@ class Future<T> implements IEventDispatcher {
 			}
 		}
 
-		// Contained as a handler is. A listener that threw escaped into
-		// whoever completed this, for an RPC response, the session reading
-		// its connection, which took the throw for a frame it could not read,
-		// closed the connection and failed every other call waiting on it.
+		// Contained as a handler is. A listener that threw would escape into
+		// whoever completed this: for an RPC response, the session reading its
+		// connection, which would take the throw for a frame it could not read,
+		// close the connection and fail every other call waiting on it.
 		if (hasEventListener(RESULT)) {
 			__safely(() -> {
 				dispatchEvent(new Event(RESULT));
@@ -475,12 +455,10 @@ class Future<T> implements IEventDispatcher {
 		Fails without the unheard-failure report.
 
 		A deliberate close is not an unhandled error. Whoever registered a
-		handler still has to be told, that is the whole point of settling on
+		handler still has to be told, since that is the point of settling on
 		close, but whoever did not register one was not waiting for anything,
-		and warning them says only that they closed something. Left as an
-		ordinary failure it made every teardown noisy: twenty-six extra lines in
-		one native suite run, measured, and invisible on jvm because the classes
-		that close futures are skipped there.
+		and warning them says only that they closed something. Every teardown
+		would be noisy otherwise.
 	**/
 	@:allow(crossbyte) @:noCompletion private function __cancel(message:String):Void {
 		__failureObserved = true;
@@ -534,12 +512,11 @@ class Future<T> implements IEventDispatcher {
 	/**
 	 * Runs a handler without letting it take anything else down with it.
 	 *
-	 * Three things went wrong without this, and all three were silent. A
-	 * throwing handler escaped into whoever resolved the future, which for
-	 * the PHP bridge is the runtime tick, where an escape costs every other
-	 * connection rather than the one. It stopped the handlers registered after
-	 * it from running at all. And it skipped the event dispatch below, so
-	 * anyone observing by `RESULT` instead of by callback simply never heard.
+	 * Without this, a throwing handler would escape into whoever resolved the
+	 * future (for the PHP bridge, the runtime tick, where an escape costs every
+	 * other connection rather than the one), stop the handlers registered after
+	 * it from running, and skip the event dispatch below, so anyone observing by
+	 * `RESULT` instead of by callback would never hear. All three are silent.
 	 *
 	 * Reported rather than swallowed: the handler is the caller's code and the
 	 * bug is theirs to see.
@@ -578,8 +555,8 @@ class Future<T> implements IEventDispatcher {
 		Takes the lock. On cpp, the word is set from 0 to 1 by an atomic
 		compare-and-swap: one instruction when nobody else holds it, which is
 		every time a future is made, observed and completed on one thread.
-		Another thread holds it for a handful of instructions, swapping a
-		handler list, never running one, so a contended acquire waits for it
+		Another thread holds it for a handful of instructions (swapping a
+		handler list, never running one), so a contended acquire waits for it
 		in `__contend`.
 	**/
 	@:noCompletion private inline function __acquire():Void {
@@ -604,10 +581,10 @@ class Future<T> implements IEventDispatcher {
 	#if cpp
 	/**
 		Waits for another thread to let go of the lock. It may be allocating as
-		it holds it, a handler list growing, and a collection waits for
-		every thread, so this lets the collector stop it between tries rather
-		than spinning where it cannot; and it yields its time slice after a
-		while, in case the holder is not running.
+		it holds it (a handler list growing), and a collection waits for every
+		thread, so this lets the collector stop it between tries rather than
+		spinning where it cannot; and it yields its time slice after a while, in
+		case the holder is not running.
 	**/
 	@:noCompletion private function __contend():Void {
 		var tries:Int = 0;
@@ -630,7 +607,7 @@ class Future<T> implements IEventDispatcher {
 	 * the symptom is a thing that simply never happens.
 	 *
 	 * A tick later, not immediately, because failing before the caller can
-	 * attach is legitimate and happens in this codebase, `PHPBridge.execute`
+	 * attach is legitimate and happens in this codebase: `PHPBridge.execute`
 	 * refuses a traversal and returns an already-failed future, and the caller
 	 * attaches to it on the next line. Complaining at failure time would call
 	 * that unhandled every time.

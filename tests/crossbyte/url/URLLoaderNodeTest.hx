@@ -13,15 +13,15 @@ import utest.Async;
  * `URLLoader` on Node, where it runs over Node's http client rather than
  * CrossByte's own.
  *
- * That client never decoded a content coding: a gzip answer reached the
- * caller as gzip, garbage as text, and the next such body threw a RangeError
- * out of `getString` inside the loader's completion, which ended the process.
- * jvm and eval decoded the same responses. It decodes them now, with Node's
- * zlib and within `URLRequest.maxDecompressedSize`, and a body that cannot be
- * read as text is an `IO_ERROR`.
+ * Node's client decodes no content coding itself, so the loader decodes
+ * them with Node's zlib and within `URLRequest.maxDecompressedSize`, as jvm
+ * and eval do: a gzip answer must not reach the caller as gzip, garbage as
+ * text, or a RangeError out of `getString` inside the loader's completion,
+ * which would end the process. A body that cannot be read as text is an
+ * `IO_ERROR`.
  *
- * And a request's TLS settings, the authority it trusts, `verifyCert`, a
- * client certificate, pinned keys, reach Node's client, against Node's own
+ * And a request's TLS settings (the authority it trusts, `verifyCert`, a
+ * client certificate, pinned keys) reach Node's client, against Node's own
  * https server.
  */
 @:timeout(20000)
@@ -53,7 +53,7 @@ class URLLoaderNodeTest extends utest.Test {
 
 	public function testABodyThatIsNotTextIsAnErrorNotACrash(async:Async):Void {
 		// F8 88 80 80 80 is a five-byte UTF-8 lead nothing decodes to a code
-		// point: getString threw a RangeError here, out of the completion.
+		// point: getString would throw a RangeError here, out of the completion.
 		serve(function(port:Int, close:Void->Void):Void {
 			load('http://127.0.0.1:$port/binary', null, outcome -> {
 				close();
@@ -79,7 +79,7 @@ class URLLoaderNodeTest extends utest.Test {
 	/**
 		A request's TLS settings reach Node's client: the authority it trusts,
 		`verifyCert`, and a connection opened without checking is not handed
-		to a request that checks. There were no settings to reach it.
+		to a request that checks.
 	**/
 	public function testARequestTrustsTheAuthorityItNames(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
@@ -110,10 +110,10 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		A pin is checked whether or not the chain is, and a request that fails
-		it sends nothing. Checked in `checkServerIdentity`, which Node calls
-		only for a chain that verified, a pin with `verifyCert` off, pinning
-		a self-signed server's key rather than trusting it, was ignored, and
-		the request went to whatever server answered.
+		it sends nothing. Checked only in `checkServerIdentity`, which Node
+		calls only for a chain that verified, a pin with `verifyCert` off
+		(pinning a self-signed server's key rather than trusting it) would be
+		ignored, and the request would go to whatever server answered.
 	**/
 	public function testAPinIsCheckedWithOrWithoutTheChain(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
@@ -197,11 +197,11 @@ class URLLoaderNodeTest extends utest.Test {
 	}
 
 	/**
-		A `ByteArray` body goes out as the bytes it holds. Node was handed the
-		buffer under it, which runs on past `length` into the room it keeps to
-		grow, and into whatever it held before it was cleared: "hello" went
-		out as nine bytes, and written after a secret, with the rest of the
-		secret behind it.
+		A `ByteArray` body goes out as the bytes it holds, not as the buffer
+		under it, which runs on past `length` into the room it keeps to grow,
+		and into whatever it held before it was cleared: "hello" would go out
+		as nine bytes, and, written after a secret, with the rest of the secret
+		behind it.
 	**/
 	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
 		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
@@ -225,10 +225,9 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		`close()` ends the load in flight, and the next load is the only one
-		heard from. `close()` only stopped the next load being refused as
-		busy: the request it closed went on, and its answer arrived after the
-		next load's, COMPLETE "FAST" and then COMPLETE "SLOW", on one loader,
-		while the server answered a request nobody wanted.
+		heard from. Were the closed request to go on, its answer would arrive
+		after the next load's (COMPLETE "FAST" and then COMPLETE "SLOW", on one
+		loader) while the server answered a request nobody wanted.
 	**/
 	public function testClosingALoadEndsItsRequestAndDropsItsAnswer(async:Async):Void {
 		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
@@ -279,8 +278,7 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		A load's `cancelToken` cancels it: the request ends, and the load fails
-		saying it was cancelled, as it does natively. There was no token on
-		JavaScript; `cancelToken` stayed null.
+		saying it was cancelled, as it does natively.
 	**/
 	public function testCancellingALoadsTokenEndsIt(async:Async):Void {
 		var slow:SlowAnswer = {arrived: false, closed: false, answered: false};
@@ -319,8 +317,8 @@ class URLLoaderNodeTest extends utest.Test {
 	/**
 		A cookie a redirect sets goes back on the hops after it, as
 		`manageCookies` says and as the native client does: a sign-in
-		answering 302 with a session cookie reached the page it sent the
-		client to without it. Not with `manageCookies` off, and never over a
+		answering 302 with a session cookie reaches the page it sends the
+		client to with it. Not with `manageCookies` off, and never over a
 		`Cookie` the caller wrote itself.
 	**/
 	public function testACookieARedirectSetsGoesBackOnTheNextHop(async:Async):Void {
@@ -354,9 +352,9 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		`User-Agent: CrossByte` while `userAgent` is unset, as the member says
-		and the native client sends. Node sends none of its own, so a request
-		went out with no User-Agent at all. One set is sent instead, and one
-		the caller wrote among its headers is the one Node sends.
+		and the native client sends. Node sends none of its own, so without it
+		a request would go out with no User-Agent at all. One set is sent
+		instead, and one the caller wrote among its headers is the one Node sends.
 	**/
 	public function testTheUserAgentIsCrossByteUnlessSet(async:Async):Void {
 		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
@@ -380,7 +378,7 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		A version Node's http client cannot speak is refused, saying so,
-		where it went out as HTTP/1.1 whatever was asked, and natively a
+		rather than sent as HTTP/1.1 whatever was asked; and natively a
 		version that cannot be had fails rather than falls back.
 	**/
 	public function testAVersionNodeCannotSpeakIsRefused(async:Async):Void {
@@ -408,9 +406,8 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		An object's fields go as a form, as they do natively: a POST's as its
-		body, a GET's as its query. Only a `URLVariables` was encoded here;
-		an object went out as `Std.string` made it, "{ user : bob }", and
-		a GET sent it as a body.
+		body, a GET's as its query, not as `Std.string` makes it
+		("{ user : bob }"), and never a GET's as a body.
 	**/
 	public function testAnObjectsFieldsGoAsAForm(async:Async):Void {
 		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
@@ -435,7 +432,7 @@ class URLLoaderNodeTest extends utest.Test {
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	/**
 		A head trickled a byte at a time ends at the request's `headTimeout`;
-		each byte reset Node's idle timeout, and nothing else bounded it.
+		each byte resets Node's idle timeout, which alone would never end it.
 	**/
 	public function testATrickledHeadEndsAtItsDeadline(async:Async):Void {
 		var head:String = "HTTP/1.1 200 OK\r\nX-Slow: " + StringTools.rpad("", "s", 60) + "\r\nContent-Length: 2\r\n\r\nok";
@@ -474,8 +471,8 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		A body past the request's `maxBodySize` is refused, declared or as it
-		grows. Node's client held a body to nothing at all, where the native
-		one held it to 64 MB.
+		A body past the request's `maxBodySize` is refused, declared or as it
+		grows, where Node's client on its own holds a body to nothing at all.
 	**/
 	public function testTheBodyLimitHolds(async:Async):Void {
 		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
@@ -531,9 +528,9 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/**
 		The request's `maxResponseHeaderSize` is Node's limit on a response's
-		header section. Node held it to its own 16 KB, a quarter of what the
-		native client takes, so a 32 KB section loaded natively and failed
-		here.
+		header section, rather than Node's own 16 KB, a quarter of what the
+		native client takes, which would fail here a 32 KB section that loads
+		natively.
 	**/
 	public function testTheHeaderLimitIsTheRequests(async:Async):Void {
 		serveWith((request:Dynamic, body:js.node.Buffer, response:Dynamic) -> {
@@ -601,8 +598,8 @@ class URLLoaderNodeTest extends utest.Test {
 	}
 
 	/**
-		Answers `/slow` after 300 ms, unless the client has gone by then,
-		which `slow` records, and anything else at once with "FAST".
+		Answers `/slow` after 300 ms, unless the client has gone by then
+		(which `slow` records), and anything else at once with "FAST".
 	**/
 	private static function answerSlowly(slow:SlowAnswer):(request:Dynamic, body:js.node.Buffer, response:Dynamic) -> Void {
 		return (request, body, response) -> {
@@ -651,8 +648,8 @@ class URLLoaderNodeTest extends utest.Test {
 	}
 
 	/**
-		Node's https server on `fixture`, answering "hello", or, at
-		`/away?to=PORT`, sending the request on to that port, and, given
+		Node's https server on `fixture`, answering "hello" (or, at
+		`/away?to=PORT`, sending the request on to that port), and, given
 		`clientAuthority`, requiring a client certificate it signed. `served`
 		counts the requests answered.
 	**/

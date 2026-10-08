@@ -7,8 +7,8 @@ import haxe.io.BytesBuffer;
 /**
 	A gzip or zlib stream written a piece at a time, over `DeflateStream`:
 	the header goes out with the first piece, each piece ends on a sync flush,
-	and `finish` adds the last block and the trailer, gzip's CRC-32 and
-	length, zlib's Adler-32, over everything written.
+	and `finish` adds the last block and the trailer (gzip's CRC-32 and
+	length, zlib's Adler-32) over everything written.
 
 	What HTTP needs to compress a body it streams: each chunk arrives with its
 	own compressed bytes, which the client can inflate as they come.

@@ -6,8 +6,7 @@ package stress;
  * These exist because the utest suites cannot see this class of bug: the
  * interpreter is single-threaded, so a data race in shared state passes
  * every unit test and only appears under real thread contention. Each case
- * here corresponds to a race that actually shipped and was caught this
- * way.
+ * here pins a race of that kind.
  *
  * Cases must be deterministic in their assertions even though their
  * scheduling is not: assert on invariants that must hold under any

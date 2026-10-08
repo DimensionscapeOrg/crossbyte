@@ -5,20 +5,16 @@ import haxe.io.Bytes;
 /**
 	hxcpp's own zlib, for the one-shot DEFLATE codings on native.
 
-	The pure Haxe `Deflater` took 743 microseconds for 64 KB of JSON and wrote
-	8.3 KB of it; zlib at its default level takes about 210 and writes 6.0 KB.
-	An HTTP server compressing a page-sized body for every browser, which
-	asks for it every time, was held to about 1,300 responses a second by
-	that alone. hxcpp already links zlib for `haxe.zip`, so this adds no
+	The pure Haxe `Deflater` takes about 743 microseconds for 64 KB of JSON
+	and writes 8.3 KB of it; zlib at its default level takes about 210 and
+	writes 6.0 KB. hxcpp already links zlib for `haxe.zip`, so this adds no
 	dependency.
 
-	Each thread keeps one deflate stream and resets it for the next input,
-	where a `haxe.zip.Compress` was made and closed for every one: zlib's
-	`deflateInit` and `deflateEnd` were a third of what a 437-byte WebSocket
-	message cost to compress (3.1-3.2 µs of 8.4-9.4, the audit's
-	InflatePerf). The stream holds about 270 KB of zlib's state for the life
-	of its thread. Its input is read to its length, so a `ByteArray`'s
-	spare capacity is no longer copied off first.
+	Each thread keeps one deflate stream and resets it for the next input:
+	making and ending a stream for each would be a third of what a small
+	WebSocket message costs to compress. The stream holds about 270 KB of
+	zlib's state for the life of its thread. Its input is read to its
+	length, so a `ByteArray`'s spare capacity is not copied off first.
 
 	A body compressed as it streams goes through the same zlib, flushed after
 	each piece; see `NativeDeflateStream`.

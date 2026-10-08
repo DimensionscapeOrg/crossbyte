@@ -1,8 +1,8 @@
 package crossbyte.net;
 
 /**
-	A client that connects over TCP and resets at once, a close with a
-	linger of zero, for the tests of what a listener does with a
+	A client that connects over TCP and resets at once (a close with a
+	linger of zero), for the tests of what a listener does with a
 	connection gone before it is taken. Nothing else in the suite can reset
 	a connection that has sent and been sent nothing.
 

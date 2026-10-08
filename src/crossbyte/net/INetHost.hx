@@ -9,8 +9,8 @@ import crossbyte.Future;
  * `onAccept` callback. Connection shutdowns are reported through
  * `onDisconnect`, while listener failures are reported through `onError`.
  *
- * A member that answers with a `Future` reports every failure through it,
- * a refusal included, as a `Future` failed with the error as its `cause`,
+ * A member that answers with a `Future` reports every failure through it
+ * (a refusal included, as a `Future` failed with the error as its `cause`)
  * and never throws. The others throw.
  */
 interface INetHost {
@@ -27,14 +27,13 @@ interface INetHost {
 		count. 10,000 by default (`ServerSocket.DEFAULT_MAX_CONNECTIONS`).
 		A TCP or WebSocket host's is its server's `maxConnections`: a TCP
 		connection arriving at the limit is closed as it is accepted, before
-		`onAccept`: its peer sees the connection accepted and closed at
-		once, and a WebSocket upgrade is answered 503. A reliable datagram
+		`onAccept` (its peer sees the connection accepted and closed at
+		once), and a WebSocket upgrade is answered 503. A reliable datagram
 		host counts its sessions itself, and closes one accepted at the limit
 		before `onAccept`: its peer sees it connect and then close. Either
 		way the refusal is counted in `refusedConnections`.
 
-		It was the backlog a host asked `listen()` for, and limited nothing
-		it served; a host now asks for the system's largest backlog.
+		A host asks `listen()` for the system's largest backlog.
 	**/
 	public var maxConnections(get, set):Int;
 	/**

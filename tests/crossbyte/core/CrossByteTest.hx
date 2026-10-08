@@ -18,9 +18,10 @@ class CrossByteTest extends utest.Test {
 	static var __allocatorDone:Int = 0;
 
 	/**
-		A loop that only pumps does not stall another thread's collection.
-		With no sleep and nothing allocated, pump() reached no GC safepoint, so
-		a collection another thread started waited on this one for ever.
+		A loop that only pumps does not stall another thread's collection. With
+		no sleep and nothing allocated, pump() still reaches a GC safepoint;
+		without one, a collection another thread started would wait on this one
+		for ever.
 	**/
 	public function testAPumpOnlyLoopDoesNotStallACollection():Void {
 		var runtime = CrossByte.current();
@@ -51,8 +52,8 @@ class CrossByteTest extends utest.Test {
 	#if (cpp && windows)
 	/**
 		The process keeps the priority it was started with unless asked to
-		run high. Every native Windows build raised itself to
-		HIGH_PRIORITY_CLASS as the runtime loaded, unasked and undocumented.
+		run high: a native Windows build does not raise itself to
+		HIGH_PRIORITY_CLASS as the runtime loads.
 	**/
 	public function testTheProcessIsRaisedToHighPriorityOnlyWhenAsked():Void {
 		var high:Int = 0x80; // HIGH_PRIORITY_CLASS
@@ -96,10 +97,10 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testCurrentThrowsOnForeignThreadWithoutRuntime():Void {
-		// Every threaded target, not only native. Elsewhere current() handed
-		// back the primordial runtime on any thread, so whatever a worker
-		// thread registered there was touched from two threads, and
-		// ThreadUtil.isPrimordial was true on every thread.
+		// Every threaded target, not only native. If current() handed back the
+		// primordial runtime on any thread, whatever a worker thread registered
+		// there would be touched from two threads, and ThreadUtil.isPrimordial
+		// would be true on every thread.
 		#if target.threaded
 		var queue:Deque<String> = new Deque();
 		Thread.create(() -> {
@@ -196,12 +197,11 @@ class CrossByteTest extends utest.Test {
 
 	public function testLoopReportsRealElapsedTimeAfterALongFrame():Void {
 		#if target.threaded
-		// A frame that ran long is reported as it ran. The runtime used to cap
-		// this at a quarter second, which cost more than it bought: the capped
-		// figure was also what haxe.Timer and the HTTP connection sweep
-		// subtracted from their own deadlines, so a stall silently made every
-		// one of them run slow, and a listener handed the capped delta had no
-		// way back to the real one. Bounding the step is the consumer's call,
+		// A frame that ran long is reported as it ran, with no cap. A capped
+		// figure would also be what haxe.Timer and the HTTP connection sweep
+		// subtract from their own deadlines, so a stall would silently make every
+		// one of them run slow, and a listener handed the capped delta would have
+		// no way back to the real one. Bounding the step is the consumer's call,
 		// made where the right bound is actually known.
 		var runtime = new CrossByte(false, DEFAULT, true);
 		var reported:Float = -1;

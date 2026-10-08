@@ -17,8 +17,8 @@ import sys.thread.Mutex;
  * stays constant regardless of how many observations arrive.
  *
  * Safe to observe from any thread. On hxcpp an observation is two atomic
- * additions rather than a lock, one to the bucket it falls in, one to the
- * sum, so a read taken while observations arrive can find the sum
+ * additions rather than a lock (one to the bucket it falls in, one to the
+ * sum), so a read taken while observations arrive can find the sum
  * counting one that the buckets do not yet, or the other way round. The
  * buckets and the count always agree with each other: the count is the
  * total of the buckets, and the buckets never decrease from one bound to
@@ -59,11 +59,9 @@ class Histogram {
 	// Each observation adds to one bucket here rather than to every bucket
 	// at or above it, and the cumulative counts and the total are added up
 	// when read. That makes an observation two updates however many buckets
-	// there are, where it was one per bucket it fell under: eleven for a
-	// fast response under the default buckets. And it makes the count the
-	// total of the buckets, so the two cannot disagree, they were separate,
-	// and a read between the updates saw a count the buckets did not add up
-	// to.
+	// there are, rather than one per bucket it falls under (eleven for a
+	// fast response under the default buckets), and it makes the count the
+	// total of the buckets, so the two cannot disagree.
 	@:noCompletion private var __cells:Array<Float>;
 
 	#if (target.threaded && !cpp)
@@ -99,7 +97,7 @@ class Histogram {
 	public function observe(value:Float):Void {
 		// The first bucket whose bound it does not exceed, or the one past the
 		// last. NaN is at or below no bound, so it lands there as well: in the
-		// count and +Inf only, as it always was.
+		// count and +Inf only.
 		//
 		// Counted off the cells rather than off `bounds`, which is a public
 		// array a caller can grow: on hxcpp the update below writes to memory
@@ -200,12 +198,12 @@ class Histogram {
 
 	/**
 	 * Everything the exposition writes, read in one pass: the cumulative
-	 * count at each bound, then the total, which is the `+Inf` bucket and
-	 * `_count` both, then the sum.
+	 * count at each bound, then the total (which is the `+Inf` bucket and
+	 * `_count` both), then the sum.
 	 *
-	 * One pass so that a scrape agrees with itself. The exposition used to
-	 * read the buckets, the count and the sum separately, and an observation
-	 * landing between two of those reads made `+Inf` and `_count` differ.
+	 * One pass so that a scrape agrees with itself: read separately, an
+	 * observation landing between two reads would make `+Inf` and `_count`
+	 * differ.
 	 */
 	@:allow(crossbyte.metrics.Metrics)
 	@:noCompletion private function __snapshot():Array<Float> {
@@ -220,7 +218,7 @@ class Histogram {
 		#end
 
 		// In place: each bucket's count becomes the running total up to it,
-		// and the slot after the last bound, the ones above every bound,
+		// and the slot after the last bound (the ones above every bound)
 		// becomes the total of all of them. The sum, last, stays as it is.
 		var running:Float = 0;
 		for (i in 0...cells.length - 1) {

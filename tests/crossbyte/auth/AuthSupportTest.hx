@@ -77,10 +77,10 @@ class AuthSupportTest extends utest.Test {
 	/**
 		An authorization endpoint that carries a query of its own keeps it.
 
-		The flow's parameters were added after a second `?`, so a parameter
-		that never changes put in the endpoint, Google's
-		`access_type=offline`, without which no refresh token is issued,
-		took the rest of the URL as its value.
+		The flow's parameters are not added after a second `?`, where a
+		parameter that never changes put in the endpoint (Google's
+		`access_type=offline`, without which no refresh token is issued) would
+		take the rest of the URL as its value.
 	**/
 	public function testAnAuthorizeUrlWithAQueryKeepsIt():Void {
 		var oauth = new OAuth(new OAuthConfig("client", "secret", "https://auth.example/authorize?access_type=offline", "https://auth.example/token",
@@ -95,10 +95,9 @@ class AuthSupportTest extends utest.Test {
 	}
 
 	/**
-		Parameters that change per request, OpenID Connect's `nonce`,
-		`prompt`, `login_hint`, go in the URL encoded like the rest. There
-		was nowhere to put them: a nonce, which has to be new for each
-		sign-in, cannot live in the configuration.
+		Parameters that change per request (OpenID Connect's `nonce`, `prompt`,
+		`login_hint`) go in the URL encoded like the rest. A nonce, which has to
+		be new for each sign-in, cannot live in the configuration.
 	**/
 	public function testFurtherAuthorizationParametersAreEncodedIn():Void {
 		var oauth = new OAuth(new OAuthConfig("client", "secret", "https://auth.example/authorize", "https://auth.example/token",
@@ -145,8 +144,8 @@ class AuthSupportTest extends utest.Test {
 		An OpenID Connect sign-in hands back its ID token.
 
 		The class's own example asks for `openid email` and signs the user in
-		with what comes back, and the `id_token`, the one thing in the
-		response that says who signed in, was dropped.
+		with what comes back, so the `id_token` (the one thing in the response
+		that says who signed in) is kept.
 	**/
 	public function testAnOpenIdConnectSignInKeepsItsIdToken():Void {
 		var delivered:OAuthToken = null;
@@ -163,7 +162,7 @@ class AuthSupportTest extends utest.Test {
 		var failure:String = null;
 
 		// A 200 carrying an error document, which is how a rejected grant often
-		// arrives. This used to be delivered as success with a null accessToken.
+		// arrives. It is a failure, not a success with a null accessToken.
 		OAuth.__handleTokenResponse("exchange", '{"error":"invalid_grant","error_description":"authorization code has expired"}',
 			token -> delivered = token, message -> failure = message);
 
@@ -216,8 +215,8 @@ class AuthSupportTest extends utest.Test {
 	public function testFailureWithoutAnErrorCallbackDoesNotThrow():Void {
 		var delivered:OAuthToken = null;
 
-		// The pre-existing shape: no handler, so the failure is logged. It must
-		// stay non-fatal, since that is what every current caller relies on.
+		// No handler, so the failure is logged. It must stay non-fatal, since
+		// that is what every caller without a handler relies on.
 		OAuth.__handleTokenResponse("exchange", '{"error":"invalid_client"}', token -> delivered = token, null);
 
 		Assert.isNull(delivered);

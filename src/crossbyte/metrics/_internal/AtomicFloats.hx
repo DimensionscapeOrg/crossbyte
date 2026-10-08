@@ -5,12 +5,13 @@ package crossbyte.metrics._internal;
 	Lock-free arithmetic on the Floats of an array: how a metric is updated
 	on hxcpp.
 
-	A server updates a metric for every response it sends, and a lock there
-	cost about 230ns a time, because acquiring an hxcpp `Mutex` enters and
-	leaves a GC-free zone. These are the same updates as atomic instructions
-	on the value itself, a compare-and-swap loop for an addition, an atomic
-	load or store otherwise, which cost a few nanoseconds when nothing else
-	is writing, and never wait for another thread to finish anything.
+	A server updates a metric for every response it sends, where a lock
+	would cost about 230ns a time, because acquiring an hxcpp `Mutex` enters
+	and leaves a GC-free zone. These are the same updates as atomic
+	instructions on the value itself (a compare-and-swap loop for an
+	addition, an atomic load or store otherwise), which cost a few
+	nanoseconds when nothing else is writing, and never wait for another
+	thread to finish anything.
 
 	The values are the elements of an ordinary `Array<Float>`, which is what
 	makes this sound. hxcpp allocates every array's storage 8-byte aligned,
@@ -25,9 +26,8 @@ package crossbyte.metrics._internal;
 	could lose one.
 
 	Calls, not inline: what they hold needs `<atomic>`, which this file
-	includes, and inlined into a caller it compiled only where something
-	else had included that, the hxcpp fork's headers did, a stock
-	hxcpp's do not.
+	includes, and inlined into a caller it would compile only where
+	something else had included that, which a stock hxcpp's headers do not.
 **/
 @:noCompletion
 @:cppFileCode("#include <atomic>")

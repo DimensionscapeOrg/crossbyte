@@ -8,7 +8,7 @@ package crossbyte.io._internal;
 class ApplicationIdentity {
 	/**
 		The main class's full name, as `pack.Main`, or null for a build with
-		no main class, a library loaded by something else.
+		no main class: a library loaded by something else.
 	**/
 	public static function mainClass():Null<String> {
 		var meta:Dynamic = haxe.rtti.Meta.getType(ApplicationIdentity);

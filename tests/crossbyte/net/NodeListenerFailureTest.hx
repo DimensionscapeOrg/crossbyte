@@ -15,10 +15,10 @@ import utest.Async;
 	connection and nothing else.
 
 	A socket's events arrive from Node's own event loop rather than from
-	anything of CrossByte's, so an exception thrown by a listener had nowhere
-	to go but Node, which ended the process: one client sending something its
-	handler could not parse took every other client down with it. Before the
-	fix each of these cases ended the whole test run.
+	anything of CrossByte's, so an exception thrown by a listener must be
+	caught there, or it would go to Node, which ends the process: one client
+	sending something its handler could not parse would take every other
+	client down with it.
 **/
 class NodeListenerFailureTest extends utest.Test {
 	#if nodejs

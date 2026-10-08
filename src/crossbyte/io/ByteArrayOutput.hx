@@ -50,7 +50,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * This represents the cumulative length of all backing `Bytes` chunks,
 	 * including any flushed and unflushed buffers.
 	 *
-	 * **Note:** This is *not* the number of bytes currently written, it is the buffer size.
+	 * **Note:** This is *not* the number of bytes currently written; it is the buffer size.
 	 * Use `flush()` + `toBytes()` or `toByteArray()` to get the actual written contents.
 	 *
 	 * @example
@@ -160,10 +160,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	public inline function reserve(size:Int):Void {
 		// Against the room left in the active chunk, and grown as a write
 		// grows it: a chunk at least as large as everything written so far.
-		// A reserve that did not fit took a chunk of exactly its size, so a
-		// codec reserving per value, every varint and string writer here
-		// does, through `reserved = false`, made a chunk, and copied the
-		// last one's used bytes out, for each value it wrote.
+		// so a codec reserving per value (every varint and string writer
+		// here does, through `reserved = false`) does not make a chunk, and
+		// copy the last one's used bytes out, for each value it writes.
 		__room(size);
 	}
 
@@ -185,9 +184,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @return `true` if valid, `false` otherwise.
 	 */
 	public inline function validateSizeAt(size:Int, pos:Int):Bool {
-		// Difference, not sum. `pos + size` overflows for a large size and
-		// wraps negative, so a write that could never fit was reported as
-		// valid.
+		// Difference, not sum: `pos + size` overflows for a large size and
+		// wraps negative, so a write that could never fit would be reported
+		// as valid.
 		if (size < 0 || size > current.length - pos) {
 			return false;
 		}
@@ -198,10 +197,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		Makes room for `count` bytes at the write position: a comparison, and a
 		new chunk when the active one cannot hold them.
 
-		Every writer comes through here. The fixed-size ones only checked,
-		outside `final`, and threw, a `new ByteArrayOutput()` could not take
-		`writeInt(1)` without `reserve(4)` first, and in a `final` build did
-		not check at all, writing past the end of the chunk.
+		Every writer comes through here, so a `new ByteArrayOutput()` takes
+		`writeInt(1)` without `reserve(4)` first, and a `final` build never
+		writes past the end of a chunk.
 	**/
 	@:noCompletion private inline function __room(count:Int):Void {
 		if (count > current.length - this.__outputPosition) {
@@ -221,7 +219,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		}
 		var total:Int = this.size + chunk;
 		if (total < this.size) {
-			// Doubling past 2^31 wrapped: only what was asked for.
+			// Doubling past 2^31 would wrap: only what was asked for.
 			total = this.size + count;
 		}
 		this_resize(total);
@@ -314,8 +312,8 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 					// chunk is allocated to exactly the number of bytes that
 					// were written into it, so one can end in the middle of the
 					// integer being patched, and setInt32 on the chunk that
-					// merely holds the first byte writes the other three past
-					// the end of it.
+					// merely holds the first byte would write the other three
+					// past the end of it.
 					if (position + 4 <= chunkStart + bytes.length) {
 						bytes.setInt32(position - chunkStart, value);
 					} else {
@@ -432,9 +430,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 			reserve(varUIntSize(v));
 		}
 
-		// Tested as the unsigned value it is. A signed `v > 0x7F` was false
-		// for anything with bit 31 set, which went out as a single byte,
-		// and so did a ZigZag value from 2^30 up in magnitude.
+		// Tested as the unsigned value it is: a signed `v > 0x7F` is false
+		// for anything with bit 31 set, which would go out as a single byte,
+		// as would a ZigZag value from 2^30 up in magnitude.
 		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
 			v >>>= 7;
@@ -486,8 +484,8 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 */
 	public static inline function varUIntSize(v:Int):Int {
 		// Masks, not `<`: `v >>>= 0` makes a value unsigned on JavaScript
-		// alone, and everywhere else a value with bit 31 set compared as
-		// negative and was sized at one byte.
+		// alone, and everywhere else a value with bit 31 set compares as
+		// negative and would be sized at one byte.
 		if ((v & ~0x7F) == 0) {
 			return 1;
 		}

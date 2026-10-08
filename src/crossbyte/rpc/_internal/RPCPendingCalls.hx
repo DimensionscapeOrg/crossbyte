@@ -10,13 +10,13 @@ import haxe.ds.Vector;
 
 	A caller numbers its calls one after another, so a call's place is its
 	id modulo the ring's length, and calls in flight together have places
-	of their own: nothing is hashed, and nothing is made for a call. They
-	were held in an `IntMap`, which on hxcpp made a node for each.
+	of their own: nothing is hashed, and nothing is made for a call, where an
+	`IntMap` would make a node for each on hxcpp.
 
 	The ring doubles, up to `MAX` places, when a call finds its place taken
-	while at least half of them are; otherwise the call there, still
+	while at least half of them are; otherwise the call there (still
 	waiting a ring's length of calls after it was made, a slow one behind
-	many answered, moves to a map of its own, as every call did before.
+	many answered) moves to a map of its own.
 	A ring that grew keeps its size.
 **/
 @:noCompletion
@@ -93,7 +93,7 @@ final class RPCPendingCalls {
 	}
 
 	/**
-		Fails every call held, in no particular order, as a map's were. Its
+		Fails every call held, in no particular order. Its
 		owner lets go of it first: failing a call runs its handlers, which
 		may make more.
 	**/

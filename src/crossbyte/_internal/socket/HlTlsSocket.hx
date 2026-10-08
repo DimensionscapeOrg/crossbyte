@@ -9,12 +9,11 @@ import sys.ssl.Context;
 
 	HashLink stops every thread to collect, and waits for each to reach a safe
 	point or to have said it is blocked. Its plain socket reads say so. Its TLS
-	layer reads the network with a bare `recv` that does not, mbedTLS's
-	socket callbacks in `ssl.hdll`, so a thread waiting for a slow server's
-	answer on an HTTPS connection held every other thread for as long as the
-	server took. A response that took six seconds stopped the runtime for six
-	seconds, and the collector spun a core waiting.
-
+	point or to have said it is blocked. Its plain socket reads say so. Its TLS
+	layer reads the network with a bare `recv` that does not (mbedTLS's
+	socket callbacks in `ssl.hdll`), so a thread waiting for a slow server's
+	answer on an HTTPS connection would hold every other thread for as long as
+	the server took, and the collector would spin a core waiting.
 	mbedTLS takes its reads and writes through callbacks, and `ssl.hdll` lets
 	those be Haxe functions (`ssl_set_bio`). These hand them to the plain socket
 	natives, whose reads are marked blocking, so a thread waiting on a TLS
@@ -65,7 +64,7 @@ class HlTlsSocket extends sys.ssl.Socket {
 
 	/**
 		mbedTLS's read, by way of `socket_recv`, which is marked blocking. A
-		would-block, a timeout run out included, answers -2, which
+		would-block (a timeout run out included) answers -2, which
 		`ssl.hdll` turns into MBEDTLS_ERR_SSL_WANT_READ as its own callback
 		does; a failure answers -1, which mbedTLS passes up as one.
 	**/

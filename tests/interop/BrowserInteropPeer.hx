@@ -23,7 +23,7 @@ import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 	can still have the other backwards.
 
 	Answering a browser makes this peer ICE-controlled and the DTLS client at
-	once, because the browser offers, taking the ICE role, and offers
+	once, because the browser offers (taking the ICE role) and offers
 	`actpass`, leaving the client half here. Offering to a browser inverts both:
 	this peer nominates, and the browser's answer of `active` makes it the DTLS
 	server. Since the SCTP association is opened by the DTLS client and the even
@@ -31,8 +31,8 @@ import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 	listening for an association and taking the odd streams, none of which the
 	first direction touches.
 
-	A connection that drove both roles from one bit passed the answering
-	direction and could not have completed this one.
+	A connection that drove both roles from one bit would pass the answering
+	direction and could not complete this one.
 
 	Signalling is stdin and stdout, one JSON object per line, because the
 	harness driving both ends is already a process that reads and writes them.
@@ -147,8 +147,7 @@ class BrowserInteropPeer {
 		resetting its streams (RFC 6525). The browser closes one, and this end
 		has to hear it and reset its own stream in answer, or the browser's
 		channel never finishes closing; then this end closes one, and the
-		browser's has to close. Nothing here did either: a close was local, and
-		RE-CONFIG went unread.
+		browser's has to close.
 
 		Kept pumping a while afterwards, so the browser finishes its half
 		before the connection, whose end would close its channels anyway, is
@@ -255,7 +254,7 @@ class BrowserInteropPeer {
 	/**
 		This end offers; the browser answers.
 
-		ICE-controlling, and, once the browser answers `active`, the DTLS
+		ICE-controlling, and (once the browser answers `active`) the DTLS
 		server, so the browser opens the SCTP association and takes the even
 		streams. The channel is opened from here, which is what makes the
 		browser's `ondatachannel` fire.
@@ -308,7 +307,7 @@ class BrowserInteropPeer {
 		Adds the addresses this peer can be reached at.
 
 		Bound to the wildcard, so the socket cannot say where it is. Each of the
-		peer's own candidates is a destination to ask about, whichever
+		peer's own candidates is a destination to ask about: whichever
 		interface reaches it is the address to advertise.
 
 		The default route is asked as well, always, and not only when there are
@@ -316,7 +315,7 @@ class BrowserInteropPeer {
 		`.local` mDNS names, which resolve to nothing here, so asking only about
 		them yields nothing and the peer advertises loopback alone. That passes
 		this test, both ends being on one machine, and describes a peer no
-		browser on any other machine could reach, a green run for a connection
+		browser on any other machine could reach: a green run for a connection
 		that does not work.
 	**/
 	static function gatherToward(destinations:Array<String>):Void {
@@ -434,7 +433,7 @@ class BrowserInteropPeer {
 		Sends on an ordered channel that may send each message once, losing the
 		first message on purpose, and loses the browser's first on it too.
 
-		It is not sent again, that is what `maxRetransmits: 0` means, so the
+		It is not sent again (that is what `maxRetransmits: 0` means), so the
 		browser holds everything after it until a FORWARD TSN says to skip it.
 		The rest arriving, in order, is the browser agreeing with how CrossByte
 		wrote that chunk; a FORWARD TSN it could not read would leave them held.
@@ -459,8 +458,8 @@ class BrowserInteropPeer {
 					// Only that message's chunk is lost, not the packet it rides in.
 					// A channel's sends in one pass go out bundled in one packet, so
 					// "kept-1" to "kept-5" travel with "lost": dropping the whole
-					// packet lost them all, and on a channel that sends each message
-					// once the browser rightly had nothing to deliver.
+					// packet would lose them all, and on a channel that sends each message
+					// once the browser would rightly have nothing to deliver.
 					var kept:Array<SctpChunk> = [];
 
 					for (chunk in packet.chunks) {

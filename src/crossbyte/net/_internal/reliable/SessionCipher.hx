@@ -30,8 +30,8 @@ import crossbyte.crypto._internal.NativeSodium;
 	So the two directions have keys of their own, and both ends' randoms go
 	into every key: an application that gives the same key to every session
 	of a player, or to two attempts, still never seals two datagrams under
-	one key and nonce, from either end. Two equal randoms, a CONNECT sent
-	back at its sender, are refused, since they would give both directions
+	one key and nonce, from either end. Two equal randoms (a CONNECT sent
+	back at its sender) are refused, since they would give both directions
 	one key.
 
 	**The nonce** is the sender's IV XOR its packet number, a 64-bit counter
@@ -41,7 +41,7 @@ import crossbyte.crypto._internal.NativeSodium;
 	up to 2^31 datagrams is bridged.
 
 	**The envelope.** The plaintext is the datagram the session would have
-	sent without encryption, one frame, or a bundle, whole:
+	sent without encryption (one frame, or a bundle), whole:
 
 	- `SEALED`: 0xCE, the packet number's low 32 bits, then the ciphertext
 	  and the 16-byte tag. `OVERHEAD` = 21 bytes.
@@ -50,9 +50,9 @@ import crossbyte.crypto._internal.NativeSodium;
 	  ciphertext and the tag. 41 bytes. A side sends these until it has
 	  opened a datagram from its peer, which shows the peer has both randoms.
 
-	The header, everything before the ciphertext, is the associated data:
+	The header (everything before the ciphertext) is the associated data:
 	authenticated, not encrypted. A plaintext reliable datagram starts with
-	0xCB, so neither kind is mistaken for one, and a peer from before this
+	0xCB, so neither kind is mistaken for one, and a peer without encryption
 	drops both as frames with the wrong magic.
 
 	**The replay window** is `REPLAY_WINDOW` packet numbers below the highest

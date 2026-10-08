@@ -15,10 +15,9 @@ import utest.Assert;
 @:access(crossbyte.core.CrossByte)
 class ApplicationTest extends utest.Test {
 	public function testAServerApplicationRunsOnTheTimersItWasGiven():Void {
-		// It built its runtime naming POLL and nothing else, so a
-		// ServerApplication asked for a timing wheel ran on the heap. On the
-		// interpreter it could not be built at all: its main-thread check
-		// read true on the main thread itself.
+		// A ServerApplication asked for a timing wheel runs its POLL loop on the
+		// wheel, not on the heap, and it can be built on the interpreter, whose
+		// main thread passes the main-thread check.
 		var probe:ProbeServer = null;
 		try {
 			probe = new ProbeServer(TimerStrategy.WHEEL);
@@ -40,12 +39,12 @@ class ApplicationTest extends utest.Test {
 
 	#if js
 	/**
-		An application made once the program is running runs. Its loop went
-		through haxe.EntryPoint, which on Node runs what it is handed only
-		until the program has started, so an application made after that,
-		once an asynchronous load had finished, say, never ran: no INIT, no
-		tick. A real primordial runtime, made in a later turn with the
-		harness's set aside, and the harness's put back after.
+		An application made once the program is running runs. On Node,
+		haxe.EntryPoint runs what it is handed only until the program has
+		started, so an application made after that (once an asynchronous load
+		has finished, say) must still get its INIT and its ticks. A real
+		primordial runtime, made in a later turn with the harness's set aside,
+		and the harness's put back after.
 	**/
 	@:access(crossbyte.Timer)
 	@:timeout(5000)
@@ -81,8 +80,8 @@ class ApplicationTest extends utest.Test {
 
 	/**
 		A POLL runtime on JavaScript runs the DEFAULT loop, since there is no
-		socket set to poll there. It threw at its first frame, which took down
-		every ServerApplication on Node.
+		socket set to poll there, and its first frame does not throw: a throw
+		there would take down every ServerApplication on Node.
 	**/
 	@:timeout(5000)
 	public function testAPollRuntimeRunsOnJavaScript(async:utest.Async):Void {

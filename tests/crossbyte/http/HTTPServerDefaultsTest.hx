@@ -11,11 +11,10 @@ import utest.Async;
 /**
  * What a server built with `new HTTPServerConfig(...)` and nothing else does.
  *
- * Both of these were found by measurement rather than by reading, and both
- * were defaults nobody had argued for in writing. A limiter of ten requests a
- * minute refused two assets of an ordinary twelve-request page, and an output
- * bound of zero meant a client that stopped reading held its whole response in
- * memory for as long as it liked.
+ * A limiter of ten requests a minute would refuse two assets of an
+ * ordinary twelve-request page, and an output bound of zero would let a
+ * client that stopped reading hold its whole response in memory for as
+ * long as it liked.
  *
  * Neither number is sacred. The point of the two cases below is that changing
  * one says so out loud: a default that breaks an ordinary page load, or that
@@ -121,13 +120,13 @@ class HTTPServerDefaultsTest extends utest.Test {
 	/**
 		A server that never set `rootDirectory` serves no files at all.
 
-		The default root used to be `File.applicationStorageDirectory`, the
-		account's home on Linux and macOS, `%APPDATA%` on Windows, so a
-		server with only routes answered every other path from there. This is
-		the auditor's case: a session the application saved through `Store`,
-		which keeps its files under that same directory, was one guessable
-		path away. The canary is written where `Store` writes, which is where
-		the store tests already write, and removed afterwards.
+		A root defaulting to `File.applicationStorageDirectory` (the account's
+		home on Linux and macOS, `%APPDATA%` on Windows) would let a server with
+		only routes answer every other path from there: a session the
+		application saved through `Store`, which keeps its files under that
+		same directory, would be one guessable path away. The canary is written
+		where `Store` writes, which is where the store tests already write, and
+		removed afterwards.
 	**/
 	public function testAServerWithNoRootServesNoFiles(async:Async):Void {
 		var name:String = "http-root-canary-" + Std.random(0x3FFFFFFF);
@@ -209,10 +208,9 @@ class HTTPServerDefaultsTest extends utest.Test {
 
 		The directory is removed here, by name, rather than through an
 		asynchronous `clear()` that the `close()` beside it could overtake.
-		And more than once if need be: every full native run on Windows left
-		one canary behind, its value file still in place, a file just written
-		is often held a moment by something else there, the virus scanner
-		first among them, and a delete that meets it fails.
+		And more than once if need be: on Windows a file just written is often
+		held a moment by something else (the virus scanner first among them),
+		and a delete that meets it fails.
 	**/
 	private static function __removeStore(store:crossbyte.io.Store, name:String):Void {
 		try {

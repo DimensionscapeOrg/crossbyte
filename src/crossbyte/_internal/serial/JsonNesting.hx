@@ -5,7 +5,7 @@ package crossbyte._internal.serial;
 	parsed.
 
 	`haxe.Json` parses a frame per level, so natively a document nested a few
-	thousand deep, 12 KB of brackets, overflows the stack and ends the
+	thousand deep (12 KB of brackets) overflows the stack and ends the
 	process, where no catch can see it. JSON read from elsewhere is measured
 	first: a token's header, a JWK Set and a token endpoint's answer at
 	`LIMIT`, and an object `ByteArray.readObject` reads at
@@ -60,8 +60,8 @@ class JsonNesting {
 	}
 
 	/**
-		How many values `json` holds, objects, arrays, strings, names
-		included, and the numbers, `true`, `false` and `null`, counted
+		How many values `json` holds (objects, arrays, strings, names
+		included, and the numbers, `true`, `false` and `null`), counted
 		where each starts, without parsing; or `limit + 1` as soon as it is
 		past `limit`. One pass, allocating nothing.
 

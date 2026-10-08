@@ -13,14 +13,14 @@ import utest.Async;
 /**
 	What `Socket`'s documentation promises, held to it.
 
-	- The constructor promised a `SecurityError` for a port outside 0-65535,
-	  and quietly made a socket that never connected.
-	- `writeBytes` promised a `RangeError` for an offset or length past the
-	  bytes given, and quietly wrote whatever part of them there was.
-	- A `timeout` of 0 failed every native connect at once, where on Node it
-	  meant no deadline; it means no deadline everywhere now.
-	- Bytes written and then closed straight away were thrown away: every
-	  write goes at the end of the pass, and `close()` came first.
+	- The constructor throws a `SecurityError` for a port outside 0-65535,
+	  rather than making a socket that never connects.
+	- `writeBytes` throws a `RangeError` for an offset or length past the
+	  bytes given, rather than writing whatever part of them there is.
+	- A `timeout` of 0 means no deadline everywhere, as on Node, rather than
+	  failing every native connect at once.
+	- Bytes written and then closed straight away still go, though every
+	  write goes at the end of the pass and `close()` comes first.
 **/
 class SocketContractTest extends utest.Test {
 	public function testAConstructorPortOutOfRangeIsASecurityError():Void {
@@ -70,12 +70,12 @@ class SocketContractTest extends utest.Test {
 	}
 
 	/**
-		A socket's ends read null and 0 while it has none, before
-		`connect()` and after `close()`, and the ones it was given while
-		connected. Asking dereferenced a socket that was not there, so a
-		close handler asking whom it had talked to threw, natively, and on
-		the jvm an RPC session started on a connection still connecting
-		threw a NullPointerException from `localAddress`.
+		A socket's ends read null and 0 while it has none (before
+		`connect()` and after `close()`), and the ones it was given while
+		connected. Asking must not dereference a socket that is not there: a
+		close handler asking whom it had talked to would throw natively, and
+		on the jvm an RPC session started on a connection still connecting
+		would throw a NullPointerException from `localAddress`.
 	**/
 	@:timeout(15000)
 	public function testItsEndsReadNothingWhileItHasNone(async:Async):Void {
@@ -109,10 +109,9 @@ class SocketContractTest extends utest.Test {
 	}
 
 	/**
-		A `socketData` event's `bytesLoaded` is what arrived for it, as the
-		native read loop has always said; on Node and in a page it was
-		everything still unread, so an event for 4 bytes said 7 when the 3
-		before them were not yet read.
+		A `socketData` event's `bytesLoaded` is what arrived for it on every
+		target, not everything still unread: an event for 4 bytes says 4 even
+		when the 3 before them are not yet read.
 	**/
 	@:timeout(15000)
 	public function testBytesLoadedIsWhatArrived(async:Async):Void {
@@ -199,13 +198,12 @@ class SocketContractTest extends utest.Test {
 	#if (cpp || java || jvm || neko || hl)
 	/**
 		A connection whose connect and whose peer's hangup arrive in one
-		tick, closed by its own CONNECT listener. The tick went on to the
-		close it had already decided on and cleaned the socket up a second
+		tick, closed by its own CONNECT listener. The tick must not go on to
+		the close it had already decided on and clean the socket up a second
 		time, calling `close()` on a socket the listener's close had let go:
-		natively a null dereference that ended the process, which the macOS
-		CI runner, where a server's hangup lands in the connect's tick, did
-		every run. Its own close is announced once, as an application's
-		close is, and nothing after it.
+		natively that is a null dereference that ends the process, and on
+		macOS a server's hangup lands in the connect's tick. Its own close is
+		announced once, as an application's close is, and nothing after it.
 	**/
 	public function testAConnectionItsConnectListenerClosesAsThePeerHangsUpEndsQuietly():Void {
 		var runtime = crossbyte.core.CrossByte.current();

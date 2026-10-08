@@ -6,265 +6,1340 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Highlights
 
-Everything since 1.0.0-rc.1 is listed under Added, Removed, Changed and
-Fixed below, more than 750 entries. In short:
+Everything since 1.0.0-rc.1. If you are upgrading from it, read
+"Upgrading from 1.0.0-rc.1", at the end of this section, first.
 
-- **WebRTC and NAT traversal.** `crossbyte.net.rtc.PeerConnection` puts
-  ICE, DTLS, SCTP and data channels, reliable and partially reliable,
-  behind one class, and interoperates with Chrome. With them: STUN, TURN
-  over UDP, TCP and TLS with RFC 8656 channels, ICE restart and consent
-  freshness, and `PeerConnectionHost` for many peers on one UDP port.
-- **HTTP/2**, client and server, with ALPN, HPACK and the Rapid Reset
-  defence; HTTP/1.1 keep-alive and pipelining; streamed responses and
-  server-sent events; a router, gzip and Brotli, request limits, rate
-  limiting and Prometheus metrics.
-- **Real-time networking.** Reliable UDP with pluggable congestion control,
-  delivery modes, round-trip statistics and TURN fallback, its datagrams
-  batched on Linux; game-server structures, `SpatialGrid`,
-  `InterestSet`, `SequenceRing` and `ByteDelta`, `BitWriter`,
-  `FixedStep`, `PeerClock`.
-- **Databases.** MongoDB over its wire protocol, BSON included, on every
-  target that can block; a native MySQL client with TLS and MySQL 8
-  logins; Postgres parameter binding and timeouts; SQLite with an
-  asynchronous worker, attached databases and schemas; connection pools,
-  `AsyncDatabase` and `SchemaMigrator`.
+- **Reliable UDP for games.** Reliable, unreliable and sequenced delivery
+  on one session; congestion control you can replace; selective
+  acknowledgements and RACK loss recovery; join cookies against forged
+  joins; sessions that follow a player to a new address; opt-in
+  ChaCha20-Poly1305 encryption; TURN fallback; and one message prepared
+  once for many sessions.
+- **WebRTC data channels.** `crossbyte.net.rtc.PeerConnection` puts ICE,
+  DTLS, SCTP and data channels, reliable and partially reliable, behind one
+  class, and interoperates with Chrome. With it come STUN, TURN over UDP,
+  TCP and TLS, ICE restart and consent freshness, and `PeerConnectionHost`
+  for many peers on one UDP port.
+- **HTTP/2 and a fuller HTTP server.** HTTP/2 client and server, with ALPN,
+  HPACK and the Rapid Reset defence; HTTP/1.1 keep-alive and pipelining;
+  streamed responses and server-sent events; a router, compression, rate
+  limiting, request limits and Prometheus metrics; one server spread over
+  several cores.
+- **Typed RPC.** Compiled contracts carry arrays, structures, enums,
+  `Null<T>` and compact numbers, generated with no reflection; the runtime
+  lane has typed calls; calls get deadlines, handlers can answer later,
+  clients redial, and a hello versions the protocol.
+- **Databases.** MongoDB over its wire protocol, with BSON; a native MySQL
+  client with TLS and MySQL 8 logins; Postgres parameter binding,
+  cancellation and timeouts; SQLite with an asynchronous worker, attached
+  databases and schemas; `ConnectionPool`, `AsyncDatabase` and
+  `SchemaMigrator`.
 - **Crypto.** libsodium, vendored (AEAD, X25519, key exchange, BLAKE2b,
-  Ed25519, Argon2id); RSA and ECDSA signatures; JWT with RS256, ES256 and
-  EdDSA, JWKS and claims of an application's own; OAuth PKCE;
-  asynchronous BCrypt and Argon2id.
-- **Every target.** Node runs the networking stack, sockets, listeners,
-  TLS, WebSocket, UDP and the HTTP server; a headless browser runs the
-  portable suite; the jvm runs the whole suite, TLS with ALPN, SNI and
-  client certificates included; and the native suite runs on Windows,
-  Linux and macOS in CI.
-- **Runtime and operations.** `Future` and `Completer`, `CrossByte.post`
-  and `make`, loop-health measures, a structured `Logger` with categories,
-  layered `Config`, durable `Store` on every target, graceful shutdown and
-  Windows service control, and `crossbyte.metrics`.
-- **Hardening and speed.** Two audits, 171 findings, each fixed with a test
-  shown failing first; nine wire parsers fuzzed; soak, stress and
-  performance suites, and what they found, among it a WebSocket server
-  receiving large messages 45 times faster, and TLS uploads 26 times.
+  HKDF, Ed25519, Argon2id); RSA and ECDSA signatures; JWT with RS256, ES256
+  and EdDSA, JWKS and claims of your own; OAuth PKCE; asynchronous password
+  hashing.
+- **Every target.** Node runs the networking stack: sockets, TLS,
+  WebSocket, UDP and the HTTP server. The jvm runs the whole suite, TLS
+  included. HashLink and Neko build and run again. The native suite runs on
+  Windows, Linux and macOS.
+- **Runtime and operations.** `Future` and `Completer`, work posted between
+  threads, timers on a heap or a timing wheel, loop-health measures, a
+  structured `Logger`, layered `Config`, durable `Store`, graceful shutdown
+  and Windows service control, and `crossbyte.metrics`.
+- **Hardened and faster.** Every server bounds what one peer can make it
+  hold or spend; the wire parsers are fuzzed; and natively, sending or
+  receiving a message over TCP, UDP, reliable UDP or WebSocket allocates
+  nothing once a connection is under way, but the text a WebSocket
+  listener asks for.
+
+### Added
+
+#### Runtime
+
+- `crossbyte.Future<T>` and `crossbyte.Completer<T>`: `then`, `map`,
+  `flatMap`, `all`, `catchError`, `Future.resolved` and `Future.failed`,
+  with the failure itself as `cause`. `RPCResponse` extends `Future`.
+- `CrossByte.post(callback)` runs a callback on a runtime's own thread,
+  from any thread, and wakes the runtime for it. It returns `false` once
+  the runtime has exited.
+- `CrossByte.make(loopType, timers, configure)`: `configure` runs before
+  the child runtime's thread starts, and `timers` picks the scheduler.
+  `TimerStrategy.WHEEL` is a timing wheel for many timers re-armed often;
+  the heap stays the default.
+- Loop health: `CrossByte.loopLag`, `frameOverruns`,
+  `droppedScheduleDebt`, `postQueueDepth`, `timerBacklog`, `timerLag` and
+  `timerOverruns`.
+- `CrossByte.collectWhenIdle`, off by default: natively, a runtime running
+  its own loop collects garbage in the gap before its next tick when a
+  collection is due, rather than in the middle of a tick.
+- `CrossByte.defaultSocketCapacity` (1024) sizes the poll backend's first
+  allocation, and `ServerApplication.defaultTicksPerSecond` sets a server's
+  tick rate before `INIT`.
+- `UncaughtErrorEvent.UNCAUGHT_ERROR`: what a timer, a tick listener, a
+  socket handler or a posted callback throws is logged and dispatched here,
+  and the runtime carries on.
+- `-D crossbyte_check_events` poisons an event or payload once its
+  listener call returns, to find code that keeps one, and
+  `-D crossbyte_fresh_events` makes every arrival afresh. See Upgrading.
+- `Logger`: levels (`LogLevel`), `key=value` fields, JSON output,
+  timestamps, a `sink` and a `recordSink` that receives each record whole,
+  and categories (`Logger.category(name)`, `Logger.setLevel(category,
+  level)`, inherited along the dots).
+- `crossbyte.core.Config`: configuration layered from defaults, `key=value`
+  files and environment variables, with typed getters and `require()`.
+- `crossbyte.metrics`: `Counter`, `Gauge`, `Histogram` and a `Metrics`
+  registry with Prometheus text output, and `MetricsEndpoint` to serve it.
+- `TypedWorker<In, Out, Progress>`, a `Worker` whose messages have types,
+  and `Worker.maxMessagesPerTick` (256).
+- Game-server pieces: `crossbyte.ds.SpatialGrid` and `SpatialGrid3D` for
+  moving entities, `InterestSet` for what entered and left a view,
+  `SequenceRing` and `crossbyte.io.ByteDelta` for delta snapshots,
+  `crossbyte.io.BitWriter` and `BitReader`, `crossbyte.core.FixedStep`,
+  `crossbyte.ds.IdList`, `IntPriorityQueue` and `ExpiringMap`. The
+  `arena` sample builds a server from them.
+- `crossbyte.cluster`: `SnowflakeId`, `Rendezvous` hashing, `Membership`
+  and `NodeChannel`, low-level pieces for running as more than one node.
+- Data structures: `BitSet.nextSetBit`, `nextClearBit`, iteration,
+  `isEmpty`, `clone` and the set operations; `RadixTree.longestPrefix` and
+  `longestPrefixLength`; `QuadTree.queryCircle`; `Deque` with a starting
+  capacity, `iterator()` and `clear()`; `BloomFilter.clear`, `addInt`,
+  `containsInt`, `addBytes` and `containsBytes`; `Array2D.fill`.
+- `SwitchTable.make` takes any expression as a key, and a fallback for a
+  key no case matches.
+- `crossbyte.utils.Checksum` (CRC-32, Adler-32, MD5, SHA-1 and XOR) and
+  `crossbyte.utils.IntParse`, which reads an integer the same way on every
+  target.
+- `crossbyte.sys.System.sleep(seconds)`, which returns on the interpreter
+  on Windows, where `Sys.sleep` can sleep for days.
+- `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function
+  directly.
+
+#### TCP
+
+- TLS on both ends of a `Socket`. A client sets `secure` before
+  `connect()`, and checks the server with `verifyCert` and
+  `certAuthority`. A server is `new ServerSocket(true)` with
+  `setCertificate`, `addSNICertificate` and `requireClientCertificate()`,
+  stepped across ticks under `handshakeTimeout`. Natively, on the jvm and
+  on Node.
+- `crossbyte.net.Certificate` and `crossbyte.net.Key`, loaded with
+  `fromFile` or `fromPem`, a key in any form it comes in (PKCS#1, SEC1,
+  PKCS#8, encrypted or not). A `Key` prints as `[Key: redacted]`.
+- ALPN: `ServerSocket.setALPN()` and `Socket.alpnProtocol`.
+- Native TLS servers resume returning clients with session tickets; build
+  with `-D HXCPP_SSL_NO_TICKETS` to turn that off. With the hxcpp fork on
+  mbedTLS 3.6.7, TLS 1.3 is negotiated with every peer that offers it.
+- Limits on a server: `ServerSocket.admit(address, port)`, asked before
+  any TLS work; `maxAcceptsPerTick` (64); `maxPendingHandshakes` (256);
+  `maxConnections` (10,000); `maxPendingHandshakesPerAddress` (16); and
+  the counts `refusedConnections`, `acceptFailures` and
+  `handshakeFailures`.
+- Limits on a connection: `Socket.maxOutputBufferSize`,
+  `outputOverflowPolicy` and `outputBufferLength` for what waits for a
+  peer, and `maxInputBufferSize` (16 MiB) with `inputOverflowPolicy`
+  (`PAUSE` or `CLOSE`) for what the application has not read.
+- `Socket.receiveBufferSize` and `sendBufferSize`, also on `ServerSocket`
+  for the connections it accepts, natively and on the jvm
+  (`Socket.bufferSizeSupported`).
+- `Socket.peerShutdownPolicy`: `HALF_OPEN` keeps a connection writable
+  after its peer half-closes, with `Event.PEER_CLOSE`, `peerShutdown` and
+  `shutdown(read, write)`.
+- `OutputProgressEvent.OUTPUT_PROGRESS` is dispatched as written bytes
+  reach the network, with `bytesPending`.
+- `ServerSocket.stopAccepting()` releases the port while open connections
+  carry on.
+- One server on several cores: `ServerSocket.runtimes`, `runtimeCount` and
+  `selectRuntime` hand each accepted connection to a runtime, and
+  `reusePort` gives each runtime its own listener on Linux. Natively, on
+  the jvm, hl, neko and the interpreter.
+- `IOErrorEvent.TIMEOUT_ERROR_ID` marks a connect that timed out, and a
+  `NetConnection` reports it as `Reason.Timeout`.
+- `userData` on `Socket`, `ReliableDatagramSocket`, `DataChannel` and
+  `NetConnectionBase`, for an application's state that should go when the
+  connection goes.
+- `crossbyte.net.RateLimiter`, a token bucket with `tryAcquire`,
+  `secondsUntil`, `addressKey` and a bound on keys (`maxKeys`), and
+  `crossbyte.net.ConcurrencyLimiter` for how many at once.
+- `crossbyte.net.FrameCodec`: length-prefixed messages over a stream, with
+  `maxFrameSize` checked on the header.
+- `crossbyte.net.LocalAddress` and `ReflexiveAddress`, and on `INetHost`
+  `localAddressFor`, `discoverPublicAddress`, `dial` and `canDial`.
+- `new NetHost("wss://...")` takes the certificate it presents as `cert`,
+  and a `NetHost` URI on port 0 listens on a port the system picks.
+
+#### UDP
+
+- `DatagramSocket.receiveBufferSize` and `sendBufferSize`, and
+  `bufferSizeSupported`.
+- `DatagramSocket` on Node.
+- `crossbyte.net.StunClient`: what address the outside world sees a socket
+  as, asked through the socket you give it, and the NAT's behaviour by RFC
+  5780 (`classifyMapping`, `classifyFiltering`, `probe`).
+
+#### Reliable UDP
+
+- Delivery modes, `crossbyte.net.DeliveryMode`: `RELIABLE` (the default),
+  `UNRELIABLE` and `sequenced(channel)`, which drops anything older than
+  the newest message on its channel (0 to 255).
+- Congestion control you can replace: `CongestionControl` (Reno, the
+  default), `LossTolerantCongestionControl` for lossy radio paths,
+  `ReliableDatagramSocket.congestionControl` and the server's
+  `congestionControlFor(address, port)` hook.
+- Measurements: `roundTripTime`, `roundTripVariation`,
+  `retransmitTimeout`, `minRoundTripTime` and `framesDelivered`.
+- Limits and timing: `maxMessageSize` (8 MB), `maxOutputBufferSize`
+  (256 KB), `outputOverflowPolicy`, `bufferedAmount`, `ackDelay` (25 ms),
+  `keepAliveInterval` (15 s), `idleTimeout` (60 s) and `closeTimeout`
+  (10 s); `abort()` ends a session at once.
+- A payload on the CONNECT, up to 1,200 bytes, shown to
+  `admit(address, port, payload)` before anything is allocated and kept as
+  `connectPayload`. `maxPendingConnections` (256) bounds half-open
+  sessions.
+- Join cookies: `ReliableDatagramServerSocket.joinValidation`
+  (`UNDER_PRESSURE` by default, `ALWAYS`, `NEVER`) and
+  `joinValidationThreshold` (64) answer a CONNECT with a stateless cookie,
+  as TCP's SYN cookies and QUIC's Retry do. `maxResetsPerSecond` (1,000)
+  bounds the resets a process sends.
+- `ReliableDatagramServerSocket.allowRebind`, off by default: a session
+  follows its player to a new address or port, proved with a key the
+  session was given. "Resuming a player" in the class documentation shows
+  how to take back one whose session was reset.
+- Encrypted sessions, opt-in and keyed by the application:
+  `ReliableDatagramSocket.encryptionKey`, the server's
+  `encryptionKeyFor(address, port, payload)` hook and an `encryptionKey`
+  argument on its `connect` and `connectRelayed`. Every datagram after the
+  CONNECT is sealed with ChaCha20-Poly1305 under per-direction keys derived
+  with HKDF-SHA-256, with a 1,024-packet replay window; sealing adds 21
+  bytes (`ENCRYPTION_OVERHEAD`). Natively, on the jvm and on Node.
+  `isEncryptionSupported`, `encrypted`, `unauthenticatedDatagrams`,
+  `replayedDatagrams` and `lateDatagrams` report on it.
+- One message to many sessions: `PreparedDatagram.of(bytes, offset,
+  length)` copies it once, and `ReliableDatagramSocket.sendPrepared` and
+  `ReliableDatagramServerSocket.broadcast(message, ?sessions, delivery)`
+  send it in any delivery mode without a copy per session.
+- Peer to peer: `ReliableDatagramServerSocket.connect()` (and
+  `INetHost.dial()`) opens a session from the server's own port,
+  `discoverPublicAddress()` asks STUN through it, and `attachIceAgent()`
+  runs ICE over it.
+- TURN fallback for peers hole punching cannot reach: `allocateRelay`,
+  `relayedCandidate`, `connectRelayed`, `permitRelayedPeer` and
+  `releaseRelay`, over UDP, TCP or TLS (`relayCertAuthority`,
+  `relayVerifyCert`). `onDatagram` and `sendDatagram` carry a protocol of
+  your own on the same port.
+- Reliable UDP on Node.
+
+#### WebSocket
+
+- `ServerWebSocket.upgrade(request)` decides on each session from its
+  `WebSocketRequest` (path, query, headers, cookies, `Origin`,
+  subprotocols, address), and can refuse it or choose its subprotocol. A
+  session keeps it as `WebSocket.request`.
+- `sendText` and `sendBinary`; `WebSocketMessageEvent.MESSAGE` delivers
+  each message whole; `WebSocket.protocols` and `protocol`; `ping()`,
+  `pong()`, `pingInterval` (30 s) and `idleTimeout` (60 s).
+- permessage-deflate (RFC 7692), opt in with `perMessageDeflate` on the
+  server or the client, above `compressionThreshold` (1,024 bytes).
+- `PreparedMessage`, `WebSocket.sendPrepared` and
+  `ServerWebSocket.broadcast(message, ?sessions)`: one message encoded and
+  framed once, and compressed once, for many sessions.
+- Limits: `maxConnections` (10,000; a 503 past it),
+  `maxPendingHandshakesPerAddress` (16), `refusedConnections`,
+  `maxHeaderSize` (16 KiB; a 431 past it), and per server or session
+  `maxMessageSize` (1 MiB), `closeTimeout` (5 s) and
+  `maxOutputBufferSize` (8 MiB).
+- Graceful shutdown: `stopAccepting()`, `drain(timeout, ?onComplete,
+  closeCode)`, `clientCount`, `draining` and `WebSocket.closeWith(code,
+  reason)`. `publishMetrics()` adds session counts to a `Metrics`
+  registry.
+- `runtimes`, `runtimeCount`, `selectRuntime` and `reusePort`, as on
+  `ServerSocket`.
+- A client checks a `wss://` server's certificate with `verifyCert` and
+  `certAuthority`, and dials IPv6 literals.
+- Client and server on Node.
+
+#### WebRTC
+
+- `crossbyte.net.rtc.PeerConnection`: ICE, DTLS, SCTP and DCEP over one
+  UDP socket, with `PeerDescription` and `SessionDescription` (SDP) for
+  signalling, which stays the application's. Checked against Chrome in both
+  directions.
+- `DataChannel` and `DataChannelSet`, reliable or partially reliable
+  (`maxRetransmits`, `maxPacketLifeTime`, RFC 3758), with SCTP flow and
+  congestion control and `bufferedAmount`.
+- ICE: `IceAgent`, consent freshness (RFC 7675), role conflicts, ICE
+  restart (`restartIce()`), trickle (`onLocalCandidate`,
+  `addRemoteCandidate`) and `onSelectedPairChanged`.
+- `PeerConnectionHost`: many peer connections on one UDP port, driven by
+  one tick.
+- STUN and TURN: `gatherReflexive`, `gatherRelayed` and
+  `gatherRelayedFrom(servers)` with failover; `TurnClient` over UDP, TCP or
+  TLS (`TurnTransport`), with RFC 8656 channels (`useChannels`), IPv6
+  (`requestIPv6`), RFC 8489's SHA-256 credentials and 300 redirects;
+  `setRelayCredentials` for expiring credentials.
+- `readyTimeout` (30 s), `maxPeerChannels` (512), `maxLabelSize`
+  (1,024 bytes), `refusedChannels`, `maxMessageSize`, `onClose`, `closed`
+  and `closeReason`.
+- DTLS needs mbedTLS, so `DtlsCertificate` and `PeerConnection` work
+  natively only.
+
+#### HTTP
+
+- HTTP/2, client and server. A server sets `HTTPServerConfig.http2Enabled`
+  and serves both versions on one listener (ALPN over TLS, prior knowledge
+  in cleartext); a client sets `URLRequest.httpVersion`. The server has the
+  Rapid Reset defence (`http2MaxResetStreams`, `http2ResetWindowSeconds`)
+  and bounds request bodies per connection
+  (`http2MaxRequestBodyBuffer`, 4 MB). `-D crossbyte_no_http2` leaves it
+  out of a build.
+- HTTP/1.1 keep-alive and pipelining: `keepAlive` (on),
+  `keepAliveTimeout` (5 s) and `keepAliveMaxRequests` (1,000).
+- `crossbyte.http.Router`: method and path routing with `:param` and
+  `*rest`, as middleware.
+- Answers from middleware: `HTTPRequestHandler.respond()` and
+  `respondBytes()`, and `beginResponse(status, contentType, headers)` for a
+  body written as it is produced (`HTTPResponseStream`), with `onDrain`,
+  `Event.CLOSE` and `connected`.
+- HTTPS: `HTTPServerConfig.tlsCertificatePath` and `tlsKeyPath`.
+- Request limits: `requestTimeout` (60 s; a 408), `maxRequestBodySize`
+  (1 MB; a 413), a 64 KB header block (a 431), `maxConnections` (10,000)
+  and `maxOutputBufferSize` (8 MB).
+- `onExpectContinue(handler)` decides on `Expect: 100-continue`, and
+  `onError(handler, error)` answers a failed request yourself.
+- Rate limiting answers `429` with `Retry-After`, keyed by
+  `rateLimitKey(handler)` where the client's address is not the key.
+  `HTTPRequestHandler.remoteAddress` is public.
+- Compression: `HTTPServerConfig.compression` (`HTTPCompression`) sets
+  what is compressed and how hard, keeps compressed static files, and
+  serves a precompressed `.br` or `.gz` beside a file. Streamed responses
+  are compressed as they go. `fileCacheSize` (16 MB) keeps small static
+  files in memory.
+- `HTTPServer.drain(timeout, ?onComplete)` finishes in-flight requests
+  before closing.
+- Metrics: `HTTPServerConfig.metrics` and `metricsPrefix`.
+- One server on several cores: `HTTPServerConfig.runtimes`,
+  `runtimeCount` and `reusePort`.
+- PHP: `phpTimeout` (30 s; a 504), `phpMaxResponseSize` (8 MiB; a 502)
+  and `phpMaxExchanges` (64), and PHP served on Node.
+- `serveDotFiles`, off by default.
+- Client limits and deadlines per request: `URLRequest.headTimeout`
+  (5 min), `totalTimeout`, `maxBodySize` (64 MB), `maxDecompressedSize`
+  (64 MB), `maxRedirects` (10) and `maxResponseHeaderSize` (64 KB).
+- Client TLS per request: `URLRequest.verifyCert`, `certAuthority`,
+  `clientCertificate` with `clientKey`, and `pinnedPublicKeys`
+  (`pin-sha256`).
+- The client keeps connections for the next request, manages cookies
+  across redirects (`manageCookies`), refuses `https` to `http` redirects
+  unless `followInsecureRedirects` is set, and cancels with
+  `HTTPCancelToken` or `URLLoader.close()`. Loads share a pool of
+  `URLLoader.maxConcurrentLoads` (16) threads.
+- `URLLoader` on Node and in a browser.
+- For an `HTTPBackend`: `HTTPRequestBody`, `HTTPRequestContext.onHeaders`,
+  `followInsecureRedirects`, `manageCookies`, `onRedirect` and `tls`.
+- OAuth: PKCE (`createCodeVerifier()`, `codeChallenge()`),
+  `OAuthConfig.clientAuthentication` (`SECRET_BASIC` or `SECRET_POST`),
+  `OAuthToken.idToken`, extra authorization parameters, `OAuth.timeout`
+  (30 s) and an `onError` callback.
+
+#### RPC
+
+- Compiled-lane types: `Array<T>`, structures (a class implementing
+  `crossbyte.rpc.RPCStruct`, or an anonymous structure), enums with or
+  without arguments, `Null<T>` of each, and compact numbers
+  (`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`). An
+  abstract over a carried type is carried as that type. Each is generated
+  at compile time with no reflection; a type the lane cannot carry fails
+  the build.
+- Typed runtime calls: `RPCSession.runtimeCall(op)` and
+  `runtimeRequest(op)` write values straight into the frame, and
+  `registerArgs(op, handler)` reads them through `RPCArgs`.
+- Handlers can answer later by returning `Future<T>`;
+  `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
+- Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
+  `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+- `RPCSession.dial(uri, ?commands, ?handler)`: a client that redials, from
+  0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
+  `up`.
+- Errors: `crossbyte.rpc.RPCError`, whose message reaches the caller, and
+  `RPCSession.onHandlerError` and `onUnreadableFrame`.
+- Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
+  `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
+- Contracts, handlers and commands classes can extend others of their
+  kind.
+- A hello as each connection starts: `RPCSession.PROTOCOL_VERSION`,
+  `peerVersion`, `peerCapabilities`, `peerCallsFingerprint`,
+  `peerAnswersFingerprint` and `onHello`.
+- `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
+  session whose call is running.
+- RPC on Node and in a browser.
+- An RPC guide, `docs/rpc.md`.
+
+#### Data
+
+- MongoDB over its wire protocol, natively, on the jvm, the interpreter, hl
+  and neko: `mongodb://` strings, replica sets, TLS, SCRAM-SHA-256,
+  SCRAM-SHA-1, X.509 and PLAIN, cursors, write concern, transactions and
+  `MongoError`. With it, `crossbyte.db.mongodb.bson` (BSON on every target,
+  with `BsonDocument` keeping field order) and `ExtendedJson`.
+- MySQL, natively: TLS (`MySQLConfig.sslMode`, `sslCa`), MySQL 8's
+  `caching_sha2_password`, `connectTimeout` (10 s), `readTimeout`,
+  `writeTimeout` and TCP keepalive, `MySQLConnection.cancel()`, `ping()`,
+  `escape()` and `quote()`, and `MySQLError` with `code` and `sqlState`.
+- Postgres: `PostgresConnection.requestParams(sql, params)` and
+  `PostgresStatement.executeParams(params)` with `PostgresParameter`;
+  `PostgresConfig.statementTimeout`, keepalive settings,
+  `tcpUserTimeout`, `connectionParameters` and `libraryPath`; and
+  `PostgresConnection.cancel()`.
+- SQLite: `attach()`, `detach()`, `loadSchema()` with
+  `getSchemaResult()`, and `queueTimeout` (10 s) for an asynchronous
+  connection.
+- For every driver: `SQLRow` and `executeEach` read a result row by row
+  without an object per row; `itemClass` makes each row an instance of a
+  class; `crossbyte.db.ITransactionalConnection`.
+- `crossbyte.db.ConnectionPool<T>`, which rolls back a transaction left
+  open; `crossbyte.db.AsyncDatabase<T>`, which runs work on a worker with a
+  bounded queue; and `crossbyte.db.SchemaMigrator` for versioned
+  migrations.
+- Compression: `CompressionAlgorithm.LZ4_FRAME` and `ZLIB`, and
+  `ByteArray.uncompress(algorithm, maxOutputSize)`.
+- Crypto from libsodium: `Aead` (XChaCha20-Poly1305), `X25519`,
+  `KeyExchange`, `GenericHash` (BLAKE2b), `HKDF`, `Argon2id`,
+  `ConstantTime.equals` and `SecureMemory.wipe`.
+- `PublicKeySignature` and `SignatureKey`: RSA and ECDSA over SHA-256.
+- JWT: `RS256`, `ES256` and `EdDSA` signers; `JWKSet` and `JWK`;
+  `JWT.verify`, which says why a token was refused (`JWTRejection`);
+  `maxTokenLength`, `acceptedTypes`, `requireType` and `updateKeys`; and
+  claims of your own (`claim`, `hasClaim`, `setClaim`).
+- `BCrypt.hashAsync` and `verifyAsync`, the same on `Argon2id`, and
+  `dummyHash` on both. Argon2id also runs on Node 24.7 and later.
+- `SecureRandom.isSupported`, and `SecureRandom` on Node and in a browser.
+
+#### Platform
+
+- Node runs `Socket`, `ServerSocket` (with TLS), `WebSocket`,
+  `ServerWebSocket`, `DatagramSocket`, reliable UDP, `HTTPServer`,
+  `NetConnection`, `NetHost`, RPC, `NativeProcess`, `FileStream` and
+  `URLLoader`; an `Application` drives itself there and in a browser.
+- The jvm has TLS (with ALPN, SNI and client certificates) and runs the
+  whole suite; HashLink and Neko build and run it too.
+- `crossbyte.io.Store`: durable key/value storage on every target,
+  IndexedDB in a browser and files elsewhere.
+- `crossbyte.sys.ProcessLifecycle`: graceful shutdown on SIGINT, SIGTERM
+  and SIGHUP, Windows console events, and the Windows Service Control
+  Manager (`installServiceControl(name)`). The `windows-service` sample
+  shows a server draining on `sc stop`.
+- `System.applicationId`, set with `-D crossbyte_app_id`, names an
+  application's storage directory.
+- `File.openWithDefaultApplication()`.
+- `SharedObject.remove(name)` and `SharedObject.lockTimeout`;
+  `LocalConnection.maxQueuedBytes` (16 MB) and `bytesPending`.
+- `NativeProcess` on the jvm, hl and neko.
+- Test harnesses: a load and churn harness (`ci/load.hxml`), a soak
+  (`ci/soak.hxml`), fuzzing of the wire parsers, a performance suite and
+  allocation budgets. `docs/testing.md` describes them.
+
+### Changed
+
+Entries marked "(Upgrading)" can need code changed; the Upgrading section
+says how.
+
+#### Runtime
+
+- A failure in a callback no longer ends the process. What a timer, a tick
+  listener, a socket handler or a posted callback throws is logged with
+  `Logger.error` and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`; a
+  recurring timer stays armed, a stream socket whose handler threw is
+  closed, and every other connection carries on. `HostApplication.advance`
+  and `CrossByte.pump` report such failures the same way rather than
+  rethrowing them. (Upgrading)
+- Work posted from another thread runs as soon as the runtime is free,
+  not at its next tick: natively at twelve ticks a second, the mean wait
+  fell from about 40 ms to under 0.1 ms. `exit()` from another thread stops
+  the loop at once.
+- `tps` delivers the rate it names (60 ticks a second measured 56.6 and now
+  59.9), and the frame wait sleeps once rather than a millisecond at a
+  time. `ServerApplication`'s `POLL` loop waits inside poll, so a socket
+  that becomes ready is served at once, not at the next tick.
+- Every timer due in a frame fires in that frame; the cap of 256 a frame is
+  gone, and a burst is spread only when it would overrun the frame.
+  `haxe.Timer` and `GlobalTimer.setInterval` run at the rate they are given,
+  on the runtime of the thread that made them, where each period was
+  rounded up to whole ticks.
+- `haxe.Timer.stamp()` is monotonic natively (`CLOCK_MONOTONIC`, or
+  QueryPerformanceCounter on Windows) and on the jvm (`System.nanoTime`),
+  and every deadline in CrossByte is measured on it, so setting the time of
+  day no longer moves them.
+- Arming, clearing, pausing and resuming a timer allocates nothing, and the
+  heap scheduler keeps each timer's position on the timer: at 30,000
+  timers, a simulated second costs 40 ms of CPU where it cost 499 ms.
+- Dispatching an event costs about half what it did, and adding or removing
+  a listener copies the list only while a dispatch is walking it.
+- `CrossByte.current()` answers the calling thread's own runtime on every
+  threaded target, and throws on a thread no runtime belongs to.
+  `CrossByte.make()` no longer takes over the calling thread's timers, and a
+  child runtime exits with the runtime that made it. (Upgrading)
+- `Worker`, `TaskPool` and `Task` run their work on other threads on the
+  jvm and the interpreter too, where it ran inline on the caller's thread.
+  `System.processorCount` answers on every target. A `Worker` delivers up
+  to `maxMessagesPerTick` messages a tick, where it delivered one.
+- The events and payloads a socket hands out for each arrival are reused
+  for the next arrival. (Upgrading)
+- Every socket starts in `ByteArray.defaultEndian`, little-endian unless
+  changed, as `ByteArray` does. (Upgrading)
+- `writeObject` frames HXSF and JSON with a 32-bit length, so an object is
+  no longer limited to 65,535 bytes of text, and `readObject` bounds what
+  it makes: `ByteArray.maxObjectValues` values, nested at most 256 deep
+  (128 in AMF). (Upgrading)
+- Event-type constants are typed (`EventType<T>`), so a listener of the
+  wrong event is refused at compile time. (Upgrading)
+- `ByteArray` reads and writes integers a word at a time (`readInt` 526 to
+  889 MB/s), appends without zeroing what it overwrites, and
+  `ByteArray.fromBytes` no longer allocates a 64 KB buffer only to drop
+  it.
+- `Logger` writes timestamps in UTC with milliseconds, escapes control
+  characters in messages and fields so a client cannot forge a log line,
+  and writes JSON fields in a fixed order. (Upgrading)
+- `Vector` is an abstract that works on every target, with typed callbacks
+  (`VectorCallback`), `sort` taking a comparator and `concat` taking
+  vectors. (Upgrading)
+- `SlotHandle` carries 20 index bits and 11 generation bits, and `SlotMap`
+  and `PackedSlotMap` reuse the slot freed longest ago, so a stale handle
+  no longer comes to name a new entity within seconds. (Upgrading)
+- `ObjectPool` keeps at most `maxFree` free objects, 10,000 unless set.
+  (Upgrading)
+- `TaskPool.submit` returns `Task<Any>`, `UncaughtErrorEvent.origin` is
+  `Any`, and `EnumUtil`, `ListedMap.KeyValuePair` and `Object.entries()`
+  use classes rather than anonymous structures. (Upgrading)
+- On JavaScript, text is encoded and decoded through the platform's
+  `TextEncoder` and `TextDecoder`, about ten times faster, and a NUL byte no
+  longer ends a string read from bytes (on HashLink too).
+
+#### TCP
+
+- Natively a TCP message allocates nothing once a connection is under way,
+  and an idle connection lets go of its buffers' storage after five quiet
+  seconds: 1.7 KB where it kept 51 KB after a 16 KB message each way.
+- The socket read buffer is 64 KB, shared per thread, and arrivals are
+  appended to the input rather than rebuilding it, so a reader that falls
+  behind no longer costs the square of its backlog. Draining an output
+  backlog is linear too: 16 MB took 2.4 s of copying and takes 1.5 ms.
+- Each socket reads at most a megabyte a pass and the loop polls again, so
+  a fast sender no longer holds the runtime or the server's memory. A TLS
+  socket reads more than one record a pass: an upload over TLS went from
+  16 to 410 MB/s.
+- Listeners, connects in flight and TLS handshakes are in the poll set:
+  at twelve ticks a second on eval and the jvm, connect to accept went from
+  41 to 57 ms to under a millisecond.
+- A TCP `NetConnection` writes what a pass sent in one system call: RPC
+  over TCP at twenty calls a tick went from 7.0 to 0.5 µs of CPU a call.
+- Host names are looked up off the runtime's thread, on four threads the
+  process keeps, with answers cached for 30 seconds and failures for 5. A
+  name that does not resolve is an `ioError` after `connect()` returns.
+  (Upgrading)
+- A server out of descriptors no longer spins: after a failed accept the
+  listener is set aside for 5 ms, doubling to a second. Natively on Linux
+  and macOS the soft descriptor limit is raised to the hard one at start
+  (`-D crossbyte_keep_nofile` keeps it), and on Windows a listen backlog
+  can reach 65,535 where it stopped at 200. (Upgrading)
+- With the hxcpp fork on mbedTLS 3.6.7, a full TLS handshake costs a
+  native server about a quarter of the CPU it did, AES-GCM uses AES-NI in
+  MSVC builds, and TLS 1.0 and 1.1 are refused. (Upgrading)
+- A `NetConnection` ends the same way over TCP, WebSocket and reliable
+  UDP: `onError`, then `onClose` once with the reason. A WebSocket close
+  reports its code as `Reason.Code`. (Upgrading)
+- `RateLimiter` lives in `crossbyte.net` and is a token bucket; IPv6
+  clients are keyed by their /64. (Upgrading)
+- `Socket.close()` sends what was written before it, and a `Socket.timeout`
+  of 0 is no deadline natively too, as on Node.
+- On the jvm: one `ByteBuffer` per array rather than one per read or
+  write, a selector per thread, registrations kept between selects, reads
+  that copy nothing (about 1,200 to 3,000 MB/s over loopback), and a
+  connect that no longer holds the runtime's thread.
+
+#### UDP
+
+- On Linux, natively, a `DatagramSocket` reads with `recvmmsg` (up to 64 a
+  call) once datagrams queue, and reliable UDP sends with `sendmmsg` and
+  UDP segmentation offload: a bulk send costs 1.15 ms of CPU a megabyte
+  where it cost 2.9.
+- A socket reads up to 1,024 datagrams each time it is found readable,
+  where it read 64, keeps its own address, and sends a fifth faster
+  natively. On the jvm a send allocates nothing.
+- `DatagramSocket.connect()` and `send()` to a name look it up off the
+  runtime's thread, and a send keeps the answer for a minute. (Upgrading)
+- `DatagramSocket.send` is an inline forwarder, so it boxes nothing on the
+  jvm. (Upgrading)
+- A datagram too large to send says so, with the size and the limit.
+
+#### Reliable UDP
+
+- A session sends at the rate the path carries: a retransmission timeout
+  measured as RFC 6298 has it (200 ms to 10 s), a window that starts at ten
+  frames and halves on loss, selective acknowledgements with RACK loss
+  detection (RFC 8985) and a tail probe. Frames a pass produces go out
+  bundled, and sessions ask for a megabyte of socket buffer each way
+  (`WINDOW_BUFFER_SIZE`). Natively over loopback, 1,000-byte messages
+  under 1% loss went from 0.35 to 58 MB/s, and 100-byte messages from
+  45,000 to 258,000 a second.
+- A session holds an acknowledgement up to `ackDelay` (25 ms) for
+  something it sends to carry it, halving a game server's datagrams.
+  (Upgrading)
+- `maxOutputBufferSize` is 256 KB by default, where it was unbounded.
+  (Upgrading)
+- `close()` delivers everything sent before it and waits for the peer's
+  acknowledgement; `abort()` is the old immediate close. (Upgrading)
+- A quiet session sends a keepalive every 15 seconds and closes after 60
+  seconds of silence, where it sent none and closed between 75 and 150
+  seconds in.
+- The wire: a 1.0 CONNECT carries an extension (flag `0x08`, padded to 29
+  bytes), and frame type 7, `PATH`, carries join cookies and rebinds. A
+  peer on 1.0.0-rc.1 ignores both. (Upgrading)
+- An idle session holds about 2.7 KB natively, where it held 14 KB; a
+  message allocates nothing natively once a session is under way; and a
+  session a server accepts no longer opens a socket of its own.
+- In `DATAGRAM` mode a message larger than one frame arrives as one
+  message, and `flush()` works there too.
+- A `timeout` of 0 is no deadline, where it failed the attempt at once.
+
+#### WebSocket
+
+- The process-wide settings are gone: `maxMessageSize` (1 MiB),
+  `closeTimeout` (5 s) and `pingInterval` are set per server or session, and
+  a frame may be as long as its message, where frames over 64 KiB were
+  refused. (Upgrading)
+- A `ServerWebSocket` bounds what waits for each session at 8 MiB
+  (`maxOutputBufferSize`), closing with 1011 past it. (Upgrading)
+- A session pings a peer it has not heard from for 30 seconds and closes
+  with 1006 after 60, where a vanished peer was held for good. An accepted
+  subprotocol is echoed.
+- `closeWith()` and `drain()` carry out the closing handshake, with the code
+  and reason in the frame, and wait up to `closeTimeout` for the answer.
+- A peer flooding pings is owed one pong, the newest, rather than one each.
+- Sessions are read when their socket is readable, so 10,000 idle sessions
+  no longer make a hundred thousand system calls a second; what a pass
+  sends goes in one write (relaying a chat room: 485 to 107 µs of CPU a
+  message natively); and a server receives large messages 45 times faster
+  (19 to 650-930 MB/s).
+- Natively a message allocates nothing to send or receive but the `text` a
+  listener asks for, and an idle session holds less (an accepted one 3.8 KB
+  where it held 6.6), letting go of its buffers after a quiet heartbeat.
+- A `wss://` client checks the server's certificate. (Upgrading)
+- A client's failed connect ends one way: `ioError`, then `close` with 1006.
+  Its `timeout` bounds the whole connect: lookup, TCP, TLS and upgrade.
+- `ServerWebSocket.verifyCert` is gone, and `certAuthority` asks every
+  client for a certificate. `cert` and `certAuthority` take
+  `crossbyte.net.Certificate` and `Key`, and are set before `bind()`.
+  (Upgrading)
+- `WebSocket.shutdown()` throws `IllegalOperationError`: a session has no
+  half-close. (Upgrading)
+
+#### HTTP
+
+- Server defaults are safer: no `rootDirectory` serves no files, the
+  address is `127.0.0.1`, dot files are refused, `tryFiles` has no
+  `/index.html` fallback and `rewrites` is empty. (Upgrading)
+- Server limits are on by default: `maxConnections` 10,000 (was 256), 240
+  requests a minute per client (was 10), `maxOutputBufferSize` 8 MB (was
+  unbounded), `requestTimeout` 60 s, keep-alive, `phpTimeout` 30 s and
+  `phpMaxResponseSize` 8 MiB. (Upgrading)
+- The server compresses only what is worth it (1 KB or more, a text-like
+  type, not an error), sends `Vary: Accept-Encoding`, prefers gzip to
+  Brotli at equal preference unless Brotli is native, and treats the
+  `deflate` coding as zlib (RFC 9110). Natively gzip and deflate come from
+  hxcpp's zlib: 64 KB of JSON compresses in 235 µs to 6.0 KB, where it took
+  743 µs and came to 8.3 KB. (Upgrading)
+- A request's path is normalised once, before middleware, and files and
+  rewrites are resolved only after the middleware lets a request through.
+  A malformed escape or an encoded NUL is answered 400, and `+` in a path is
+  a plus. (Upgrading)
+- CORS no longer grants credentials to every origin, and a preflight is
+  answered with the configured methods and headers. (Upgrading)
+- Faster serving: a static file is looked up with one system call (79-byte
+  file: 345 to 125 µs of CPU), header lines are parsed where they lie, the
+  `Date` header is formatted once a second, and the access log is written
+  by a thread of its own under the category `http.access`.
+- Large responses: static files over 256 KB stream in 64 KB slices, a
+  response larger than the output buffer goes out in bursts as the client
+  reads, and a client that stops reading for 30 seconds is let go.
+- PHP no longer holds the runtime: the bridge connects off the runtime's
+  thread and reads replies as they arrive (a reply waited 49 to 53 ms for
+  the next tick, and now 0.5 ms). A script is given every request header as
+  `HTTP_*`, the client every response header the script sets.
+- `HTTPRequestContext`, `RewriteRule` and `RewriteCondition` are classes,
+  and a middleware's `next` takes `?error:Any`. (Upgrading)
+- The client reads a response a buffer at a time and keeps connections for
+  the next request; a body grows as it arrives rather than being allocated
+  from its declared length; loads share a thread pool; and
+  `HTTP_RESPONSE_STATUS` is dispatched on every target with the final
+  response's headers and URL.
+- A redirect to another origin drops `Authorization`,
+  `Proxy-Authorization` and a hand-set `Cookie`, and `https` to `http` is
+  refused unless `followInsecureRedirects` is set. (Upgrading)
+- `URLRequest.idleTimeout = 0` is no idle limit natively too. (Upgrading)
+- `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`,
+  so they no longer block the runtime. (Upgrading)
+- The native client's process-wide limits (`Http.MAX_*`) are per-request
+  settings on `URLRequest`. (Upgrading)
+
+#### RPC
+
+- A compiled call is named on the wire by a hash of its method's signature,
+  not its name alone, so two builds with different signatures no longer
+  read each other's bytes as their own. (Upgrading)
+- A frame a session cannot read is answered or passed over, and the
+  connection carries on: an unknown method is answered
+  `RPCError.UNKNOWN_METHOD_MESSAGE`, arguments that do not read
+  `UNREADABLE_MESSAGE`.
+- A handler that throws is answered with an error and the connection
+  carries on; anything but an `RPCError` is answered
+  `RPCError.INTERNAL_MESSAGE`, so internal details no longer reach the
+  caller. (Upgrading)
+- Every session answers pings, the heartbeat runs on any session, and a
+  heartbeat timeout closes the connection as `Reason.Timeout`. (Upgrading)
+- One handler can serve many sessions: each call is answered on the
+  connection it came in on, and `RPCHandler.session` names it.
+- Faster calls: frames are written into one buffer each session keeps, and
+  natively a request and its answer take 133 ns where they took 233, and a
+  round trip with a `Future` answer 405 ns where it took 928.
+- A handler's `@:rpc` method is no longer held to eight arguments.
+
+#### Data
+
+- Counts and ids are `Float`s, exact past 2^31: SQLite's, MySQL's,
+  Postgres's and MongoDB's. (Upgrading)
+- Natively, MySQL and SQLite column values come back exact: large integers
+  as `haxe.Int64`, `DECIMAL` as a `String`, dates in UTC. (Upgrading)
+- A statement or transaction the server refuses throws an `SQLError` on
+  every driver, after the `SQLErrorEvent` it already dispatched. MySQL
+  throws `MySQLError` and no longer puts the statement's text in the
+  message. (Upgrading)
+- Statement parameters are typed (`FieldStruct<SQLValue>`), and each value
+  is sent as its type. (Upgrading)
+- A native MySQL connection uses TLS whenever the server offers it
+  (`sslMode` `PREFERRED`). (Upgrading)
+- `SQLiteConnection.busyTimeout` is 5 seconds as a connection opens.
+  (Upgrading)
+- SQLite statements are prepared once and kept (64 texts): a statement with
+  six values runs in 0.8 to 2.2 µs where it took 4.0 to 7.3. Postgres
+  results come from the bridge as a binary block rather than JSON, 0.32 to
+  0.42 µs a row of 8 columns where it took 2.7 to 3.9.
+- A native MySQL statement reads its rows a page at a time, as asked for,
+  where a result was read whole first.
+- MongoDB and PostgreSQL connections keep TCP keepalive on with MySQL's
+  timings (60 s, then every 10 s, 6 probes).
+- Inflating goes through zlib natively, on Node and on the jvm (a 437-byte
+  message: 27 to 84 µs natively, now about 2), and Node compresses with its
+  own zlib and Brotli. `ByteArray.uncompress` throws `IOError` for bad data
+  and `RangeError` past its limit. (Upgrading)
+- `BCrypt.hash` makes `$2b$` hashes at cost 12 by default. (Upgrading)
+- JWT HS256 verification and signing cost about a quarter of what they did.
+  JWT times are `Float` seconds, and its data types are classes.
+  (Upgrading)
+- Off native cpp, crypto and IPC classes throw `IllegalOperationError`.
+  (Upgrading)
+- libsodium built by gcc and clang uses 64-bit arithmetic and the CPU's SIMD
+  code (X25519 41 to 24 µs, Argon2id at its interactive limits 72 to 45 ms),
+  BLAKE3 uses SSE2, SSE4.1 and AVX2 (977 to 3,459 MB/s), and natively
+  `SecureRandom` draws small amounts from a per-thread pool.
+
+#### Platform
+
+- `File.applicationStorageDirectory`, and every `Store` in it, is the
+  application's own directory. (Upgrading)
+- `File.applicationDirectory`, `System.appDir` and `Resources` are the
+  program's own directory, not the working directory. (Upgrading)
+- `File` takes paths literally (no `%NAME%` expansion), and
+  `File.resolvePath` normalises and never climbs out of the file system's
+  root or the application storage directory. (Upgrading)
+- `LocalConnection`, `SharedChannel` and `SharedObject` names are each
+  user's own. (Upgrading)
+- `LocalConnection` and `SharedChannel` write what a pass sent in one
+  write and deliver up to 2 ms of messages a pass, where they delivered 32
+  a tick: 4 KB messages went from 20 to 120 MB/s.
+- `System` asks the operating system directly rather than starting a
+  process, and throws where nothing answers. (Upgrading)
+- A native Windows build no longer raises its process to
+  `HIGH_PRIORITY_CLASS`. (Upgrading)
+- A child process's output is read at most `NativeProcess.MAX_OUTPUT_AHEAD`
+  (256 KB) ahead of the runtime.
+- The hxcpp fork's `production` branch brings changes an application can
+  see. (Upgrading)
+- On Node, gzip, deflate and Brotli use Node's zlib, and log records go to
+  stdout in one write a turn of the event loop.
+
+### Fixed
+
+Fixes to code new in this release are not listed.
+
+#### Runtime
+
+- A timer handle kept after its timer ended no longer cancels another
+  timer that reuses the slot; a runtime numbers its timers and holds at
+  most 524,288 at once.
+- A NaN delay or interval is refused with an `ArgumentError`, where one
+  NaN timer stopped every timer on its runtime.
+- A timer whose callback runs a frame of its own and then resumes itself
+  is no longer lost; a timer paused or rescheduled from its own callback
+  runs at its new time.
+- `Timer.fromWallClock` and `toWallClock` no longer put wall times off by
+  the runtime's age.
+- `removeEventListener(type, this.handler)` removes the listener on eval and
+  the jvm, where a bound method never compared equal.
+- A `Task` made on a thread with no runtime always calls its handlers, a
+  `Worker` cancelled after its work completed ends `CANCELLED`, and a
+  throwing task listener no longer stops the others.
+- `pump()` on a runtime that has exited no longer claims the calling thread.
+- `CrossByte.cpuLoad` counts a `POLL` loop's socket handlers.
+- A native host loop that only calls `pump()` reaches a garbage-collection
+  safe point, where it stalled every other thread.
+- Native debug builds with `hxcpp-debug-server` no longer die before
+  `main`.
+- On neko, posts to a runtime, a `Task`'s first listener and a cancel are
+  no longer occasionally lost.
+- Reading an object is bounded: a twelve-byte HXSF array no longer
+  allocates 840 MB, a negative length is refused, and an object nested
+  thousands deep no longer ends the process. AMF reads only what has
+  arrived.
+- Bounds checks that could overflow are fixed in `ByteArray`,
+  `ByteArrayOutput`, `DatagramSocket.send` and `ReliableDatagramSocket.send`;
+  `ByteArrayOutput.writeIntAt` no longer writes past a chunk; and varint
+  readers keep their bounds in `-D final` builds.
+- Writing past the end of a `ByteArray` zeroes the gap, where it could
+  expose earlier contents (on eval too).
+- A multi-byte read that cannot be satisfied throws without moving
+  `position`.
+- The varint writers write every 32-bit value (bit 31 set went out as one
+  byte), and the readers refuse a value past 32 bits.
+- `writeUTF` refuses a string over 65,535 bytes with a `RangeError`, where
+  the length wrapped.
+- `ByteArrayOutput` grows in every writer, and `reserve` no longer
+  reallocates on every call.
+- `EOFError` keeps the message it is given, and `Error.getCallStack()`
+  returns the error's own stack.
+- `ListedMap`, `DenseSet`, `OrderedMap`, `IndexedMap` and `PackedSlotMap`
+  can have the entry a loop is on removed.
+- `PriorityQueue` serves equal priorities first come, first served.
+- `QuadTree.insert` never refuses a point inside its bounds, and stops
+  subdividing 32 levels down.
+- `Array2D.clear()` empties the grid for every reference to it, and
+  `BitmapData.threshold` works.
+- `WeightedGraph` finds nodes by hashing, `RadixTree` lookups allocate
+  nothing, and `BloomFilter` sets the same bits on every target.
+- `Random.int` draws from all of a range wider than 2^31 values, the
+  unseeded start no longer repeats between runs on the jvm, hl and neko,
+  and a seed gives the same sequence on JavaScript as elsewhere.
+- `crossbyte.utils.Hash` gives the same answers on JavaScript as elsewhere,
+  as does `MathUtil.nextPow2` above 2^30.
+- `Seq32` wraps at 32 bits on JavaScript and prints as unsigned on the jvm.
+- `PrimitiveValue.toInt`, `Version` and every number a peer sends are read
+  the same way on every target, through `IntParse`.
+- `GlobalTimer` hands out unique ids on every threaded target.
+- On the jvm, `PriorityQueue`, `SwitchTable.make` with mixed keys, and
+  `Vector`'s `every`, `some` and `filter` work.
+- A `Map<Int, T>` miss on the jvm costs what a hit does (a Haxe 4.3.7
+  `IntMap` fault).
+
+#### TCP
+
+- A peer's data that arrives with its FIN is delivered before `CLOSE`,
+  where reading it in the listener killed the runtime loop.
+- A socket closed while a write was blocked no longer stops the runtime
+  loop, and a socket that blocked twice in a row no longer strands what it
+  held.
+- A client connect that completes at once no longer reports a healthy
+  connection as failed, and a connection is announced closed once.
+- A refused connect is reported at once as an `ioError` ("Connection
+  refused") on every system, where Windows waited out the timeout and
+  Linux and macOS announced a connect and then a close.
+- A client that connects and resets before it is accepted no longer ends a
+  native server on Linux.
+- `bind`, `connect`, `send` and `close` failures say what failed, and a
+  `bind` that fails is reported rather than taken for a success.
+- `ServerSocket.listen()` on a server never bound is an `IOError` on every
+  target. (Upgrading)
+- A server out of descriptors reports it once and keeps listening, where
+  the jvm closed the server and native code said nothing.
+- Writing before a connect has finished is no longer an error natively,
+  and `Socket.close()` sends what was written first.
+- A closed connection is let go of, where the socket registry kept it
+  reachable, with its buffers and `userData`.
+- `localAddress`, `remoteAddress` and their ports read null and 0 when a
+  socket has no such end, where they threw.
+- A `Socket` built with port 65535 works, and `writeBytes` and the
+  constructor refuse arguments out of range. (Upgrading)
+- On Windows a client turns Nagle's algorithm off before it connects, where
+  it stayed on.
+- On Linux and macOS, accepted sockets are close-on-exec, so a child process
+  no longer inherits a client's connection; on Windows the fork's sockets
+  are not inheritable.
+- A native connection reset read a byte at a time is a failure, not the
+  end of the stream.
+- Natively, a TLS connection accepted before its listener closed no longer
+  reads freed memory, and `alpnProtocol` still names what was agreed.
+- On Linux and macOS a process with more than about a thousand descriptors
+  can still connect and accept.
+- Socket errors on eval can be caught, where a reset or a port in use ended
+  the interpreter.
+- On neko a runtime services more than 64 sockets, and a `ServerSocket`
+  can listen.
+- On the jvm, a refused connect is reported as refused, the listen backlog
+  is the system's maximum rather than 50, `sys.net.Socket.setTimeout` works,
+  addresses are reported compressed (`::1`), and repeated selects no longer
+  exhaust the machine's ephemeral ports.
+- On the interpreter a second `close()` does nothing, and `readByte` at
+  the end of a connection throws `Eof`.
+- `NetConnection.close()` on a connection that has already ended does
+  nothing, and a `NetConnection`'s timestamps come from its own runtime.
+- A URL port too large for an `Int` is refused the same way on every target.
+- IPv6 addresses are written in RFC 5952 form on every target.
+
+#### UDP
+
+- One failed send, or one ICMP "port unreachable" report on Windows, no
+  longer stops a `DatagramSocket` receiving for good. Anyone could deafen a
+  reliable UDP server on Windows this way.
+- A connected `DatagramSocket` sends on macOS and the BSDs.
+- On Linux, two datagram sockets are no longer given the same port (the
+  hxcpp fork sets `SO_REUSEADDR` on stream sockets only), and on neko and
+  hl a bound port is checked.
+- `DatagramSocket.isSupported` answers truthfully on neko, where UDP works
+  again.
+
+#### Reliable UDP
+
+- `close()` delivers what was sent before it: a FIN overtook lost frames,
+  and a client writing 300 messages and closing had 10 of them heard.
+- A session connects when the last message of its handshake is lost, where
+  one connection in ten failed at 10% loss; a repeated HANDSHAKE no longer
+  skips frames on their way.
+- A peer that crashes and returns on the same address gets back in within
+  about three seconds, a server's `close()` tells its peers, and a peer
+  with no session is told at once.
+- A spoofed CONNECT no longer makes the server retransmit at the address it
+  names, and half-open sessions are bounded (`maxPendingConnections`).
+- A session is no longer closed when its socket's send buffer is
+  momentarily full.
+- A `NetConnection` over reliable UDP reports deadlines as `Reason.Timeout`.
+- Closing a session from its own `DATA` handler no longer reports an error.
+- On neko, hl and the interpreter a session's clock never runs backwards.
+
+#### WebSocket
+
+- A server receives a client's first message: the handshake's bytes stayed
+  in the buffer and every session closed with 1002.
+- The last message before a disconnect is delivered, and a full send buffer
+  no longer drops bytes or closes the session with 1006.
+- A TLS handshake that failed is no longer taken for a successful one, and
+  a session whose handshake fails or times out closes its socket.
+- `handshakeTimeout` closes stalled upgrades, TLS included, and
+  `stopAccepting()`, `drain()` and `close()` let go of sessions still
+  upgrading.
+- An upgrade request is read to 16 KiB at most, where one endless header
+  could hold hundreds of megabytes; a frame header claiming a huge payload
+  is refused on its header.
+- Close codes are checked against RFC 6455's ranges.
+- `ServerWebSocket.bind(0)` reports the port it got, a secure server's
+  sessions say they are `secure`, and `pendingHandshakeCount()` and
+  `handshakeFailures` count.
+- `ServerWebSocket` takes the TLS methods it inherits (`setCertificate`,
+  `addSNICertificate`, `setALPN`, `requireClientCertificate`), which
+  crashed natively.
+- `ServerWebSocket.listen()` on a server never bound throws an `IOError`,
+  and a server survives accepts the system refuses.
+- `writeBytes` and `sendBinary` refuse a range outside the bytes given;
+  `socketData`'s `bytesLoaded` counts the message that arrived; and the
+  output limit honours `outputOverflowPolicy`.
+- A server accepts sessions on eval, hl and neko, and a jvm server no
+  longer stops the runtime while idle.
+- A client dials IPv6 literals; a normal disconnect no longer prints
+  through `trace`.
+
+#### HTTP
+
+- Request smuggling: a `Content-Length` too large for an `Int`, an
+  obs-fold header line, whitespace before a colon or a line with no colon
+  is refused with 400, and a chunk size is bounded before it is parsed.
+- A URL can no longer add a header or a request: control characters are
+  refused and the request target, `Host` and other headers are sanitised.
+- A percent-encoded NUL in a path no longer slips past `blacklist`; with PHP
+  off, `.php` source is no longer served as a static file; and on Windows a
+  path naming an environment variable no longer reaches a file outside the
+  root.
+- `blacklist` and `whitelist` hold for every method and for rewrites, where
+  a blacklisted script ran for a `POST`.
+- A rewrite's `$1` to `$9` are expanded in one pass, so a request cannot
+  rewrite the target; rules are compiled once; a `POST` follows rewrites;
+  `Header` conditions match in any case; and `$uri` works in later
+  `tryFiles` entries.
+- A request body is bounded as it is decoded (413), and more than two
+  codings are refused (415).
+- Pipelined requests are answered in order, and requests behind one being
+  answered no longer turn its answer into a 413.
+- A response too large for the output buffer is sent whole, where a 12 MB
+  `respond()` went out cut short and logged as a 200.
+- A request carried on from a later tick is answered 500 when it throws,
+  and a response whose head has gone is never answered twice.
+- Error answers to `HEAD` carry no body; 1xx, 204 and 304 carry no
+  `Content-Length`; `405` reads "Method Not Allowed"; and
+  `errorDocument` is used.
+- A precompressed `.gz` is sent to a client that also takes Brotli, and gzip
+  no longer names a file `data`.
+- A conditional request dated after 2038 is answered 304.
+- The client honours `idleTimeout` in milliseconds (the default 30 s waited
+  over eight hours), holds a response's header section to 64 KB, refuses a
+  `Content-Length` past its limit before allocating, and bounds
+  decompression while it decodes.
+- A request body over 16 KB reaches the server whole over `https`, where
+  the rest of the first TLS record was dropped.
+- Cancelling a load ends it at once on every target, and `URLLoader.close()`
+  mid-request no longer crashes a native build.
+- A `COMPLETE` or `IO_ERROR` listener can start the loader's next load; a
+  `URLVariables` is sent as a form on every target; a HEAD stays a HEAD
+  through a redirect; and a failed connect says why.
+- Cookies across a redirect match their host in any case and are kept per
+  host; IPv6 hosts keep their brackets.
+- On the jvm, each load no longer leaves two sockets open.
+- The PHP bridge sends request bodies over 64 KB whole, passes binary
+  responses through untouched, keeps every cookie a script sets, answers a
+  backend that never replies with 504, and names a failing backend.
+- `OAuth.getAuthorizationUrl` keeps a query the endpoint carries, and a
+  rejected token exchange reaches an `onError` callback.
+- `HTTPBackendRegistry` is thread-safe, and the server logs the port it
+  bound.
+
+#### RPC
+
+- A frame that names a count or length larger than itself is refused before
+  anything is allocated, and a frame too short for what it carries no longer
+  reads into the next frame.
+- A call fails when its connection closes or cannot carry it, where it
+  waited for good; its `cause` is the connection's `Reason`.
+- The heartbeat no longer closes healthy connections: pings were never
+  answered.
+- A method returning `Null<T>` answers correctly, where the first answer that
+  was not null closed the connection.
+- A call to a session with no handler is answered rather than left
+  waiting, and a frame over `maxFrameLength` is refused before it is sent.
+- A session on a listening `LocalConnection` answers every client, not only
+  the first.
+- `RPCResponse.respond()` replaces the responder, as documented.
+  (Upgrading)
+- A contract extending another carries the parent's methods; a handler
+  extending another builds; types named through an import alias or private
+  typedef in another module build; and two methods whose ops collide fail
+  the build.
+
+#### Data
+
+- MySQL, from the hxcpp fork: statements with non-ASCII text are no longer
+  cut short (an `UPDATE` changed the wrong row); a write is no longer
+  reported as failed after it ran; escaping follows
+  `NO_BACKSLASH_ESCAPES` when it changes; one hostile packet no longer ends
+  the process; MySQL 8's default collation works; and `FLOAT` reads the
+  same in any locale.
+- MySQL: `timeZone` and `sqlMode` work, savepoints can be referred to
+  again, `isolationLevel` reads on older servers, and a statement given its
+  connection before `open()` runs.
+- Postgres: connections no longer share one result buffer, which could hand
+  a query another query's rows; queries no longer stall garbage collection;
+  `autocommit = false` takes effect (Upgrading); `ping()` asks the server;
+  `inTransaction` follows SQL text; libpq loads on macOS; `escape` no longer
+  doubles backslashes; and a malformed result block no longer crashes the
+  process.
+- SQLite: an asynchronous connection survives a failure and gives each
+  statement every row; a synchronous or asynchronous `cancel()` stops the
+  statement and keeps the connection; `deanalyze()` removes statistics
+  rather than reopening the database; `autoCompact` shrinks the file;
+  `SQLiteMode.READ` cannot write (Upgrading); a failed statement no longer
+  fails the next; and rowids past 2^31 read back whole.
+- A transaction begun as SQL text, or by turning autocommit off, is seen by
+  `inTransaction`, so a pool can roll it back.
+- A failed COMMIT is no longer reported as committed.
+- A null parameter is written as `NULL`, and `:name` is not substituted
+  inside comments, quoted identifiers, dollar-quoted strings or `E''`
+  strings.
+- Every statement honours `itemClass`, and results paged ahead come back in
+  order with only the last marked complete.
+- On the jvm, MySQL and SQLite failures arrive as `SQLError` or `IOError`,
+  not a `ClassCastException`; on hl, a MySQL open that cannot connect no
+  longer corrupts the heap.
+- deflate, gzip and LZ4 compress, where all three wrote stored blocks larger
+  than their input.
+- Brotli: a four-byte stream no longer hangs the decoder, a truncated
+  stream no longer crashes it, first use from several threads is safe,
+  decoding takes memory in proportion to its output, compression costs in
+  proportion to its input, and hl's output is correct.
+- gzip reads every RFC 1952 header and several members; an LZ4 block cut
+  short is refused; LZ4 decodes in a browser; and the native Brotli and LZ4
+  backends stop at `maxOutputSize`.
+- BCrypt adds the key's terminating NUL, so its hashes verify elsewhere and
+  others verify here; hashes made before still verify. A cost of 31 runs.
+- JWT times past 2038 are judged the same on every target; `verifyToken`
+  accepts any `typ` in `acceptedTypes` (`JWT` and `at+jwt`) and none;
+  `secureCompare` answers `false` for a null; a header with `crit` is
+  refused; and a deeply nested token no longer ends the process.
+- BCrypt on a worker thread no longer stalls garbage collection, and
+  `SecureRandom` initialises safely from two threads.
+
+#### Platform
+
+- `File`: `copyTo` and `moveTo` refuse to copy a file onto itself, which
+  emptied it; `moveTo` renames within a volume; `cancel()` cancels;
+  `canonicalize()` follows links; `size` and the dates are read when asked
+  for; `creationDate` is the file's birth time; `file:` URLs are read;
+  `spaceAvailable`, `isHidden` and the user directories answer correctly;
+  `openWithDefaultApplication()` works; `clone()` copies no listeners;
+  `deleteDirectory` on a missing path no longer crashes natively; paths
+  like `/root` work; and failures are `IOError`s with AIR's error numbers.
+- `File.createTempFile` and `createTempDirectory` use unguessable names and
+  create exclusively, so another user cannot steer them.
+- `Resources` reads only inside `resourcesDir`. (Upgrading)
+- `FileStream`: reads and writes keep the `IDataInput` contract in both
+  modes, `endian` and `position` mean the same opened either way,
+  `truncate()` truncates in place, `UPDATE` mode reads back on macOS, an
+  asynchronous read hands out only what it has read, and `readObject` reads
+  one object. A short `readBytes` throws `EOFError`. (Upgrading)
+- Platform checks made at run time ask the machine: `System.PLATFORM`,
+  `File.separator` and the storage directory were wrong on eval, the jvm
+  and Node running on Windows.
+- `System.totalCpuUsage()`, `getDeviceId()`, `processorCount` on macOS and
+  `memoryUsage()` past 2 GiB answer correctly.
+- `SharedObject` opens on macOS, reads a region whole under one lock, and
+  no longer replaces `data` with `{}` on a race.
+- `LocalConnection`: a peer that stops reading no longer stalls this side,
+  large frames move quickly through small buffers, a second `listen()` on
+  a name in use throws, reconnecting no longer runs two readers, `onReady`
+  comes after `connect()` returns, a listener no longer stops delivering,
+  and SIGPIPE no longer ends the process.
+- `NativeProcess` no longer crashes its parent when a child ends, keeps
+  UTF-8 split across reads whole, reports `EXIT` after `exit()` on the jvm,
+  and its `pid` is the child's.
+- On Windows a `Date` before 1970 no longer ends the process (hxcpp fork).
+- A process whose threads end as it exits no longer hangs on Windows or
+  crashes in debug builds (hxcpp fork).
+- HashLink and Neko compile and run again, sockets included; hl TLS reads
+  no longer stop every other thread; and neko's temporary files work.
+- Native builds on Linux and macOS compile cleanly, and `-D final` builds
+  compile.
+- No `trace` calls remain in library code.
 
 ### Upgrading from 1.0.0-rc.1
 
-Native builds need the `production` branch of the `dimensionscape/hxcpp`
-fork; the README says why. Each of these can need code changed, and its
-entry below says how:
+Each of these can need code changed; each says how. Behaviour that only
+an API added in this release has is not listed here.
+
+#### Building
+
+- Native builds need the `production` branch of the `dimensionscape/hxcpp`
+  fork, which has the socket, TLS and crypto support CrossByte builds on:
+  `haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production`.
+- That fork changes what an application can see natively: `Std.string` of
+  a `Float` prints the shortest text that reads back as the same number
+  (`0.1 + 0.2` is `0.30000000000000004`), spells `NaN`, `Infinity` and
+  `-Infinity` so, writes exponents without leading zeros (`1e-7`), and
+  neither printing nor `parseFloat` follows the process locale. TLS is 1.2
+  at least, and one TLS read or write moves at most 16 KB, so use the count
+  it returns. `sys.net.Socket`'s `listen`, `setBlocking` and `setTimeout`
+  throw when the system call fails, `setTimeout` refuses a negative or NaN
+  value, `shutdown` throws for any failure but "not connected", and
+  `select` refuses a closed socket (and, on Linux and macOS, a descriptor
+  past `FD_SETSIZE`). `Std.parseInt` saturates a decimal outside the `Int`
+  range. An exception escaping a thread ends that thread, printed as
+  `Uncaught exception in thread: ...`, rather than the process. Maps
+  iterate in a different order. `Math.floor`, `round` and `ceil` of `NaN`
+  are 0. A child process killed by a signal exits with 128 plus the
+  signal. Strings of eight characters or more are four bytes larger. On
+  Windows, `Sys.println` to a redirected stdout no longer flushes each line.
+- With the fork on mbedTLS 3.6.7, a MySQL server that offers TLS only at
+  1.0 or 1.1 no longer connects, and native code of your own that calls
+  mbedTLS through hxcpp's headers meets its 3.x API.
+- A static Lime build (iOS and tvOS always, `-static` elsewhere) compiles
+  Lime's curl against hxcpp's mbedTLS, so with the fork on 3.6.7 rebuild
+  Lime against it (`lime rebuild <target> -static`); a library built
+  against 2.28 does not fit. Lime 8.4.0's curl 7.87 then fails every HTTPS
+  request with "ssl_init failed" until it sets its RNG before
+  `mbedtls_ssl_setup`, which mbedTLS 3 requires: a two-line move in
+  `project/lib/curl/lib/vtls/mbedtls.c`. A dynamic build, whose ndll
+  carries its own mbedTLS, is unaffected.
+- A build with `-D crossbyte_brotli_native` or `-D crossbyte_lz4_native`
+  needs the current `crossbyte-brotli` or `crossbyte-lz4`, whose
+  `decompress` takes the output limit.
+- A jvm build that adds CrossByte with `-cp` rather than `-lib crossbyte`
+  adds `--macro crossbyte._internal.macro.StdOverrides.use()` before any
+  other macro, as `extraParams.hxml` does for `-lib`.
+- Natively on Linux and macOS a process raises its soft limit on open
+  descriptors to its hard limit as it starts, and the children it starts
+  inherit that: build with `-D crossbyte_keep_nofile` to keep the limit it
+  was started with, for children that `select()` on descriptors under
+  1,024.
+- A native Windows build runs at the priority it was started with; set
+  `CrossByte.windowsHighPriority = true` for the high class it took itself.
+
+#### Runtime
 
 - An event, and a payload handed to a hook called once per arrival, is
   valid only during the call it is handed to. A `DatagramSocket`, a
   `ReliableDatagramSocket`, a `WebSocket` and a `Socket` hand the same
   event and the same `ByteArray` out again for the next arrival, and empty
-  the bytes once the call returns, as `TurnClient.onData` and
-  `DtlsTransport.onMessage` do their payload. Code that keeps one past its
-  call, that queues events, or `event.data`, to handle at the next game
-  tick, say, reads empty bytes, or the next arrival's fields, where it
-  read what arrived. Keep a copy instead: `event.data.readBytes(mine)`,
-  the fields you need, or `event.clone()`, which copies the payload. Build
-  with `-D crossbyte_check_events` to find the line that keeps one, it
-  reads poison there, or reads nothing and throws, and with
-  `-D crossbyte_fresh_events` to have every arrival made afresh, as
-  before, until it copies. What is handed out other than as an event or
-  to such a hook stays yours to keep: an RPC argument, a message a decoder
-  returns, a request body, `NetConnection.onData`'s input.
+  the bytes once the call returns. Code that keeps one past its call (that
+  queues events, or `event.data`, to handle at the next game tick, say)
+  reads empty bytes, or the next arrival's fields, where it read what
+  arrived. Keep a copy instead: `event.data.readBytes(mine)`, the fields you
+  need, or `event.clone()`, which copies the payload. Build with
+  `-D crossbyte_check_events` to find the line that keeps one (it reads
+  poison there, or reads nothing and throws), and with
+  `-D crossbyte_fresh_events` to have every arrival made afresh, as before,
+  until it copies. What is
+  handed out other than as an event or to such a hook stays yours to keep:
+  an RPC argument, a message a decoder returns, a request body,
+  `NetConnection.onData`'s input.
 - Sockets, datagram sockets and WebSocket messages read and write in
   `ByteArray.defaultEndian`, little-endian unless changed, as every
-  `ByteArray` does. A protocol in network byte order sets `endian` on its
+  `ByteArray` does; datagram and WebSocket payloads were big-endian. A
+  protocol in network byte order sets `endian = Endian.BIG_ENDIAN` on its
   socket, or `ByteArray.defaultEndian` once.
-- An `HTTPServer` without a `rootDirectory` serves no files and listens on
-  `127.0.0.1`; `rewrites` is empty by default and `tryFiles` is
-  `["$uri", "$uri/"]`, and `validate()` refuses a `tryFiles` out of the
-  order the server follows.
-- The TLS surface takes `crossbyte.net.Certificate` and
-  `crossbyte.net.Key`, not `sys.ssl.Certificate` and `sys.ssl.Key`.
+- A listener added for a typed event-type constant must take that event or
+  one it extends: `addEventListener(ProgressEvent.SOCKET_DATA, (e:Event) ->
+  ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
+  `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin`, now `Any`,
+  through a type test and a cast.
+- `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
+  handler threw during the step: listen for
+  `UncaughtErrorEvent.UNCAUGHT_ERROR` where code caught failures around
+  them.
+- On the jvm, the interpreter, hl and neko, `CrossByte.current()` on a
+  thread no runtime belongs to throws `IllegalOperationError`, where it
+  returned the primordial runtime. Capture the runtime on its own thread and
+  hand work to it with `CrossByte.post`.
+- `CrossByte.pump` is two inline overloads, and `GlobalTimer.setTimeout`
+  and `setInterval` are overloads too: every call compiles as it did, but
+  none of them is a value any more (`var step = runtime.pump`, or a call
+  through `Dynamic`, does not compile or find it). Wrap it,
+  `(delta) -> runtime.pump(delta)`.
 - `readObject` and `writeObject` throw for an `objectEncoding` the build
-  cannot do, on `ByteArray`, `FileStream` and every socket, where they
-  read `null` and wrote nothing.
-- An object read through a `ByteArray` or a socket, or by `SharedObject`
-  or `SharedChannel`, may hold 1,000,000 values, elements, members,
-  names, each null of a run, and one holding more is refused with an
-  `IOError`. A program reading larger objects it trusts raises
-  `ByteArray.maxObjectValues`.
-- Types: `SQLiteConnection.lastInsertRowID` and `DBStats`' counts are
-  `Float`s; `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
-  `Null<Float>`; `System.memoryUsage()` is a `Float`;
-  `MySQLStatement.parameters` is a `FieldStruct<Dynamic>`; `SlotHandle`
-  no longer becomes an `Int` by itself; `PHPBridge.execute()` returns a
-  `Future`.
-- Moved or removed: `RateLimiter` is in `crossbyte.net`;
-  `MongoConnection.lastInsertRowID`, `StunClient.discoverFor` and
-  `ThreadEvent.UPDATE` are gone.
-- `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
-  statements throw what the server refused.
+  cannot do (AMF without the `format` haxelib), on `ByteArray`,
+  `FileStream` and every socket, where they read `null` and wrote nothing.
+- An object read through a `ByteArray` or a socket, or by `SharedObject` or
+  `SharedChannel`, may hold 1,000,000 values (elements, members, names,
+  each null of a run) and nest 256 deep (128 in AMF); one past either is
+  refused with an `IOError`. A program reading larger objects it trusts
+  raises `ByteArray.maxObjectValues`.
+- `writeObject` puts a 32-bit length before an HXSF or JSON object, where
+  rc.1 put 16 bits: an object written by rc.1 does not read back, so both
+  peers, and anything stored, move to 1.0 together.
+- `ByteArray.readVarInt` and `writeVarInt` are `readVarUInt` and
+  `writeVarUInt`, in the same format. `ByteArrayInput.readVarUInt` reads
+  values from 2^31 up, as a negative `Int`, where it threw; check for one
+  where the value is a length.
+- `ByteArray.uncompress` throws `crossbyte.errors.IOError` for data it
+  cannot read and `crossbyte.errors.RangeError` for a result past its
+  limit, whatever the algorithm, where it threw strings, `haxe.io.Eof` or a
+  plain `haxe.Exception`: catch these instead.
+- Code that keeps "no algorithm" in a `CompressionAlgorithm` types it
+  `Null<CompressionAlgorithm>`, which `CompressionAlgorithm.fromString`
+  answers. A token nobody knows, converted where an algorithm is asked for,
+  throws an `ArgumentError`.
+- Log timestamps are UTC with milliseconds (`2026-09-25T09:00:00.123Z`),
+  where they were local time to the second, and control characters in a
+  message or field are written as escapes. Anything parsing the text
+  format expects both.
+- A `TaskPool.submit` task's result is `Any`: cast it to read from it.
+- `Vector.sort` takes a comparator or nothing; `Vector.concat` takes
+  vectors: wrap an array or an item in a `Vector` first.
+- `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
+  `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
+  classes, so code that builds one from another anonymous type, rather than
+  a literal, constructs it instead.
+- `SlotHandle` no longer becomes an `Int` by itself: use `handle.index()`
+  for the slot and `handle.toInt()` for the whole handle. It has 20 index
+  bits, so a `SlotMap` or `PackedSlotMap` holds at most 1,048,576 entries
+  (it held 16,777,216), and one made with a larger `maxCapacity` throws.
+- An `ObjectPool` keeps 10,000 free objects unless told otherwise: set
+  `maxFree` to `0x7FFFFFFF` for no bound, as before. A negative `maxFree`
+  throws an `ArgumentError`.
+- `ThreadEvent.UPDATE` is gone; nothing dispatched it.
+- `Random.seed` is no longer public: set the shared seed with
+  `Random.reseed(value)`.
+- A `Dynamic` value no longer converts to a `URL` on its own: cast it,
+  `(value : String)`, or build `new URL(value)`.
+
+#### TCP
+
+- `ServerSocket.listen()`, and `ServerWebSocket.listen()`, throw an
+  `IOError` for a server never bound, where Linux and macOS listened on a
+  port of the system's choosing: bind first, to port 0 for one the system
+  picks.
+- `Socket.writeBytes` throws a `RangeError` for an offset or length outside
+  the bytes given, and the `Socket` constructor a `SecurityError` for a
+  port outside 0 to 65535, where they wrote part or did nothing.
+- A `Socket` stops reading once 16 MiB have arrived that its application
+  has not read (`maxInputBufferSize`, `PAUSE`), and goes on once it reads:
+  an application that waits for a whole message larger than that before
+  reading any raises the limit, or sets it to 0 for none.
+- A raw `ServerSocket`, and a `NetHost` on one, closes a connection
+  arriving while 10,000 are open (`maxConnections`), and a TLS one closes
+  a connection from an address with 16 handshakes under way once half of
+  `maxPendingHandshakes` are taken (`maxPendingHandshakesPerAddress`):
+  raise the first for a server built to hold more, and set the second to 0
+  behind a proxy.
+- `NetHost.maxConnections` (`INetHost`) is the most connections a host
+  serves, 10,000 by default, where it was the listen backlog: code that set
+  it as a backlog now caps its connections at that number, so remove the
+  line or set the cap it wants. A host asks for the system's largest
+  backlog.
+- A class implementing `INetHost` declares `maxConnections` as
+  `(get, set)` and adds `refusedConnections`, `canDial`, `dial`,
+  `discoverPublicAddress`, `localAddressFor`, `allocateRelay`,
+  `dialRelayed` and `permitRelayedPeer`. A host that cannot dial from its
+  listening endpoint answers `canDial` false, throws
+  `IllegalOperationError` from `dial`, `dialRelayed` and
+  `permitRelayedPeer`, and fails the `Future`s of `discoverPublicAddress`
+  and `allocateRelay`.
+- A `NetConnection` whose TCP connect fails calls `onClose` after
+  `onError`, and `onClose` after an error is given the error's reason; a
+  WebSocket connection closed by its peer reports `Reason.Code` with the
+  close frame's code and reason, where it reported `Reason.Closed`. Code
+  that took `onClose` to mean a connection had been up checks for
+  `onReady` instead.
+- A host name given to `Socket.connect()`, `WebSocket.connect()`,
+  `ReliableDatagramSocket.connect()`, `DatagramSocket.connect()` or
+  `DatagramSocket.send()` is looked up off the runtime's thread, and one
+  that does not resolve is reported as an `ioError` event after the call
+  returns. `ReliableDatagramSocket.connect()` and `DatagramSocket.send()`
+  threw `ArgumentError` for one, and `DatagramSocket.connect()` threw
+  `IOError`: listen for `ioError` instead. A malformed address still throws
+  at once.
+- `RateLimiter` is in `crossbyte.net`; `crossbyte.http.RateLimiter`
+  remains as a deprecated alias. It is a token bucket now, and its
+  constructor is `new RateLimiter(maxRequests = 10, perSeconds = 60.0,
+  ?clock, maxKeys = 100000)`, where rc.1's one argument was the window in
+  seconds with ten requests fixed: `new RateLimiter(30.0)` becomes `new
+  RateLimiter(10, 30.0)`.
+
+#### UDP
+
+- `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
+- `DatagramSocket.send` is `inline`, so a subclass can no longer override
+  it: an override does not compile. Every call compiles as it did, and
+  `socket.send` taken as a value, or called through `Reflect` or
+  `Dynamic`, works as before. Code that overrode `send` (to log, filter,
+  delay or drop datagrams) wraps the socket instead: a class of its own
+  that holds a `DatagramSocket`, does its work in a `send` of its own and
+  then calls the socket's, and hands the socket out (or forwards
+  `addEventListener`) for its events.
+
+#### Reliable UDP
+
 - `ReliableDatagramSocket.close()` is graceful: its `close` event comes
   once the peer has acknowledged everything, not during the call, and
   `abort()` is the old immediate close. Its FIN holds a place in the
   sequence, which a peer from before 1.0 does not know, so both ends need
   1.0 for what was sent before a close to arrive before it.
 - A reliable datagram client on 1.0.0-rc.1 cannot return a join cookie:
-  while a 1.0 server validates joins, once `joinValidationThreshold`
-  sessions are pending, by default, its CONNECTs are dropped, and it
-  joins once fewer are pending, or never under `JoinValidation.ALWAYS`.
-  Set `joinValidation = NEVER` on a server that must take such clients
-  under any load. A 1.0 client joins a server on rc.1 as before.
-- `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
-- A closed `DataChannel` resets its SCTP stream, so the peer's end closes
-  too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
-  advertise it, is not asked, and keeps its end open as before.
-- `PeerConnection.addLocalCandidate` throws for a relayed candidate, which
-  never worked from there: ask `gatherRelayed` or `gatherRelayedFrom`.
-- An `IceAgent` fails when it has selected no pair 80 seconds after
-  `start` (`timeout`), where it waited without end; set `timeout` to 0 to
-  keep waiting.
-- Off native cpp, `Ed25519.verifyDetached` throws an
-  `IllegalOperationError` where it answered `false`, and `keypair` and
-  `signDetached` throw one where they threw a String; check
-  `Ed25519.isAvailable()` first.
-- `SharedObject.sync()` throws an `IOError` for a payload the build cannot
-  read, where it set `data` to `{}`.
-- Off native cpp the crypto classes, the EdDSA, RS256 and ES256 JWT
-  signers and the IPC classes throw an `IllegalOperationError`, where they
-  threw a String or an `ArgumentError`; `Aead.decrypt` and
-  `PublicKeySignature.verify`, `keyType` and `joseSignatureLength` throw
-  there where they answered. Check `isAvailable()` or `isSupported` first.
-- A `JWT` verifying tokens that carry `aud` needs `expectedAudience` set to
-  the audience it is; with none, those tokens are refused.
-- `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
-- `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
-- `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
-  random bytes, throws an `IllegalOperationError` on the interpreter, neko
-  and HashLink, where it threw a String.
-- `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
-  30 seconds. On Node a request for any version but HTTP/1.1 fails, and in
-  a browser one with `followRedirects = false` does.
-- `RPCResponse.respond()` replaces the responder bound before, as it says,
-  where it added one: add with `then`.
-- A `NetConnection` whose TCP connect fails calls `onClose` after
-  `onError`, and `onClose` after an error is given the error's reason.
-  Code that took `onClose` to mean a connection had been up checks for
-  `onReady` instead.
-- `ServerSocket.listen()` throws an `IOError` for a server never bound,
-  on Linux and macOS too, where it listened on a port of the system's
-  choosing: bind first, to port 0 for one the system picks.
-- `Socket.writeBytes` and the `Socket` constructor throw for arguments
-  out of range, as documented, where they clamped or did nothing.
-- A TCP or WebSocket `NetHost`'s `discoverPublicAddress` and
-  `allocateRelay` fail the `Future` they return rather than throwing.
-- `ServerWebSocket.verifyCert` is gone: `certAuthority`, or
-  `requireClientCertificate()`, asks clients for a certificate, natively
-  now as well as on Node.
-- A `ServerWebSocket`'s `cert` and `certAuthority` are set before `bind()`,
-  on Node too, and only on a secure server; either throws otherwise.
-- `ByteArrayInput.readVarUInt` reads values from 2^31 up, as a negative
-  `Int`, where it threw; check for one where the value is a length.
-- `ByteArray.readVarInt` and `writeVarInt` are `readVarUInt` and
-  `writeVarUInt`, in the same format.
-- `writeObject` puts a 32-bit length before an HXSF or JSON object, where
-  rc.1 put 16 bits: an object written by rc.1 does not read back, so both
-  peers, and anything stored, move to 1.0 together.
-- A native Windows build runs at the priority it was started with; set
-  `CrossByte.windowsHighPriority = true` for the high class it took itself.
-- SQLite failures are `SQLError`s, as the other drivers' are, and are
-  dispatched as `SQLErrorEvent`s: catch `SQLError` where code caught the
-  `String` the driver threw.
-- `SQLiteConnection.open()` and `openAsync()` throw on a connection that
-  is open: `close()` it first, and after an asynchronous close wait for
-  `CLOSE`.
-- An SQLite connection opened with `SQLiteMode.READ` refuses to write:
-  open with `UPDATE` to write.
-- `SQLiteConnection.totalChanges` is a `Float` and `FKViolation.rowid` a
-  `Null<Float>`.
-- `PostgresConnection.request()` throws `SQLError` where it threw
-  `IOError` (a refused statement) or a `String` (no connection).
-- `PostgresConnection.autocommit = false` takes effect, where it did
-  nothing: statements then wait for `commit()`. Remove it from code that
-  set it and relied on each statement committing.
-- `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
-  `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
-  served as plain HTTP, and an `errorDocument` that is not there.
-- `SharedObject`'s constructor, `flush()`, `sync()` and `clear()` throw an
-  `IOError` when another participant holds the region's lock past
-  `lockTimeout` (five seconds), where they waited without end; set
-  `lockTimeout` to 0 to keep waiting.
-- `File.moveTo` with `overwrite` replaces an existing directory instead of
-  merging into it, as its documentation says; merge with `copyTo` and then
-  delete the source if that is what was meant.
-- `File.applicationStorageDirectory` is the application's own directory
-  inside the account's application data, so stores moved:
-  `%APPDATA%\stores\<name>` is now `%APPDATA%\<id>\stores\<name>`, and
-  `$HOME/stores/<name>` is now `~/.local/share/<id>/stores/<name>` on
-  Linux and `~/Library/Application Support/<id>/stores/<name>` on macOS,
-  with `<id>` the main class's full name unless `-D crossbyte_app_id`
-  names it. Nothing is moved for you, a store in the old place could be
-  any application's, so move an application's own across once. Two
-  applications with the same main class, such as `Main`, share a
-  directory until one sets the define.
-- `File.applicationDirectory` and `Resources` read from the program's own
-  directory instead of the working directory. The build copies `resources`
-  beside the program; a tool that moves the program afterwards must carry
-  `resources` with it.
-- `File` no longer expands `%NAME%` in a path on Windows: build the path
-  from `Sys.getEnv("NAME")`, or start from `File.applicationStorageDirectory`
-  and the other static directories, which are usually what was meant.
-- `FileStream` reads and writes in `ByteArray.defaultEndian`,
-  little-endian unless changed. Set `endian = Endian.BIG_ENDIAN` on a
-  stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
-  `writeObject` frames HXSF and JSON with a 32-bit length, so objects in
-  files written by rc.1 do not read back.
-- `File.data` throws an `IllegalOperationError` until a load has
-  succeeded, where it answered `null`: check for a load first, or catch
-  it. `File.extension` and `type` are `null` for a name with no dot, where
-  they were `""`.
-- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
-  throw an `IllegalOperationError` off native and on macOS, where they
-  answered `[false]`, `[]` and `false`: check `System.PLATFORM` and the
-  target first. `System.getDeviceId()` answers `null`, not `""`, where
-  there is no identifier, and `totalSystemMemory()` and
-  `freeSystemMemory()` throw where nothing answers, where they answered 0.
-- On an asynchronous `SQLiteConnection`, `request()` and the properties
-  that ask SQLite wait for the work queued before them (`queueTimeout`),
-  and the rows `request()` answers are read by name: its `getResult`,
-  `getIntResult` and `getFloatResult` throw. `connected` is true from the
-  `OPEN` event to `close()`.
-- `SQLiteConnection.cacheSize` is an `Int`, negative for a size in KiB,
-  where it was a `UInt`.
-- `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
-  `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
-  were `Int`s.
-- With the hxcpp fork on mbedTLS 3.6.7, a MySQL server that offers TLS
-  only at 1.0 or 1.1, or a WebRTC peer that speaks only DTLS 1.0, no
-  longer connects; and native code of your own that calls mbedTLS through
-  hxcpp's headers meets its 3.x API, as CrossByte's own was ported to.
-- A static Lime build, iOS and tvOS always, `-static` elsewhere,
-  compiles Lime's curl against hxcpp's mbedTLS, so with the fork on 3.6.7
-  rebuild Lime against it (`lime rebuild <target> -static`; a library
-  built against 2.28 does not fit). Lime 8.4.0's curl 7.87 then fails
-  every HTTPS request with "ssl_init failed" until it sets its RNG before
-  `mbedtls_ssl_setup`, which mbedTLS 3 requires: a two-line move in
-  `project/lib/curl/lib/vtls/mbedtls.c`. A dynamic build, whose ndll
-  carries its own mbedTLS, is unaffected.
-- `MongoConnection.affectedRows` and `count()`, and `MongoWriteResult`'s
-  `inserted`, `matched`, `modified` and `deleted`, are `Float`s, where
-  they were `Int`s: code that keeps one in an `Int` needs `Std.int()`.
-- `LocalConnection.timeout` and `SharedChannel.timeout` of 0 wait without
-  a deadline, where they made a single try; set 1 for a single try.
-- On Linux and macOS a `SharedObject` region is not shared between users:
-  one another user made under the name throws an `IOError`, where it was
-  shared when the first user's umask let others write it.
-- Two users can no longer meet over a `LocalConnection`, `SharedChannel` or
-  `local://` name: each user's names are their own. A name's socket is
-  `/tmp/crossbyte-<uid>/<name>` on Linux and macOS, where it was
-  `/tmp/crossbyte_local_connection_<name>`, and its pipe
-  `\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
-  `\.\pipe\<name>`: a program of your own that opened those directly
-  must follow.
-- A `timeoutMs` of 0 is no deadline for a STUN question (`StunClient`,
-  `discoverPublicAddress`, `gatherReflexive`) and for
-  `ReliableDatagramServerSocket.connect` and `connectRelayed`, where it
-  meant three and twenty seconds: pass the time wanted, or leave the
-  argument out for the default. `StunClient.classifyFiltering` fails for 0,
-  and a dial throws for a negative timeout.
+  while a 1.0 server validates joins (once `joinValidationThreshold`
+  sessions are pending, by default) its CONNECTs are dropped, and it joins
+  once fewer are pending, or never under `JoinValidation.ALWAYS`. Set
+  `joinValidation = NEVER` on a server that must take such clients under
+  any load. A 1.0 client joins a server on rc.1 as before.
 - A reliable session holds an acknowledgement for up to 25 ms (`ackDelay`)
   for something it sends to carry it. Set `ackDelay` to 0, on the socket or
   on `ReliableDatagramServerSocket`, for one every pass as before; a peer on
@@ -272,166 +1347,31 @@ entry below says how:
 - `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB by default: a
   session that would hold more waiting for its window is ended with an
   `ioError`. One `send` larger than the window waits whole, so an
-  application that sends more than that at once, one large reliable
-  message, a file, raises it on its sessions, or sets it to 0 for no
-  limit.
-- `Membership.heard` and `sweep` take a `Float` `now`, -1 unless given,
-  where they took `Null<Float>`: leave the argument out, or pass -1, where
-  code passed null to ask the clock.
-- `NodeChannel.poll()` takes no argument; delete the one passed, which was
-  never read.
-- `RPCHandler.afterCall(method, requestId, error)` takes a
-  `Null<haxe.Exception>`, and `onHandlerError` and
-  `RPCSession.afterRuntimeCall` a `haxe.Exception`, where they took
-  `Dynamic`: change the parameter's type in an override or handler. What was
-  thrown is the exception, or, for a value that was not one, the `value` of
-  the `haxe.ValueException` given.
-- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are -1, not null, for
-  no limit, and `PeerConnection.createDataChannel` takes -1, or nothing,
-  where it took null: compare with -1, and pass -1 where code passed null
-  for the limit it did not set.
-- `DataChannelSet.transfer` is gone from its public surface: send on a
-  `DataChannel`.
-- Code that keeps "no algorithm" in a `CompressionAlgorithm` types it
-  `Null<CompressionAlgorithm>`; `CompressionAlgorithm.fromString` answers
-  that type.
-- A `TaskPool.submit` task's result is `Any`: cast it to read from it.
-- `Vector.sort` takes a comparator or nothing; `Vector.concat` takes
-  vectors, wrap an array or an item in a `Vector` first.
-- `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
-  `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
-  classes, so code that builds one from another anonymous type, rather than
-  a literal, constructs it instead.
-- A listener added for a typed event-type constant must take that event or
-  one it extends: `addEventListener(ProgressEvent.SOCKET_DATA, (e:Event) ->
-  ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
-  `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin` through a type
-  test and a cast.
-- `parameters` of `SQLiteStatement`, `MySQLStatement` and
-  `PostgresStatement` is a `FieldStruct<SQLValue>`: a `Bool`, `Int`,
-  `Float`, `Int64`, `String`, `Bytes`, `Date` or null converts to it as it
-  is set. A value read back is a `SQLValue`; cast it to its type
-  (`var name:String = statement.parameters.name`). On SQLite, which took
-  `String`s only, a number now goes in as a number and `Bytes` as a blob.
-- `PostgresConnection.request()` answers a `PostgresResultSet`, a
-  `sys.db.ResultSet`, where it answered `Dynamic`; the
-  `PostgresStatement.PostgresResultSet` typedef of `Dynamic` is gone.
-  `PostgresRawResult` is a class in `crossbyte.db.postgres`, and
-  `SQLiteConnection`'s `WalCheckpointResult`, `FKViolation`,
-  `SQLSchemaResult`, `SQLTableSchema`, `SQLColumnSchema`, `SQLViewSchema`,
-  `SQLIndexSchema`, `SQLTriggerSchema` and `DBStats`, and
-  `SchemaMigrator.MigrationReport`, are classes: object literals with their
-  fields still make them, but a value built as another anonymous structure
-  no longer passes for one.
-- MongoDB options are classes: an options object built as an anonymous
-  structure in a variable, parsed from JSON, or shared between `find` and
-  `count`, has to be written as a literal at the call or copied into the
-  class (`var o:MongoFindOptions = {limit: 5}`). A `hint` is a name, a
-  `BsonDocument` or an object of keys, not a number; a `collation` is a
-  literal of `MongoCollation`'s fields with `locale`, or a
-  `MongoCollation`, not a `BsonDocument`; a write concern's `w` is an
-  `Int` or a `String`. Code that built a `MongoWriteError` or an upserted
-  entry as an anonymous object builds it as a literal of the class, and
-  cannot assign its fields; code that made a `MongoCursor` or an
-  `ExtendedJsonParser` itself uses `MongoConnection` and
-  `ExtendedJson.parse`.
-- A JWT claims literal whose times mix `Int` and `Float` converts one of them
-  (`exp: now + 3600.0`); a time that is not a number no longer compiles.
-- `JWTPayload.audience` is a `JWTAudience`: ask it with `contains(name)` or
-  read `toArray()`. `JWTPayload.seconds` is no longer public.
-- `Secret`, `JWTHeaderData`, `IgnoredKey`, `SigningKeyPair`,
-  `KeyExchangeKeyPair` and `SessionKeys` are classes: a value typed as an
-  anonymous structure no longer passes for one, and `Json.stringify` writes a
-  `JWTHeaderData`'s unset members as `null`.
-- A custom `HTTPBackend` that reads `context.data` gets an `HTTPRequestBody`,
-  not a `String` or `Bytes`: send `context.data.toBytes()`, and read
-  `context.data.text` (or `isText`) where it matters which it was. Code that
-  builds an `HTTPRequestContext` from an object literal still compiles; code
-  that passes some other structure as one does not.
-- `RouteContext`, `RewriteRule` and `RewriteCondition` are classes: object
-  literals still build them, but a value of some other structure type no
-  longer passes as one, build it from a literal.
-- A `Dynamic` value no longer converts to a `URL` on its own: cast it,
-  `(value : String)`, or build `new URL(value)`.
-- `DatagramSocket.send` is `inline`, so a subclass can no longer override
-  it: an override does not compile. Every call compiles as it did, and
-  `socket.send` taken as a value, or called through `Reflect` or
-  `Dynamic`, works as before. Code that overrode `send`, to log, filter,
-  delay or drop datagrams, wraps the socket instead: a class of its own
-  that holds a `DatagramSocket`, does its work in a `send` of its own and
-  then calls the socket's, and hands the socket out (or forwards
-  `addEventListener`) for its events. Nothing in CrossByte sends through
-  an application's subclass: a reliable session, a server and the rtc
-  stack each make their own `DatagramSocket`.
-- `CrossByte.pump` is two inline overloads: every call compiles as it did,
-  but `pump` is not a value any more, `var step = runtime.pump` and a
-  call through `Dynamic` do not compile or find it. Wrap it,
-  `(delta) -> runtime.pump(delta)`.
-- `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
-  `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES` are gone: set
-  `maxRedirects`, `maxBodySize`, `maxDecompressedSize` and
-  `maxResponseHeaderSize` on each `URLRequest` instead. A custom
-  `HTTPBackend` reads them, and `headTimeout`, from its
-  `HTTPRequestContext`.
-- A load now fails once it has waited its `idleTimeout` for a thread, and a
-  response's head must arrive within `URLRequest.headTimeout`, five
-  minutes, of its request. Raise `URLLoader.maxConcurrentLoads` or
-  `idleTimeout` for many slow loads at once, and `headTimeout` with
-  `idleTimeout` for a long poll held longer than five minutes.
-- `OAuth.timeout = 0` means no deadline rather than failing at once, and a
-  negative or `NaN` timeout throws an `ArgumentError`.
-- A PHP response past 8 MiB now fails with `502 Bad Gateway`: raise
-  `HTTPServerConfig.phpMaxResponseSize` for a script that serves larger
-  files.
-- An `ExpiringMap` holds 100,000 entries and an `ObjectPool` keeps 10,000
-  free objects unless told otherwise: pass `maxSize` 0, or set `maxFree`
-  to `0x7FFFFFFF`, for no bound, as before. A negative `maxSize` or
-  `maxFree`, and an `ExpiringMap` `ttl` that is not a positive number,
-  throw an `ArgumentError`.
-- A `Membership` timeout of 0, and `installServiceControl`'s
-  `connectTimeoutMs` of 0, are no limit: a membership whose nodes should
-  leave needs a timeout above 0. A negative or NaN timeout, a negative
-  `maxNodes`, and a negative `connectTimeoutMs` or stop-pending hint,
-  throw an `ArgumentError`.
-- `AsyncDatabase.queueTimeout` is a `Float`, 30 seconds unless set, and a
-  job still queued then fails; set 0 where `null` meant no limit.
-  `maxQueued` is 100,000 unless set: set 0, or more, for a batch that
-  submits more than that at once. A `ConnectionPool` `acquireTimeout` of 0
-  waits without limit, where it failed at once.
-- A `SQLiteConnection` waits up to 5 seconds for another connection's
-  write lock, `busyTimeout` as it opens, where it failed at once with
-  "database is locked". On a synchronous connection the wait is on the
-  calling thread: set `busyTimeout = 0` where failing at once is wanted,
-  or less where a runtime's thread calls it.
-- A MySQL `connectTimeout` of 0 is no limit natively, where it bounded
-  each handshake read at 50 seconds; NaN and negative MySQL timeouts, and
-  a negative Postgres `connectTimeout`, throw an `ArgumentError`.
-- An `INetConnection` of your own copies what its `send` is given before
-  keeping any of it, to queue it, say: an `RPCSession` writes its next
-  frame over the one it sent as soon as `send` returns. Every transport
-  CrossByte ships copies. `-D crossbyte_check_events` poisons each frame
-  once it is sent, so a connection that keeps one sends garbage its tests
-  will see; `-D crossbyte_fresh_events` frames each in a buffer of its own,
-  as before.
-- A null `String` or `Bytes` argument to a compiled RPC call, where the
-  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
-  natively too, where a null `String` went as an empty one: pass `""`, or
-  declare the argument `?name` or `Null<String>` to send null.
-- Both ends of a compiled RPC connection are built with 1.0: a compiled
-  call's op is the hash of its method's signature, where it was the hash of
-  its name, so a peer on 1.0.0-rc.1 finds none of a 1.0 peer's methods, nor
-  it the rc.1 peer's. The runtime lane and the heartbeat are unchanged. A
-  hand-written `dispatch` compares against `Hash.fnv1a32` of each method's
-  signature, the RPC guide's "What names a call", where it compared
-  against that of its name.
-- A runtime-lane request for a number nobody registered is answered
-  `RPCError.UNKNOWN_METHOD_MESSAGE`, where it was answered "Unsupported
-  runtime RPC op: " and the number: compare an error with the constant.
+  application that sends more than that at once (one large reliable
+  message, a file) raises it on its sessions, or sets it to 0 for no limit.
+
+#### WebSocket
+
 - The process-wide WebSocket settings are gone: set `maxMessageSize` or
   `closeTimeout` on the `ServerWebSocket` or `WebSocket` where code set
   `WebSocket.MAX_MESSAGE_SIZE` or `CLOSE_TIMEOUT`, and `pingInterval`
   where it set `PING_INTERVAL`; `MAX_PAYLOAD` has no replacement, since a
-  frame may now be as long as a message.
+  frame may now be as long as a message. `WebSocket.toWebSocket` is gone
+  too; it is `ServerWebSocket`'s own.
+- A `wss://` client checks the server's certificate: that it chains to an
+  authority the client trusts and names the host. A client of a server with
+  a self-signed certificate trusts it with
+  `certAuthority = Certificate.fromFile("server.pem")`, or sets
+  `verifyCert = false`.
+- `ServerWebSocket.cert` and `certAuthority` take `crossbyte.net.Certificate`
+  and `crossbyte.net.Key`, not `sys.ssl.Certificate` and `sys.ssl.Key`:
+  load them with `Certificate.fromFile(path)` and `Key.fromFile(path,
+  ?password)`, or `fromPem`.
+- `ServerWebSocket.verifyCert` is gone: `certAuthority`, or
+  `requireClientCertificate()`, asks clients for a certificate, natively
+  now as well as on Node.
+- A `ServerWebSocket`'s `cert` and `certAuthority` are set before `bind()`,
+  on Node too, and only on a secure server; either throws otherwise.
 - A `ServerWebSocket` answers an upgrade 503 while 10,000 sessions are
   open (`maxConnections`), and closes a connection from an address with 16
   still upgrading once half of `maxPendingHandshakes` are taken
@@ -445,9069 +1385,295 @@ entry below says how:
 - A `ServerWebSocket` refuses an upgrade request of more than 16 KiB
   with 431, where it read one of any size: raise `maxHeaderSize` for
   clients carrying more cookies than that.
-- Natively on Linux and macOS a process raises its soft limit on open
-  descriptors to its hard limit as it starts, and the children it starts
-  inherit that: build with `-D crossbyte_keep_nofile` to keep the limit
-  it was started with, for children that `select()` on descriptors under
-  1,024.
-- A `Socket` stops reading once 16 MiB have arrived that its application
-  has not read (`maxInputBufferSize`, `PAUSE`), and goes on once it reads:
-  an application that waits for a whole message larger than that before
-  reading any raises the limit, or sets it to 0 for none.
-- A raw `ServerSocket`, and a `NetHost` on one, closes a connection
-  arriving while 10,000 are open (`maxConnections`), and a TLS one closes
-  a connection from an address with 16 handshakes under way once half of
-  `maxPendingHandshakes` are taken (`maxPendingHandshakesPerAddress`):
-  raise the first for a server built to hold more, and set the second to 0
-  behind a proxy.
-- `NetHost.maxConnections` (`INetHost`) is the most connections a host
-  serves, 10,000 by default, where it was the listen backlog: code that set
-  it as a backlog now caps its connections at that number, remove the
-  line, or set the cap it wants. A host asks for the system's largest
-  backlog. A class implementing `INetHost` declares `maxConnections` as
-  `(get, set)` and adds `refusedConnections(get, never)`.
-- `PeerConnection.readyTimeout = 0` is no deadline, where it failed the
-  connection at once, and NaN or a negative number throws
-  `ArgumentError`: code that set 0 to fail fast sets a small number of
-  seconds instead.
-- A `PeerConnection` refuses a channel its peer opens past 512 of the
-  peer's open at once (`maxPeerChannels`), or naming a label or protocol of
-  more than 1 KiB (`maxLabelSize`), and `createDataChannel` throws
-  `ArgumentError` for a label or protocol past 65,535 bytes: raise or zero
-  the limits for a peer that opens more, or names longer.
+- A session closes with 1006 when it has heard nothing from its peer for
+  60 seconds (`idleTimeout`), pinging it after 30 (`pingInterval`); every
+  conforming peer answers pings. Set `idleTimeout` to 0 for a peer that
+  must stay silent longer.
+- `WebSocket.shutdown()` throws an `IllegalOperationError`, where it
+  returned having done nothing: close with `closeWith()` or `close()`.
 
-### Added
-- One reliable UDP message to many sessions, prepared once:
-  `PreparedDatagram.of(bytes, offset, length)` copies a message once, and
-  `ReliableDatagramSocket.sendPrepared(message, delivery)` and
-  `ReliableDatagramServerSocket.broadcast(message, ?sessions, delivery)`,
-  to every session the server has connected, or a list, send it in any
-  delivery mode. Each session frames it with its own sequence numbers,
-  bundles it, paces it by its own window and sends it again until its peer
-  has it, all from the prepared bytes, holding a record of each frame in
-  flight and no copy, where a `send` per session copied the message for
-  each and held every copy until acknowledged. A kilobyte to 1,000
-  sessions with 1% loss each way (`tests/perf/realtime/RudpFanout`): held
-  until every peer has it, 1.27 MB as a `send` each, under 0.1 MB prepared
-  (jvm: 1.08 MB and 9 KB); the call, 880-940 ns a session as a `send`
-  each, 630 prepared (jvm: 630-645 and 500). An encrypted session shares
-  the message the same way; its sealing stays per session.
-  Who receives, rooms, areas of interest, stays the application's. As
-  `ServerWebSocket.broadcast`, it throws for no one session: one not
-  connected or closing is passed over, and one past its output limit under
-  `THROW` is not thrown for.
-- Encrypted reliable UDP sessions, opt-in and keyed by the application, as
-  netcode.io's are: `ReliableDatagramSocket.encryptionKey` (set before
-  `connect`), `ReliableDatagramServerSocket.encryptionKeyFor(address,
-  port, payload)` (a hook beside `admit`, asked for each admitted CONNECT,
-  null for a session in the clear) and an `encryptionKey` argument on the
-  server's `connect` and `connectRelayed`; `isEncryptionSupported`,
-  `encrypted`, and the counts `unauthenticatedDatagrams`,
-  `replayedDatagrams` and `lateDatagrams`. Every datagram after the CONNECT,
-  messages of every delivery mode, acknowledgements, bundles,
-  keepalives, the FIN, is sealed with ChaCha20-Poly1305 (RFC 8439) under
-  a key of its own for each direction, derived with HKDF-SHA-256 from the
-  application's key and a random of each end's, so a key given to two
-  sessions never seals two datagrams alike; the nonce is a per-direction
-  packet number XOR an IV, as TLS 1.3 and QUIC build theirs, of which only
-  the low 32 bits are sent; the header is authenticated; a 1,024-number
-  replay window drops replays and anything older before decrypting.
-  Sealing adds 21 bytes a datagram (`ENCRYPTION_OVERHEAD`: a byte of type,
-  4 of packet number, the 16-byte tag), so an encrypted session's frames
-  carry at most 1,179 bytes (`MAX_ENCRYPTED_PAYLOAD_SIZE`,
-  `maxPayloadSize`, which also bounds its unreliable messages and CONNECT
-  payload) and no sealed datagram is larger than one in the clear, 1,211
-  bytes. With `allowRebind`, an encrypted session's REBIND proof is keyed
-  with a rebind key both ends derive with its sealing keys and neither
-  sends, where a session in the clear is given one in the HANDSHAKE: even
-  someone who saw the whole handshake cannot move it. It fails closed: a session that asked for encryption never falls back to
-  the clear, and a peer that answers without it, a key mismatch, and a
-  server that refuses (a new `PATH` frame saying why) end the attempt with
-  an `ioError` naming the reason. Natively through libsodium, on Node
-  through its `crypto` (for datagrams from 896 bytes; its own code below,
-  which is faster there), and on the jvm through a ChaCha20-Poly1305 of
-  CrossByte's own, since Java 8 has none; not on HashLink, neko or the
-  interpreter, which have no secure random source. Peers that do not ask
-  for encryption see no change on the wire, and a session in the clear
-  costs what it did. Not protected: who talks to whom, when and how much
-  (sizes, timing, counts, packet numbers), the CONNECT and its token, and
-  past sessions once a key leaks (no forward secrecy in this mode); a
-  server's reset is not authenticated, so it ends no encrypted session.
-  "Encrypted sessions" in `ReliableDatagramServerSocket`'s class doc is a
-  complete login service, game server and client (connect tokens, HKDF),
-  compiled with the doc examples; the README's "Reliable UDP: encrypted
-  sessions" sums it up with figures per target. Tests:
-  `ReliableDatagramCipherTest` (RFC 8439 and OpenSSL vectors, whole sealed
-  datagrams computed independently with Node's crypto),
-  `ReliableDatagramEncryptionTest` (the handshake and every refusal, loss
-  and reordering, rebind, over real sockets), `ReliableDatagramTamperTest`
-  (every byte position of a session's datagram changed, replays, datagrams
-  older than the window, truncated, foreign and plaintext ones: each
-  dropped and counted); `node ci/rudp-interop/run.js` runs whole sessions
-  between native, jvm and Node builds, a wrong key refused each way.
-- Typed arguments for RPC runtime handlers: `RPCSession.registerArgs(op,
-  handler)` registers, beside `register`'s `Array<Dynamic>` handlers, one
-  handed an `RPCArgs`, `int(i)`, `float(i)` (an Int too), `bool(i)`,
-  `string(i)`, `bytes(i)`, `isNull(i)`, `kind(i)`, `value(i)`, `count`,
-  that reads each value where it lies in the frame, checked against its
-  tag: a value of another kind, or an index past `count`, throws an
-  `RPCError` naming it, which a request's caller is answered with. The
-  frame is read once before the handler runs, a call that does not read
-  answered `UNREADABLE_MESSAGE`. Same wire, same answers (a `Future`
-  answered later), either registration replacing the other; the `RPCArgs`
-  is valid only during the call. With `runtimeCall`, natively a one-way
-  call of three Floats takes 68 ns and allocates nothing, where
-  `call`/`register` take 155 ns and 368 bytes; on the jvm 48-55 ns and 24
-  bytes against 100-116 ns and 272. A new allocation budget holds it at
-  that (`testATypedRuntimeRpcCall`: 0 B natively, 24 B on the jvm). Tests:
-  `RPCArgsTest`.
-- Typed calls on the RPC runtime lane: `RPCSession.runtimeCall(op)` and
-  `runtimeRequest(op)` give an `RPCCallWriter` / `RPCRequestWriter<T>` that
-  writes each value, `.int(7).float(1.5).string("x").bool(true)
-  .bytes(b).nullValue().value(v)`, straight into the session's frame and
-  `send()`s it, with no array and no boxing; a request's `send()` returns
-  its `RPCResponse<T>`. The frame is the one `call`/`request` send (a Float
-  always under the Float tag), so either side may be either kind. Valid
-  until sent: a writer used after `send()` or `cancel()` throws
-  `IllegalOperationError`; one taken while another is being written is
-  framed apart. Natively a one-way call of three Floats so written takes
-  105 ns and 184 bytes to an `Array<Dynamic>` handler (the handler's
-  array), where `call` takes 155 ns and 368 (RpcLaneBench). Tests:
-  `RPCCallWriterTest`.
-- What the compiled RPC lane's new types are worth against packing by
-  hand, in the RPC guide ("Against packing by hand"): a player state,
-  an id, position and velocity as `Float32`s, flags, a name, eight
-  inventory slots, sent one-way and read into an object, natively 130 ns
-  and 592 bytes allocated, both ends, against 274 ns and 1,704 bytes for
-  the same values packed into `Bytes` by hand; on the jvm 189-205 ns and
-  544 bytes against 261-289 ns and 920. A class that is both an
-  `hxwire.WireObject` and an `RPCStruct` sends, for fields that cannot be
-  absent, exactly the bytes hxwire's `toBinary()` makes, with no
-  dependency on hxwire. The compact integers also take a `Float` (or
-  `Float32`) on the other side of an operator, as an `Int` does.
-- `Null<T>` of every kind the compiled RPC lane now carries, compact
-  numbers, arrays, structures, enums, as an argument (or `?name`), an
-  answer, an array element, a structure's field or an enum constructor's
-  argument, a typedef of one included: a byte saying whether the value is
-  there, then the value; absent, the byte alone. Tests:
-  `RPCNullTypesTest`.
-- Enums on the compiled RPC lane. A simple enum is its constructor's
-  index, one byte (two for more than 256 constructors), and an array of
-  them is written and read as one run. An enum with arguments is the same
-  index followed by that constructor's arguments, each as its kind is
-  written, a tagged union, as Rust's enums and protobuf's `oneof` are,
-  generated at compile time with no reflection: `Walk(x:Float32,
-  y:Float32)` is 9 bytes. The op carries each constructor in index order
-  with its arguments' kinds (`<Stop,Walk(f32,f32),Say(utf8,?i32)>`), so a
-  constructor added, removed, renamed or reordered makes another method,
-  and an index past the constructors is a call that cannot be read. An
-  enum with type parameters, a private one, one that contains itself, or
-  one with an argument RPC does not carry fails the build. Natively a
-  one-way call carrying a simple enum takes 49 ns (one Int 41), sixteen of
-  them 102 ns, and `Walk(1.5, 2.5)` 63 ns. Tests: `RPCEnumTest`.
-- Structures on the compiled RPC lane: a class that implements the new
-  `crossbyte.rpc.RPCStruct`, or an anonymous structure (typedef'd or
-  written out), as an argument, an answer, an array element or another
-  structure's field. Its reader and writer are generated at compile time,
-  once each, with no reflection or `Dynamic`; on the wire it is its fields'
-  values one after another, no names, tags or lengths, no byte for a
-  field that cannot be absent, and a structure inside another goes
-  through the same frame. Fields go in the order of their names, so moving
-  a declaration changes nothing, after those pinned with `@:field(n)` (as
-  the `hxwire` library orders them); `@:rpcSkip` leaves a class's field off
-  the wire. The layout is the token in the op,
-  `{1=id:i32,name:utf8,x:f32}`: so a field renamed, retyped, added,
-  removed or made optional makes another method, and a class and a typedef
-  with the same fields are one layout. A class is read by `new` with no
-  arguments and setting each field, an anonymous structure made as an
-  object literal; a structure of numbers only is written and read as one
-  run, and an array of them as one run. A field RPC does not carry, a
-  `final` field or a property, a constructor that needs arguments, a
-  private class, a structure with no fields or one that contains itself
-  fails the build, naming it. A null where a structure has to be, or
-  inside one, throws `ArgumentError` before anything is sent. Natively a
-  one-way call carrying `{id:Int, x, y, z:Float32, flags:UInt8}` takes 50
-  ns and allocates 40 bytes as a class, 74 ns and 232 bytes as a typedef
-  (an anonymous structure's fields are looked up by name and its numbers
-  boxed), and 45 ns as five arguments; an array of eight, 106 ns as
-  classes, 241 ns as typedefs. Prefer a class for hot calls; the guide's
-  "Structures" says so. Tests: `RPCStructTest`.
-- Compact numbers on the compiled RPC lane: `crossbyte.rpc.Float32` (four
-  bytes, single precision; Haxe's `Single` where the target has one, which
-  a contract may also declare), `Int8` and `UInt8` (one byte), `Int16` and
-  `UInt16` (two), where an `Int` takes four and a `Float` eight, a
-  position as three `Float32`s is 12 bytes, not 24. Each is an `Int` (or a
-  `Float`) wherever one is wanted; an `Int` assigned to one keeps its low
-  bits, as a C cast does, so what it holds is what is sent; operators and
-  comparisons work on the `Int` it holds. In the op: `f32`, `i8`, `u8`,
-  `i16`, `u16`. An abstract over a kind the lane carries, an
-  `enum abstract Team(Int)`, an abstract over `String`, `UInt`, is now
-  carried as that kind, with its token, where it failed the build. The
-  compiled lane also reads and writes an `Int`, a `Float` and the compact
-  numbers with one load or store natively, checked against what the frame
-  holds in every build (`ByteArrayInput.readInt` was four bounds-checked
-  byte reads, unchecked in `final`): a request and its answer of two Ints
-  140 -> 111 ns, a one-way call of three Floats 44 -> 41 ns, and the runtime
-  lane's 3-5% faster (RpcLaneBench, natively). A call of `Int8, UInt8,
-  Int16, UInt16, Float32` is 10 bytes of arguments where four Ints and a
-  Float are 24, in the same 51 ns. Tests: `RPCCompactTest`.
-- `Array<T>` on the compiled RPC lane, of every kind it carries, nested
-  too: an argument or an answer of a contract method can be
-  `Array<Int>`, `Array<Null<String>>`, `Array<Array<Float>>`. A varint
-  count, then each element as its kind is written, with no tag or length
-  of its own; in the op, the element's kind in brackets (`[i32]`), so
-  every method that carried a kind before keeps its op. The count is the
-  peer's to choose and is checked against what is left of the frame, at
-  the least each element takes, before anything is made for it: a frame
-  of twenty bytes naming two billion elements is answered
-  `RPCError.UNREADABLE_MESSAGE`, as any call whose arguments do not read.
-  A null array, or a null inside one where the element cannot be absent,
-  throws an `ArgumentError` before anything is sent, and the session's
-  frame is given back. Numbers and `Bool`s are written and read as a run,
-  checked once: natively a one-way call carrying 16 Ints takes 77 ns where
-  one Int takes 40, and 4 strings of 8 characters 108 ns (`RpcTypeBench`).
-  A method that carries an array is decoded by a call of its own rather
-  than inlined into `dispatch`, which would make every method of its
-  contract slower. Tests: `RPCArrayTest`.
-- `PeerConnection.maxPeerChannels` (512) and `maxLabelSize` (1,024 bytes),
-  and `refusedChannels`: the channels a peer may have open that it opened
-  itself, and how long a name it may give one, where the stream numbers
-  were the only bound, 3,000 OPENs with 1 KB labels left 3,000 channels
-  and 3 MB of labels (512 and 512 KB now). An OPEN past either is refused
-  as RFC 8832 refuses a channel: no acknowledgement, and the stream reset,
-  which closes the peer's end; `onChannel` is not called. 512 is what
-  libwebrtc's 1,024 SCTP streams give one side; channels this end creates
-  are not counted. 0 lifts each. The same on `DataChannelSet`, with
-  `DEFAULT_MAX_PEER_CHANNELS` and `DEFAULT_MAX_LABEL_SIZE`. Tests:
-  `DataChannelTest` (the limits, a name measured in bytes, the next channel
-  taken once one closes, 0) and `PeerConnectionTest`; they failed before.
-  `createDataChannel` also refuses a label or protocol past the OPEN's
-  sixteen-bit length, as the W3C API does, where it wrote the length cut
-  short and the peer read the protocol out of the label.
-- `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
-  `maxPendingHandshakesPerAddress` (16) and `refusedConnections`, the
-  names and shapes `ServerWebSocket` had, moved up to the class every
-  server is built on. A raw `ServerSocket`, and a `NetHost` on one,
-  which a game server builds on, accepted without bound; at its limit a
-  connection is now closed as it is accepted, before any TLS handshake or
-  `connect` event, and counted. Its peer sees the connection accepted and
-  closed at once, an end of stream (or a reset if it had sent something),
-  as Node's `net.Server.maxConnections` refuses; nginx and HAProxy leave
-  such a connection in the kernel's queue, which suits a cap that frees
-  in milliseconds, but a server's places free on the scale of sessions,
-  and a client queued behind them would wait without a word. A TLS
-  connection is counted once its handshake is done, and one arriving at
-  the limit is refused before a handshake is spent on it. A TLS server
-  also holds one address to 16 handshakes under way once half of
-  `maxPendingHandshakes` are taken, as `ServerWebSocket` does, refusing
-  past it as accepted: one address opening TLS connections and saying
-  nothing held every place, and every real client waited behind it. The
-  counts are every runtime's on a spread server, and a place is given back
-  however its connection ends. `ServerWebSocket` answers 503 at the limit,
-  as before; `HTTPServer` takes its limit from
-  `HTTPServerConfig.maxConnections` into this field and counts its
-  refusals here too. `NetHost.maxConnections` is its server's, and a
-  reliable UDP host counts its sessions itself, closing one accepted past
-  the limit before `onAccept`; `INetHost.refusedConnections` says how many.
-- `Socket.maxInputBufferSize` and `inputOverflowPolicy` (with
-  `InputOverflowPolicy`): what a peer can make a connection hold that its
-  application has not read, as `maxOutputBufferSize` bounds what waits for
-  a peer. There was no limit: one peer sending to a connection whose
-  application read a message a tick made a server hold 664 MB in a
-  second. `PAUSE`, the default, stops reading at the limit until the
-  application has read below it, natively the socket leaves the poll
-  set's reads and its registry asks it once a pass whether to go on; on
-  Node, Node's socket is paused, and what arrives meanwhile waits in the
-  kernel until TCP's window holds the peer back: backpressure, nothing
-  lost. `CLOSE` closes the connection, with an `ioError` naming the limit,
-  as soon as a byte arrives past it. The default limit,
-  `DEFAULT_MAX_INPUT_BUFFER_SIZE`, is 16 MiB: twice the largest message
-  any CrossByte transport takes by default (8 MiB RPC frames and reliable
-  UDP messages), so an application waiting for a whole one is never held
-  short; HTTP, WebSocket, RPC and `NetConnection` read what arrives as it
-  arrives and never reach it. A 4 MB send to a connection reading nothing
-  was held whole; it now holds 64 KB at a 64 KB limit and arrives whole
-  once read. A secure socket reads a whole TLS record or none, so a TLS
-  read stopped at the limit leaves nothing decrypted where no poll can
-  see it.
-- `Socket.receiveBufferSize` and `sendBufferSize`, and the same on
-  `ServerSocket` for every connection it accepts: the kernel's buffers for
-  a TCP connection (`SO_RCVBUF`, `SO_SNDBUF`), as `DatagramSocket` has
-  them for UDP. Asked for, a size is fixed and the system's own growing
-  turned off for the socket: that bounds what a peer can make the kernel
-  hold for one connection while the application is not reading, where
-  a server holding many connections keeps most of their memory, and
-  moves a slow peer's backlog into the socket's own output buffer, where
-  `bytesPending` counts it and `maxOutputBufferSize` bounds it. A client
-  asks before `connect()`, which is when the window a connection starts
-  with is agreed, and the size is asked for again once it is connected,
-  since macOS sizes a connecting socket's buffers from its route over
-  what was asked; a server asks before `listen()`, and its listener and
-  each connection it accepts take it. Natively and on the jvm
-  (`Socket.bufferSizeSupported`); Node gives a TCP socket no way to size
-  them, and the interpreter, HashLink and Neko none to ask, so asking
-  there throws `IllegalOperationError`. Linux keeps twice what is asked
-  and reports that. With them `HTTPStreamingTest`'s held-response cases
-  make their stall rather than assume it: they failed about 1 run in 6
-  alone, "the responses never waited on their client", when Windows'
-  loopback buffers grew to take all 64 MB a case sent; the client's
-  receive buffer and the server's send buffer are now fixed at 64 KB
-  where they can be, and answers go eight at a time, then more, until the
-  server's socket parks, so a target that cannot be asked is sent more.
-- `PreparedMessage`, `WebSocket.sendPrepared` and
-  `ServerWebSocket.broadcast`: one WebSocket message made ready once and
-  sent to many sessions, a chat room's line, a match's state, a
-  dashboard's update. `PreparedMessage.text` and `.binary` encode and
-  frame the message as a server sends it, unmasked; each session it goes
-  to copies those frames into what its pass sends, where a `sendText` or
-  `sendBinary` per session encoded, framed and copied it again for every
-  one. `broadcast(message)` sends it to every session a server has open,
-  each runtime's own on a spread server, and `broadcast(message,
-  sessions)` to the ones the application chose; who receives stays the
-  application's, as in Go's gorilla/websocket (`PreparedMessage`), which
-  this follows. Made with `compress`, it holds a compressed form too,
-  compressed once, for every session that agreed to permessage-deflate
-  (each compresses a message on its own, so one form serves them all).
-  TLS encrypts per session, so it shares the framing only; a client masks
-  each frame with its own key, so a client's `sendPrepared` shares the
-  encoding and frames it itself. Preparing copies the bytes: the buffer
-  is the caller's again at once, a message event's payload included, and
-  the message never changes after, so it can be kept and sent from any
-  runtime. A session still writes once a pass however many messages it
-  was sent in it. One 1 KB message to 1,000 sessions, natively, the
-  send and the pass that writes it: 9.6 ms in a loop of `sendText` and
-  9.3 ms prepared, the writing of it, 1,000 system calls either way,
-  most of the time; with compression agreed, 17.3 ms and 9.2 ms,
-  compressed once rather than 1,000 times. What the send
-  allocates: in a loop of `sendBinary` 1.7 MB, with compression 5 MB,
-  prepared 3.6 KB and 7.7 KB, made once (a native `sendText` of ASCII
-  allocated nothing already); on the jvm 4.2 MB in a loop of `sendText`
-  and 16 MB with compression, prepared 6 KB and 19 KB.
-- `ServerWebSocket.maxPendingHandshakesPerAddress`, 16 by default: once
-  half of `maxPendingHandshakes` are taken, a connection from an address
-  that already has that many still upgrading is closed as it is accepted,
-  before any TLS or upgrade work, and counted in `refusedConnections`. One
-  address opening connections that never spoke held all 256 places for
-  `handshakeTimeout` each, and every real client queued behind them:
-  natively, against 40 such connections a second for 40 s, a client from
-  another address joined 10 times, a median of 3.4 s and up to 7.3 s each;
-  now 38 times, 2.6 ms each and 4.1 ms at most, the flood holding 128
-  places. Only under pressure, where nginx's `limit_conn` refuses always,
-  so many clients behind one address, a carrier's NAT, an office, a
-  proxy, are not throttled while there is room; behind a proxy that
-  forwards connections before their client speaks, set it to 0. On a
-  server spread over `runtimes` the count is every runtime's; on Node it
-  counts sessions waiting for their upgrade once Node has done their TLS.
-  `ServerWebSocket`'s class doc now lists every limit on what a peer can
-  cost, and shows `admit` with a `RateLimiter`, which a public listener
-  keeps: these bound what a connection holds, not how often one comes.
-- `ServerWebSocket.maxConnections`, 10,000 by default as `HTTPServer`'s:
-  an upgrade arriving with that many sessions open is answered `503
-  Service Unavailable` and closed, `upgrade` not asked, counted in
-  `refusedConnections` and not in `handshakeFailures`, and a session's
-  place is given back when it closes, or when `upgrade` refuses it. Every
-  runtime's sessions together, on a spread server. There was no bound on
-  the sessions a `ServerWebSocket` held. Node's `net.Server` names the
-  same bound and closes the connection; a WebSocket client is told why.
-- `ServerWebSocket.refusedConnections`: the connections closed for the
-  two limits above, every runtime's together.
-- `maxMessageSize` and `closeTimeout` on `ServerWebSocket`, for its
-  sessions, and on `WebSocket`, each session's own: the largest message
-  taken (1 MiB) and the closing handshake's deadline (5 s). They were the
-  process-wide `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, which one server, or
-  a client, changed for every session in the process. `closeTimeout`
-  refuses 0, NaN and negatives with an `ArgumentError`.
-- `ReliableDatagramServerSocket.allowRebind`, off unless set: a reliable
-  UDP session that follows its player to a new address, a NAT that
-  gives it a new port, a phone moving from Wi-Fi to a mobile network,
-  where it was reset and the player cut off. Each session a 1.0 peer opens
-  is given a 16-byte random rebind key in the server's HANDSHAKE; when the
-  peer's frames then come from an address with no session, the server's
-  reset carries a challenge, a keyed hash of the new address and port
-  made as a join cookie is, and the peer's live session answers it from
-  there with a REBIND: its connection id, the challenge, and a keyed hash
-  of the two with the session's key. The server moves the session, its
-  endpoint maps, its host's count, its relay path, `remoteAddress` and
-  `remotePort`: answers with a REBOUND, and both sides send again at
-  once what went out while the peer could not be reached. The same session
-  object goes on; through a NAT written for the tests, every message both
-  ways arrived once and in order, under 15% loss too, and traffic resumed
-  0.2 ms after the client's first frame from its new port over loopback
-  (0.35 ms on the jvm), where the session had been reset. Refused: a wrong proof, a challenge
-  made for another address or more than 10 to 20 s old, a session not
-  connected or closing, and a second move within a second; at most 16
-  REBINDs are checked a pass. A client gives up after its `timeout`, with
-  an `ioError` naming the failed rebind. Without encryption the key crosses
-  the network in the clear, so someone on the path when a session began
-  could move it later: use it with encryption, or where no one hostile
-  shares the path. Nothing per packet, and nothing at all while off; no
-  key is given on a target with no secure random source (neko, HashLink).
-  TCP and WebSocket connections cannot follow an address, and reconnect
-  and resume, as `ReliableDatagramServerSocket`'s "Resuming a player"
-  shows.
-- "Resuming a player", in `ReliableDatagramServerSocket`'s class doc: how a
-  game takes back a player whose session was reset, a peer from before
-  1.0, a server without `allowRebind`, any TCP or WebSocket connection,
-  with a single-use resume token in its `connect` payload, checked by
-  `admit` and put back on the new session by its handler, which ends the
-  one left behind; a server and a client, compiled with the doc examples.
-- `ReliableDatagramServerSocket.joinValidation` (`JoinValidation`:
-  `UNDER_PRESSURE` unless changed, `ALWAYS`, `NEVER`) and
-  `joinValidationThreshold` (64): a stateless cookie for reliable UDP
-  joins, as TCP's SYN cookies, QUIC's Retry and DTLS's HelloVerifyRequest
-  do. A pending session was held for 20 seconds on the word of a source
-  address UDP lets a sender write, so about 13 forged CONNECTs a second
-  kept all 256 `maxPendingConnections` slots full and no real player could
-  join. Once `joinValidationThreshold` sessions are pending, or always,
-  under `ALWAYS`, a CONNECT is answered with a cookie instead: a keyed
-  hash (SipHash-2-4) of its address, port, connection id and the time,
-  for which the server keeps nothing, under a key made at random and
-  turned over every 10 seconds with the one before still accepted. Only a
-  CONNECT that returns it, from the address and port it was made for, goes
-  on to `admit` and a session. A 1.0 client returns it by itself, at once:
-  a join under a flood costs one more round trip, and an ordinary one
-  nothing. In a test, 1,040 forged CONNECTs from 200 addresses held 8
-  slots under a threshold of 8 where they had held all 16, and a real
-  client joined through them, where it could not. A cookie is never
-  larger than the CONNECT it answers: a 1.0 CONNECT is padded to 29
-  bytes, the largest anything is sent back to one. See Changed for the
-  wire, and Upgrading for peers on 1.0.0-rc.1.
-- `ReliableDatagramServerSocket.maxResetsPerSecond`, 1,000 unless changed:
-  the resets every reliable datagram server in the process may send
-  together in a second, from one allowance that holds a second's worth and
-  fills at that rate; negative is no limit and 0 sends none. A reset is
-  the FIN a server answers a frame from an address with no session with,
-  and one went out for every such frame however many came, so a sender
-  writing someone else's address could have the server send that address
-  a datagram for each of its own: 600 stranger frames drew 600 FINs, and
-  draw 50 under an allowance of 50. Past the allowance a frame is dropped
-  unanswered.
-- `ByteArray.maxObjectValues`: the most values one object read may make,
-  1,000,000 unless changed, for the whole process; zero or less is no
-  limit. See the fix below.
-- `CrossByte.collectWhenIdle`, off by default: natively, a runtime running
-  its own loop collects garbage in the gap before its next tick when the
-  collections it has seen say one is due before the gap after, and the gap
-  is half as long again as its collections take, rather than leaving the
-  collector to stop the process inside whichever tick allocates past its
-  target. It learns how long a cycle runs per byte of free space from the
-  collections the collector makes, and leaves one cycle in every few to it
-  to keep measuring. At 30 ticks a second, with 180 MB of small objects
-  live and about 55 MB of garbage a second, collections in ticks fell from
-  18 a minute to 5-7, and a tick's work at the 99th percentile from 14-18
-  ms to 2-3 ms, for one collection a minute more. A collection stops every
-  runtime in the process, so it suits a process where one runtime ticks or
-  only one turns it on. Off, it costs a frame one test; on the jvm,
-  JavaScript, HashLink, neko and the interpreter it does nothing.
-- `URLRequest.headTimeout`, `totalTimeout`, `maxBodySize`, `maxRedirects`
-  and `maxResponseHeaderSize`, on every target, and the same in
-  `HTTPRequestContext` but `totalTimeout`, which the loader keeps. No
-  request was bounded in time: an idle timeout is reset by every byte, so a
-  body trickled a byte every 700 ms ran its full 5.6 s, and one that kept
-  trickling would have run for as long as it did. `headTimeout`, five
-  minutes by default, is a deadline on each response's head, counted from
-  its request having gone; `totalTimeout`, none by default, is one on the
-  whole load, from `load()` to `COMPLETE`, at which the request is
-  cancelled where it stands. The limits were process-wide statics of the
-  native client that one caller changed for every request in the process,
-  and Node held a body to nothing and a header section to its own 16 KB;
-  each is the request's own now, with the defaults the native client had:
-  64 MB, 10 redirects, 64 KB. Over HTTP/2 the deadline and the limits hold
-  as over HTTP/1.1, the header section counted as HPACK counts it.
-- An RPC hello: every `RPCSession` says hello as its connection starts,
-  at once on one up already, or as one becomes ready, with its protocol
-  version, `RPCSession.PROTOCOL_VERSION` (1), its capabilities (none in
-  1.0), and fingerprints of the methods its commands call and its handler
-  answers. Nothing waits for it, so it adds no round trip. The peer's sets
-  `peerVersion`, `peerCapabilities`, `peerCallsFingerprint` and
-  `peerAnswersFingerprint`, and calls `onHello`; a session's own are
-  `callsFingerprint` and `answersFingerprint`. A peer from before 1.0 says
-  none, and its version is 0. The hello is a response frame under request
-  id 0, as a pong is, which a session from before 1.0 passes over. A
-  feature added after 1.0 is to be used towards a peer only once its hello
-  has declared it, so later releases keep talking to this one.
-- `-D crossbyte_check_events` finds code that keeps an event, or the bytes
-  one carries, past the listener call it was handed to. Every event and
-  payload a socket hands out for an arrival is then made for it alone, and
-  killed when the call that handed it out returns, or throws: its bytes
-  overwritten with `0xDB`, its length and position set to 0, and the
-  event's fields cleared, strings null, numbers -1. So the line that kept
-  one reads poison, or reads nothing and throws end-of-file, instead of
-  quietly reading the next arrival. `-D crossbyte_fresh_events` makes
-  every one afresh too and kills nothing, as before 1.0: the workaround
-  for such code until it copies. `Event` says what is valid when, and how
-  to keep it.
-- `SequenceRing.remove(sequence)` and `SequenceRing.writeBits(from, out, at,
-  byteCount)`, which make the ring a receive window as well as a history:
-  what arrived past a gap is filed by sequence, taken out as the gap fills,
-  and acknowledged as a map of bits, bit `k` of byte `i` for
-  `from + 8i + k`, the shape of a selective acknowledgement or a game's ack
-  bitfield. Its presence flags are packed, so `writeBits` reads eight slots
-  at a time and looks again only at a set bit, to check the slot holds that
-  number and not one a ring's length away. Reliable UDP's receive window is
-  built on it.
-- `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function by
-  an overload of their own, which calls it directly; the ActionScript form,
-  any function with arguments, is unchanged.
-- `TypedWorker<In, Out, Progress>`: a `Worker` whose run message, progress
-  and result have types, with `onProgress` and `onComplete` handlers that
-  receive them typed. `Worker` is `TypedWorker<Dynamic, Dynamic, Dynamic>`.
-- `SQLRow` and `executeEach` on `SQLiteStatement`, `MySQLStatement` and
-  `PostgresStatement`: a result read row by row and column by column
-  (`getInt`, `getFloat`, `getBool`, `getString`, `getBytes`, `getValue`,
-  `isNull`, `columnName`, `columnCount`), through one object moved on to
-  each row, with no object made for a row. On SQLite, natively, the same
-  SELECT of 20,000 rows of 8 columns reads at 320-480 ns a row this way;
-  on Postgres at 260-340 ns a row, from the block the bridge sends.
-- `HTTPRequestBody`, a request body for an `HTTPBackend`: text, sent as
-  UTF-8, or bytes. `toBytes()` is what goes on the wire; `text` and
-  `isText` say whether it was given as text.
-- `HTTPServerConfig.fileCacheSize` (default 16 MB, `0` for none): static
-  files of 256 KB or less are kept in memory once read, and served from
-  there while the size and modification time read on each request are as
-  they were. A file modified in the last two seconds is not kept, so one
-  rewritten twice within a second at the same size is never served as it
-  first was. Every request read the file from disk again.
-- A load and churn harness, `ci/load.hxml` (`tests/load`), run by hand as
-  the soak is: a reliable-UDP game server at 30 or 60 ticks a second with
-  its clients in other processes; HTTP/1.1, HTTP/2 and WebSocket clients
-  half over TLS 1.3, resuming as browsers do, connecting and leaving for as
-  long as a plan says; and ten thousand idle WebSockets, on the built-in
-  backend or crossbyte-libuv's. Each reports processor time, latency,
-  errors, handles and memory as the run goes, and memory against where the
-  server started once the clients have gone. The README's Testing section
-  says how to run them.
-- One `ServerSocket` can serve its connections on several runtimes, so a
-  server uses more than one core: `runtimes` takes runtimes made with
-  `CrossByte.make(POLL)`, or `runtimeCount` makes them. The listener stays
-  on its runtime and hands each connection it accepts, before its TLS
-  handshake, to the runtime `selectRuntime` names, a game server sends a
-  player to the runtime that owns their match, or to the next in turn,
-  passing over one that has exited. From then on the connection is that
-  runtime's: polled, timed and announced there, its `connect` listener
-  run there. `admit`, `maxPendingHandshakes` and `handshakeFailures` hold
-  for the server as a whole. On Linux, `reusePort` gives each runtime a
-  listener of its own on the port instead (`SO_REUSEPORT`), the kernel
-  sharing connections out; refused on every other system. Natively, on the
-  jvm, hl, neko (whose threads contend for its allocator) and the
-  interpreter (where the runtimes take turns); on Node, whose runtimes share
-  one thread, refused.
-- `ServerWebSocket` takes `runtimes`, `runtimeCount`, `selectRuntime` and
-  `reusePort` too: each session's TLS handshake, upgrade, messages and close
-  run on the runtime it was handed to, and the `upgrade` hook is asked
-  there. `maxPendingHandshakes`, `pendingHandshakeCount()`,
-  `handshakeFailures`, `clientCount` and the published metrics count every
-  runtime's sessions; `drain()` sends each runtime's sessions their close
-  frame there and finishes once all have gone, exiting the runtimes
-  `runtimeCount` made; `close()` and `stopAccepting()` drop what is still
-  upgrading on every runtime.
-- `HTTPServerConfig.runtimes`, `runtimeCount` and `reusePort` spread an
-  `HTTPServer` the same way: each connection is served on its runtime, its
-  TLS handshake and its requests, HTTP/1.1 and HTTP/2, and the middleware,
-  routes and hooks run there, several at once, `HTTPServerConfig.runtimes`
-  says what that asks of them. `maxConnections` counts every runtime's
-  connections together; `rateLimiter` is given a lock as the server starts,
-  so one budget per client holds across them; the metrics count them all;
-  with PHP each runtime dials the backend with a bridge of its own; and
-  `drain()` drains every runtime's connections, finishing once each has.
-  The README's "Using more than one core" says what runs where and what
-  it must be, with examples for a socket server, an HTTP server and a game
-  server routing by match; the `multicore` sample runs one, and
-  `tests/scaling` measures it.
-- `HTTPServerConfig.http2MaxRequestBodyBuffer`: what one HTTP/2 connection
-  holds of request bodies at once, across all its streams, 4 MB
-  (`DEFAULT_HTTP2_REQUEST_BODY_BUFFER`) unless changed, `0` for no limit,
-  never less than `maxRequestBodySize`. See Fixed.
-- `SharedObject.remove(name)` takes a region away on Linux and macOS,
-  with, on macOS, its lock file, where it otherwise outlives every
-  handle until the machine restarts, and nothing could remove it. Handles
-  open on it keep it between them; the next one opened under the name
-  starts a new, empty region. On Windows a region goes with its last
-  handle, and `remove` does nothing and answers `false`. On macOS a
-  handle now takes the lock file before it opens the region, so a removal
-  cannot come between the two. `SharedObjectTest` removes the regions it
-  makes, which piled up under `/dev/shm` on every Linux run.
-- `PeerConnection.gatherRelayed` takes `certAuthority` and `verifyCert`
-  for a relay reached over TLS, as a `TurnServer` given to
-  `gatherRelayedFrom` does. It took the transport and nothing else, so a
-  private relay over TLS, whose authority no system trusts, could not be
-  reached through it.
-- `SQLiteConnection.queueTimeout`: how long a call that answers at once,
-  `request()`, a property that asks SQLite, waits on an asynchronous
-  connection for the worker to reach it, 10 seconds unless changed, 0 for
-  no limit. One not started by then is withdrawn without running and
-  throws an `SQLError`.
-- `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
-  over TLS whose certificate should not be checked, a test against a
-  throwaway one. The server passed its relay client an authority
-  (`relayCertAuthority`) and nothing else, so `TurnClient.verifyCert`
-  could not be reached.
-- `TurnServer.verifyCert`, so a relay `PeerConnection.gatherRelayedFrom`
-  reaches over TLS can have its certificate check turned off for a test
-  against a throwaway one, as `TurnClient.verifyCert` allows. Through
-  `PeerConnection` it could not be turned off at all.
-- `IceAgent.onStateChanged`, called as the agent moves to CHECKING,
-  CONNECTED and FAILED. Losing consent set `state` and called nothing, so
-  a caller holding an agent, one attached to a
-  `ReliableDatagramServerSocket`: had to poll `state` every tick to learn
-  that its path had gone.
-- `OAuthConfig.clientAuthentication`: `SECRET_BASIC` sends the client
-  secret in an HTTP Basic `Authorization` header, as RFC 6749 has every
-  provider accept, instead of the request body, `SECRET_POST`, which stays
-  the default. A provider configured for Basic alone answered every
-  exchange `invalid_client`, and there was no other way to send it.
-- `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
-  `openid` scope answers with: the JWT that says who signed in, which was
-  dropped although `OAuth`'s own example asks for that scope. And
-  `getAuthorizationUrl` takes further parameters for the request, such as
-  OpenID Connect's `nonce`, which has to be new for each sign-in and so had
-  nowhere to go. `OAuthToken` and `OAuthConfig` document their fields.
-- `new NetHost("wss://...")` takes the certificate and key it presents,
-  as `cert`, and installs them before it binds. It bound its
-  `ServerWebSocket` with no way to reach `cert` first, so every TLS
-  handshake failed and nothing said why; a `wss://` host without `cert`
-  is now an `ArgumentError`, as is `cert` given to a host that would not
-  use it.
-- `IOErrorEvent.TIMEOUT_ERROR_ID`, the `errorID` of a `Socket`'s `ioError`
-  for a connect not made within its `timeout`, so a listener can tell a
-  deadline from a refusal without reading the text. A `NetConnection`
-  reports it as `Reason.Timeout`, to `onError` and `onClose`, and a
-  `NetHost` to `onDisconnect`: `Reason.Timeout` was declared, and nothing
-  ever reported it.
-- `crossbyte.utils.Checksum`: a `ChecksumAlgorithm`'s checksum of some
-  bytes, or of a range of them, as the bytes of its value (`compute`) or
-  as hexadecimal (`hex`), CRC-32, Adler-32, MD5, SHA-1 and XOR. The enum
-  named the five and nothing anywhere took one: it was left from an RPC
-  header field that was never built.
-- `System.applicationId`, the name an application's storage directory and
-  stores are kept under: the `crossbyte_app_id` define
-  (`-D crossbyte_app_id=com.example.chat`), which the build refuses unless
-  every platform can give a directory that name, or else the main class's
-  full name, the same whichever target the application is built for,
-  and for an Aedifex build the project's main class, which Aedifex's
-  generated `ProgramMain` starts. A build with no main class uses the
-  program's file name.
-- `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
-  `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
-  database's tables with their columns, views, indices and triggers.
-  `SQLEvent.ATTACH`, `DETACH` and `SCHEMA` were declared, as AIR's
-  `SQLConnection` has them, and nothing could make one.
-- A streamed response, `HTTPRequestHandler.beginResponse`, server-sent
-  events, a download made as it goes, is compressed as it goes, for a
-  client that takes gzip or deflate and a type the compression policy
-  covers. Each write is flushed as compressed bytes of its own, which the
-  client inflates as they arrive, and matches reach back 32 KB into what
-  was written before, so two hundred short events that repeat their fields
-  compress to less than half of what they would one at a time. br and lz4
-  cannot be flushed a chunk at a time here and are not used for a stream.
-  It went out as it was, whatever the client took.
-- A TURN relay reached over TLS (`TurnTransport.TLS`), natively, on the jvm
-  and on Node, for `ReliableDatagramServerSocket.allocateRelay` and
-  `PeerConnection.gatherRelayedFrom` alike. It was refused, saying a plain
-  `Socket` could not start TLS; a client `Socket` can now. The relay's
-  certificate is checked against the name it was given, trusting the
-  system's authorities or one named in `TurnClient.certAuthority`,
-  `TurnServer.certAuthority` or `ReliableDatagramServerSocket.
-  relayCertAuthority`; `TurnClient.verifyCert` turns the check off.
-- TLS settings per request: `URLRequest.verifyCert`, `certAuthority`,
-  `clientCertificate` with `clientKey`, and `pinnedPublicKeys` (RFC 7469
-  `pin-sha256` digests, with or without `sha256/`). Trusting a private
-  authority meant setting a process-wide static through `@:privateAccess`,
-  and there was no way to present a client certificate or to pin a key.
-  A kept connection, HTTP/1.1 or HTTP/2, is reused only by a request with
-  the same settings, so one opened without checking its server never
-  carries a request that checks. The client certificate is left behind by
-  a redirect to another origin, as `Authorization` is. A pin is checked
-  after the handshake and before anything is sent, whether or not the
-  chain is, natively, on the jvm and on Node; hl, neko and a browser
-  cannot see the server's key, and refuse a pinned request rather than
-  send it unchecked. neko's TLS checks the server whatever it is told, so
-  `verifyCert = false` changes nothing there. `HTTPTLSOptions` carries the
-  settings, and `HTTPRequestContext.tls` hands them to an `HTTPBackend`.
-- `URLRequest.maxDecompressedSize`: the most a compressed response may
-  decode to before the load fails, 64 MB unless set, per request. The
-  ceiling was an internal static of the native client, one number for every
-  request, while what a response sends and what it decodes to have no fixed
-  ratio. `HTTPRequestContext.maxDecompressedSize` hands it to a backend,
-  and the HTTP/2 backend holds to it.
-- `HTTPServerConfig.compression`, an `HTTPCompression`: whether the server
-  compresses (`enabled`), from what size (`minimumSize`, 1 KB), which
-  `Content-Type`s (`types`), and how hard (`level`, Brotli's 0 to 11). A
-  static file is compressed once per coding and kept, up to `cacheSize`
-  (16 MB), while its size and modification time hold, it was compressed
-  again for every request, and a 150 KB script served 64 requests a second
-  as Brotli natively against 863 as it was, and a precompressed
-  `app.js.br` or `app.js.gz` beside `app.js` is sent in its place when it
-  is not older (`precompressed`), which is also how a file large enough to
-  stream goes out compressed.
-- `crossbyte.sys.System.sleep(seconds)`, a sleep that comes back on the
-  interpreter on Windows, where `Sys.sleep` can sleep for 49 days: eval
-  times a `Thread.yield()` in the process's CPU time, which Windows counts
-  in 15.6ms ticks, and sleeps for what is left, and a tick inside the yield
-  leaves a negative remainder that OCaml's `Unix.sleepf` hands to `Sleep()`
-  as an unsigned count. With a second thread busy, a loop of
-  `Sys.sleep(0.001)` hung in one run of three and `System.sleep` in none.
-  Every sleep in the library, the tests and the samples goes through it
-  now, the runtime's frame loop, `ConnectionPool`, `FileStream`,
-  `FileStore`, `LocalConnection`, `NativeProcess`, `ProcessLifecycle` and
-  the tests' pump loops were what hung the interpreter suite, in a
-  different test each run, and a suite build fails on any other call to
-  `Sys.sleep`.
-- `SwitchTable.make` takes any expression as a key, `Opcode.PING`, a
-  variable, where it took only literals, refuses two literal keys that are
-  the same, and takes a fallback, `(key, args) -> ...`, for a key no case
-  matches. Without one it still throws, now naming the key.
-- `RadixTree.longestPrefix` and `longestPrefixLength`: the longest key held
-  that a string starts with, and its length, the route that serves
-  "/api/v1/users/123" when "/api/v1/users" is held. The tree could only
-  answer exact keys.
-- `crossbyte.ds.IdList`, a list of `Int` ids that holds them unboxed and
-  keeps its storage when emptied, and the queries that fill one:
-  `SpatialGrid.queryCircleIds` and `queryRectIds`, `SpatialGrid3D.
-  querySphereIds` and `queryBoxIds`. `InterestSet.addAll` takes one. A query
-  into an `Array<Int>` boxes every id above 127 on the jvm, and an array
-  emptied with `resize(0)` hands V8 its storage back, so the interest loop
-  the documentation showed allocated 2.2 MB a tick for 1,000 views of 50 on
-  either; through an `IdList` it allocates nothing on the jvm and Node, and
-  natively it went from 1.28 to about 1.0 ms a tick.
-- `crossbyte.ds.IntPriorityQueue`: a priority queue of `Int` ids, each held
-  with a priority given when it is enqueued, lowest first, equals in the
-  order they came. `PriorityQueue<Int>` does not compile, its elements being
-  objects, so a matchmaker keyed on player ids had no queue to use. It calls
-  no comparator and looks nothing up while sifting, so it allocates nothing
-  per operation on any target, and it keeps its own id table: the jvm's
-  `IntMap` visits every bucket to find a missing key, which made 50,000 ids
-  take a second there rather than 10 ms.
-- A MongoDB client that speaks the server's wire protocol over CrossByte's
-  own sockets, on hxcpp, the jvm, the interpreter, hl and neko. MongoDB was
-  listed among CrossByte's databases and could be reached from none of
-  them: `MongoConnection` went through PHP's extension, embedded in a Haxe
-  string that had not compiled since a3239a7. It now opens a `mongodb://`
-  string or a config, several hosts, a secondary followed to its primary,
-  TLS with a CA file or a client certificate, says hello over OP_MSG, and
-  signs in with SCRAM-SHA-256 or SCRAM-SHA-1, their first step riding on
-  the hello, or with X.509 or PLAIN. It has `insert` (batched to the
-  server's limits, an `ObjectId` made for a document without an `_id`),
-  `find`, `findOne`, `update`, `delete`, `aggregate`, `count`,
-  `createIndexes`, `drop` and `runCommand`; `MongoCursor` fetches with
-  `getMore` as it is read, and `close` sends `killCursors`; write concern
-  is per connection or per write. `begin`, `commit` and `rollback` run a
-  transaction on the connection's session, and `MongoConnection` is an
-  `ITransactionalConnection`, so a pool rolls back one a borrower leaves
-  open. A refusal is a `MongoError`, an `SQLError` with the server's code
-  in `errorID`, its `codeName`, labels and write errors; a lost connection
-  is an `IOError`. Like the other drivers it blocks, for a worker, and it
-  is not built for JavaScript. Not done: `mongodb+srv://`, compression,
-  retryable writes, and reads from secondaries.
-- `crossbyte.db.mongodb.bson`: BSON, encoded and decoded on every target,
-  the browser included, double, string, document, array, binary with its
-  subtype, ObjectId, bool, UTC datetime, null, regex, JavaScript, int32,
-  timestamp, int64 and Decimal128, the last two exactly, and MinKey and
-  MaxKey. A `Date` goes out as a BSON date, which is what a TTL index acts
-  on; `BsonDateTime` holds one exactly on hl and neko too, where `Date`
-  keeps whole seconds between 1901 and 2038. `BsonDocument` keeps its
-  field order, which a command, a sort and an index key depend on and an
-  anonymous object does not keep on most targets. `ExtendedJson` reads and
-  writes MongoDB Extended JSON v2, binding `:name` placeholders as values.
-- `StunClient` asks through a socket it is given, and classifies the NAT in
-  front of it. `discover` takes the `DatagramSocket` to ask through,
-  bound, and left open and as it was found, so the answer describes the
-  mapping of the socket an application actually uses. Each question used
-  to bind a socket of its own, so it answered for a port nothing used, and
-  comparing what two servers saw compared two mappings: every NAT, and
-  loopback too, read as symmetric. `classifyMapping` and
-  `classifyFiltering` run RFC 5780's tests through one socket against a
-  server with a second address, answering with a `NatBehavior`, and
-  `probe` asks one RFC 5780 question, a CHANGE-REQUEST in, OTHER-ADDRESS,
-  RESPONSE-ORIGIN and where the answer came from out, as a `StunProbe`,
-  for the tests those two do not run. A server that gives no OTHER-ADDRESS,
-  or ignores CHANGE-REQUEST, is reported as unable to classify rather than
-  read as a NAT that lets everything in.
-- TURN over TCP, IPv6 relays, and RFC 8489's credentials. `TurnClient`
-  takes a `TurnTransport`: over TCP or TLS it frames every message for a
-  stream (RFC 8656 section 3.1), `receiveStream` takes what arrives,
-  split anywhere, and `streamClosed` ends the allocation with the
-  connection, and sends each request once, waiting RFC 8489's 39.5
-  seconds, since a stream does not lose it. `PeerConnection.gatherRelayed`,
-  a `TurnServer`'s `transport` and `ReliableDatagramServerSocket.allocateRelay`
-  reach a relay over TCP for a network that lets nothing else out; what
-  the relay relays is UDP either way. TLS is framed the same, and needs a
-  TLS stream the caller holds, since a plain `Socket` does not start TLS on
-  every target. `requestIPv6` asks for an IPv6 relayed address
-  (REQUESTED-ADDRESS-FAMILY), whose peers are IPv6 and are written with the
-  transaction as RFC 8489 has it. A relay offering password algorithms is
-  answered with SHA-256 keys and MESSAGE-INTEGRITY-SHA256 alone, one
-  offering username anonymity with USERHASH in place of USERNAME, and one
-  whose nonce offers algorithms on an answer that lists none, the list
-  stripped on the way, a downgrade, is not answered at all. The SHA-256
-  arithmetic is pinned to values computed with Node's crypto.
-  `StunMessage` gains the attributes, `ipv6Bytes` and `canonicalIPv6`,
-  and IPv6 in `xorMappedAddress`, `xorPeerAddress` and `xorRelayed` given
-  the transaction id.
-- Reliable datagram sessions can fall back to a TURN relay, for the peers
-  hole punching cannot reach, a symmetric NAT or a carrier's CGNAT at
-  either end. `ReliableDatagramServerSocket.allocateRelay` asks a relay for
-  an address through the port the server listens on; `relayedCandidate` is
-  that address for the peer to be told of, `connectRelayed` opens a session
-  that reaches its peer through the relay, a CONNECT arriving through it
-  opens one that answers the same way, and `permitRelayedPeer` lets a peer
-  that dials first through. An attached `IceAgent` checks from the relayed
-  candidate too, and no longer takes STUN that is not a connectivity check,
-  it took every STUN message on the socket, a relay's answers included.
-  A relay that goes away closes the sessions through it, each with an
-  `ioError` saying so; `releaseRelay` frees it. `NetHost` reaches all of
-  this through `allocateRelay`, `dialRelayed` and `permitRelayedPeer` on a
-  reliable datagram host. And for a protocol of the application's own on
-  the same port, `onDatagram` sees every datagram before anything else
-  does, and `sendDatagram` answers from the port: there was no way in,
-  since everything that was not a reliable frame was dropped as noise.
-  `TurnClient.sendTo` takes an offset and a length.
-- `PeerConnection.gatherRelayedFrom(servers)`, which asks each TURN relay in
-  a list in turn until one lends an address, and keeps one for as long as
-  the connection lasts: a relay that loses the allocation is replaced from
-  the list and the new relayed candidate announced through
-  `onLocalCandidate`, and `restartIce` asks the relay whether it is still
-  there, a network change costs the allocation, and replaces one that is
-  not. `setRelayCredentials` renews the credentials relays are asked with,
-  for the TURN REST convention's expiring ones. A failed gather's `cause` is
-  a `TurnError`, the relay's code, its reason, and where a 300 pointed,
-  where it was a sentence with no code in it. Underneath: `TurnClient`
-  follows 300 Try Alternate to the server it names (once per server, so two
-  relays redirecting to each other cannot hold it), and gains
-  `setCredentials`, `refresh` and `failure`.
-- TLS for a client `Socket`: set `secure` before `connect()` and the socket
-  handshakes once TCP is up, stepped as the server's flights arrive, and
-  dispatches `connect` when the handshake is done, within `timeout`,
-  which counts it, on native, jvm and Node; on eval the handshake blocks,
-  as eval's connect does. `secure` was read only to report it, so a client
-  asking for TLS spoke plain TCP. `verifyCert` and `certAuthority`, which
-  were `WebSocket`'s, are `Socket`'s now and check a secure socket's server
-  the way they check a `wss://` one: a certificate from an authority the
-  client does not trust, or naming another host, is refused with an
-  `ioError` that says so. On Node, a socket a TLS `ServerSocket` accepted
-  says it is `secure`, and a socket's `ioError` carries Node's reason.
-- permessage-deflate (RFC 7692) for WebSocket, opt in with
-  `ServerWebSocket.perMessageDeflate` or, on a client, with
-  `WebSocket.perMessageDeflate` before `connect()`. A server declined every
-  browser's offer, so an 18 KB JSON snapshot went out at 5.7 times its
-  deflated size, and a compressed frame closed the connection with 1002.
-  Each message is compressed on its own, both ways: a server answers an
-  offer with `server_no_context_takeover; client_no_context_takeover`, and
-  a client asks for the same, refuses an answer that keeps a context it
-  cannot inflate, and sends uncompressed to a server that did not agree to
-  inflate each of its messages alone. Messages shorter than
-  `compressionThreshold` (1024 bytes by default) go as they are, and so
-  does one that compressing did not shrink; `WebSocket.compressed` says
-  whether a session agreed. What arrives compressed is inflated under
-  `MAX_MESSAGE_SIZE`, and a message inflating past it is refused with 1009.
-- `MySQLConnection.escape()` and `quote()`, which SQLite's and Postgres's
-  connections had and MySQL's did not; they escape by the session's
-  current rules, `NO_BACKSLASH_ESCAPES` included. `ParamBinder.substituteWith`,
-  which substitutes a parameter set to `null` and can read backslash escapes
-  inside literals as MySQL does.
-- Limits and cancellation for the native MySQL client, which had neither:
-  a slow statement or a server gone mid-query held the calling thread and
-  its connection for five hours. `MySQLConfig.connectTimeout` (10 s when
-  unset) bounds the connect and the login; `readTimeout` and
-  `writeTimeout`, unset by default, bound each read and write after, and a
-  read that times out closes the connection, since the answer it gave up
-  on is still coming. TCP keepalive is on by default (`keepAlive`,
-  `keepAliveIdle` 60, `keepAliveInterval` 10, `keepAliveCount` 6), so a
-  connection to a vanished host is noticed in about two minutes.
-  `MySQLConnection.cancel()` stops the statement a connection is running,
-  from any thread, with `KILL QUERY` over a second connection; the
-  statement fails with `MySQLError` 1317. `ping()` is a COM_PING.
-- `MySQLError`, an `SQLError` with the MySQL error number (`code`) and
-  `SQLSTATE` (`sqlState`), so a deadlock (1213, `40001`) can be retried and
-  a duplicate key (1062, `23000`) reported, and `MySQLConnectionError`, the
-  `IOError` a failed `open()` throws, with the same (1045 for a refused
-  login, 1049 an unknown database, 2003 an unreachable server).
-- TLS and MySQL 8 logins for the native MySQL client. `MySQLConfig.sslMode`
-  (`MySQLSSLMode`: `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`,
-  `VERIFY_IDENTITY`, as libmysqlclient's `--ssl-mode`), `sslCa` for the
-  certificate authorities to verify against, and
-  `MySQLConnection.encrypted`. The client speaks `caching_sha2_password`,
-  MySQL 8's default, in both its fast path and its full authentication,
-  where the server needs the password itself: sent over TLS, or encrypted
-  with the server's RSA key, given as `MySQLConfig.serverPublicKey`, or
-  asked of the server with `allowPublicKeyRetrieval`, off by default since
-  whoever answers in the server's place could supply their own. Also
-  `sha256_password`, and `mysql_clear_password` over TLS only. A mode that
-  insists on TLS fails `open()` with 2026 where it cannot be had: against a
-  server offering none, and on every target but cpp, where the driver
-  CrossByte connects through has none, before anything is sent. From the
-  hxcpp fork (`fix/mysql-client`), on the mbedTLS hxcpp bundles.
-- `CompressionAlgorithm.LZ4_FRAME` (`"lz4-frame"`): the LZ4 frame format,
-  what the `lz4` tool writes and `.lz4` files hold, read and written by
-  `ByteArray.compress` and `uncompress` beside the bare block `LZ4` has
-  always meant. A frame carries its blocks' sizes, an end mark, its content
-  size and an xxHash32 of the content, so one cut short or damaged is
-  always refused, which a bare block cannot promise. Reading takes linked
-  or independent blocks of any size, block and content checksums,
-  concatenated and skippable frames; writing uses independent 4 MB blocks
-  with the content size and checksum. A frame whose stated size passes the
-  limit is refused before a block is decoded.
-- `CompressionAlgorithm.ZLIB` (`"zlib"`): the zlib format of RFC 1950, a
-  deflate stream behind a two-byte header with an Adler-32 of the data,
-  written and read by `ByteArray.compress` and `uncompress` under the same
-  output limit. It is what HTTP's `deflate` content coding is, and what
-  zlib, Node's `zlib.deflateSync` and Java's `Deflater` write; `DEFLATE`
-  stays the raw stream inside it.
-- `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
-  `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
-  built-in client's rules and say where its response came from. The bundled
-  HTTP/2 backend uses them.
-- PKCE for OAuth (RFC 7636): `OAuth.createCodeVerifier()`,
-  `OAuth.codeChallenge(verifier)`, a `codeChallenge` argument to
-  `getAuthorizationUrl`, sent with `code_challenge_method=S256`, and a
-  `codeVerifier` argument to `getAccessToken`. There was nowhere to put
-  either, and PKCE is what keeps an intercepted authorization code from
-  being exchanged by someone else. A client with no secret no longer sends
-  an empty `client_secret`, which some providers refuse. `OAuth.timeout`
-  (30 seconds) bounds each exchange and refresh.
-- JWT payloads carry claims of an application's own. A literal can hold
-  them beside the registered claims, `{sub: id, exp: now + 3600, role:
-  "admin"}`, and `JWTPayload.claim(name)`, `hasClaim` and `setClaim`
-  read and set them. That literal failed to compile with "has extra field
-  role", so a role or a tenant went in through `Dynamic`. `sub` and `iat`
-  are optional, so a refresh token without a subject can be made too.
-- `JWT.verify`, which answers with a `JWTVerification`: the claims, or a
-  `JWTRejection` naming the first check the token failed,
-  `malformed`, `too-large`, `unsupported-algorithm`,
-  `algorithm-mismatch`, `type-not-accepted`, `unknown-key`,
-  `bad-signature`, `missing-expiry`, `expired`, `not-yet-valid`,
-  `issued-in-future`, `wrong-issuer` or `wrong-audience`. `verifyToken`
-  answered all of them with the same `null`, so an expired session and a
-  forged token looked alike in a log. With it: `JWT.maxTokenLength`, the
-  cap on what is parsed, which was a fixed 4096 characters and still
-  defaults to that; `JWT.acceptedTypes` and `JWT.requireType`, for which
-  `typ` headers pass; and `JWT.updateKeys`, which swaps a verifier's keys
-  and keeps its other settings, where rotating keys meant building a new
-  `JWT`. `JWKSet.signer(RS256)` turns a fetched key set into what
-  `updateKeys` takes, and `unknown-key` is the cue to fetch it again.
-- `crossbyte.crypto.SignatureKey`: an RSA or EC key parsed once into
-  mbedTLS and held natively, with `sign`, `verify`,
-  `joseSignatureLength` and `dispose`. For a key used more than once,
-  which `PublicKeySignature`'s PEM-taking functions parse every call. The
-  parsed key is wiped and freed when the object is collected, or at once by
-  `dispose`.
-- `BCrypt.hashAsync` and `verifyAsync`, and `Argon2id.hashAsync` and
-  `verifyAsync`, which hash on a `TaskPool` worker and answer with a
-  `Future`, completed on the calling runtime's thread at its next tick. A
-  hash at the recommended cost holds its thread for 50 to 300 ms, so a
-  runtime verifying sign-ins itself served nobody else meanwhile, and about
-  eight a second filled it. They use a pool of two workers the hashers
-  share, started on first use, or the pool passed in. `BCrypt.dummyHash`
-  and `Argon2id.dummyHash` give a hash to verify against when a sign-in
-  names a user that does not exist, so it takes as long to refuse as a
-  real user's wrong password and the timing does not say which names are
-  registered.
-- Argon2id on Node 24.7 and later, through Node's own `crypto.argon2`,
-  checked for rather than assumed. Its hashes and libsodium's verify in
-  each other, and on Node `hashAsync` runs on libuv's thread pool.
-- `AsyncDatabase.maxQueued` and `queueTimeout`, and backlog metrics. With a
-  worker per pooled connection, what `AsyncDatabase.of` builds, a job
-  never waits for a connection, so the pool's acquire timeout and wait
-  metrics never fire: all the waiting happens in the worker pool's queue,
-  which had no bound, no deadline and nothing measuring it, so a database
-  slower than the traffic showed up only as memory and latency growing
-  together. `maxQueued` makes `submit` throw once that many jobs are
-  waiting; `queueTimeout` fails a job that waited longer than that for a
-  worker, without running it or taking a connection. Both are off by
-  default, since a batch submitting thousands of statements at once is a
-  legitimate use of the queue; a server should set them. Given a
-  `Metrics` registry, `AsyncDatabase` publishes `db_async_queued`,
-  `db_async_running`, `db_async_queue_wait_seconds`, and the
-  `db_async_rejected_total` and `db_async_expired_total` it turned away.
-- `ConnectionPool` rolls back a transaction left open on a connection as it
-  is released, including by `withConnection` after its body threw,
-  before anyone else can take it. A body that began a transaction and then
-  failed returned its connection still inside it, so the next borrower's
-  writes joined that transaction and its locks stayed held, and `validate`
-  could not tell, since an open transaction answers a ping. It applies to a
-  connection implementing the new `crossbyte.db.ITransactionalConnection`,
-  as `PostgresConnection`, `MySQLConnection` and `SQLiteConnection` now do,
-  and needs no configuration; a rollback that fails retires the connection.
-  A connection released with its transaction open is also logged as a
-  warning under `db.pool`, since that is a bug in the caller, unless
-  `withConnection` is returning it after its body threw, which has its own
-  error, and each such rollback is counted in
-  `db_pool_rollbacks_on_release_total`. `ConnectionPoolOptions.reset` runs
-  after it on every release, for the rest of a session's state (`DISCARD
-  ALL`, say); a reset that throws retires the connection too, counted with
-  the reason `failed_reset`.
-- `PostgresConfig.statementTimeout`, `keepAliveIdle`, `keepAliveInterval`,
-  `keepAliveCount`, `tcpUserTimeout` and `connectionParameters`, and
-  `PostgresConnection.cancel()`. Nothing could bound a PostgreSQL statement:
-  no timeout, no way to cancel one, and no way to hand libpq a setting the
-  config did not name, so a database host that vanished mid-query was
-  noticed only when TCP gave up, about two hours later. `statementTimeout` is
-  sent as `statement_timeout` when the session starts, so it costs no round
-  trip; the keepalive settings and `tcpUserTimeout` let a dead peer be
-  noticed in seconds; `connectionParameters` passes any other libpq keyword
-  through, quoted. `cancel()` asks the server to stop the statement a
-  connection is running, and is safe from any thread, which is where it is
-  needed, since the thread that sent the statement is waiting for its
-  answer. Defaults are unchanged. Native driver only.
-- `CrossByte.loopLag`, `frameOverruns`, `droppedScheduleDebt` and
-  `postQueueDepth`: how far past its deadline the last frame ended, how many
-  frames have outrun their tick, how many seconds of schedule the loop has
-  given up after stalls too long to repay, and how many posted callbacks
-  are waiting to run. With `timerBacklog`, `timerLag` and `timerOverruns`
-  they say whether a runtime is keeping up; nothing did before. Each costs
-  the loop a clock read a frame at most.
-- `Logger` categories and a record sink. `Logger.category("http.access")`
-  returns a logger whose level `Logger.setLevel("http.access", level)` sets
-  apart from the global one, inherited along the dots (`http` covers
-  `http.access`), and `Logger.log` takes a category too. A categorised
-  record names it, `[INFO] [http.access] ...`, or `"category"` in JSON.
-  `Logger.recordSink` receives each record whole: level, category, message,
-  fields, time and the formatted line, where `sink` only ever saw the line
-  and could not tell an error from a debug record. A category's level is
-  cached, so a record below it costs a comparison. The runtime logs the
-  failures it contains under `runtime`.
-- `CrossByte.post(callback)`: runs `callback` on the runtime's own thread,
-  safe to call from any thread, and wakes the runtime for it. It was
-  `__post`, marked internal although it is the one way to hand a runtime
-  work from another thread; `__post` still works. Returns `false` once the
-  runtime has exited, when the callback would never run.
-- `CrossByte.make(loopType, timers, configure)`: a callback run with the new
-  child runtime, on the calling thread, before the child's thread starts,
-  the place to set `tps` and add `INIT` and `EXIT` listeners. The thread
-  used to start inside `make()`, so anything done to the returned runtime
-  raced its first frame, and an INIT listener added afterwards could miss
-  INIT.
-- ICE restart for WebRTC connections. A browser whose network changes
-  restarts ICE, new credentials, in a new offer, and they were dropped:
-  an agent that had left NEW ignored `start`, so every check afterwards was
-  signed with credentials the peer had discarded, and consent ran out half a
-  minute later, taking the connection and its channels with it. Now
-  `connect` given a description with new credentials restarts this side,
-  and `description()` is the answer to send back; a new agent checks with
-  the new credentials while the session carries on over the old path, and
-  takes it over once it has one of its own. DTLS and SCTP carry on
-  untouched. `PeerConnection.restartIce()` starts one from this side, and
-  `iceRestarting` says one is under way. The side offering a restart
-  controls it, as a browser takes it; an answer to one states this side's
-  DTLS role, since a browser refuses `actpass` in an answer; and a
-  description with another certificate is refused as a new session.
-  Checked against Chrome, started from either side, on a socket of its own
-  and on a `PeerConnectionHost`.
-- `PeerConnectionHost`: many WebRTC peer connections on one UDP port, driven
-  by one tick. A `PeerConnection` binds a socket of its own, and with it a
-  port, that socket's buffers and a tick listener, so a server holding ten
-  thousand browser peers held ten thousand of each and had to open a port
-  range as wide as its peak. `host.createConnection(isOfferer)` makes a
-  connection that shares the host's socket instead and is otherwise used
-  the same way. The host routes a browser's checks by the ufrag they name,
-  the answers to a connection's own checks by their transaction, and DTLS
-  by the address that connection proved a path to, never by one it only
-  sent to, so a peer listing another's address as its own cannot take that
-  peer's traffic. `addLocalCandidate` gives every connection the host's
-  public address. A hosted connection gathers no reflexive or relayed
-  address of its own, that socket's mapping being every connection's. An
-  idle tick measured natively went from about 120 ns a connection to about
-  8, with 300 connections. Checked against Chrome in both directions. The
-  socket reads at most 64 datagrams each time the runtime services it,
-  which the DEFAULT main loop does once a tick, so a busy host wants the
-  POLL main loop.
-- Partially reliable WebRTC data channels, RFC 3758 with RFC 8832's channel
-  types: what a game's state channel is, since a position that arrives late
-  is worth less than the next one. `PeerConnection.createDataChannel` takes
-  `maxRetransmits` or `maxPacketLifeTime`, as a browser's does, and
-  `DataChannel` reports both. A message past its limit is given up on and a
-  FORWARD TSN moves the peer past it, rather than everything behind it on
-  the stream waiting; one whose time runs out before it is sent is dropped
-  unsent. Until now a browser's `{ordered: false, maxRetransmits: 0}`
-  channel was quietly made reliable: the association never said it
-  understood FORWARD TSN, so the browser could give up on nothing it sent
-  here, and DCEP's channel type and reliability parameter were read and
-  dropped, so what this end sent back was retransmitted like everything
-  else. Both ends now say so in INIT and INIT ACK, the terms are honoured
-  in both directions, and a peer's FORWARD TSN is followed: an ordered
-  stream skips what was given up on, and part of a message given up on is
-  dropped. A peer that does not say it understands FORWARD TSN gets
-  reliable channels, as RFC 8831 has it. Checked against Chrome both ways:
-  each gives up on a message the other lost, and the other delivers the
-  rest in order.
-- `LocalConnection.maxQueuedBytes`, the most a connection holds in each
-  direction, 16 MB by default, two frames of the largest size, and
-  `bytesPending`, what `send` has queued that the peer has not taken yet.
-  A sender with more than that to send at once paces itself on
-  `bytesPending`; see the entry under Fixed on a peer that stops reading.
-- `RPCSession.dial(uri, ?commands, ?handler)`: a client session that dials
-  its server, and dials again whenever its connection ends, at once, then
-  after a wait doubling from `MIN_REDIAL` (0.25 s) to `MAX_REDIAL` (30 s)
-  while the server stays away, until `close()`. While it is down a call
-  through it fails as it is made, with the `Reason` the last connection
-  ended with, or the last attempt failed with, as its `cause`. Its
-  commands, handler, `data` and heartbeat stay with it across connections.
-  A gateway surviving a backend restart built this itself, dial, back
-  off, rebind, and check the backend was up before each call, since a call
-  on a closed TCP connection threw out of its stub. Every session also has
-  `onUp` and `onDown`, told as its connection becomes ready and as one that
-  was usable ends, `up`, and `close()`. `NetConnection`'s constructor takes
-  a `connectTimeout` for `local://`, whose connect waits on the calling
-  thread; a dial makes a single try.
-- Deadlines for RPC calls. `RPCResponse.timeout(ms)` gives a call until
-  then to be answered, and `RPCSession.callTimeout` gives every call a
-  session makes, on either lane, a deadline unless it has its own. Past
-  it the call fails with a new `RPCTimeoutError`, an `RPCError`, so a
-  handler forwarding it tells its own caller the call timed out, the
-  connection is left as it was, and an answer arriving later is dropped.
-  A call with no deadline waited for as long as its connection lasted,
-  however long its peer took. A call without one arms nothing; one with
-  one holds a timer until it is answered. `RPCSession.handlerTimeout`
-  bounds how long a call the session's handler answers with a `Future`
-  may wait: past it the caller is answered `RPCError.TIMEOUT_MESSAGE`,
-  `onHandlerError` and `afterCall` are told, and the call gives up its
-  place among `maxCallsWaiting`, where a future that never completed held
-  one of the 256 for good.
-- `ServerSocket.acceptFailures` and `ServerSocket.handshakeFailures` count
-  the connections a server could not take from its listen queue and the
-  TLS handshakes that failed or timed out, which left no trace before.
-- A WebSocket server sees the request a session was opened by, and decides
-  on it. `ServerWebSocket.upgrade(request)` is asked before the `101` goes
-  out and can refuse the session, answered with `request.status`, 403
-  unless changed, or choose its subprotocol; `WebSocketRequest` carries
-  the path, query, headers, cookies, `Origin`, the subprotocols offered and
-  the peer's address, and the session keeps it as `WebSocket.request`. The
-  request was parsed and thrown away, so a session could not be
-  authenticated, a page from another site could not be refused, and a
-  browser that offered a subprotocol failed to connect at all: none was
-  ever echoed. `WebSocket.protocols` asks for subprotocols from a client
-  and `protocol` says which was agreed. `sendText` sends a message a
-  browser receives as a string, where everything was binary and reached a
-  page as a `Blob`; `sendBinary` sends one at once. A session with a
-  listener for the new `WebSocketMessageEvent.MESSAGE` receives each
-  message whole, with whether it was text, where messages ran together into
-  one stream. `ping()`, `pong()`, `pingInterval` and `idleTimeout` are
-  public, on the session and, for the sessions it accepts, on the server.
-- A response can be written as it is produced:
-  `HTTPRequestHandler.beginResponse(status, contentType, headers)` sends the
-  head and returns an `HTTPResponseStream` to `write` or `writeText` the body
-  into and `end`. Chunked under HTTP/1.1 (ended by closing for an HTTP/1.0
-  client), DATA on a stream held open under HTTP/2. `write` answers `false`
-  when the client has more waiting than it is reading, and `onDrain` says
-  when to go on; a producer that writes regardless is stopped at
-  `maxOutputBufferSize` with an error logged rather than held without bound.
-  The handler dispatches `Event.CLOSE` when its client goes, the connection
-  closed, or an HTTP/2 stream reset, and `connected` says whether it is
-  still there. `respondBytes` sends a body of bytes. `respond` took only a
-  String and always a `Content-Length`, so server-sent events, downloads
-  produced as they went and binary bodies needed `@:privateAccess`.
-- A rate-limited request is answered `429` with a `Retry-After` saying how
-  many seconds until it may try again, over HTTP/1.1 and HTTP/2, and the
-  limiter can be keyed on something other than the client's address:
-  `HTTPServerConfig.rateLimitKey(handler)` names the key a request counts
-  against, the address a trusted proxy forwards, an account, or null to
-  leave it unlimited. `HTTPRequestHandler.remoteAddress` is public, where a
-  route limiting logins per client needed `@:privateAccess` to read it.
-  `RateLimiter.secondsUntil(key)` says when a key could spend again, and
-  `RateLimiter.addressKey(address, prefixBits)` turns an address into the
-  key the server uses, an IPv6 one by its prefix.
-- `HTTPServerConfig.maxRequestBodySize`, the request body a server accepts,
-  on the wire and once decoded, over HTTP/1.1 and HTTP/2; one megabyte by
-  default, as before. It was fixed, and it counted the headers too. A body
-  past it is now `413`, refused on its `Content-Length` before any of it is
-  read and on a chunk's size line for a chunked one; a `Content-Length` past
-  the old fixed limit was answered `400`. A header block has its own limit,
-  64 KB, answered `431`.
-- `HTTPServerConfig.onExpectContinue(handler)`, asked with a request's
-  method, path and headers before a client sending `Expect: 100-continue` is
-  told to send its body. Returning `false` after answering, a `401`, say,
-  keeps the body from being sent at all. The server used to tell every such
-  client to go ahead before any middleware had seen the request.
-- `HTTPServerConfig.onError(handler, error)`, called when a middleware or
-  route throws or passes an error to `next()`. It can answer the request
-  itself, a JSON error body, say, and otherwise the server answers `500`,
-  or the status an `Int` error names, as before. An error that is not an
-  `Int` is now logged at ERROR with the method, the path and, where the
-  target keeps one, the stack; it was not logged at all, so a route that
-  threw a database error left only an INFO line reading `Status: 500`. The
-  client is still told only the status.
-- `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
-  the same way on every target, within a bound, answering `-1` for anything
-  that is not a plain non-negative number that fits. `Std.parseInt` has four
-  answers past 32 bits, truncated on Linux and macOS native, where
-  4294967296 reads as 0, clamped on Windows native, a throw on the jvm and a
-  wider-than-Int number on JavaScript, so a check of its result is right on
-  no target. These count digits against the bound before converting, never
-  throw, and return an unboxed `Int`.
-- RPC handlers can answer later. A method declared to return `Future<T>`
-  instead of `T`, in a contract too, where its commands stub still
-  returns `RPCResponse<T>`, is answered once the future completes, and a
-  runtime handler returning a `Future` likewise. A handler whose answer
-  depends on something slow, such as a hub asking an instance host for a
-  match, had nothing to send by the time it returned. The wire, the caller
-  and handlers that answer at once are unchanged; a method answering at once
-  generates the same code as before. A future complete already when the
-  method returns is answered then with nothing registered; one completed on
-  another thread is answered on the session's thread at its runtime's next
-  tick, since a connection is not thread-safe. A failure is answered as a
-  throw is, an `RPCError`'s message, or `RPCError.INTERNAL_MESSAGE` with
-  `onHandlerError` told, and `afterCall` runs when the future completes. A
-  response that fails because the other side answered with an error now has
-  an `RPCError` as its `cause`, so forwarding one passes the refusal on.
-  `RPCSession.maxCallsWaiting` (256) bounds how many calls may wait at once;
-  past it a call is refused with `RPCError.BUSY_MESSAGE` before its method
-  runs. An answer completing after its connection ended is dropped.
-- `crossbyte.Completer<T>`, the side of a `Future` that completes it:
-  `complete(value)`, `fail(error)`, and `future` to hand out. A `Future` could
-  only be completed by CrossByte itself, so code of an application's own
-  could not promise an answer it would have later. `fail` takes what a
-  function would throw, keeping it as the future's `cause`. Named after
-  Dart's `Completer`, which completes a `Future` the same way.
-- An RPC guide, `docs/rpc.md`: contracts, commands and handlers; one-way
-  calls and requests; what can be sent; how a failing handler is answered
-  and what ends a connection; the call hooks; surfaces built from parts;
-  the runtime lane; heartbeats and pending calls. Its examples are
-  typechecked in CI, in order, by `ci/doc-examples.js`, which now reads
-  markdown guides as well as doc comments, takes declarations as well as
-  statements, and lets a statement example name the receiver it assumes
-  in a leading `// Given name:Type.` line.
-- `RPCSession.beforeRuntimeCall(op, requestId, payloadSize)` and
-  `afterRuntimeCall(op, requestId, error)`: what `beforeCall` and
-  `afterCall` are to a compiled handler, for handlers added with
-  `register`. Those have no class to override hooks in, so the hooks are
-  set on the session. Left `null`, as they start, they cost a runtime call
-  one check each.
-- RPC commands classes can extend other commands classes, as handlers can.
-  A subclass sends its parent's methods as well as its own and reads the
-  responses to both. A commands class for a contract can extend the one for
-  the contract it extends. The macro made `ping` and the response reader
-  again in every commands class, which Haxe refused in a subclass.
-- RPC contracts can extend other contracts, so a reusable one, presence,
-  chat, can be built into an application's. A contract's stubs, and its
-  handler's dispatch, now cover every method of every interface it extends,
-  however far up. A parent reached twice gives its methods once, and a
-  generic parent takes the type its extension passes. A name declared twice
-  with different signatures is a compile error, since on the wire the two
-  would be one method.
-- RPC handler classes can extend other handler classes. A subclass answers
-  its parent's methods as well as its own, an override is what answers, and
-  a contract method can be implemented by an ancestor, so a reusable
-  contract can come with a reusable handler. The macro made `ping` and
-  `dispatch` again in every handler class, which Haxe refused in a subclass
-  without `override`.
-- `RPCHandler.beforeCall(method, requestId, payloadSize)` and
-  `afterCall(method, requestId, error)`: one place to authorize, rate limit
-  or count every call, and to see how each went, where it had to go in
-  every method. `beforeCall` runs before a call's arguments are read, and
-  refuses it by returning an `RPCError`: a request is answered with its
-  message, and a one-way call is dropped. `afterCall` runs once the answer
-  has gone. Hooks in a shared base class apply to every handler built on it.
-  The calls are generated only into a handler that overrides them, or whose
-  ancestor does. Natively, dispatching a one-way call costs 18 ns in a
-  handler without them, as before. With both overridden it costs 22 ns,
-  against about 190 ns for the whole call from stub to handler.
-- The performance suite measures RPC: dispatching a one-way call, a call
-  from stub to handler, and a request answered, over connections joined in
-  memory, with and without hooks.
-- `crossbyte.rpc.RPCError`, for a failure an RPC handler means its caller to
-  see. Thrown from a handler method, its message is the caller's answer:
-  the `RPCResponse` fails with it, word for word, and the connection stays
-  up. `RPCSession.onHandlerError(op, method, error)` is told of anything a
-  handler throws that its caller is not told: anything but an `RPCError`,
-  and anything at all from a one-way call. `method` is the compiled
-  handler's method name, or `null` for a runtime handler. It logs by
-  default, and whatever it throws is ignored.
-- Pluggable congestion control for reliable datagram sessions.
-  `CongestionControl` decides how many frames a session may have in the
-  network at once, and is both the default, Reno, as before, and the
-  class to extend: `onAcknowledged`, `onLoss` and `onTimeout` are its events,
-  and `window`, read before every frame is sent, is its answer. Setting
-  `ReliableDatagramSocket.congestionControl` gives a session its own. A
-  server's `congestionControlFor(address, port)` hook gives one to each
-  session it accepts or dials, and a hook that throws refuses the CONNECT,
-  as `admit` does.
-- `LossTolerantCongestionControl`, for paths that lose frames to radio
-  rather than to congestion. On a loss it sets the window to what the path
-  has been delivering times the fastest round trip: what the path holds
-  with nothing queued. A loss with no queue behind it then costs little,
-  and a queue is still drained, though never below half the window. At a
-  20 ms round trip, 1000-byte messages ran at 7.0 MB/s under 1% loss where
-  the default runs at 0.63; at 5% loss, 2.1 against 0.28; at 10%, 1.0
-  against 0.19 (medians of six runs). With a small receive buffer
-  overflowing, it lost no more frames than the default. It measures by two
-  new readings on the socket: `minRoundTripTime`, the fastest round trip,
-  and `framesDelivered`, the frames the peer is known to hold, each counted
-  once, as soon as it is known.
-- `DatagramSocket.receiveBufferSize` and `sendBufferSize`: the operating
-  system's buffers for a socket, read and asked for. Past the receive
-  buffer, arriving datagrams are dropped, and the systems' defaults are
-  small, 64 KB on Windows, so a socket many peers send to, or one
-  receiving a window of datagrams at once, wants more. What is granted is
-  the system's call (Linux caps it at `net.core.rmem_max`, and reports twice
-  what it keeps), so read it back. Natively and on the jvm, and on Node once
-  the socket is bound; eval, HashLink and Neko cannot size a socket's
-  buffers and read 0.
-- `crossbyte.net.PeerClock`: where a peer's clock stands against this one,
-  from exchanges the application makes in messages of its own, this side
-  notes when it asked, the peer answers with its clock, this side notes when
-  the answer came. One exchange puts the peer's reading within the round
-  trip, so the offset is taken at the middle and is out by at most half the
-  round trip, which `error` reports; of the last `window` exchanges, 16 by
-  default, the one with the shortest round trip is used, since queueing is
-  what lengthens a round trip and it is rarely even on both legs. `now()`,
-  `toPeer` and `toLocal` read times across, `jitter` follows how much one
-  round trip differs from the next as RFC 3550 smooths it, and an exchange
-  that cannot have happened, an answer before its question, a time that is
-  not finite, is refused. It owns no socket and no timer, so it runs on
-  every target, the browser included.
-- `ReliableDatagramSocket.roundTripTime`, `roundTripVariation` and
-  `retransmitTimeout`: what the session measures to time its own
-  retransmissions, RFC 6298's smoothed round trip, its variation, and the
-  timeout drawn from them, read-only, in seconds. The round trip is -1
-  until the first reliable frame sent only once is acknowledged.
-- A payload on the CONNECT that opens a reliable datagram session, for the
-  server to decide on before it allocates anything. `connect` on
-  `ReliableDatagramSocket` and on `ReliableDatagramServerSocket` takes one of
-  up to a frame, 1200 bytes, copied when called and carried by every CONNECT
-  the handshake repeats; `admit(address, port, payload)` is shown it, empty
-  when the peer sent nothing; and the session a server accepts keeps it as
-  `connectPayload`, so the handler that takes the session knows who it is by
-  the token it was let in on. Admission could weigh only an address, which
-  UDP lets a sender write for itself, so a join ticket or a protocol version
-  could be checked only once a session and its handshake had been paid for.
-  The payload crosses in the clear and anyone who sees it can send it again,
-  so what it carries should be something the server can verify and expire,
-  not a secret. A CONNECT carrying more than a frame is dropped before
-  `admit` is asked, since each pending session holds what its CONNECT
-  carried. Peers that both dial, as through NAT, each keep the other's. A
-  peer on an older build sends none, and ignores one.
-- `crossbyte.io.BitWriter` and `BitReader`: values in as few bits as they
-  need. Widths of 1 to 32 bits, signed values, integers in a known range (in
-  the bits the range needs, none for a range of one), floats quantized to
-  evenly spaced steps over a range (back within half a step, the ends exact),
-  and raw 32-bit floats. Bits fill 32-bit words from the lowest up, stored
-  little-endian and trimmed to whole bytes, so the bytes are the same on every
-  target. The writer gathers a word before storing it and keeps its buffer
-  across `reset`, so packing allocates nothing once it has grown; the reader
-  treats its input as a peer's, refusing a read past the end with `EOFError`
-  and a range value past its maximum with `RangeError`, and reading the last
-  partial word a byte at a time rather than past it. A value too wide for its
-  field is refused rather than truncated into a different, plausible one. On
-  the snapshot the arena sends, 64 records of a 10-bit slot, a 4-bit
-  generation, 12-bit x and y and a flag, packing takes 1.05 microseconds
-  natively against 1.14 for the same values byte-aligned, and 312 bytes
-  against 512.
-- `crossbyte.net.DeliveryMode`, and a fourth argument to
-  `ReliableDatagramSocket.send` that takes one: `RELIABLE`, the default and
-  what `send` always did; `UNRELIABLE`, sent once and never resent; and
-  `sequenced(channel)`, unreliable, with anything older than the newest
-  message delivered on its channel dropped rather than delivered late. A
-  session carried only reliable ordered messages, so state sent over it waited
-  behind whichever packet was lost, and the way round that, a raw
-  `DatagramSocket`: left the handshake, admission, congestion control and
-  keepalive behind. Unreliable and sequenced messages ride the same session,
-  must fit one frame (1200 bytes; larger is refused, not split), and are not
-  paced by the reliable congestion window, which has no acknowledgements for
-  them to open or close it. Channels 0 to 255 are independent, so a newer
-  snapshot never makes an older input look stale. The channel and a 24-bit
-  wrapping counter travel in the frame's existing sequence field, so nothing
-  is added to the frame, and a peer on an older build drops the new frame
-  types as unknown rather than misreading them.
-- `ReliableDatagramSocket.maxMessageSize`, eight megabytes unless set, zero
-  for no limit: the largest reliable message a peer may send. A message
-  larger than a frame is held until its last fragment arrives, so what a peer
-  can make this side hold is whatever it says a message is; past the limit the
-  session closes with an `ioError` saying why.
-- `crossbyte.ds.SpatialGrid3D`: `SpatialGrid` with a third axis, for things
-  spread as far up and down as across, space, flight, floors a view apart.
-  `set(id, x, y, z)` moves an id for a comparison unless it crosses a cell, and
-  `querySphere` and `queryBox` visit only the cells they overlap. A world that
-  is mostly flat relative to its view radius is still cheaper in
-  `SpatialGrid` on the ground plane: a 3D cell costs an array entry whether or
-  not anything is in it, and a sphere touches up to 27 cells where a circle
-  touches 9. Run through the arena on a flat world it keeps 100,000 entities
-  current in 1.07 ms against the 2D grid's 0.91, reporting the same entities
-  entering and leaving every view. There is no octree, for the reason there
-  is a grid beside `QuadTree`: a tree divides where things are, so moving
-  them means building it again.
-- `crossbyte.ds.SpatialGrid`: ids at positions, filed into square cells, for
-  things that move. Each cell's ids are a list threaded through arrays indexed
-  by id, so `set` costs a comparison when an id stays in its cell, at any
-  ordinary speed, nearly every step, and a relink when it crosses into
-  another, and moving allocates nothing once the arrays have grown. A query
-  visits only the cells its circle or rectangle overlaps, and what it finds
-  are ids, which go straight into an `InterestSet`. Bounds decide speed, not
-  correctness: a position outside them is filed at the edge and still found.
-  Measured in the arena sample against rebuilding a `QuadTree` every step, at
-  20 Hz with each view holding the same crowd: 0.09 ms against 0.98 to keep
-  10,000 moving entities indexed, 0.89 against 14.5 at 100,000, and 2.2
-  against 45 at 250,000, where the tree takes most of a 50 ms step. A
-  `QuadTree` remains the choice for uneven crowds and things that hold still.
-- `samples/arena`: an authoritative game server and sixteen bots in one
-  process, built from `FixedStep`, `SpatialGrid`, `InterestSet`, `BitSet`,
-  `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`, `ServerSocket.admit` and
-  `FrameCodec`. Every snapshot carries a checksum of what the server built and
-  each bot compares what it decoded, so the run exits non-zero when the pieces
-  compose badly even if each passes its own tests. CI builds and runs it.
-- Admission control on listeners. `ServerSocket.admit(address, port)` is
-  asked about each connection as soon as it is accepted, before any TLS
-  handshake, before a `Socket` is built, and `false`, or a throw, closes it
-  on the spot; a TLS server on Node asks on the raw `connection` event, so a
-  refused peer is spared the handshake there too. The accept loop takes up to
-  `maxAcceptsPerTick` connections a tick (64) where it took one, which left a
-  burst of 190 waiting 3.2 seconds at 60 Hz, and `maxPendingHandshakes` (256)
-  bounds handshakes in flight by leaving the rest queued in the kernel.
-  `ReliableDatagramServerSocket.admit` is asked before a CONNECT from a new
-  address allocates a session, and is shown what the CONNECT carried. `ServerWebSocket` honours all three: it
-  accepts through a loop of its own, where they had compiled and done
-  nothing.
-- `crossbyte.ds.InterestSet`: what came into an observer's view and what left
-  it since the last round, the spawn and despawn lists a server sends each
-  client. Ids from any visibility test are gathered and committed, and
-  `commit` reports departures and then arrivals, at a cost that follows the
-  size of the views rather than the largest id. `forget(id)` covers a slot
-  reused between rounds, which a set of numbers cannot see. `QuadTree` gains
-  `queryCircle`, and stops subdividing 32 levels down: a crowd on one spot
-  used to split until the quads were too small for floating point to tell
-  apart, and inserts began to fail.
-- `crossbyte.ds.SequenceRing` and `crossbyte.io.ByteDelta`, the two halves of
-  delta replication. The ring files values by a wrapping sequence number and
-  reads anything older than its window as absent. The codec encodes bytes as
-  a difference from a baseline, an unchanged 1000-byte snapshot costs five
-  bytes, and decodes its input as hostile, refusing a declared length above
-  `maxLength` before building anything.
-- `BitSet.nextSetBit`, `nextClearBit`, iteration with `for (i in bits)`,
-  `isEmpty`, `clone`, and `and`, `or`, `xor` and `andNot` in place. Finding
-  the set bits meant calling `get()` on every index; a loop on `nextSetBit`
-  finds them a word at a time and allocates nothing.
-- `crossbyte.core.FixedStep`: steps of one fixed size however the ticks
-  arrive. `advance(delta)` takes each tick's elapsed time and `step()` hands
-  back steps of exactly `interval`, each numbered by `tick`. Time beyond
-  `maxSteps` is dropped and counted in `dropped` rather than owed, since
-  owing it is how a server that falls behind falls further behind, and
-  `alpha` is how far into the next step the present is. A quotient a hair
-  short of a whole number counts as that number, so a 144 Hz runtime under a
-  60 Hz simulation stays on schedule.
-- `crossbyte.net.ConcurrencyLimiter`: how many at once, beside
-  `RateLimiter`'s how often. Capacity in flight is capped and the rest are
-  refused, or held in a bounded first-come queue for a bounded time.
-  `tryAcquire` never waits or jumps the queue, `acquire` grants, queues or
-  refuses, and `sweep()` from the tick expires waiters, there is no timer
-  inside. The `ConcurrencyPermit` it returns releases correctly in every
-  state, so a connection can release on close without asking what became of
-  its claim, and `limit` may change at any time.
-- `crossbyte.cluster`: low-level pieces for running as more than one node,
-  none of which refers to another.
-  - `SnowflakeId`: 64-bit ids, 41 bits of milliseconds, 10 of node, 12 of
-    sequence, unique across nodes without a round trip, ordered by time,
-    and never repeated when the clock steps back or a burst exhausts a
-    millisecond.
-  - `Rendezvous`: highest-random-weight hashing, so every node computes the
-    same owner for a key with nobody to ask, and removing a node moves only
-    its keys. The owners of fixed keys are pinned in the tests, because two
-    targets disagreeing about an owner is the failure this cannot have.
-  - `Membership`: who is alive, from heartbeats however they arrive, with
-    `onJoin` and `onLeave`, and `maxNodes` bounding the names accepted from
-    outside.
-  - `NodeChannel`: a framed link to one peer that redials with backoff from
-    a quarter second to thirty seconds, bounds what waits for an absent peer
-    with `maxQueuedBytes`, and never resends a message behind the caller's
-    back.
-- `crossbyte.net.FrameCodec`: message boundaries for transports that do not
-  keep them, such as TCP and binary WebSocket. A four-byte length prefix, a
-  read cursor with amortised compaction, and a declared length checked
-  against `maxFrameSize` as soon as the header is readable rather than after
-  the bytes arrive.
-- `crossbyte.ds.ExpiringMap`: entries that stop being there, bounded twice,
-  `ttl` for how long and `maxSize` for how many, since time is no bound when
-  whoever fills the map fills it faster than it drains. A sweep costs what
-  expired rather than what is held, and an expired entry reads as gone
-  however seldom the caller sweeps.
-- `userData` on `Socket` (and so `WebSocket`), `ReliableDatagramSocket`,
-  `DataChannel` and `NetConnectionBase`: somewhere to keep the application's
-  state for a connection that goes when the connection goes, instead of a
-  side map whose entries outlive their connections whenever a removal is
-  forgotten. Typed `Any`, so reading it back takes an explicit cast.
-- ICE consent freshness, RFC 7675. A selected pair used to stay selected
-  forever; the agent now re-checks it every four to six seconds, verifies the
-  answers against the peer's password, and gives the path up thirty seconds
-  after the last valid one. `PeerConnection` closes when that happens.
-- Fuzzing, in `tests/crossbyte/fuzz`. Nine parsers that read bytes off a wire
-  are fuzzed as pure functions, STUN, SCTP, DCEP, HPACK and its Huffman
-  strings, deflate, LZ4, and Postgres results and bytea, and the HTTP
-  server, the WebSocket frame decoder and an established SCTP association
-  over real connections. Those three assert what is still held once the peers
-  have gone as well as that the server survives, because every
-  unbounded-growth fault fixed in this release had passed a green suite. The
-  generator is seeded, so a red run reproduces.
-- A server-shaped soak, `ci/soak.hxml`, to ask whether the native GC fault
-  seen in the test suite reaches a process that stays up. Within twenty
-  seconds of its first run it found the `SlotMap` leak below; since then it
-  has run two hours clean. `TestHarness` gains `-D gc_probe` and
-  `-D gc_bisect` for cornering that fault.
-- CI runs what it says it runs. Several steps went through a tool release
-  that printed its banner and exited 0, so the native samples never built and
-  the interpreter suite, the sample type-checks and the three hxcpp audits
-  never ran. They do now, with every build's exit code checked, and five of
-  the samples are also run. The system and native crypto suites run on Linux
-  and macOS, and the examples in `File`'s documentation are type-checked
-  before the API docs build.
-- The jvm target runs the whole suite. It ran everything except `RPCTest`,
-  `CollectionsTest` and `CompressionRoundTripTest`, excluded for a Haxe 4.3.7
-  `--jvm` bytecode bug that raises a `VerifyError` at class-load and takes the
-  process with it, not a failing case but no result at all. Two of the three
-  had stopped tripping it some time ago and nothing re-checked, because nothing
-  re-checks an exclusion. The third was real, and belonged to the test rather
-  than to `crossbyte.rpc`: constructing an `RPCSession` for its side effects
-  and discarding the result leaves an uninitialised reference live across a
-  branch. Binding each construction to a local settles it. RPC on jvm needed no
-  change and never had coverage saying so; it does now. The entry point also
-  calls `addAll` instead of listing groups, which is how `addMetrics` came to
-  be missing from it, not a decision, and not visible in either file.
-- The core socket suites run on the jvm target: `SocketTest`,
-  `ServerSocketDrainTest`, `ServerWebSocketDrainTest` and
-  `WebSocketConformanceTest` were registered `#if cpp`, so the socket layer's
-  own cases, including the WebSocket conformance run against a hand-written
-  client, executed on one target only. Both jvm faults above were found by
-  turning them on, and the first of them hung the suite rather than failing it,
-  which is what a frozen runtime looks like from outside.
-- The HTTP server suite runs on the jvm target. Its cases were gated to
-  `cpp || neko || hl || nodejs`, written when the server was native-only and
-  never widened, so the whole of `HTTPServer`, routing, streaming, draining,
-  metrics, HTTP/2, executed nowhere on jvm. All of it passes there, and does
-  now: 458 further assertions on a target that had none of them.
-- TLS carries application data, and there is a case that says so. Every jvm TLS
-  test stopped at the handshake, which turned out to be the wrong place to
-  stop, certificates, ALPN, client certificates and SNI all passed while the
-  data path moved nothing. The round trip is against the JDK's own blocking
-  `SSLSocket`, so it is a foreign implementation rather than two halves of this
-  one agreeing.
-- `verifyCert = false` is honoured by the jvm TLS client. It was accepted and
-  ignored: the client verified regardless, so a self-signed development server
-  was unreachable from jvm no matter what the caller asked for. The JDK
-  consults only the three-argument `X509ExtendedTrustManager` overloads on an
-  `SSLEngine` handshake, so a trust manager implementing the two-argument forms
-  alone is silently never asked. Verification stays on unless it is turned off
-  explicitly, and turning it off does not stop the client sending SNI,
-  choosing which host to talk to is not the same decision as whether to check
-  the answer, and dropping the name would quietly serve it the wrong
-  certificate.
-- Client-side TLS on the jvm target, and with it OAuth token requests, which
-  threw there. `FlexSocket(secure)` handed back a socket that did a plain TCP
-  connect and spoke no TLS, so every https request through CrossByte's own HTTP
-  client was unencrypted or broken; it now terminates TLS as the client,
-  verifying the certificate against the JDK's trust store and checking the
-  hostname against it. `OAuth` routes through that client on jvm rather than
-  `haxe.Http`, which reaches HTTPS through a `sys.ssl.Socket` that does not
-  compile there. Verified against a live HTTPS server: 200 OK from a real host,
-  and a token request that reached a real endpoint and parsed its reply.
-- Server Name Indication on the jvm target: `addSNICertificate` now presents
-  the certificate matching the hostname a client asked for, falling back to the
-  one installed with `setCertificate` for a name no entry claims. Selecting per
-  name is a key manager's job, `SSLParameters.setSNIMatchers` only decides
-  which names a server will accept, not what it answers them with, so the
-  backend supplies one. With this, the jvm TLS surface matches what the other
-  targets offer: certificates, ALPN, client certificates and SNI.
-- Client certificates on the jvm target. `requireClientCertificate` already
-  installed a trust store there, but a trust store only says which authorities
-  would be acceptable, the handshake was never asking for a certificate, so
-  the store was never consulted and an unauthenticated peer was accepted. The
-  engine now demands one whenever `verifyCert` is set. A client presenting
-  nothing is refused with "Empty client certificate chain"; one presenting a
-  trusted certificate completes.
-- ALPN on the jvm target, so a TLS listener there can negotiate `h2`. The JDK
-  exposes it through `SSLParameters`, where the cpp path needed a native
-  extension to reach mbedTLS at all. `ServerSocket.setALPN`, `FlexSocket`'s
-  accessors and `Socket.alpnProtocol` all report it. Verified by hand against
-  the JDK's own client offering the reverse preference order, so agreement on
-  the server's first choice is a negotiation and not an echo; it is not covered
-  by CI, for the reason recorded in `ServerSocketTLSTest`.
-- TLS on the jvm target. A secure `ServerSocket` refused at construction there
-  and `Certificate`/`Key` refused to load anything, so the jvm build had no
-  HTTPS server and no WSS. It now terminates TLS through `SSLEngine`, verified
-  against `openssl s_client`: TLS 1.3, certificate accepted, handshake
-  completed. Java ships two TLS APIs and only `SSLEngine` suits a poll-driven
-  runtime, `SSLSocket` is blocking, so the engine is driven over the same
-  NIO channel the plain socket uses and reports an unfinished handshake by
-  throwing `Blocked`, which is what the existing handshake pump already treats
-  as "come back next tick". Nothing above the socket changed. Certificates load
-  from PEM; private keys from unencrypted PKCS#8, with PKCS#1 and encrypted
-  keys refused by name and told how to convert rather than misparsed. Server
-  Name Indication, client certificates and ALPN are not implemented yet and say
-  so.
-- A performance suite in `tests/bench`, covering the paths that run once per unit of real work, per datagram, per connectivity check, per event, so a regression there is multiplied by traffic. It reports the best of several calibrated samples per case; CI builds and runs it so it cannot rot, and ignores the numbers, because a shared runner's timings gate nothing honestly. Its first run found both of the performance fixes below.
-- `StunClient` has tests. It had none, nothing in the repository named it, while `StunMessage` was pinned to RFC 5769's vectors and `TurnClient` had cases of its own, so the class a caller reaches for first was the one thing in that corner nobody checked. Seven cases against a server bound in the test, covering what a real one could not be asked to do: drop a request, refuse one, answer without an address, and answer a question nobody asked.
-- `TurnClient.useChannels` and `PeerConnection.gatherRelayed`'s `useChannels` argument: RFC 8656 channels, which replace the thirty-six byte Send indication wrapper on every relayed datagram with four. Off unless asked for, because a relay that binds a channel and then drops what it is sent over it cannot say so, a `ChannelData` message is not STUN, and one implementation tested here answers the bind with success while rejecting every datagram whose top two bits are set. A relay that refuses the bind outright is the safe case and keeps working on indications.
-- `crossbyte.net.rtc.PeerConnection.gatherReflexive`: asks a STUN server what address this connection appears from and adds the answer as a candidate, which is what a peer behind NAT has to advertise for anything outside to reach it. It goes out of the connection's own socket, and it has to: a NAT keeps one translation per socket, so an address discovered on a socket of its own, which is what `StunClient` binds, answers truthfully about a mapping this connection does not have and no peer will ever send to. It asks again on RFC 5389's doubling schedule rather than sending once and waiting for a deadline, because the only question a connection asks about its own address is a thing to lose to one dropped datagram, and a deadline alone reports that loss as a server which is not there.
-- `crossbyte.net.rtc.PeerConnection.gatherRelayed` and `relayedCandidate`: allocates on a TURN server through that same socket and carries the connection over it when ICE nominates the relayed pair. For the peer no direct path reaches, two symmetric NATs, or one and a firewall that drops anything unsolicited, leave no datagram either end can send that the other receives, and a relay is an address both can. Connectivity checks, the DTLS handshake and every message are wrapped for the server to forward and unwrapped on the way back, so nothing above ICE knows there was a detour. It is preferred last: every byte crosses a third party twice, and a relayed candidate carries the lowest priority there is.
-- `IceAgent.addLocalCandidate` takes an optional way of sending from that candidate, and `receive` an optional candidate saying how a datagram arrived. Both additive. The agent used to assume one socket served every local candidate, so which one a pair named moved the priority and nothing else; a relayed candidate's address belongs to a server, and naming it is precisely what decides that a datagram is wrapped for forwarding rather than addressed at the peer. An answer also has to leave the way its request arrived, which is why `receive` needs telling.
-- CrossByte interoperates with a real TURN server. Two peers with no path between them but a relay implemented by somebody else, node-turn, RFC 5389 and 5766, open a data channel and exchange messages, including one of 128KB that crosses as 128 chunks with the acknowledgements coming back the same way. Run by `ci/relay/run.js` and part of CI, for the same reason the browser test is: the suite's own relay verifies a request with the very code that produced it, so the two would agree perfectly about anything they are both wrong about.
-- RFC 5769 section 2.4, the long-term credential sample, as test vectors. Long-term credentials key the integrity with MD5 of username, realm and password rather than with the password itself, so an implementation can have every byte of the HMAC right and still get every TURN exchange wrong. Three cases hold it: the key derived, the sample verified, and the same request rebuilt from its parts byte for byte. `StunMessage.longTermKey` now also says what it does not do, SASLprep, which matters only for a credential outside printable ASCII and silently derives a different key when it does.
-- CrossByte interoperates with a real browser. A headless Chrome `RTCPeerConnection` and `crossbyte.net.rtc` now find a path with ICE, complete a DTLS handshake verified against a signalled fingerprint, open an SCTP association, negotiate a data channel over DCEP and exchange messages, run by `ci/interop/run.js` and part of CI. Every other test in this repository proves this code agrees with itself, which is worth a great deal and is not the same thing: a checksum byte order, a chunk layout or an integrity scheme can be perfectly self-consistent and understood by nothing else alive. Three things were reasoned from RFC text rather than demonstrated until now, the SCTP checksum being written least significant byte first, the DCEP message framing, and SCTP layered inside DTLS records, and this is what turns them from arguments into facts.
-- `crossbyte.net.rtc.SessionDescription`: a `PeerDescription` rendered as SDP and read back from it, which is what a browser exchanges. Enough for a data channel and no more, one `m=application` line, no media and no codec negotiation. `a=setup` is the line that matters: `actpass` in an offer means the answer chooses, and choosing the same role the peer took leaves both waiting for a ClientHello neither sends. The parser is pinned to a real Chrome offer rather than to a round trip, because a codec that reads back what it wrote agrees with itself perfectly and may still not understand a word a browser says, it ignores the lines it does not need, skips the TCP candidate Chrome offers and this stack has no transport for, and keeps the peer's own candidate priorities rather than recomputing them, since both peers must sort the same pairs the same way.
-- `crossbyte.net.rtc.PeerConnection` and `PeerDescription`: the whole WebRTC stack behind one class. ICE finds a path, DTLS encrypts it, SCTP carries it and DCEP names the channels, all over a single UDP socket, which is why every layer beneath was built owning no socket of its own. Arriving traffic is separated by RFC 7983's rule, a first byte under 4 being STUN and 20 to 63 being DTLS, which is the rule that lets one port carry connectivity checks and an encrypted session at once; SCTP never appears raw, living inside the DTLS records. Every layer is driven from one clock, `haxe.Timer.stamp()` on the runtime tick, and that is load-bearing rather than tidy: each schedules retransmissions against the timestamps it was handed, so two layers fed from clocks with different epochs would disagree about the age of every unacknowledged packet, one retransmitting instantly, the other never, with nothing to name the cause. One `controlling` bit decides everything downstream: who nominates the ICE pair, who is the DTLS client, who opens the association, who takes the even data channel streams. An ICE role conflict therefore propagates upward, because a connection that kept its original answer after the agent changed sides would have both peers claiming the same half of each of those. Signalling is deliberately not carried here, it is the one part of WebRTC that belongs to the application, and every application already has a channel it would rather use, so `description()` hands over the fragment, password, fingerprint and candidates as data. A description arriving without a fingerprint is refused outright, since a connection built on one would be encrypted and unauthenticated, which looks secure in every way that does not matter. Covered by two peers on real sockets completing the entire stack and exchanging a message in each direction, and by a peer presenting a certificate that is not the one it signalled being refused after a handshake that succeeded.
-- `crossbyte.net.rtc.DataChannel` and `DataChannelSet`, over a `DcepMessage` codec: the top of the WebRTC stack, and the first thing in it an application would actually hold. SCTP gives an association with streams that are numbered but anonymous; RFC 8832 is what turns a stream number into a channel with a name. The OPEN travels on the very stream it is about, told apart from that channel's own messages by payload protocol identifier 50 alone, which is why a channel needs no second stream to be negotiated on, and why that identifier exists at all. Stream numbers are not negotiated: the peer that was the DTLS client takes the even ones and the other the odd, so two peers opening a channel at the same instant cannot choose the same stream and no round trip is spent discovering a clash. A caller therefore does not pick the number, and an OPEN arriving on a stream this side would have chosen is refused rather than accepted into a collision. A channel carries whole messages, send a megabyte and the far side gets a megabyte in one piece or nothing, never half of one, so an application on top needs no framing of its own. Text and bytes are separated on the wire rather than guessed at from the contents, and an empty message of each kind has an identifier of its own, since a zero-length payload is otherwise indistinguishable from no payload; a channel that swallowed one would be losing messages an application deliberately sent. Sending before the peer has acknowledged throws rather than buffering or dropping, because a caller cannot tell those two apart.
-- SCTP data transfer, `SctpDataChunk` and `SctpDataTransfer`, which is messages over an open association: fragmenting them, acknowledging them, retransmitting what went missing, and putting them back in order. Three numbers do three different jobs and conflating any two of them breaks something different: the TSN orders and acknowledges every fragment on the association and is what a SACK talks about; the stream sequence number orders whole messages within one stream and only within it; the payload protocol identifier says what the bytes are, which is why an empty message needs an identifier of its own, a zero-length payload being otherwise indistinguishable from no payload. Reliability costs keeping every unacknowledged fragment until it is acknowledged; ordering costs holding arrivals rather than delivering them, and unordered delivery declines that second cost while keeping the first, a message still arrives, and is still resent, it just does not wait. Both are per stream, which is the entire reason SCTP has streams and the reason a data channel is not simply run over TCP: a message held up on one channel delays nothing on another, and that is asserted directly. A message too large for one packet is cut up with the same stream sequence number on every fragment, the first flagged B and the last E, and held at the receiver until both ends are present with an unbroken run between them. SACKs carry the cumulative acknowledgement and the gap blocks past it, so a sender resends what is missing rather than everything since. The harness drops and reorders packets on demand, because over a wire that never misbehaves an implementation that retransmits and one that does not are indistinguishable.
-- The SCTP association handshake, `SctpAssociation`, `SctpParameter` and the states that go with them. Four messages where TCP uses three, and the extra one is the entire point: the peer being asked to open an association commits no memory to it until the requester has proved it can receive at the address it claimed, because the state that would have been held is handed over as a cookie for the requester to carry back. That is the attack SYN cookies were retrofitted onto TCP to survive, designed into SCTP from the start, and it is tested as a property rather than assumed, the answering side is still listening, holding nothing, after it has answered. A cookie it did not issue opens nothing, compared without a short circuit so the timing of a refusal says nothing about how much of a guess was right. Verification tags are the other half: each side invents one, and from then on stamps every packet with the *other* side's, which is what lets an association survive a peer restarting on the same port instead of quietly folding its new traffic into the old session. The INIT is the one packet that carries a zero tag, having none yet to carry, and that is asserted rather than left to convention. Like the agent, the relay and the DTLS transport, it owns no socket, doubly forced here, since an association runs inside a DTLS session which runs over a socket already carrying ICE.
-- The SCTP packet layer, `SctpPacket`, `SctpChunk` and `Crc32c`, which is the framing a WebRTC data channel is written in, and the first piece of the last protocol in the chain. Two details here decide whether anything ever interoperates, and both are pinned. The checksum is CRC-32C, Castagnoli's polynomial, not the CRC-32 already in `haxe.crypto`: the two are one letter apart in every document that mentions them and disagree on every input, so the wrong one produces a checksum that is perfectly self-consistent and universally rejected. It is verified against the catalogue's check value and RFC 3720's iSCSI vectors, and asserted to differ from the standard library's. It is then taken over the whole packet *with the checksum field zeroed*, the same shape STUN's integrity has and the same mistake available, and written least significant byte first, alone among the header's fields, because RFC 4960's reference implementation byte-swaps the result before storing it and every implementation follows. Chunk padding follows STUN's rule too: the length counts the header and value and not the padding, while the next chunk still begins on a four byte boundary. An unrecognised chunk carries its own instructions in the top two bits of its type, which is what lets a receiver behave correctly toward a revision it was not written against. All of it is bytes in and bytes out, so it runs on every target including the browser, where SCTP itself lives inside `RTCPeerConnection` and this code never will.
-- `crossbyte.net.rtc.DtlsTransport`: the encrypted channel a WebRTC data channel runs inside. ICE finds a path; this is what makes it private, and once SCTP is here every message on every data channel will travel through it. It owns no socket, for the reason everything else in this stack does not: the socket a peer would use is already carrying ICE checks and will later carry SCTP, and mbedTLS would want to own it, so the session is driven through memory callbacks, `onSend` out and `receive` in with `poll` for time. The same shape means two transports can be handed each other's datagrams and complete a real handshake, retransmission timers and all, with no network in between, which is how it is tested. Arriving datagrams are told apart by RFC 7983's rule, below 2 is STUN, 20 to 63 is DTLS, so a transport sharing a socket takes only what is its own and leaves the connectivity checks still keeping the path alive. Verification is by fingerprint and it is not optional: the expected value is a constructor argument, because an implementation that lets it be supplied later has a window in which a session is established and unverified, and something eventually uses it in that window. mbedTLS is configured `MBEDTLS_SSL_VERIFY_OPTIONAL` rather than `VERIFY_NONE`, and that distinction is the whole of mutual authentication here: there is no chain to verify, but `NONE` also means a server never *requests* a client certificate, so the client sends none, so the server has nothing to fingerprint and one end of the session is anonymous. `OPTIONAL` asks for it and declines to fail over a chain that leads nowhere, leaving the fingerprint to decide. The DTLS cookie exchange is disabled on the server side deliberately: it exists to prove a client is reachable at the address it claims, and ICE proved exactly that one round trip earlier by getting an answer to a connectivity check.
-- `crossbyte.net.rtc.DtlsCertificate`: the certificate a peer proves itself with, and the fingerprint it publishes instead of a certificate authority. WebRTC has no CA in it, each peer signs its own certificate, sends a hash of it over the signalling channel that already brought the two together, and the handshake checks that what was presented hashes to what was signalled. The trust comes from the signalling channel, and the certificate only has to outlive a session, which is why one per connection is normal here rather than negligent. P-256 rather than RSA, both because it is what every WebRTC implementation defaults to and because it is what makes per-session generation reasonable: measured at one to two milliseconds. The fingerprint is taken over the DER the certificate encodes to and not the PEM text carrying it, since two encodings of one certificate are one certificate and the peer at the other end is hashing bytes off the wire, checked against SHA-256 computed outside Haxe over the same certificate rather than against this implementation's own output. Native only, and `isSupported` says so: mbedTLS is what hxcpp links, Node has no DTLS in core at all, and a browser makes its certificates inside `RTCPeerConnection` where a page deliberately cannot reach the private key. The first half of DTLS; the transport itself follows.
-- `NativeDtls`, the mbedTLS bridge under it, and two things learned building it that are now written into the build rather than left to be rediscovered. hxcpp does not compile mbedTLS against its stock configuration: it passes `MBEDTLS_USER_CONFIG_FILE`, and that config turns on `MBEDTLS_THREADING_C`, which adds a mutex member to `mbedtls_ctr_drbg_context`, `mbedtls_entropy_context` and others. A file compiled against the stock config declares the smaller struct and the library then writes the larger one over whatever is next to it, reporting success, and killing the process later somewhere with no visible connection to the cause, which is exactly how this behaved for an afternoon. `NativeDtlsBuild.xml` sets the flags and `NativeDtls.cpp` refuses to compile without them. The second is that `MBEDTLS_THREADING_ALT` leaves the mutex callbacks unset until hxcpp's `_hx_ssl_init()` installs them, and until then `mbedtls_mutex_lock` is a stub that *fails*, so anything touching a mutex-bearing struct returns an error resembling nothing in particular. Whether that had already run depended on static initialiser order across translation units, which made one program work and another built from the same source fail; the bridge now calls it, which is idempotent and free. Failures also report the mbedTLS code rather than an unexplained null, because a failure nobody can reproduce on demand deserves better than "it did not work".
-- `crossbyte.net.TurnClient`: a relayed address, for the connections that have nowhere else to go. ICE finds a direct path almost always, and when it does not, symmetric NAT at both ends, a firewall permitting only outbound TCP, a carrier running CGNAT, there is no packet either peer can send that the other will receive, and no amount of hole punching invents one. TURN answers that by having a server both peers can reach forward between them. It is deliberately the last candidate tried: every byte crosses a third party twice and somebody pays for the bandwidth, which is worth it only against the alternative of no connection at all. Allocation, refresh, permissions and Send/Data indications are all here. The handshake begins with a refusal and that is not an error, a relay publishes neither its realm nor the nonce it wants requests signed against, so the first request goes out bare and the 401 that comes back is how the exchange starts; RFC 8656 section 9.2. The credential is not the password either but MD5 of username, realm and password together, so a relay can hold the digest and a credential is bound to the realm it was issued for, and that derivation is pinned to arithmetic done outside Haxe rather than to this implementation's own output. An expired nonce is ordinary operation and is retried against the new one, while a credential the relay actually rejects fails once rather than turning a wrong password into a flood. Requests queue rather than replacing each other: only one is tracked at a time, so starting a second underneath the first would abandon it, and the one abandoned would usually be the refresh, which fails silently, the allocation simply ceasing to be renewed until the connection dies with it. Like `IceAgent` it owns no socket, so the whole exchange is tested against a relay standing in memory, deterministically, on every target including the browser, including the cases a real relay will not produce on demand. Channel binding (section 12) is not implemented and says so: it would trade thirty-six bytes of overhead per packet for four, which is worth having on a busy relay and changes nothing about whether a connection works.
-- TURN support in the STUN codec, the allocate, refresh, create-permission and indication methods, `XOR-RELAYED-ADDRESS`, `XOR-PEER-ADDRESS`, `DATA`, `REALM`, `NONCE`, `LIFETIME` and `REQUESTED-TRANSPORT`, and signing keyed with bytes rather than a password, since short-term credentials key with the password directly and long-term ones with a digest. The RFC 5769 vectors still pass through that change, which is what they are there for.
-- ICE role conflict resolution, RFC 8445 section 7.3.1.1, which is what lets `IceAgent` talk to a stack CrossByte did not write. Roles are agreed out of band, and any exchange that can be raced, both sides offering at once, a restart, a signalling path that reordered two messages, leaves both peers convinced they hold the same role. Nothing detects it until a check arrives, because until then each side is perfectly consistent with itself, and the two failures look nothing alike: both controlling means two peers nominating possibly different pairs, while both controlled means nobody nominates and the checks run happily forever without ever selecting anything. The larger tiebreaker keeps the role in both cases; what differs is who acts, since an agent that wins refuses the check with a 487 and makes the sender move, while one that loses moves itself. A role change rebuilds every pair, because pair priority is computed from the role and an agent that changed sides without recomputing would be relabelled rather than switched, still ordering its list the old way while the peer orders it the new one. Pairs already proven keep their standing, a path that works being a fact about the network rather than about who nominates. A refusal is acted on only when it answers the role currently held: a check sent while claiming to be controlling can be refused after an inbound check has already made the agent controlled, and acting on that stale answer puts it back into the conflict it just left. Measured without that guard, the peers still converge, so nothing hangs and no other case notices, while the role changes repeatedly and each change discards every pair priority and the nomination in progress, which is the kind of fault that arrives at the right answer and is never found afterwards. `IceAgent.onRoleChanged` reports the switch, since a caller tracking which peer nominates now has it the other way round.
-- `StunMessage.errorCode()`, `errorCodeValue()` and `iceRoleClaim()`. The wire format for an error is not the integer, the hundreds digit occupies three bits of one byte and the remainder the next, so 487 travels as a 4 and an 87, and until now this could only render a code and reason together for a human. Anything deciding what to *do* about a refusal needs the number, and parsing it back out of that string would be a way to get it wrong.
-- `ReliableDatagramServerSocket.attachIceAgent()`, which runs an `IceAgent` over the socket the server already listens on, and with it, NAT traversal that works end to end rather than in pieces. The agent knows how to find a path and nothing about sockets; the server holds the one socket that can be used to look. Attaching wires the three things the agent needs: checks go out through this socket, STUN arriving here is handed to it, and its clock comes from the runtime tick. It has to be this socket and no other, because a NAT keeps one mapping per socket, a check sent from anywhere else opens a hole for a port the peer was never told about, and the path it proves is not the path the session would then use. Inbound traffic is sorted in three stages: a reply to an outstanding `discoverPublicAddress` query first, then the agent, then the reliable decode. The agent reports whether it took a datagram, so anything it does not recognise falls through to the session rather than being swallowed by a component with no use for it, which matters because a peer keeps checking while its session is already carrying data. One agent per socket, since two would answer each other's checks. Covered by a test that stands two servers up on real sockets, negotiates between them, and then dials a reliable session over the pair ICE chose and carries a message across it; removing the agent from the receive path fails it with the two peers never connecting.
-- `crossbyte.net.ice.IceAgent` and `IceCredentials`: the part of ICE that actually connects two peers. Candidates are checked with signed STUN requests, the ones that answer are kept, the controlling peer nominates the best of them, and the peer at the other end, seeing only its own half, arrives at the same pair. A check arriving for a pair not yet tried causes that pair to be tried immediately, which is the piece hole punching depends on: a NAT admits a datagram only after one has gone out to that destination, so the first check in each direction is what opens the mapping for the other and neither side can wait. A response reporting a mapping the sender did not know it had becomes a peer-reflexive candidate, frequently the only kind that works. Unanswered checks retransmit on RFC 5389's schedule, seven attempts, doubling from half a second, and when the last one runs out the failure is reported rather than waited on forever, because a datagram that reached nothing looks exactly like one still in flight. The agent owns no socket: it says what to send through `onSend`, is told what arrived through `receive`, and takes time through `poll`. That is required rather than tidy, since checks have to leave from the very port a peer listens on, and it has the effect that two agents can be pointed at each other and run to completion with no network at all, which is how the whole exchange is tested, deterministically, on every target including the browser. `IceCredentials` carries the fragment and password a check is signed with, refuses lengths below the RFC's minimum entropy, and keeps the password out of `toString`, since a credential that reaches a log has been published. Not done yet, and named rather than hidden: TURN, and the role conflict resolution that settles two peers who both claim to be controlling, the tiebreaker is generated and sent, but a conflict is not yet acted on.
-- `SecureRandom.isSupported`. `getSecureRandomBytes` throws on a target with no CSPRNG rather than falling back to something that only looks random, which is right, but a caller that would rather take another path had no way to ask, and everything built on it inherited that. The interpreter and neko report false; the ICE agent aliases this, because transaction ids and tiebreakers that can be guessed are worse than none.
-- STUN short-term credentials and the attributes a connectivity check carries: `MESSAGE-INTEGRITY`, `FINGERPRINT`, `USERNAME`, `PRIORITY`, `USE-CANDIDATE`, `ICE-CONTROLLING`/`ICE-CONTROLLED` and `SOFTWARE`. Both digests are computed over a message that does not exist yet, RFC 5389 has the header's length field rewritten to cover the attribute about to be appended, and only then is the hash taken over everything before it. Get that wrong and the result verifies perfectly against your own code and against nobody else's, which is why the tests are pinned to RFC 5769's published vectors rather than to a round trip, in both directions: the sample request and IPv4 response verify as they arrive, and the signing path reproduces their `MESSAGE-INTEGRITY` and `FINGERPRINT` bytes exactly. A decoded message now keeps the bytes it arrived as, because integrity cannot be checked against a re-encoding, attribute padding is unspecified, and RFC 5769 pads a username with spaces where this encoder writes zeros, so a receiver that re-encoded to verify would reject valid traffic from anyone whose padding it did not happen to share. The attribute being hashed is located by walking the list rather than scanning for its tag, since a software name or transaction id can contain those four bytes and hashing the wrong span is how a good message gets rejected or a bad one accepted; that case is tested separately, because the RFC vectors pass either way. Tags are compared without a short circuit, so a forged one cannot be built a byte at a time from how long the rejection took. HMAC-SHA1 comes from `haxe.crypto.Hmac` rather than the bundled libsodium, which offers SHA-256 and SHA-512 and no SHA-1, so this needs no native bridge and works on every target, the browser included.
-- `crossbyte.net.ice.IceCandidate`, `IceCandidatePair` and `IceCandidateType`: the addresses a peer can offer, and the order both peers will try them in. ICE does not negotiate an address, it races them, each side pairs everything it gathered against everything the peer sent, sorts, and works down the list until a check answers. The sort is the part that has to be right, because each peer does it alone and RFC 8445 requires the two to agree: peers working one list in different orders spend their checks on different pairs, and the cheapest working path is found late or not at all. The priorities are the RFC's, recommended type preferences included, so a CrossByte peer and a browser order the same pairs identically, 2130706431 for a host candidate and 1694498815 for a server-reflexive one are the numbers that appear verbatim in real SDP, and they are asserted against arithmetic done outside Haxe rather than against this implementation's own output. Pair priority is an `Int64` because the formula needs one: `2^32 * MIN(G, D)` reaches about 9.15e18 against a signed 64-bit ceiling of 9.22e18, so the RFC's exponents fill the type almost exactly, and computing it in an `Int` would wrap on a target with real 32-bit integers while merely losing precision on one whose numbers are doubles, a disagreement between targets rather than a crash. Pairing leaves out what cannot reach rather than failing it a round trip later: different address families, or different components. Candidates naming the same address, port and component count once, because a host and a reflexive candidate are the same place when no NAT sits between them. Pruning by candidate base (section 6.1.2.4) is not done and says so, since pruning by a base that was guessed rather than recorded would drop pairs that were not redundant; the cost is one spare check, not a wrong answer. None of it touches a socket, so it runs on every target including the browser, which is the one most likely to be talking ICE to a stack it did not write.
-- HTTP/2 connections are counted, limited and reaped on the server. They were none of those things: `__serveHttp2` constructed a handler and returned, so `maxConnections` was a limit a peer could ignore entirely by speaking HTTP/2, and the sweep that closes idle HTTP/1.1 connections never walked them. An HTTP/2 connection is idle between requests by design, so the deadline depends on what it owes, the keep-alive allowance with no stream open, the request timeout with one open and nothing arriving. Draining closes them through the handler so the peer gets a GOAWAY naming the last stream processed rather than a socket that simply stops.
-- Pooled HTTP/2 client connections expire, through `H2ConnectionPool.idleTimeoutSeconds` and `reapIdle()`. Reuse is the point of the pool and an unbounded one is a leak: every origin ever contacted kept a socket and a parked reader thread for the life of the process. `acquire` reaps what it walks past, which covers a program that keeps making requests; `reapIdle()` is for one that stops.
-- A cap on the compressed size of a single header block, across all of its CONTINUATION frames (`H2ServerConnection.maxHeaderBlockSize`). SETTINGS_MAX_FRAME_SIZE bounds each frame and nothing bounded the run, so a peer could send HEADERS without END_HEADERS and then CONTINUATION frames forever into a buffer that only grew. SETTINGS_MAX_HEADER_LIST_SIZE is no help either, it limits what the block decodes to, and such a block never reaches the decoder.
-- `-D crossbyte_no_http2`, which removes the registry's reference to the bundled backend so dead code elimination can take the framing layer with it. Measured at 171 KB on a 4.1 MB native binary. The existing `autoRegisterBundled` flag stops the registration but not the linkage; only the define removes the reference.
-- Rapid Reset defence on the HTTP/2 server (CVE-2023-44487), tunable through `HTTPServerConfig.http2MaxResetStreams` and `http2ResetWindowSeconds`. `SETTINGS_MAX_CONCURRENT_STREAMS` is not a defence against this and cannot be made into one: a reset stream is a closed stream, so it frees its slot the instant it arrives, and a peer that opens a stream and resets it immediately never approaches the limit while still making the server route, allocate and dispatch every request. Streams abandoned before their response are counted per window instead, and a peer past the budget gets GOAWAY with ENHANCE_YOUR_CALM, nothing it sent was malformed, there was simply too much of it. A reset arriving after the response is not counted, because a client cancelling a download it has already read enough of does exactly that.
-- `crossbyte.net.LocalAddress`, with `INetHost.localAddressFor` and `ReliableDatagramServerSocket.localAddressFor` beside it: which of this machine's addresses would reach a given peer. This is the candidate ICE calls a host candidate, and it was the one CrossByte could not produce at all, a socket bound to `0.0.0.0` reports `0.0.0.0`, which is every interface and therefore names none. It matters exactly where a reflexive address cannot help: two peers behind the same NAT reaching each other by public address would need that NAT to hairpin a packet back in to the network it came from, which plenty of consumer equipment will not do, while the two sit one hop apart on the same subnet. Both obvious implementations are wrong, and were measured to be before this was designed. Resolving the hostname answered `172.28.192.1`, a WSL adapter nothing on the LAN can reach. Enumerating interfaces answered with nine IPv4 addresses, Tailscale, two VMware adapters, four Hyper-V and WSL adapters, loopback, and one real one, so offering them all spends a peer's connectivity checks on eight that cannot work and hands it a map of every virtual network on the machine, which is the fingerprint browsers went to the trouble of `.local` mDNS names to stop leaking. What this does instead is ask the routing table: connecting a throwaway UDP socket toward the destination is what makes the kernel commit to an interface, and the source address it chose is the answer. Connecting a UDP socket transmits nothing, so the destination need not be reachable or even exist, and the stand-in for "somewhere out on the internet" is from RFC 5737's documentation range rather than a real host, so the lookup implicates nobody. No port comes back and none is needed: a NAT is what makes a reflexive port differ, nothing translates a local address, and so the port to dial is `localPort`. Available where `discoverPublicAddress` is not, it asks the machine rather than the network, so the stream hosts that refuse `dial` for want of a single endpoint still answer this.
-- `crossbyte.net.ReflexiveAddress`: the address and port a socket appears as from outside, as a public type. The STUN work returned an anonymous structure declared inside an `_internal` module, so naming the result of a public API meant importing from `_internal`, which nothing else here asks of a caller: `Certificate` and `Key` alias their internal counterparts privately and expose public names.
-- `INetHost.discoverPublicAddress`, gated by the same `canDial` that gates dialling. The two are not separate capabilities that happen to coincide: both need one socket to serve accepting and connecting, so a host that cannot dial from its listening endpoint has no single endpoint to ask about either. One flag rather than two that could drift apart.
-- `StunClient.isSupported`, in the form the rest of `crossbyte.net` uses, five of its classes already report it, and a caller should be able to branch rather than learn from a failed future.
-- `ReliableDatagramServerSocket.discoverPublicAddress()`: where this server is reachable from outside, asked through the socket it already listens on. `StunClient` answers the general question by binding a socket of its own, which cannot be this one, the server holds the port, and a NAT keeps one mapping per socket, so a reflexive address discovered anywhere else describes somewhere no peer can reach this server. The request goes out through the bound socket and the reply is picked out of ordinary inbound traffic by its transaction id, so a query costs no extra socket and disturbs no session. One at a time, since two would race for the same reply. Tested against a STUN server stood up inside the suite rather than a real one, including a reply carrying a mismatched transaction, which is refused, believing one would have a peer publish an address of the sender's choosing to the whole mesh.
-- STUN, as `crossbyte.net.StunClient` over an internal `StunMessage` codec: what address the rest of the world sees a socket as. A peer behind NAT cannot answer that locally, `localAddress` is the private side of the mapping, and the address it must publish for others to dial is the public side, so this is the first thing any peer-to-peer transport needs, and the first step of the WebRTC path in general. `discoverFor` asks from a nominated local port rather than an arbitrary one, because a NAT holds one mapping per socket and an answer about the wrong port describes somewhere nobody can reach this peer; that is the same distinction `ReliableDatagramServerSocket.connect` exists for. Replies are matched against the request's transaction id, since a datagram socket accepts from anyone and an unchecked reply is an attacker choosing the address a peer publishes to the whole mesh. `XOR-MAPPED-ADDRESS` is preferred over the older plain attribute for the reason the XOR exists: NATs were built that rewrote anything in a packet resembling an address, so the unobscured form could arrive already "corrected" to the private address it was sent to report on. The codec needs no socket and runs on every target including the browser, where the client itself cannot: a page discovers its reflexive address through `RTCPeerConnection` instead. Verified against a public STUN server as well as by unit test.
-- HTTP/2, client and server, in Haxe. HPACK, Huffman, static and dynamic tables, encoder and decoder, is pinned to the worked examples in RFC 7541 Appendix C, which is the part a round-trip test cannot check: an encoder that is merely self-consistent still produces bytes no other implementation can read. Framing, settings, streams and flow control sit on top, and both halves run on every target including the browser, because none of it needs a socket. Server: set `HTTPServerConfig.http2Enabled` and one listener serves both versions, deciding per connection, ALPN over TLS, the connection preface over cleartext, since RFC 9113 retired the `h2c` upgrade and left prior knowledge as the only cleartext mode. Requests reach the same routing, middleware, static-file and CORS pipeline an HTTP/1.1 request does; that took separating "decide a response" from "write HTTP/1.1", which `HTTPRequestHandler` had done in one breath. Client: set `URLRequest.httpVersion`, and nothing else, the bundled backend registers itself on demand. Connections are pooled per origin and shared, so concurrent requests to one host are concurrent streams rather than one connection each, and `URLLoader.close()` resets just that stream instead of dropping everyone else's.
-- ALPN on `sys.ssl.Socket`, via `crossbyte.net.ServerSocket.setALPN()` and `Socket.alpnProtocol`. Nothing in the Haxe standard library exposes it, which is what made `h2` over TLS unreachable rather than merely unimplemented; mbedTLS has carried the support all along and hxcpp already links it. Native only, so `FlexSocket.alpnSupported` says whether it will reach the handshake, and `setALPN` is a no-op rather than an error where it will not, a caller can offer `h2` unconditionally and fall back on the `null` it reads back.
-- `crossbyte.http.HTTPCancelToken`, and `URLLoader.close()` now uses it to cancel a request already in flight rather than only killing the worker that was waiting on one.
-- `HTTPRequestContext.onHeaders`. A backend could previously parse a whole response and hand back nothing but the body, which made every non-core HTTP version strictly less capable than the built-in one. The built-in HTTP/1.1 client reports through it too, so both paths say the same thing.
-- `ReliableDatagramServerSocket.connect()`, and `INetHost.dial()` with the `canDial` capability that goes with it: a reliable session opened from the port a server is already bound to. `ReliableDatagramSocket.connect()` makes its own transport and so leaves from an arbitrary port; for a peer-to-peer mesh that is the difference between working and not, because hole punching needs the port a peer dials out from to be the port it is reachable on, and a NAT holds that mapping for one socket. The capability is declared on the interface rather than assumed, because it is what decides whether a transport can carry a mesh at all: a listening TCP or WebSocket host answers `false` and refuses, since accepting and connecting are separate sockets there. A dialled session registers with its server so replies route through the same pump that feeds accepted ones, and it deliberately does not surface through `CONNECT`/`onAccept`, it was initiated, not accepted, and whoever dialled it already holds it. Extracted from RTPMP, which needed exactly this and had been assembling it by writing eleven private fields of `ReliableDatagramSocket` from outside: workable, unnoticeable when an internal is renamed, and wrong in a way that only shows under a second peer, since it left both the server and the session reading one transport.
-- `Future.map`, `Future.flatMap`, `Future.all`, `Future.catchError`, `Future.resolved` and `Future.failed`, and a `cause` alongside `error`. `map` and `flatMap` are what every adapter between two asynchronous APIs was writing by hand, `Store.getString` built a future, forwarded one arm through a conversion and the other unchanged, and that unchanged arm is the one an adapter forgets, turning a failure into a result that never arrives. `cause` carries the failure itself rather than prose about it: `HTTPRequestHandler` chose `504` over `502` by searching the message for "did not respond within", so rewording `PHPTimeout` would have silently changed a status code. It now asks what the failure was.
-- The HTTP server suite runs on Node: 90 socket round trips that had been gated to cpp, plus the config, rewrite, rate-limiter, hardening and router cases. The gate was `#if cpp`, written when the HTTP server was native-only and left in place through the port, so the target most likely to be deployed as a web server was the one whose web server no test had ever executed. It could not simply be widened, every case drove the runtime with a `while` loop, which delivers socket I/O perfectly well natively and delivers nothing on Node, where I/O arrives by returning to the event loop. Measured before designing anything: a probe pumping that way could not even read the port off a listening server. The cases are utest `Async` now, over a `pumpUntilAsync` that spreads the pumping across event loop turns on Node and delegates to the old synchronous loop everywhere else, so the native run is unchanged in speed, in assertion count, and in unwinding a failure through the test body rather than delivering it on some later turn with no stack.
-- PHP is served on Node. It was refused at `validate()` on the grounds that the bridge had to return a response and Node has no synchronous socket read to produce one with, true of the old bridge, and no longer true of anything. The refusal is gone, the FastCGI parsing is shared with the native transport rather than reimplemented, and `Launch` mode uses `crossbyte.sys.NativeProcess` where a native target uses `sys.io.Process`. Covered end to end against a FastCGI backend stood up inside the suite, including a record deliberately torn three bytes in, inside the eight-byte header, which is the split that breaks a parser assuming it can always read a whole one.
-- `Store.forEach`, `putString` and `getString`. `forEach` walks entries one at a time, a real IndexedDB cursor in a page, one file at a time elsewhere, and stops when the visitor returns `false`, so a large store is never held in memory the way `keys()` would hold it. `putString`/`getString` are UTF-8 and deliberately the only encoding offered, since anything richer would make the store choose a serialisation format. Absent still reads as `null` rather than `""`.
-- `crossbyte.io.Store`: durable key/value storage on every target, string keys and byte values, asynchronous everywhere. IndexedDB in a browser, a directory of atomically-renamed files elsewhere. It is deliberately the shape `localStorage` has, because the shape is right and only the implementation is wrong, synchronous, string-only, five megabytes, blocking the page. Beside `File` rather than in `crossbyte.db`, which is synchronous SQL drivers plus a thread pool and so exists on neither JavaScript target.
-- `crossbyte.Future<T>`: the eventual result of something unfinished, promoted from `crossbyte.rpc.RPCResponse`, which now extends it and keeps only `requestId` and `op`. Nothing about waiting for a value was ever RPC-specific, and a framework with four ways of saying "later" is three too many.
-- CI runs the portable suite in a headless browser (`ci/browser-tests.hxml` and `ci/browser/run.js`). Node is not a browser, no `window`, no `document`, none of a page's restrictions, so the js suite passing there never answered whether the same bundle loads in a page. It did not: the very first browser run threw `SharedArrayBuffer is not defined` while loading, before a test could run. The runner treats any page error as a failure whether or not an assertion noticed, because that one produced no failing assertion; it just meant nothing started.
-- `RPCSession`, `RPCHandler`, `RPCCommands` and `NetConnection` build for the browser. `Transport` already had exactly one case there, `TCP`, which is a WebSocket underneath, so what was missing was gating the transports a page has not got out of `NetConnection`, and the RPC layer needed nothing. A browser client can now call a CrossByte server through the same typed surface a desktop one uses.
-- `RPCSession`, `RPCHandler`, `RPCCommands`, `NetConnection` and `NetHost` build on Node. The RPC layer needed no port of its own, it is protocol and dispatch over a `NetConnection`, and its session-id counter already had a non-threaded branch. `NetConnection` normalises four transports and Node now has three of them: TCP, WebSocket and reliable datagram. Only `Protocol.LOCAL` is absent, needing an operating-system IPC channel and shared memory, so `Transport.LOCAL` is a case that does not exist there rather than one that fails when used. The RPC suite runs in the portable Node tests.
-- TLS servers work on Node. `ServerSocket(true)`, `ServerWebSocket(true)` and `HTTPServerConfig.tlsEnabled` all listen there now, over `js.node.Tls`, and because `tls.Server` extends `net.Server`, listen, close, address and the error event are the same calls either way. Client certificates (`requireClientCertificate`) and SNI (`addSNICertificate`) come with it. The listener is built at `listen()` rather than in the constructor, because Node takes a TLS server's whole configuration when the server is made and every piece of it arrives afterwards, which is the same instant the native path already calls "when TLS configuration is materialized".
-- `crossbyte.net.ServerWebSocket` accepts sessions on Node, which was the last piece of the framework still native-only for a reason other than a browser cannot do it. The framing that answers an upgrade and reads a masked client frame is the same code every native target runs; what it sits on is a `js.node.net.Server` and an accepted socket adopted rather than dialled. A secure server refuses there and says why, and the why is worth stating precisely: Node presents certificates perfectly well through `tls.createServer`, but `setCertificate()` takes `sys.ssl` types hxnodejs has not got, so this is a missing abstraction rather than a missing capability. A Node `wss` *client* works today, needing only to verify a certificate rather than name one.
-- `crossbyte.net.DatagramSocket` sends and receives on Node, over `dgram`, and `ReliableDatagramSocket` and `ReliableDatagramServerSocket` with it, the reliable layer is protocol code over the datagram socket and needed no port of its own. Nothing polls: a datagram is delivered when Node has one, so there is no descriptor for the socket registry and no read loop. Node fixes a socket's address family when the socket is made where a `sys.net.UdpSocket` takes whatever address it is later handed, so the family is chosen from the first address used and the socket replaced if nothing has bound yet. `connect()` is emulated, the remote is remembered, `send()` names it every time, and anything from another peer is dropped, because the hxnodejs extern predates Node's own. A connected socket needs a numeric address there rather than a name, and says so: a session is matched against the address replies arrive from, and resolving a name on Node needs a callback that `connect()` cannot wait for.
-- `crossbyte.net.WebSocket` connects on Node. The framing is the same code every native target runs, masking, fragment reassembly, ping and pong, close codes, with only the transport swapped: `js.node.net` for `ws://`, `js.node.Tls` for `wss://`. Nothing polls there, because Node reports a completed connection, arriving bytes and a closed peer as events, so the tick is left with only the sending half. `wss` works even though a secure `ServerSocket` cannot, a client having only to verify a certificate where a server has to present one. The server half, accepting a connection and upgrading it, is still native-only.
-- `crossbyte.crypto.SecureRandom` works on both JavaScript targets: `crypto.randomBytes` on Node, Web Crypto's `getRandomValues` in a browser, both of them real CSPRNGs. It threw on either before, which is why a WebSocket could not even be constructed on Node, a client masks every frame with a fresh key and the key comes from here. The browser path fills a quota at a time, since `getRandomValues` raises on a request over 65536 bytes rather than returning fewer, and refuses outright when a page has no `crypto` object at all, which is what a page served over plain http from anywhere but localhost gets. Still no fallback to `Math.random`: that would hand back something passing every test a caller could write and predictable to anyone who wanted it.
-- `crossbyte.http.HTTPServer` serves on Node, along with `HTTPRequestHandler`, `Router`, `HTTPServerConfig` and the rewrite engine. It follows from `ServerSocket`: the server is one, and the request handler wanted a filesystem, which Node has. Two features refused there at first, TLS and PHP, and neither refusal was a limit of Node; both are lifted in this same release, TLS once certificate material could be named without `sys.ssl` and PHP once the bridge stopped needing a synchronous read.
-- The rules of HTTP that hold on any target, supported versions, conflicting framing, header name and value sanitising, moved out of `_internal.http.Http` into `_internal.http.HttpSyntax`, which is portable and compiles for the browser too. `Http` is the client, drives a raw socket with its own TLS, and is excluded from both JavaScript targets; leaving the protocol rules inside it would have meant a second copy of a header sanitiser, which is one too many for the thing it prevents. `Http` keeps its four methods as forwards, so its callers and their tests are unchanged.
-- `crossbyte.net.ServerSocket` listens on Node, over `js.node.net.Server`. Accepted connections arrive as the same `ServerSocketConnectEvent` carrying the same `crossbyte.net.Socket` as on a native target, and the wiring that makes an accepted socket indistinguishable from a dialled one now lives in `Socket` so the two cannot drift. Two differences are visible and are documented rather than papered over: Node has no bind separate from listen, so a refused address arrives as a `close` event rather than out of `bind()` and a port of `0` reads as `0` until `listen()` has claimed it; and a secure server refuses, because terminating TLS needs `sys.ssl` and hxnodejs has none.
-- A `crossbyte.core.Application` drives itself on both JavaScript targets, so the same entry point that runs a desktop build runs a web one. It used to throw and point at `HostApplication`, because CrossByte's loop is a `while` that never returns and a JavaScript runtime that never gets its thread back delivers nothing, no socket, no HTTP response, no repaint. It now takes one turn at a time instead: `requestAnimationFrame` in a browser, a timer on Node, with the configured `tps` honoured as far as each can deliver it. A browser is also given a timer beside the frame request, because a page that is not visible is given no frames at all and the entire runtime would otherwise stop until the tab came back. `POLL` still refuses, neither target has a socket set to poll.
-- `crossbyte.sys.NativeProcess` runs on Node, over `child_process`. It was excluded from every JavaScript target on the grounds that the implementation needs threads, but the threads are there to keep a blocking pipe read off the runtime, and Node's streams do not block, so it needs none. Output, stream closes, exit code and pid report through the same events as on the threaded targets. `standardInput` is a real `Output` over the child's stdin; `standardOutput` and `standardError` throw, because Node delivers a child's output through callbacks and there is nothing to read synchronously. A missing executable arrives as an exit with code -1 rather than a throw from `start`, which is when Node reports it.
-- `crossbyte.url.URLLoader` works on both JavaScript targets, through the runtime's own HTTP client, `XMLHttpRequest` in a browser, `http`/`https` on Node. It was excluded from both: the native path drives HTTP over a raw socket with its own TLS, which a page is not allowed and which Node has no `sys.ssl` for. Going through the runtime's client also hands it redirects, proxies, certificate verification and connection reuse rather than reimplementing them. The event contract is unchanged, status, progress, complete, error, and there is no worker, because the worker exists on the native targets to keep a blocking request off the loop and no request blocks here. Verified with GET and POST round trips against a Node server.
-- `crossbyte.io.FileStream` works on Node. It was excluded from both JavaScript targets for needing `sys.thread.Mutex`, which neither has, but Node has a real filesystem, and one thread means there is nothing for a mutex to exclude, so it takes the no-op shim. Write, read, seek and append all verified against real files. The browser still has no seekable file handle and keeps the refusal.
-- The portable suite runs on Node in CI (`ci/js-tests.hxml`), 1013 assertions. Until now the JavaScript targets were only compiled, which is what let a broken `ByteArray` ship green: reintroducing that bug turns this suite from 1013 passing assertions into 37 failures, while every compile-only check stays clean.
-- `crossbyte.net.Socket` works on Node, over `js.node.net`. It threw there before: the browser path needs the page's WebSocket and the native path needs `select()`, and Node has neither. Node's socket is asynchronous and event-driven, which is the shape the browser path already had, so the two now mirror each other, events fill the input buffer and the tick only pushes queued writes. Verified with a TCP round trip against a Node echo server rather than by compiling.
+#### HTTP
 
-- static file responses stream instead of being loaded whole. `__serveFile` called `file.load()` and then copied the entire body into the socket's output buffer, so serving a 2 GB download cost 2 GB of resident memory twice over, and a `maxOutputBufferSize` configured to protect the server would kill the transfer it had just been made to buffer. Identity responses over 256 KB now write their head and pump the body in 64 KB slices under a 256 KB watermark, driven by the socket's own drain rather than a timer: measured on a 2,097,289-byte file, peak buffering was 262,144 bytes, exactly the watermark, an eighth of the file, where the old path's peak was the file itself. A 512 KB burst budget bounds one pump invocation, because a peer that drains as fast as the server writes keeps the buffer under the watermark forever and would otherwise read and write the whole file inside a single tick, starving every other connection on the runtime. The size test now runs ahead of content negotiation, so a large file streams as identity for a client that offered gzip: compressing a multi-gigabyte video wastes memory for nothing, and doing it incrementally needs chunked framing that does not exist yet. A streamed response ends its connection, the body is still arriving when the head has been written, so keeping the connection would let the next request's response interleave into it; combining the two is follow-up work
-- a peer that stops reading no longer holds a streamed transfer forever. Bounding the pump below `maxOutputBufferSize` is what stops the overflow policy killing a healthy transfer mid-body, but it also meant the one mechanism that reclaimed a stalled connection could never fire, and the receive deadline had already been cleared when the request arrived, so nothing else would either. A transfer that hands no bytes to the kernel for 30 seconds is now closed, without a `408`: the status line for that response left with the head, and a second one would land inside the body as though it were file content
-- a file truncated mid-transfer no longer sends fabricated bytes. `FileStream`'s synchronous `readBytes` discards the short-read count and copies the full requested length regardless, so a log rotated or a build artifact replaced under a live download put a slice of zeroes on the wire as though it were content, and a client resuming by `Range` would stitch that hole permanently into its file. Each slice's read is now measured against what it asked for, and a short one ends the connection: a visibly short response is detectable against `Content-Length`, and silently wrong bytes are not. Files of 2 GB and over are refused with a `500` rather than served wrong, because `File.size` is an `Int` and wraps negative there, the positive-truncation case, where a 4 GB file stats as a small one, is undetectable on this standard library and is recorded as such
-- HTTP/1.1 keep-alive: a connection now carries more than one request. `Connection: close` was hardcoded into every response path, so every request paid a TCP handshake, and a full TLS handshake where `tlsEnabled` was set, to be answered, and a browser fetching a page with a missing favicon paid two. `HTTPServerConfig` gains `keepAlive` (default `true`, which is what HTTP/1.1 specifies and what every client already expects), `keepAliveTimeout` (5s idle) and `keepAliveMaxRequests` (100). Setting `keepAlive = false` reproduces the old behaviour byte for byte, down to the header's position in the response. The handler became a state machine over the connection rather than a one-shot: one `__decideKeepAlive` is taken when the header is written and acted on by a single response funnel, so the header and what the socket actually does cannot disagree, the twelve scattered `close()` calls that preceded it could each have drifted from the header they followed. A response keeps the connection only when the request was fully consumed, the client's `Connection` tokens allow it, the count is under the limit, and the status is not 400/408/413/5xx; 404, 405 and 304 keep it, which is the point. The consumed-request condition is what makes the rest safe: a `429` is decided before the request line has even been read, so keeping that connection would re-parse the same bytes forever
-- pipelined requests are answered in order instead of being destroyed. Both response builders ended with `__incomingBuffer.clear()`, which under close-per-request discarded nothing that mattered; the moment a connection survives its response, that call is deleting a request the client has already sent, and the client then waits for an answer that will never come and blames the wrong end. The unconsumed tail is preserved and re-parsed through a flat driver loop rather than a recursive re-entry, a megabyte of small pipelined requests would otherwise have been tens of thousands of stack frames
-- `drain()` no longer waits on connections that are merely idle. It waited on a connection count that, under keep-alive, includes every persistent connection sitting between requests, so a graceful shutdown would have paid its full timeout on a server that was doing nothing. Idle connections are closed as drain begins and the rest are marked to close after the response they are in the middle of
-- request duration is measured per request rather than per connection. `http_request_seconds` observed accept-to-close, which under keep-alive would have billed one request for the entire session including idle time; it now runs from a request's first byte to its response being written
-- `crossbyte.http.Router`: method and path routing for the HTTP server, supplied as middleware rather than as core surface. The dynamic surface until now was the bare `Middleware` typedef, `GET` served the filesystem, a `POST` to anything that was not PHP got a `405`, and every application that wanted `POST /api/users/42` to reach a function began by hand-writing the same segment split, method switch and id extraction. `get`/`post`/`put`/`delete`/`head`/`options`/`any` register patterns that compile once into segment lists at registration: a literal, a `:param` capturing exactly one segment, or a trailing `*rest` capturing the remainder. No regular expressions, a route table is small, fixed and written by the application author, so a segment walk answers it with nothing to compile per request and no pathological pattern to defend against. Precedence is registration order, first match wins, rather than specificity scoring: ordering rules that need a document to predict are how two routes silently swap priority in a refactor. Methods outside the static dispatch gate work, because bodies are read by framing rather than by method, so a `PUT` route receives its body. The refusals are the valuable part: a pattern with `*rest` anywhere but last, an empty pattern, a capture with no name, and a pattern that names one capture twice are all rejected at registration, the last because a duplicate silently overwrote the earlier value, which is the one failure of the four that produces a wrong answer instead of no answer
-- `HTTPServerConfig.requestTimeout`: seconds a request has to arrive in full, request line, headers and body together, answered with `408 Request Timeout` and a closed connection when missed. Defaults to 60; `0` disables. This window was uncovered: the rate limiter runs only once a complete header block exists, so a client trickling one byte at a time, or connecting and sending nothing, was never rate limited and held a connection slot for as long as it cared to, and with `maxConnections` defaulting to 256, tying up every slot cost an attacker almost nothing. Enforced by a sweep on the server rather than by the data path, because the clients this exists for are precisely the ones that stop sending: a check that runs on arrival never fires on a connection that has gone quiet. The sweep arms itself on the first accepted connection, walks active handlers four times a second, and disarms when none remain, so an idle or drained server leaves nothing ticking. Receipt of the full request clears the deadline, response time is the server's own and is not billed to the client
-- Postgres parameter binding: `PostgresConnection.requestParams(sql, params)` runs a statement through `PQexecParams` with `$1`-style placeholders, and `PostgresParameter` binds a value as `Text`, `Binary` or `Null`. The driver had no binding at all, statements were assembled as SQL text with values escaped in, and `PQescapeStringConn` works on NUL-terminated C strings, so any value was truncated at its first zero byte, silently and with no error. A ciphertext blob written that way became a fragment of itself, which for an encrypted event log is data loss rather than a performance note. Results no longer go through JSON either, which could not represent a byte sequence that is not valid UTF-8: the bridge returns a length-prefixed block carrying NUL bytes, measured with `PQgetlength` rather than `strlen`, and values arrive as `haxe.io.Bytes`. `NULL` stays distinct from an empty value in both directions, since collapsing them makes a NULL and an empty string the same row and only surfaces later in a `WHERE` clause. Results are requested in text format, so `bytea` arrives as its exact `\x` hex rendering and `PostgresWire.decodeByteaHex` returns it to bytes, binary results would mean decoding every column type from its network representation by OID, for no gain on the case that mattered. Verified in three separable parts, stated rather than blurred: the wire encoding is covered by eleven cases running on every target, the C++ is checked by compiling in the native suite, and the five round-trip cases against a real server run for the first time in CI. `PostgresStatement.executeParams(params)` binds positionally through the same path and reports results through the statement's existing machinery, so the statement API is no longer stuck with substitution; `execute()` and its named `parameters` are unchanged and now documented for what they cannot carry, because mapping named onto positional means scanning statements for placeholders
-- `Data | Postgres` CI job and `PostgresIntegrationTest`: the first tests in this repository that talk to a real PostgreSQL server. The driver had three tests, all of which checked the support flag or that `open` throws when unsupported, nothing had ever connected, so the entire query path shipped unexercised. A `postgres:16` service container and `libpq5` (the driver dlopens `libpq.so.5` rather than linking it) back a suite covering connect and server version, row round-trips, `affectedRows`, rollback discarding and commit keeping, escaping a value containing quotes and backslashes, and a failing statement raising rather than returning an empty result set, the last mattering because a broken query reading as a query that matched nothing is indistinguishable from success. The suite skips cleanly wherever `CROSSBYTE_PG_HOST` is unset, so a developer without a database still gets a green run; `CROSSBYTE_PG_REQUIRED`, which only CI sets, turns that skip into a failure, because otherwise a broken service container or a missing libpq would skip every case and report success, the shape that let the jvm suite stay red unseen. Marked `@:suiteExempt` since it needs a live server and so cannot be reachable from `addNativeSmoke`. Groundwork for parameter binding: the driver builds SQL by string substitution and returns every value as a JSON string, neither of which can be fixed safely without a server to check the fix against
-- `crossbyte.db.SchemaMigrator` and `Migration`: versioned schema migrations applied in order, exactly once each, one transaction apiece. This was the last piece of a service skeleton CrossByte did not supply, `Config`, `Logger`, `Metrics`, `ProcessLifecycle`, `ConnectionPool` and `AsyncDatabase` all existed, so the first thing any service using the database layer had to write was the part that decides whether its tables exist yet. Driver-specific work is three callbacks (`execute`, `readApplied`, `recordApplied`) rather than an interface, the same choice `ConnectionPool` and `AsyncDatabase.transaction` make and for the same reason: these drivers share no base type and demanding one would exclude every driver written outside the package. `recordApplied` is the caller's so the values go through the driver's own parameter binding, generating that INSERT here would put a migration name into SQL text. Statements are supplied individually rather than as one semicolon-separated string, because splitting SQL on `;` breaks on the first string literal or trigger body containing one. The valuable part is what it refuses: an already-applied migration whose content changed (the edit will never re-run, so this database and every other one that ran the original are now different while the file claims otherwise), a pending migration numbered below one already applied (the shape a merge produces, applying it yields a schema no in-order database will ever have), two migrations sharing a version, a half-supplied transaction, and a bookkeeping table name that is not a plain identifier since it reaches the default DDL. A failing migration is rolled back, not recorded, and stops the run rather than letting later migrations run against a schema that does not exist. No `down`: a rollback written before the failure it undoes is understood is guesswork, and one that drops a column destroys the data the incident needed. Optional `lock`/`unlock` callbacks serialise concurrent migrators, held across the whole run so two instances starting within a second of each other during a rolling deploy cannot both read an empty table and both apply migration 1; released on every path out, including a refusal that happens before any migration runs, since a lock left held would stop every other instance from ever migrating. Engine-specific by necessity, `pg_advisory_lock` on PostgreSQL, `GET_LOCK` on MySQL, nothing needed on SQLite. Sixteen cases run on every target against an in-memory connection, and were verified able to fail, disabling the drift check, the ordering check and the rollback produced failures in exactly those three cases and left the other nine green
-- Windows service control: `ProcessLifecycle.installServiceControl(name)` attaches to the Service Control Manager, so `sc stop`, a service restart and system shutdown latch the same request `Ctrl+C` does and run the same callbacks. This is what the graceful-shutdown work was missing on its deployment target, `installDefaultHandlers()` arms `SetConsoleCtrlHandler`, and a process started by the SCM has no console and receives none of those events, so on a Windows Server host `HTTPServer.drain()` never ran and the SCM killed the process on its timeout with in-flight requests severed. Correct in the configuration that gets tested, inert in the one that ships. The SCM is told `SERVICE_STOP_PENDING` the moment a control arrives (its clock starts when it sends the control, not when the application reacts) and `SERVICE_STOPPED` once `poll()` has run the callbacks and torn the runtime down; `reportServiceStopPending(waitHintMs)` extends the default 30-second hint, and `deferServiceStop` plus `reportServiceStopped()` hand the final report to an asynchronous drain, which `HTTPServer.drain(timeout, onComplete)` needs since it returns before the drain finishes. `isService` reports whether the SCM started this process. The dispatcher and both OS callback threads touch only Win32 and one atomic, never the Haxe runtime, which hxcpp's collector cannot see on a thread Windows created, and the attach handshake is polled from Haxe rather than waited on natively for the same reason. Everything is a no-op off the SCM, so a server written for service deployment runs unmodified from a console, and POSIX targets keep using `SIGINT`/`SIGTERM`, which is what systemd sends. CI covers the wiring and the console path; the SCM transitions themselves need a manual `sc create`/`sc stop` check on a Windows host, which is recorded rather than assumed
-- `samples/windows-service`: an `HTTPServer` that drains in-flight requests when the Service Control Manager stops it, and behaves identically under `Ctrl+C` from a console. Built in CI with the other samples, and the harness for the manual `sc create`/`sc stop` verification the suite cannot perform. It exists mainly to demonstrate the three settings a real service needs and the specific thing each one prevents: `installServiceControl` rather than `installDefaultHandlers`, or a `sc stop` runs no callback at all; `exitOnShutdown = false`, or the runtime exits the moment the callback returns and the asynchronous drain never gets another tick to finish on; and `deferServiceStop`, or `poll()` reports the service stopped while connections are still being served. It also logs to a file, because a service has no stdout and without one there is no way to see whether the drain ran. Verified end to end by sending a real console control event to the running sample: `stop requested; draining` through `drain complete; reporting service stopped` to a clean exit
-- pool and connection metrics, registered automatically wherever a registry is configured. `ConnectionPoolOptions.metrics`/`metricsPrefix` publish open/in-use/idle/max gauges bound to the pool's own accessors, counters for acquisitions, opens, timeouts and retirements, and an `acquire_wait_seconds` histogram, the measurement that separates a saturated pool from a slow database, since both otherwise present as slow queries. `ServerWebSocket.publishMetrics()` adds session counts and accepted/closed totals, and both it and `HTTPServer` gain `output_buffer_bytes_max` and `output_buffer_bytes_total`: `maxOutputBufferSize` bounds one connection, but many peers each sitting just under that bound is invisible from the ceiling alone, and the max separates one stuck client from a server-wide back-up. Everything published is an aggregate across connections, no label carries a peer address or session id, because such a series outlives the connection that named it and grows without bound on a server with churn, which is how a metrics pipeline gets taken down by the thing meant to observe it
-- `JWKSet` and `JWK`: JWK Set ingestion (RFC 7517), turning a provider's published keys into the PEM maps `JWTSigner.RS256` and `JWTSigner.ES256` already accept, `JWT.make(RS256(JWKSet.parse(json).pemsFor("RS256")), issuer, audience)`. RSA keys are rebuilt from `n`/`e` and P-256 keys from `x`/`y` into DER `SubjectPublicKeyInfo`, indexed by `kid`. `parse` throws only when the document itself is unusable; a key it cannot verify with goes to `ignored` with a reason instead, because providers stage the next key in a set before signing with it and refusing the whole document over one unrecognised entry would lock a service out of the keys it can still use. A duplicate `kid` keeps the later key and reports the collision, and a key whose `alg` names a different algorithm is refused rather than pressed into service. Verified by rebuilding real OpenSSL-generated keys from their JWK numbers and requiring them to verify genuine RSA and ECDSA signatures, not merely to parse
-- `WebSocketConformanceTest`: a server-side protocol suite driven by a hand-written client over a real socket through a real handshake, covering fragmentation, a control frame interleaved between fragments, several frames pipelined into one write, a frame split across writes, extended payload lengths, and the rejections RFC 6455 requires, unmasked client frames, reserved bits, fragmented and oversized control frames, an orphan continuation, a data frame interrupting a fragmented message, invalid UTF-8, and an oversized payload. Eight of the fourteen fail against the source before the read-path fix. `RawWebSocketClient` composes frames by hand so a test can send what a browser sends, and, more usefully, what no cooperating client will ever send, which is coverage no amount of running CrossByte against itself provides
-
-- expanded the libsodium bridge beyond Ed25519 with `Aead` (XChaCha20-Poly1305-IETF), `X25519`, `KeyExchange` (crypto_kx), `GenericHash` (BLAKE2b), `HKDF` (HKDF-SHA-256), `Argon2id` password hashing/derivation, `ConstantTime.equals`, and `SecureMemory.wipe`, all backed by RFC/draft known-answer tests
-- `crossbyte.sys.ProcessLifecycle`: cooperative shutdown hooks fed by `SetConsoleCtrlHandler` on Windows and `SIGINT`/`SIGTERM` on POSIX cpp targets, with ordered once-only callback dispatch and optional runtime exit
-- EdDSA (Ed25519) JWT signing and verification per RFC 8037 via the native Ed25519 backend, replacing the runtime `"not implemented"` throw; verified against the RFC 8037 appendix A JWS vector
-- direct TLS termination in `ServerSocket` (`new ServerSocket(true)` + `setCertificate`/`addSNICertificate`, plus `requireClientCertificate()` for mutual TLS), with handshakes advanced across ticks so a slow or hostile peer never blocks the runtime loop, a `handshakeTimeout` guard against half-open connections, and `pendingHandshakeCount()` for metrics; `HTTPServerConfig.tlsCertificatePath`/`tlsKeyPath` turn `HTTPServer` into an HTTPS server
-
-- graceful shutdown: `ServerSocket.stopAccepting()` releases the listening socket while established connections keep working (freeing the port for a successor process), and `HTTPServer.drain(timeout, ?onComplete)` stops accepting, waits for in-flight requests, then closes, pairs with `ProcessLifecycle` so a service stop finishes live responses instead of severing them
-- `crossbyte.core.Config`: layered service configuration from defaults, `key=value` files, and environment variables (with prefix stripping), with case- and separator-insensitive keys, typed accessors (`getInt`/`getFloat`/`getBool`/`getList`), and `require()` for values a service cannot start without; malformed numbers are rejected outright rather than silently truncated
-- structured logging: `Logger` gains severity levels (`LogLevel`), `key=value` structured fields, optional JSON output, optional timestamps, and a replaceable `sink`; the existing `info`/`error`/`separator` helpers keep their exact output
-- `crossbyte.db.ConnectionPool<T>`: driver-agnostic connection pooling, lazy creation to a fixed ceiling, reuse, acquire timeout, optional health validation, `discard()`, and a `withConnection()` scope that returns the connection even when the body throws; works with every driver without them needing a shared interface
-- `crossbyte.db.AsyncDatabase<T>`: runs database work on a `TaskPool` worker holding a pooled connection and delivers the resulting `Task` completion back on the submitting runtime thread, so synchronous drivers no longer block the event loop; includes a `transaction(begin, commit, rollback, body)` scope
-- `crossbyte.metrics`: thread-safe `Counter`, `Gauge` (including gauges bound to a provider function), and `Histogram` (cumulative buckets, plus `time()` which records even when the body throws), a get-or-create `Metrics` registry with Prometheus-grammar validation, and `toPrometheus()` text exposition output
-- socket write backpressure: `Socket.maxOutputBufferSize` bounds how much undrained data may accumulate for a peer that has stopped reading, `outputOverflowPolicy` chooses between closing the connection (default) and throwing, and `outputBufferLength` exposes the current depth; opt-in, so existing behavior is unchanged
-- `ci/stress-tests.hxml`: a concurrency stress suite covering TaskPool drain completeness, ConnectionPool contention, Metrics registry contention, Timer id allocation, and socket backpressure, races the single-threaded interpreter suites cannot see; wired into the Windows native CI job (`tests/stress/README.md`)
-- `HTTPRequestHandler.respond()`: middleware can now answer a request itself (health checks, metrics, auth replies, small API routes) instead of only calling `next()` or failing with a status
-- `crossbyte.metrics.MetricsEndpoint`: middleware serving a registry in Prometheus text format, rejecting non-`GET`/`HEAD` with 405 and never letting a failed render break the request path
-- opt-in `HTTPServer` instrumentation via `HTTPServerConfig.metrics`/`metricsPrefix`: request counts labelled by status class, a request-duration histogram, and a connection gauge bound to the server's live counter
-- `crossbyte.crypto.PublicKeySignature`: RSA and ECDSA over SHA-256 via the mbedTLS that already ships with hxcpp, including conversion between ASN.1 DER and the raw `r||s` form JWS carries
-- `RS256` and `ES256` JWT signers, replacing the runtime `"not implemented"` throw, this is what lets a service verify OpenID Connect tokens from Google, Microsoft, and other providers; `JWTSigner` gains an `ES256` constructor
-- libsodium 1.0.21 is vendored as source and compiled by hxcpp, the way BLAKE3 already is: the whole `crossbyte.crypto` surface (AEAD, X25519, key exchange, Argon2id, Ed25519, BLAKE2b) now works on every target with no external dependency, no install step, and no build flag. The prebuilt `libsodium.lib` is deleted, a 2.7 MB opaque binary replaced by 2.3 MB of reviewable source, and Windows ARM64 works by construction
-- `ServerWebSocket` graceful shutdown: `stopAccepting()` releases the listener while sessions keep working, and `drain(timeout, ?onComplete, closeCode)` sends every session a close frame (1001 "going away") so clients can tell an orderly shutdown from a network failure; adds `clientCount`, `draining`, and `WebSocket.closeWith(code, reason)`
-- stress case guarding the `TaskPool` garbage-collector deadlock fixed in this release: idle pools are held parked while other threads allocate hard, which wedges the process on the pre-fix code and completes in milliseconds on the fixed code
-- `CrossByte.defaultSocketCapacity` (1024, was effectively 64): the poll backend's starting allocation is now tunable, sparing a ramping server roughly seven grow-and-rebuild cycles on the way to a thousand connections; it was never a ceiling, since the registry already grew on demand
-- `ServerApplication.defaultTicksPerSecond` (default `0`, inherit the runtime's 12): a seam for services whose latency bound is tick cadence, applied before `INIT` so a subclass can still override it. The runtime's 12 ticks per second is a deliberate low-power default and is left alone; under the stock `POLL` loop it bounds how long a ready socket waits, while a loop supplied through `MainLoopType.CUSTOM` can pass a non-zero `pump` socket timeout and be woken by readiness instead
-- accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely
-
-### Removed
-- The process-wide WebSocket settings, from
-  `crossbyte._internal.websocket.WebSocket`: `MAX_PAYLOAD`, a limit on
-  every frame that refused what browsers send (see Changed);
-  `MAX_MESSAGE_SIZE` and `CLOSE_TIMEOUT`, now `maxMessageSize` and
-  `closeTimeout` on each server and session; `PING_INTERVAL`, which only
-  gave `pingInterval` its default (`DEFAULT_PING_INTERVAL`, 30 s, in
-  seconds); and `MASK_POOL_SIZE`, which nothing read.
+- An `HTTPServer` without a `rootDirectory` serves no files and listens on
+  `127.0.0.1`: set `config.rootDirectory = new File(...)` for a server that
+  serves files, and `config.address = "0.0.0.0"` for one other machines
+  must reach. `validate()` refuses PHP, `rewrites` and `tryFiles` entries
+  past the first two without a root.
+- A static file whose path has a segment starting with `.` (`.env`,
+  `.git/config`) is answered 404, except under `/.well-known/`: set
+  `serveDotFiles` to serve them.
+- `HTTPServerConfig.tryFiles` is `["$uri", "$uri/"]` by default, where it
+  ended with `"/index.html"`: restore a single-page application's fallback
+  with `config.tryFiles = ["$uri", "$uri/", "/index.html"]`. `validate()`
+  refuses a `tryFiles` that does not begin with `"$uri", "$uri/"`.
+- `HTTPServerConfig.rewrites` is empty by default, where it routed
+  `^/api/.*$` to `/index.php`: pass the rule explicitly to keep it.
+- `HTTPServerConfig`'s constructor takes `phpTimeout` after `phpMode`, before
+  `tryFiles` and `rewrites`, and its `address` defaults to `127.0.0.1`.
+  Code that passed `tryFiles` or `rewrites` by position inserts the
+  timeout, or sets the fields by name.
+- `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses an
+  `errorDocument` that is not there.
+- Server defaults that now bound: `maxConnections` is 10,000 (was 256);
+  the rate limiter allows 240 requests a minute per client (was 10);
+  `maxOutputBufferSize` is 8 MB (was unbounded); a request must arrive in
+  full within `requestTimeout`, 60 seconds, or is answered 408 (0
+  disables); a PHP response past `phpMaxResponseSize`, 8 MiB, is a 502;
+  and a PHP backend that does not answer within `phpTimeout`, 30 seconds,
+  is a 504. Set each where a server needs more.
+- HTTP/1.1 connections are kept alive by default (`keepAlive`, 5 s idle,
+  1,000 requests): set `keepAlive = false` for one request a connection.
+- The server compresses a response only when it is 1 KB or more, of a
+  text-like type, and not an error, and prefers gzip to Brotli when the
+  client takes both equally: set `compression.minimumSize` and
+  `compression.types` to compress more, or `compression.enabled = false`
+  for nothing.
+- With `corsAllowCredentials` on, `validate()` refuses
+  `corsAllowedOrigins` holding `"*"`: name the origins. A preflight is
+  answered with `corsAllowedMethods` and `corsAllowedHeaders` rather than
+  what it asked for, so list every method and header a page sends
+  (`Authorization`, custom headers).
+- A request's path is normalised before middleware sees it (repeated
+  slashes collapsed, dot segments applied, a backslash read as `/`), a path
+  climbing above the root, a malformed escape or an encoded NUL is answered
+  400, and `+` in a path is a plus, not a space. A guard written against
+  the raw path checks the normalised one.
+- A custom `HTTPBackend` that reads `context.data` gets an `HTTPRequestBody`,
+  not a `String` or `Bytes`: send `context.data.toBytes()`, and read
+  `context.data.text` (or `isText`) where it matters which it was. Code that
+  builds an `HTTPRequestContext` from an object literal still compiles; code
+  that passes some other structure as one does not.
+- `RewriteRule` and `RewriteCondition` are classes: object literals still
+  build them, but a value of some other structure type no longer passes as
+  one, so build it from a literal.
 - `Http.MAX_REDIRECTS`, `MAX_BODY_SIZE`, `MAX_CHUNKED_BODY_SIZE`,
-  `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES`, statics of
-  the native HTTP client that one caller changed for every request in the
-  process. Each limit is the request's own now, `URLRequest.maxRedirects`,
-  `maxBodySize`, one limit whatever the framing, `maxDecompressedSize` and
-  `maxResponseHeaderSize`: with the same default; `MAX_CONTENT_CODINGS`
-  is a constant.
-- `URL`'s implicit conversion from any `Dynamic`, which compiled whatever was
-  assigned and failed at run time if it was not a String; a `String` still
-  converts. And the `ResponseEncodingDecision` typedef, a helper of
-  `HTTPRequestHandler`'s that was public by accident and is now private.
-- `crossbyte.rpc._internal.schema`: `RPCHeader`, `RPCHeaderField`,
-  `RPCHeaderFieldType` and `RPCValueType`, a header schema moved out of the
-  public API in the August 2025 RPC refactor for a macro-level use that
-  never came. Nothing imported it; only builds that include every module
-  compiled it. Internal, so no code needs to change.
-- `WebSocket.toWebSocket`, which took an internal socket type and made a
-  session with no handshake deadline unless `ServerWebSocket` called it;
-  it is `ServerWebSocket`'s own now.
-- `DatagramSocket.timeout`. It set a read timeout on the socket underneath,
-  which never blocks, every read waits on the registry's poll, and
-  Node's datagram socket has no timeout at all, so it changed nothing on
-  any target.
-- `JWTAlgorithm.HS384` and `HS512`. The type said it named the algorithms
-  CrossByte's JWT helpers understand, and nothing signs or verifies these:
-  no `JWTSigner` makes them, and `JWT.verify` refuses them as
-  `UNSUPPORTED_ALGORITHM`. The type now names HS256, RS256, ES256, EdDSA
-  and `none`, and says which verify where.
-- `ServerWebSocket.verifyCert`, which existed natively only. `certAuthority`
-  asks clients for a certificate on every target now; beside it,
-  `verifyCert` could only switch that off again natively, or demand
-  certificates from the system's authorities where Node had no such
-  setting.
-- `ByteArray.readVarInt` and `writeVarInt`, which are `readVarUInt` and
-  `writeVarUInt`: the names `ByteArrayInput` and `ByteArrayOutput` give the
-  same unsigned format, and `Socket.readVarUInt` reads. Those two classes
-  call ZigZag, a signed format, `readVarInt` and `writeVarInt`, so code
-  moved from one class to another compiled and read every negative number
-  wrong. The old names are gone rather than given to ZigZag, so a call to
-  one stops compiling instead of changing format.
-- `ThreadEvent.UPDATE`. Nothing dispatched it, and no worker or task had
-  anything it could have meant; `PROGRESS` carries a worker's messages.
-- `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
-
-### Changed
-- An idle reliable UDP session holds about 2.7 KB natively and 1.6 KB on
-  the jvm, where it held 14 KB and 7.6 KB (an encrypted one 4.5 KB and 2.9
-  KB, from 16 KB and 8.9 KB): heap after a full collection with 1,000 idle
-  sessions, less with none. The ring that holds frames arriving past a gap,
-  512 slots, 9.6 KB natively, in every session, is made on the first
-  such frame, with 16 slots, grows as far as the frames held reach, and goes
-  at a keepalive check that finds it empty; the buffer a session sends from,
-  which had room for the largest frame, grows to the largest bundle sent and
-  goes back to a small one after a keepalive period with nothing sent; a
-  server's sessions share the scratch a HANDSHAKE's and an ACK's payload are
-  written into; and a `DATAGRAM` session has no stream buffers.
-- A reliable UDP message allocates nothing natively once a session is
-  under way, where its copy kept for resending allocated 424 bytes for a
-  200-byte message. The copy is made into a frame taken from a pool, one
-  for all of a server's sessions, whose buffer is the smallest of 64, 128,
-  256, 512, 768, 1,024 or 1,200 bytes that holds the message, and the frame
-  goes back once the peer acknowledges it; the frames in flight are found
-  by sequence in a ring rather than an `IntMap`. `AllocationBudgetTest`'s
-  reliable lines: 424 to 0 bytes natively, plain and encrypted, and 392-544
-  to 64-80 on the jvm, where what is left is Java 8's selector and the
-  caller's boxed `length`. The pool keeps as many frames as were in flight
-  at once in the last ten to twenty seconds, and 64 more, so a tick that
-  sends to every session and has it all back before the next keeps them
-  all; once nothing comes back for ten seconds it keeps 64.
-- `PeerConnection.readyTimeout` reads 0 as no deadline, as
-  `IceAgent.timeout`, `Socket.timeout` and every other timeout here do;
-  it read 0 as a deadline already past, so a connection given 0 failed
-  `ready` at the first poll after `connect`, and an ICE restart was given
-  up at once. With no deadline only the agent's own `timeout` ends a
-  connect or restart that finds no path. NaN and negative values are
-  refused with `ArgumentError`: NaN compared false with every elapsed
-  time, so its deadline never came, and a negative one failed every
-  connection at once. Tests: `PeerConnectionTest`, a connect and a
-  restart given 0, and the values refused; each failed before.
-- A TCP connection lets go of its buffers' storage once it has gone
-  quiet. Each buffer kept the largest it had needed for as long as the
-  connection was open: after one 16 KB message each way an idle accepted
-  connection held 51 KB natively and on the jvm (1,000 of them, heap after
-  a full collection), where it held 1.5 KB before any. It now keeps its
-  storage while busy, a message read or written still allocates
-  nothing; the TCP echo budget is unchanged at 0 bytes natively, and its
-  time with it (14.6 us), and its runtime's socket registry asks the
-  connections holding storage every five seconds whether they have read
-  or written since; one that has not lets go of everything not waiting to
-  be read or sent, and its pooled events, which leaves 1.7 KB (natively;
-  jvm 1.7 KB, a client 1.9 and 2.2). A buffer grown past 64 KB lets go as
-  soon as it empties. On the jvm the socket's views over that storage go
-  with it. The one-byte buffer each system socket kept for `readByte` is
-  made at the first one: an idle connection 1,513 -> 1,464 bytes natively.
-  Node's sockets keep their storage, as before.
-- On the jvm a TCP socket reads and writes through one `ByteBuffer` per
-  array, moved to each range, where it wrapped a new one for every read
-  and every write. A 100-byte TCP echo allocated 336 bytes and allocates
-  144; the same reads and writes lighten a WebSocket echo (620 -> 428), an
-  HTTP/1.1 GET (3,920 -> 3,728) and a POST (8,896 -> 8,704), Oracle's JRE 8.
-- A WebSocket message allocates nothing to send or to receive, natively,
-  but the `text` a listener asks for. An echo of a 100-character text
-  allocated 264 bytes natively, and allocates 116: the `String` the echo
-  asked for (101), and four bytes a frame of the client's masking keys.
-  Those keys are drawn four bytes a frame from a pool of 8 KB of the
-  system's CSPRNG, one a thread, as Node's `ws` draws them, where each
-  frame drew its own: a buffer and its storage, 140 bytes, every frame a
-  client sent, each key still CSPRNG output used once (RFC 6455 5.3).
-  `sendBinary` frames from the caller's bytes where it copied them into a
-  buffer of its own first (1,680 bytes for a 1 KB message, now none), a
-  message longer than a frame is framed a fragment at a time from where
-  it lies, a text past ASCII is encoded into the session's scratch
-  natively (1,168 bytes for 1 KB, now none), and a heartbeat's ping
-  carries one shared empty payload. On the jvm the echo went from 672 to
-  620 bytes; the rest there is the text, `sys.net.Socket`'s buffer per
-  read and write, and the JDK's selector. A `String` the application asks
-  for stays a string of its own, safe to keep; a listener that reads
-  `data` allocates nothing. Compression, where agreed, still works in
-  buffers of its own. Round trip unchanged (15.4 against 15.2 µs, median
-  of five interleaved).
-- A WebSocket session holds less while it is open, and lets go of what it
-  held for its messages once it goes quiet. With 1,000 idle sessions,
-  heap after a full collection, a session a server accepted held 6.6 KB
-  natively and 5.0 KB on the jvm, now 3.8 and 3.1 KB; a client 5.0 and
-  3.9 KB, now 4.1 and 3.4 KB. After one 16 KB message each way a server's
-  session held 97 KB natively (95 KB on the jvm) for as long as it
-  lasted; it holds 4.6 KB (3.3 KB) once it has been quiet for a beat of
-  its heartbeat. What went: the upgrade request's parsed headers, a
-  third of an idle session, which `WebSocket.request` now reads again,
-  the first time it is asked after the session opened, from the head it
-  keeps; the close listener a server hung on each of its sessions; six
-  closures the framing layer was given by its socket, now typed calls;
-  and what only a client or a TLS handshake uses, made there alone. A
-  session's buffers let their storage go once it has heard nothing and
-  sent nothing since the last beat (`pingInterval`, 30 s by default), and
-  past 64 KB as soon as they empty, where each kept the largest it had
-  ever needed. A busy session is never quiet for a beat, so nothing is
-  let go of under load: the echo of a 100-byte text took 15.4 µs per
-  round trip natively before and 15.3 after (median of five interleaved),
-  allocating the same. In the soak (1,000 sessions, a message each way
-  at 30 Hz) a busy session held 9.5 KB natively and holds 7.3 KB, and
-  collections fell from 39 a minute to 33 (4 to 2 with 200 MB of world
-  live); the longest stall did not move.
-- A WebSocket frame is held to what is left of its message under
-  `maxMessageSize`, on its header, and not to 64 KiB besides. A browser
-  sends a message of 100 KB as one frame, Chrome, 102,400 bytes, and a
-  megabyte in frames of up to that, and Node's `ws` sends every message
-  as one, so each was refused with 1009 however large a message was
-  allowed. A frame that would take its message past the limit is still
-  refused before anything waits for its payload, which is all the frame
-  limit bounded. A session sends a message longer than 64 KiB in frames of
-  64 KiB (`FRAGMENT_SIZE`) as before, so a peer from before 1.0 takes it.
-- A `ServerWebSocket` bounds what may wait for each session at 8 MiB
-  by default (`maxOutputBufferSize`, `DEFAULT_MAX_OUTPUT_BUFFER_SIZE`),
-  as `HTTPServer` bounds a response's output, where it was 0, no limit:
-  a peer that stopped reading, a phone asleep, a client stuck, made
-  the server hold everything sent to it, and a server broadcasting to it
-  every message. Past the limit the session dispatches `ioError` saying
-  the peer is not reading and closes with 1011, letting go of what
-  waited. The server's limit now applies from the moment a session is
-  accepted, and when it is 0; it applied once a session opened, and only
-  when it was not 0.
-- The reliable UDP wire, for join cookies (see `joinValidation` under
-  Added). A 1.0 CONNECT sets the flag bit 0x08 (`CONNECT_EXTENDED_MASK`,
-  graceful on a FIN), and its payload starts with an extension ahead of
-  what `connect` passed: one byte, the extension's length after it; one
-  byte of features (0x01 a cookie follows, 0x02 the sender answers a
-  rebind challenge); the 8-byte cookie when it has one; zero padding until
-  the datagram is 29 bytes. A CONNECT with the bit and fewer than 29
-  bytes, or an extension past its end, is not a frame. Frame type 7,
-  `PATH`, is new: its payload's first byte says what it is, and a server
-  answers a CONNECT it validates with kind 1, the cookie, the sequence
-  field echoing the connection id, then 8 bytes, 16 in all, whose top bit
-  says which of the server's two keys made it. A peer on 1.0.0-rc.1 drops
-  type 7 and ignores the flag and the payload, as it ignored every CONNECT
-  payload. For `allowRebind`: every 1.0 CONNECT declares feature 0x02; a
-  server session given a key sends HANDSHAKEs of 22 payload bytes (the six
-  of 1.0, then the key) until its peer has shown it took one; a reset (a
-  FIN without the graceful bit) carries the challenge in its sequence
-  field, where it carried 0, and stays 7 bytes; `PATH` kind 2, REBIND, is
-  20 bytes (connection id in the sequence field, the 4-byte challenge, an
-  8-byte proof), and kind 3, REBOUND, 12 (connection id, the challenge).
-  A peer from before 1.0, or with no key, takes a reset with a challenge
-  as any reset.
-- A session a `ReliableDatagramServerSocket` accepts or dials makes no
-  socket of its own. Its constructor made one, a system socket, its
-  buffers asked for, a 64 KB read buffer, that the server closed at
-  once, for every join and every CONNECT below the validation threshold:
-  an accepted CONNECT allocated 88,080 bytes and took 45.9 us on the jvm,
-  and allocates 21,352 and takes 8.9 us; natively its large objects fell
-  from 86,004 bytes to 12,292.
-- On the jvm a datagram socket allocates nothing to send a datagram, and
-  nothing to read one from the peer the last came from. Each send made a
-  view of the bytes (48 bytes) and the destination afresh, an
-  `InetSocketAddress`, an `InetAddress`, their holders and the address's
-  bytes, 120 more, and each read a view of the read buffer and a copy of
-  the sender's address bytes. A send now copies into a direct buffer the
-  socket keeps (the channel copied a heap buffer into one of its own
-  anyway), the destination is kept with the `sys.net.Address` it was made
-  from and made again only when its host, port or IPv6 bytes change, a
-  read reuses its view, and the sender's address is read once a run of
-  datagrams from it. This is reliable UDP's send and receive on the jvm
-  too: a 100-byte datagram sent and received allocates 312 bytes there,
-  where it allocated 576, and a reliable UDP message delivered and
-  acknowledged 464, where it allocated 992 (Oracle JRE 8; Temurin 8 248
-  and 464). A socket that sends holds a direct buffer the size of the
-  largest datagram it has sent, 2 KB at least.
-- On the jvm `DatagramSocket.send` boxes nothing. Its optional arguments
-  were objects there, and `Integer` keeps only -128 to 127, so a send to a
-  real port allocated 16 bytes for the port, and 16 more each for a length
-  or an offset past 127: 184 to 216 bytes a send where 168 were the
-  socket's own (Oracle JRE 8 and Temurin 8 alike). `send` is an inline
-  forwarder now, over a method with every argument given; see Upgrading.
-  A 100-byte datagram sent and received allocates 576 bytes on the jvm,
-  where it allocated 592. Natively nothing was boxed.
-- On Linux, natively, a `DatagramSocket` that finds a second datagram
-  waiting in a pass reads from then on in batches: one `recvmmsg` takes in
-  up to 64, where each datagram took a `recvfrom` of its own and the pass
-  one more to find the socket empty. Each is still handed out one at a
-  time, in the socket's reused payload, under the same 1,024-a-pass share;
-  datagrams a batch holds when a listener throws or stops the socket
-  receiving are handed out next, before anything read after them. A
-  reliable UDP server reading once a frame, as the `DEFAULT` loop does,
-  made 95% fewer system calls for its datagrams and spent 6 to 9% less
-  processor time, 5% less in the kernel, at 200 and 1,000 clients x 30 Hz
-  (WSL, 11 interleaved runs each); one woken for each arrival, as the
-  `POLL` loop is, reads a datagram or two at a time, made a third fewer
-  calls and spent the same. A batch's slots are 64 KB, past the largest
-  datagram, so none is cut short, and mapped, so the system commits only
-  the pages datagrams land in: a busy socket holds at most 4 MB of address
-  space and, for datagrams up to 4 KB, 256 KB of memory, until `close()`;
-  a socket that never has two datagrams waiting holds none. macOS, Windows
-  and the other targets read one datagram a call, as before.
-- `SQLiteConnection.busyTimeout` is 5,000 milliseconds as a connection
-  opens, `DEFAULT_BUSY_TIMEOUT`, where it was SQLite's own 0: a write
-  while another connection, in this process or another, held the write
-  lock failed at once with "database is locked", though the lock went a
-  moment later. It now waits for the lock, as Python's `sqlite3` and
-  most drivers do by default. See Upgrading.
-- Pausing and resuming a timer, `Timer.pause`, `Timer.resume`,
-  allocates nothing, where the pair allocated 24 bytes natively and on the
-  jvm: the time a timer was paused at was a boxed `Float`, and on the jvm
-  the time and the policy were boxed again by the defaults they passed
-  through.
-- `CrossByte.post` says its queue has no depth limit, and why: a limit
-  would refuse work only the runtime's own thread may do, or make a
-  runtime posting to itself wait for itself. A waiting callback costs
-  about 32 bytes natively. A producer a peer can drive bounds what it
-  hands over, reading `postQueueDepth`.
-- Natively a timer callback that takes its handle, `Timer.setInterval(1,
-  1, handle -> ...)`, is given the handle boxed once per timer, where
-  every fire boxed it anew: hxcpp passes a closure its arguments boxed,
-  and a handle is past the small-int cache from a runtime's 256th timer
-  on, so such an interval allocated 24 bytes each time it fired. It
-  allocates nothing now. Other targets did not box it.
-- A timer's node is reused for the next timer armed once its timer is done,
-  where every `setTimeout` and `setInterval` made one: 80 bytes natively,
-  and on the jvm 72 with the slot's generation and number boxed, which was
-  everything arming and clearing a timeout allocated. Reliable UDP arms one
-  for every acknowledgement it holds, so a server allocated one per message
-  per session. A timeout armed and cleared, or armed and fired, now
-  allocates nothing natively or on the jvm. Up to 4,096 done nodes are
-  kept per runtime, so a burst of timers pins no more than that, under a
-  third of a megabyte natively. A handle is a number, never a node, so a
-  cleared handle stays inert whatever its node carries next.
-- A PHP script's response is held to `HTTPServerConfig.phpMaxResponseSize`,
-  8 MiB by default, and its CGI header block to 64 KiB and 100 lines, as it
-  arrives: past either, the request is answered `502 Bad Gateway`. Nothing
-  bounded a response, which the server holds whole before it answers, so a
-  script, or a backend not running PHP at all, chose how much of the
-  server's memory each request took. And a runtime has
-  `HTTPServerConfig.phpMaxExchanges`, 64 by default, requests with its PHP
-  backend at once, each holding a connection: more wait their turn, within
-  `phpTimeout`, and past 1,024 waiting a request is refused at once as busy
-  and answered `503 Service Unavailable`, not the `502` of a backend that
-  answered badly. Every request opened a connection of its own,
-  however many were already waiting on a `php-cgi -b` that answers one at a
-  time.
-- Host names are looked up on four threads the process keeps for lookups,
-  not on a thread started for each: ten thousand connects by name were ten
-  thousand threads, with no cap, and nothing ended a wait that the system's
-  lookup did not. A caller now waits 30 seconds for its answer at most and
-  is then told the lookup timed out; the system call, which cannot be
-  stopped, carries on on its thread, and at most four can be held so. 256
-  names at most wait for a thread, and one asked for past them fails at
-  once. Callers asking for a name already being looked up share the lookup,
-  and an answer is kept for 30 seconds, a failure for 5, for 256 names at
-  most: a burst of connects to one host costs one lookup, and a host that
-  moves is found within half a minute. For every socket's connect by name,
-  datagram sends and dials, and STUN servers.
-- The HTTP client looks a host's name up on those threads too, within the
-  request's idle timeout, and a cancel ends the wait. It was looked up
-  inside the connect on the load's own thread, where a wedged resolver held
-  the load, over HTTP/2, every request waiting on that connect, for as
-  long as it stayed wedged, and a cancel could not reach it.
-- A load waiting for one of `URLLoader.maxConcurrentLoads`' threads waits
-  its request's `idleTimeout` at most, and then fails with an `IO_ERROR`
-  saying so. It waited for as long as the loads ahead of it took, which
-  nothing bounded: measured, 3.0 s past its own limit of 500 ms.
-- A response body of a declared length, or a chunk of a chunked one, is
-  read into room that grows as it arrives, from 64 KB. It was allocated
-  whole from the header, so a response declaring 64 MB cost 64 MB before a
-  byte of it came, on each of the loader's threads. A body cut short of its
-  length says so, "expected 5000 bytes, got 100", where it said "Eof".
-- MongoDB and PostgreSQL connections keep TCP keepalive on with MySQL's
-  timings, a probe after 60 idle seconds, then one every 10, and the
-  connection dropped after 6 unanswered, so a server that has gone
-  silent, a partition or a host that died without closing, is found in
-  about two minutes and the worker waiting on it let go. MongoDB's client
-  set no keepalive and, with no socket timeout by default, waited on such
-  a server for good; Postgres's libpq turned keepalive on but left its
-  timings to the system, two hours before the first probe. `keepAlive`,
-  `keepAliveIdle`, `keepAliveInterval` and `keepAliveCount` are new on
-  `MongoConfig`, and `keepAlive` on `PostgresConfig`, as on `MySQLConfig`;
-  0 for a timing is the system's own. Natively MongoDB's timings are set
-  on every system; on the jvm keepalive is turned on and its timings need
-  Java 11; the interpreter, hl and neko have no such option. A command
-  sent to a host that has just vanished waits instead for the system to
-  stop retransmitting it, about fifteen minutes on Linux, which Postgres's
-  `tcpUserTimeout` bounds. A MongoDB `connectTimeout` or `socketTimeout`
-  of NaN, which read as no limit, throws an `ArgumentError`.
-- `AsyncDatabase` bounds its queue by default. A job waits at most
-  `queueTimeout`, now 30 seconds, for a worker, and fails at that
-  deadline with an `IllegalOperationError`, at once, on a thread of the
-  database's own: it failed only when a worker reached it, which with
-  every worker held by a database that had stopped answering was never.
-  And `maxQueued`, now 100,000, refuses a job past that many waiting. Both
-  were off unless set. 0 is no limit for either, and NaN or a negative
-  value throws an `ArgumentError`, as it does for `acquireTimeout`;
-  `queueTimeout` is a `Float`, not a `Null<Float>`. The watch costs about
-  0.7 microseconds a job natively and 0.3 on the jvm, measured on jobs
-  that do nothing, 100,000 queued at once.
-- `ConnectionPool` reads an `acquireTimeout` of 0, for the pool or for one
-  `acquire`, as no limit: the caller waits until a connection comes free
-  or the pool closes, where it failed at once. NaN, which waited for ever
-  once the pool was saturated, and a negative timeout for one call, which
-  failed at once, throw an `ArgumentError`, as a negative default did.
-- A `Membership` timeout of 0 is none, as 0 is everywhere in CrossByte:
-  no node leaves for being quiet, only by `forget`. It was refused. A
-  negative or NaN timeout, a negative `maxNodes` (which read as no limit)
-  and a time of NaN given to `heard` or `sweep` throw an `ArgumentError`:
-  NaN made a node that never left. A name longer than
-  `Membership.MAX_NAME_LENGTH`, 255 characters, is refused as one past
-  `maxNodes` is, since the number of names a peer could make up was
-  bounded but not their length.
-- `ExpiringMap` holds at most 100,000 entries unless given another
-  `maxSize`, where it held whatever was put in it for as long as its
-  `ttl`: the map built for sessions and tokens, what a peer makes a
-  server keep, had its count bound off unless asked. Past the bound the
-  entry closest to expiring goes, as before. An entry costs about 250
-  bytes natively and 80 on the jvm besides its key and value, so the
-  default holds some 25 MB natively. A negative `maxSize`, which read as
-  no limit, and a `ttl` of NaN, which kept every entry for good, throw an
-  `ArgumentError`, as a `ttl` of 0 now does where it threw a String; so
-  does `sweep(NaN)`, which swept nothing.
-- `ObjectPool` keeps at most 10,000 free objects unless `maxFree` is set,
-  where it kept every object released: a burst stayed in memory for good,
-  and in every collection's walk. `reserve`, the constructor's `length`
-  and `resizeCapacity` raise `maxFree` to what they reserve, so objects
-  made in advance are kept. A negative `maxFree` throws an
-  `ArgumentError`.
-- An `RPCSession` keeps the deadlines of the calls it makes under
-  `callTimeout` in one queue, in the order the calls were made, with one
-  timer for all of them, where each call armed a timer of its own, a
-  closure and a timer node a call, kept in order in the runtime's heap and
-  counted against the 524,288 timers a runtime holds at once. A call
-  answered leaves the queue at once, and each falls due when its own timer
-  would have; one made after `callTimeout` was lowered, which would fall
-  due before the calls ahead of it, still arms its own, as does one given
-  a deadline with `RPCResponse.timeout`. `handlerTimeout`'s deadlines, for
-  calls a handler answers later, are kept the same way. And the calls
-  waiting on their answers, past the first, are held in a ring indexed by
-  request id, where they were an `IntMap`, which natively made a node for
-  each; a call still waiting a ring's length of calls later moves to a map
-  of its own. Over an in-memory link, natively: a request and its answer
-  under `callTimeout` take 141 ns and allocate 168 bytes, as one without a
-  deadline does, where they took 164 ns and allocated 280, on the
-  runtime lane 258 ns and 344 bytes, where 294 and 456; a call a handler
-  answers later under `handlerTimeout` 258 ns and 656 bytes, where 295
-  and 752; and sixteen requests in flight at once 117 ns and 168 bytes
-  each, where 130 and 211. On the jvm a request under `callTimeout`
-  allocates 192 bytes, where it allocated 287.
-- The runtime RPC lane tells a value's kind without allocating, where
-  `Type.typeof` made an object for every `String` and `Bytes` it was
-  asked about. The kinds are those `Type.typeof` gave, on every target,
-  JavaScript, the jvm and HashLink still send a whole `Float` as an `Int`.
-  Natively a one-way runtime call of a 12-character string allocates 152
-  bytes, where it allocated 208, and takes 135 ns, where it took 147; on
-  the jvm, whose compiler already left the object out, 128 bytes as
-  before. Its frame is not sized before it is written: it is the
-  session's buffer, which grows only for a frame larger than any it has
-  held, so a pass over the arguments to size them would only add to each
-  call.
-- An `RPCSession` answers or passes over a frame it cannot read, and its
-  connection carries on, where the connection ended and every call waiting
-  on it failed, so in a rolling deploy a client calling a method its
-  server did not have yet was disconnected. A request for a method the
-  handler has not got, on either lane, is answered
-  `RPCError.UNKNOWN_METHOD_MESSAGE`; one whose arguments do not read,
-  they ran past their frame, or named more than it holds,
-  `RPCError.UNREADABLE_MESSAGE`; a one-way call of either kind is dropped.
-  An answer that does not read fails the call it answers, and a frame of a
-  kind the session does not know is passed over, a runtime value of a kind
-  it does not know among them, so a later release can add kinds without
-  disconnecting this one. `RPCSession.onUnreadableFrame` is told of each.
-  Only a frame whose length cannot be trusted ends the connection now, and,
-  as before, whatever a hand-written `dispatch` throws.
-- A compiled RPC call is named on the wire by the hash of its method's
-  signature, its name, and the kinds of its arguments and of its answer,
-  where it was the hash of its name alone. A client and a server built
-  from two versions of a method read each other's bytes as their own:
-  `(x:Int, y:Int)` sent to `(v:Float)` ran the handler on a `Float` made of
-  two `Int`s, arguments reordered were read in the new order, and an `Int`
-  answer read as a `Bool` was its first byte. Now such a call finds no
-  method. A kind names a layout, not a type, so renaming an argument or a
-  typedef changes no op; renaming the method, reordering, retyping, adding
-  or removing an argument, or letting one be absent does. A one-way call
-  reaches a method that answers, as before, and `ping` keeps its op. An
-  argument whose type is a typedef of `Null<T>` carries the byte saying
-  whether it is there, as one written `Null<T>` does, where it went bare
-  and could not be null. The format is in the RPC guide, under "What names
-  a call".
-- An `RPCSession` writes every frame it sends, calls and answers, error
-  answers, pings and pongs, on both lanes, in one buffer it keeps, begun
-  with room for the whole frame, where each was a `ByteArrayOutput` of its
-  own grown as it was written. `INetConnection.send` says that what it is
-  given is valid only during the call, which every transport CrossByte
-  ships already honours: each copies what it keeps. A call made from inside
-  a send that delivers at once, a handler calling back, is framed in a
-  buffer of its own, and a buffer grown past 16 KB is let go once its frame
-  is sent. A string goes into the frame as its UTF-8, natively when it is
-  held a byte a character and on the jvm when it is ASCII and at most 256
-  characters, where it was encoded into a `Bytes` first. Over an in-memory
-  link, natively: a one-way call of three numbers takes 46 ns and
-  allocates nothing, where it took 83 ns and allocated 208 bytes; one of a
-  12-character string 54 ns and 24 bytes, the string the handler is given,
-  where 110 ns and 384; a request and its answer 133 ns and 168 bytes,
-  where 233 ns and 544; the runtime lane's one-way call 163 ns and 368
-  bytes, where 293 ns and 1,008. Over TCP a one-way call costs 453 to 469
-  ns of CPU in all, where it cost 500 to 531. Under `-D crossbyte_check_events`
-  each frame is a buffer of its own, poisoned once sent, and under
-  `-D crossbyte_fresh_events` a buffer of its own left as it is.
-- What arrives is handed out in objects made once and filled again for
-  each arrival after: a `DatagramSocket`'s `DatagramSocketDataEvent` and
-  its `data`; a `ReliableDatagramSocket` session's event, the buffer a
-  fragmented message is put back together in, the payload a bundled frame
-  is copied into, and a stream's `ProgressEvent`; a `WebSocket`'s
-  `WebSocketMessageEvent`, the buffer each message is read into, and its
-  `ProgressEvent`; and the payloads `TurnClient.onData` and
-  `DtlsTransport.onMessage` are handed. One of each per socket, session or
-  connection, made when first needed, one that has received nothing
-  holds none, and taken afresh while it is out, so a listener that pumps
-  the runtime is handed the next arrival in objects of its own. Once its
-  call returns a payload is emptied, length and position 0, and storage it
-  grew past 16 KB is let go: what reuse holds for a connection is at most
-  that and its events. Measured over 1,000 connections, a WebSocket
-  connection holds about 390 bytes more for it natively (170 on the jvm)
-  and a reliable UDP session about 90 (100), so 4 MB and 1 MB at 10,000;
-  at worst, each connection's last message just under 16 KB, 16 KB more
-  each. A
-  100-byte datagram sent and received allocates nothing natively, where it
-  allocated 344 bytes, and 592 bytes on the jvm, where it allocated 824; a
-  200-byte reliable UDP message delivered and acknowledged 504 bytes
-  natively (1,112) and 1,095 on the jvm (1,519); a 100-byte WebSocket text
-  message echoed 264 bytes natively (1,096) and 672 on the jvm (1,072).
-  Under `-D crossbyte_fresh_events` or `-D crossbyte_check_events` every
-  arrival is made afresh, as before. See Upgrading.
-- A WebSocket message goes from the framing layer to the session by a
-  direct call, with no event made between them, and each frame is read
-  straight into the message it belongs to and unmasked there. Each frame
-  was read into a `ByteArray` of its own, which was copied into the
-  message unless it was the first.
-- A reliable UDP server whose `onDatagram` sees each datagram first copies
-  a frame's payload into one buffer of its own, filled again for each,
-  where each frame's had a `ByteArray` of its own.
-- `clone()` of a `DatagramSocketDataEvent` or a `WebSocketMessageEvent`
-  copies the bytes the event carries, where it shared them: a clone is the
-  way to keep a whole event past its listener call, and is safe to, with
-  bytes of its own at the same position and in the same byte order.
-- A `Socket` reuses its `connect`, `close`, `ioError` and `socketData`
-  events, as it did, now under the two defines above: each is made afresh
-  under either, and killed once dispatched under
-  `-D crossbyte_check_events`.
-- A WebSocket text message is written into its frame without being encoded
-  into a buffer of its own first, natively when the string is held a byte a
-  character and on the jvm when it is ASCII and no longer than 256
-  characters; other text, and text to be compressed or fragmented, is
-  encoded as before. A 100-character message echoed allocates 1,096 bytes
-  natively, where it allocated 1,576, and about 1,100 on the jvm, where it
-  allocated 2,000. What arrives is unchanged.
-- An HTTP response's own fields, Date, Content-Type,
-  X-Content-Type-Options and Server, and the array holding them with the
-  caller's, are kept by the connection from one response to the next
-  when nothing outside will see them, where each response made them anew.
-  An `HTTPStatusEvent` listener is given new ones, as before, which are its
-  to keep. An HTTP/1.1 GET allocates 1,344 bytes natively, where it
-  allocated 1,640, and 3,920 on the jvm, where it allocated 4,080; an
-  HTTP/2 GET, whose handler is new for each stream, 3,448, where it
-  allocated 3,520.
-- A reliable UDP message is copied for sending into a buffer of exactly its
-  length, where writing grew the copy half as much again: a 200-byte
-  message, delivered and acknowledged, allocates 1,112 bytes natively,
-  where it allocated 1,216, and about 1,520 on the jvm, where it
-  allocated 1,610.
-- A request body with a `Content-Length` is held in no more than that
-  length. It was grown by writing, half as much again as each write
-  needed, so a POST of 4 KB was held in 6,177 bytes. It still grows as
-  bytes arrive, a declared length alone allocates nothing, but stops
-  at the declared length: a POST of 4 KB allocates 6,352 bytes natively,
-  where it allocated 8,404, and 9,064 on the jvm, where it allocated
-  11,120. A chunked body grows as before.
-- On the jvm the socket registry's select answers into arrays the registry
-  keeps. Through `sys.net.Socket.select` every frame with a socket on it
-  made two empty arrays to ask with, three to answer in, their storage and
-  the object holding them, and boxed its timeout: 200 to 250 bytes a frame,
-  idle or not. A TCP echo allocated 912 bytes a round trip on the jvm and
-  allocates 336; an HTTP/1.1 GET 4,680, now 4,104; an HTTP/2 GET 2,984,
-  now 2,408; a WebSocket echo 2,656, now 2,080; a reliable UDP message
-  2,464, now 1,632; a datagram 1,112, now 824. `select` itself answers in
-  new arrays, as before.
-- On the jvm a runtime frame boxes nothing. An argument with a default is
-  an object there, and the frame passed three, `pump`'s socket timeout,
-  the registry's poll timeout and the timers' limits, so a frame with
-  nothing to do allocated 88 to 112 bytes, and every frame of a busy
-  one as much. `pump` is two inline overloads now, `pump(delta)` and
-  `pump(delta, socketTimeout)`, over one frame. An idle frame, a timer
-  firing and a posted callback allocate nothing on the jvm; an HTTP/1.1
-  GET 4,888 bytes, now 4,632; a TCP echo 1,136, now 912. Natively nothing
-  was boxed, and nothing changed.
-- The socket registry walks the sockets it flushes, and those it lets go,
-  itself, where it handed each list a method to call: the method became a
-  closure every pass with something to flush, 32 bytes natively. A TCP
-  echo allocates nothing natively now, where it allocated 80 bytes; an
-  HTTP/1.1 GET 1,720, now 1,640; an HTTP/2 GET 3,600, now 3,520.
-- A `Socket`'s read, and a `WebSocket`'s, copies what arrived into its
-  input from the thread's read buffer as it is, where a `ByteArray` was
-  made around the buffer for every read: 64 bytes natively a read, and on
-  the jvm 40. A TCP echo allocated 208 bytes natively a round trip and
-  allocates 80; an HTTP/1.1 GET 1,848, now 1,720; an HTTP/2 GET 3,728,
-  now 3,600; a WebSocket echo 1,704, now 1,576.
-- `CrossByte.post` keeps the array a batch of callbacks ran from for the
-  next batch, where each batch was a new array: a callback posted and run
-  allocated 104 bytes natively and allocates none, and on the jvm 184,
-  now 88, the frame that runs it, alone. A batch of more than 1,024 lets
-  its array go rather than keep a burst's size.
-- An HTTP/1.1 response's head is put together natively from an array of
-  its pieces kept from one response to the next, and joined once. A
-  `StringBuf` there is an array of pieces of its own, which grew seven
-  times a head: a GET answered on a kept-alive connection allocated 3,576
-  bytes natively, plain or over TLS, and allocates 1,848; a POST of 4 KB
-  10,340, now 8,612. Elsewhere the head is built as before, the jvm's
-  builder appending numbers without making strings of them.
-- Three places that iterated a map on a path that runs often no longer do.
-  Natively a `Map`'s `keys()` and `iterator()` copy every entry into a new
-  array first, so asking a map whether it was empty, or walking it for a
-  few entries, cost as much as the map was large:
-  - reliable UDP held the frames that arrived past a gap in an `IntMap` and
-    built each ACK's map of them by walking its keys, for every ACK, and
-    one goes at once for each frame past a gap, so a burst of loss cost the
-    square of the frames held. They are held in a `SequenceRing` now: no
-    hashing on the out-of-order path, and the ACK's map read from it a byte
-    at a time. Per ACK, measured natively: 257 to 120 ns with 10 frames
-    held, 2,250 to 210 ns with 100, 11,250 to 600 ns with 500;
-  - `ReliableDatagramServerSocket` asked a host's map whether it had
-    sessions left on every close: 1,000 sessions behind one address, a
-    carrier NAT, closing took 1.3 ms, 4,000 took 18 ms; now 74 us and
-    0.3 ms;
-  - `RPCSession` asked its maps of runtime handlers and of runtime-lane
-    calls waiting whether they were empty, on every answer: with 1,000
-    calls waiting, an answer cost 1,309 ns; now 302 ns at any number.
-- A `DatagramSocket` reads with the transfer that answers -1 when nothing
-  is waiting, where `readFrom` threw `Blocked` to end every pass that read
-  the socket dry, and its pass's sends that go one at a time use the one
-  that answers -1 for a full send buffer. Reliable UDP, STUN, TURN and
-  WebRTC all read through it. A socket woken for one 64-byte datagram at a
-  time spent 10.2-11.3 µs of CPU a datagram, and spends 8.2-9.0 µs; ten a
-  wake, where the end of the pass is shared, cost what they did.
-- A `PeerConnection`'s data channels send what one pass of the runtime's
-  loop sent when the pass ends, sharing SCTP packets, DTLS records and
-  datagrams, where each message was a packet, a record and a `sendto` of its
-  own; `close()` sends them first. Ten 32-byte messages a tick between two
-  peers over loopback, the whole stack: 14-17 µs of CPU a message before,
-  3.1-3.5 µs now; one a tick costs what it did, 28-30 µs.
-- An SCTP packet's checksum is checked over the bytes as they arrived, four
-  zeros in the field's place, where every packet received was copied whole
-  to zero the field in the copy, and packets and DATA chunks are made at
-  their size rather than grown. Encoding a 1 KB DATA packet took 640-676 ns
-  before and 511-535 ns now, decoding and checking one 717-810 ns before and
-  594-634 ns now.
-- A native DTLS session is looked up without a lock when the thread looked
-  it up last, which every call for one record does, half a dozen, each of
-  which took a process-wide lock and searched a map. Under what the whole
-  stack resolves, 0.4 µs a message.
-- `DataChannel.maxRetransmits` and `maxPacketLifeTime` are `Int`s, -1 for no
-  limit, where they were `Null<Int>`s and null;
-  `PeerConnection.createDataChannel` and `DataChannelSet.create` take -1,
-  the default, for no limit. `DataChannelSet.transfer` is no longer public:
-  it is the connection's own, and a message sent on it went behind the
-  channels' backs. `PeerDescription` says why it stays an anonymous
-  structure: it is wire data, written and read as JSON.
-- `RPCHandler.afterCall` and `onHandlerError`, and
-  `RPCSession.afterRuntimeCall`, are given the error as a `haxe.Exception`,
-  where it was `Dynamic`. The generated code wraps what a handler threw
-  once, as `haxe.Exception.caught` does: an `RPCError` arrives as itself,
-  and anything thrown that was not an exception as a `haxe.ValueException`
-  holding it in `value`.
-- A compiled RPC call or answer is framed in a buffer made at its size, from
-  the arguments' types, where the frame began at 9 bytes and grew by a chunk
-  for every argument: in memory, a one-way call from stub to handler took
-  206-280 ns before and 72-85 ns now, a request and its answer 421-501 ns
-  before and 230-259 ns now.
-- A `NodeChannel` writes what one pass of the runtime's loop sent in one
-  write when the pass ends, each message's length written ahead of it, where
-  every message was framed into a buffer of its own and flushed with a
-  system call. What a pass wrote when the link fails waits for the link, as
-  a message that failed to go always did. Twenty 64-byte messages a round
-  over loopback: 7.0-7.3 µs of CPU a message before, 0.5 µs now.
-  `NodeChannel.poll()` takes no argument: the time it took was not read.
-- A TCP `NetConnection` writes what one pass of the runtime's loop sent on
-  it in one write, when the pass ends, where each `send` was a system call
-  of its own: RPC over TCP, twenty calls a tick, 7.0 µs of CPU a call
-  before, 0.5 µs now. From another thread, or with no runtime running, a
-  send still goes at once, and a socket whose output limit throws is still
-  flushed by `send`, so the throw reaches it.
-- A `LocalConnection` writes what one pass of the runtime's loop sent in one
-  write when the pass ends, framed straight into one buffer, where each
-  `send` made a buffer of its own, grew it twice and asked the system
-  whether the channel was open before writing it; what the pipe does not
-  take is tried again each frame, as well as by the reader thread. That
-  thread hands what it reads to the runtime without asking which runtime it
-  is on, an exception thrown and caught for every frame, and reads again
-  at once after a pass that found something, where it slept first, a
-  millisecond at least on Windows. CPU per message, two connections in one
-  process: 64-byte messages 7.5-8.4 µs before, 3.0-3.6 µs now; 4 KB messages
-  178-197 µs before, 29-34 µs now, 20 MB/s before and 120-140 MB/s now.
-- A `SharedChannel` message is framed into one buffer of its size, where it
-  went through a `BytesBuffer`, natively a byte at a time, and two more
-  copies, and one received is taken as the connection made it rather than
-  copied first.
-- `SharedObject`'s constructor takes its `defaultData` as an `Object`, the
-  type of `data`, where it took `Dynamic`.
-- A `ServerWebSocket` keeps its open sessions where it can take one out at
-  once, each session knowing its place, where every connection searched the
-  list of sessions for it and every close searched it again: a session's
-  arrival and departure took 4.1-4.9 µs at 1,000 sessions and 40-43 µs at
-  10,000, and take 0.12-0.31 µs at either. On the jvm a TLS session's socket
-  is cast once, not on every pump. The framing layer's handlers and events
-  are typed rather than `Dynamic`.
-- `Membership.sweep()` looks at no node until the earliest heard from is
-  `timeout` old, with heartbeats arriving, once a timeout rather than
-  every tick, and walks a list when it does, where it walked the map's
-  keys, natively copied first, and looked each up again. A node that an
-  `onLeave` forgets during a sweep is reported once; it was reported, and
-  counted off `length`, twice. A sweep a tick at 60 Hz over 1,024 nodes,
-  each heard from once a second: 52-65 µs a tick before, 0.29-0.52 µs now,
-  the heartbeats included.
-- `Rendezvous` hashes an ASCII key from its characters, by a table, where it
-  encoded the key's bytes first and took the CRC a bit at a time, and
-  `owners()` keeps the best few by insertion, where it made an anonymous
-  structure for every node and sorted them all with a closure. The answers
-  are the same. Over 16 nodes, `owner` took 78-156 ns a key before and 65-77
-  ns now, and `owners(key, 3)` 2.3-2.7 µs before and 0.20-0.24 µs now.
-- `Membership.heard` and `sweep` take `now:Float = -1`, a negative time
-  asking the membership's clock, where a `?now:Float`, natively an object
-  made for every heartbeat that passed one, did for null.
-- `ReliableDatagramSocket.maxOutputBufferSize` is 256 KB unless changed,
-  where it was 0, no limit. A session that would hold more than that waiting
-  for its congestion window is ended at once, with an `ioError` saying why,
-  where it held everything sent to it, a server overloaded with a thousand
-  such sessions held 1.2 GB. A game server at 1,000 clients and 60 Hz held
-  nothing waiting in any session while it kept its tick, and 18 KB at most
-  in one when it was starved of processor time.
-- A reliable session holds the acknowledgement of what arrives in order for
-  up to 25 ms, `ReliableDatagramSocket.ackDelay`, as QUIC holds one for its
-  `max_ack_delay`, for something of its own to carry it. A game server's
-  session, taking an input a tick and sending a state a tick, sent half its
-  datagrams for acknowledgements alone. One goes at once for a frame out of
-  order, a duplicate or one that fills a gap, for the second frame not yet
-  acknowledged, and for a peer on 1.0.0-rc.1, which cannot be told; one that
-  goes alone says how long it was held, and the peer measures its round trip
-  without the hold and waits that much longer before it sends anything
-  again. A HANDSHAKE now carries the value, and a change to it is sent at
-  once. `ReliableDatagramServerSocket.ackDelay` sets it for the sessions a
-  server accepts. Measured on a server of 500 sessions at 30 Hz, each
-  sending it a 16-byte input a tick and sent a 64-byte reliable and a
-  128-byte sequenced message, over 10 s: it read 150,600 datagrams where it
-  read 300,800, sent 151,900 where it sent 301,300, and spent 3.2-4.2 s of
-  CPU where it spent 4.4-4.9 s, its kernel time 2.3-2.5 s where it was
-  3.2-3.4 s. At 60 Hz it spent 4.0-4.3 s where it spent 6.0-6.7 s; at 1,000
-  sessions, where it fell behind before, taking 83-91% of the inputs, it
-  keeps up, on 6.1-7.3 s where it spent 8.2-9.3 s. In the load harness's
-  game scenario, whose traffic is mostly sequenced and so not acknowledged,
-  a tick at 1,000 clients and 60 Hz costs 12.2-12.5 ms where it cost
-  12.5-13.0 ms.
-- A reliable datagram reaches its session without being copied or wrapped on
-  the way. The socket hands it over directly rather than as an event when
-  nothing else listens; the frame is decoded into one the session keeps, and
-  a whole datagram's payload is used where it lies; an empty ACK makes no
-  payload; the acknowledgement is an `Int` with a flag rather than a
-  `Null<Int>`, an object natively; a server finds a session by address
-  without building a string key; a source address is not formatted again for
-  every datagram; and the retransmission check is not a closure and a walk
-  of a map's keys. Measured over 200 sessions: 416-454 bytes allocated a
-  datagram before, 249-252 now, with `ackDelay` 0 so that both send as many;
-  with it, 333-373 KB a round of 200 sessions before, 191 KB now.
-- A `ReliableDatagramSocket` in `STREAM` mode appends what arrives to what
-  is unread, where each frame copied all the unread input into a new buffer,
-  so a reader a megabyte behind paid for the megabyte with every frame: CPU
-  per megabyte received, 766-875 ms before, 8-12 ms now.
-- The event-type constants are typed: `Event.CLOSE` is an
-  `EventType<Event>`, `ProgressEvent.SOCKET_DATA` an
-  `EventType<ProgressEvent>`, and so on for `Event`, `FileListEvent`,
-  `IOErrorEvent`, `ProgressEvent`, `ServerSocketConnectEvent`, `ThreadEvent`
-  and `TickEvent`. A listener of the wrong event is refused where it is
-  added; as `String`s they let `addEventListener` take the type from the
-  listener, so any listener fit. A listener of a supertype, `Event->Void`,
-  still fits. `TaskEvent`'s stay `String`s, since a task's event carries its
-  own result type. `ServerSocket.addEventListener` and `removeEventListener`
-  check their listener against the type as every other dispatcher does,
-  where they took `Dynamic->Void`.
-- `UncaughtErrorEvent.origin` is `Any`, where it was `Dynamic`.
-- `crossbyte.Object` drops `@:generic`, which did nothing. `values()` and
-  `entries()` no longer make a closure, and `entries()` an anonymous object
-  per field. `Event.target`'s doc says how to read it typed.
-- `ListedMap.KeyValuePair` is a class, built from a `{key, value}` literal as
-  before and fitting where a `{key, value}` structure is asked for;
-  `OrderedMap.keyValuePairs()` and `Object.entries()` answer them.
-  `EnumUtil.getValue` is an `Array<Dynamic>`, where it was `Dynamic`, and
-  `EnumUtil.getNameValuePair` an `EnumNameValue` class.
-  `WeightedGraph.Edge`, what `getNeighbors` answers, is public.
-- `Vector`'s callbacks are `VectorCallback`s: any function of none to three
-  of `(item, index, vector)`, or an untyped `Function` as before. `sort` takes
-  an optional `(T, T) -> Int`, where it took `Dynamic` and threw for a value
-  that was not a function; `concat` takes vectors, as ActionScript's does,
-  where it took anything.
-- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` call a callback
-  whose type says how many arguments it takes directly, where each call went
-  through `Reflect.callMethod` with an argument array: 12 ns an item
-  natively, where it cost 61 to 68, and 5 to 6 on Node, where it cost 12 to
-  15.
-- `SwitchTable.make` looks keys up typed when they are all `Int`s or all
-  `String`s, and makes each handler written as a function literal once
-  rather than on every dispatch: 71 to 77 ns a dispatch of sixteen `Int`
-  keys natively, where it cost 130 to 147. What reaches `otherwise` is
-  unchanged, except on JavaScript, where a key now matches a case only when
-  it is the same value: the `String` `"1"` matched the case `1` there, and
-  nowhere else.
-- On the jvm, `File.modificationDate` reads one attribute: 20 us, where
-  `FileSystem.stat`, which first asks for attributes Windows refuses with an
-  exception, took 108 to 138.
-- `Logger`'s JSON records are written out directly, and always as `level`,
-  `message`, `time`, `category` and then the fields, where an anonymous
-  object went through `haxe.Json`, which wrote the keys in whatever order
-  the target's reflection gave: 0.83 to 0.90 us a record natively, where it
-  cost 0.97 to 1.09, and 0.24 to 0.45 on the jvm, where it cost 0.66 to
-  0.71.
-- A child process's output is held at most `NativeProcess.MAX_OUTPUT_AHEAD`
-  (256 KB) ahead of the runtime: past that the readers stop reading, and a
-  child that goes on writing waits on its pipe until the runtime has
-  dispatched what it holds. It was read as fast as the child wrote and
-  queued without limit, so a chatty child of a busy server held its whole
-  output in the server. Its messages to the runtime are typed, where they
-  were anonymous objects read back by reflection.
-- A `Worker` delivers a backlog without moving it: each turn's share of
-  queued messages was spliced off the front of the queue, moving everything
-  behind it. A million queued messages are delivered in 0.05 to 0.08 s
-  natively, where they took 0.6 to 0.7.
-- `TaskPool.submit` returns a `Task<Any>`, where it was `Task<Dynamic>`.
-- A `TaskPool` lets go of a finished task in constant time, where it searched
-  its list of tasks in flight and shifted everything after it: a burst cost
-  the square of its size. Natively, without a `Mutex` and a `Lock` made per
-  task, a task costs 2.1 to 2.2 us of wall time in bursts of 100,000, where
-  it cost 7.0 to 7.9, and 2.2 in bursts of 1,000, where it cost 4.3 to 4.8;
-  on the jvm 0.46 to 0.55 us in bursts of 100,000, where it cost 4.2 to 4.7.
-- A `Void->Void` timer is called directly, without a closure made around it
-  when it is armed or a boxed handle for each run: 82 to 133 ns a fire and
-  re-arm, against 89 to 151, natively.
-- An event reaches its listeners for half of what it cost natively: each
-  listener's entry is a class, where a dispatch read its anonymous fields by
-  name, twice a listener. A tick with 1,000 listeners costs 4.2 to 5.3 us
-  natively, where it cost 11.3 to 12.2.
-- `FlexSocket` is an abstract over `sys.net.Socket`, which every TLS socket
-  it holds extends, rather than over `EitherType`, which converted it from
-  `Dynamic` on every call. On the jvm an accepted socket is constructed
-  directly rather than through reflection, a received datagram's address
-  is read without a checked cast per byte, and the std socket overrides set
-  a `Host`'s fields through checked access rather than `untyped`.
-- A socket that would block says so without an exception. The native
-  transfer threw for it, the standard `sys.net` socket caught that and
-  threw `Blocked`, and `Socket.flush` caught that in turn: three exceptions
-  each time a slow peer's full window refused a flush, on every pass until
-  it read, and two to end every pass that read a UDP socket dry. Natively a
-  flush refused by a peer that stopped reading costs 0.38 us a socket a
-  pass, where it cost 5.5 to 5.8 (64 such peers, three interleaved runs); a
-  datagram received one a pass 9.7 to 9.9 us, where it cost 11.2 to 11.5.
-  `sys.net.Socket` and `UdpSocket` keep their standard behaviour, throwing
-  `Blocked` once rather than twice natively; CrossByte's own read and write
-  loops use internal transfers that answer -1. Every spelling of "would
-  block" a TLS layer uses is recognised in a flush, where a bare string
-  closed the connection.
-- `CompressionAlgorithm` is an `Int` underneath, where it was a boxed
-  `Null<Int>`. `fromString` answers `Null<CompressionAlgorithm>`, and a
-  token nobody knows, converted where an algorithm is asked for, throws an
-  `ArgumentError`, where it was null.
-- An empty `ByteArray`, every one `ByteArray.fromBytes` makes, per
-  datagram and per frame, no longer allocates a buffer only for it to be
-  replaced; and `ByteArrayOutput.reserve` grows as writing does, where each
-  reserve that did not fit took a chunk of exactly its size, so a codec
-  reserving per value made a chunk and a copy per value: 10,000 reserved
-  ints and 1,000 varints took 11,000 chunks.
-- `JWT.verify` and `generateToken` for HS256 cost about a quarter of what they
-  did. An HMAC key's two padded blocks are hashed once per secret, when the
-  signer is made, rather than for every token through `haxe.crypto.Hmac`; the
-  MAC is taken straight over the token's characters and compared, in constant
-  time, with the 32 bytes the signature decodes to, in its one canonical
-  spelling, so the same tokens are accepted as before. Base64url has a codec
-  of its own, which decodes a segment where it lies and answers a malformed
-  one without an exception; the token is no longer split into substrings and
-  joined back together; a header that a verified token carried is not decoded
-  again; and a signer's header is made once. Natively a typical token's
-  verification took 11-13 microseconds of CPU and takes about 3, its signing
-  9.5-12 and 3.5-4; on the jvm 6.4-10.5 and 2.3-2.5 microseconds, and 5.3-8.2
-  and 2.8-4.3; on Node 22-26 and 3-4, and 20-24 and 4.5-5. On Node,
-  `crypto.createHmac` was slower than this. The header `generateToken` writes
-  is `{"alg":..,"typ":"JWT","kid":..}`, in that order on every target.
-- RS256 and ES256 tokens, `SignatureKey` and `PublicKeySignature` hash the
-  message with a faster SHA-256: 1.7 microseconds for a token's signing input
-  where `haxe.crypto.Sha256` took 4.9.
-- Natively `SecureRandom.getSecureRandomBytes` hands out bytes from a 4 KB pool
-  each thread fills from the system, BCryptGenRandom on Windows,
-  `/dev/urandom` elsewhere, and zeroes each range it hands out; it made a
-  system call per draw, and on Linux and macOS took a lock and read through a
-  `FileInput` for each. Draws of 1 KB or more still go straight to the system,
-  and a forked child drops the pool it inherited. A 4-byte draw, a WebSocket
-  client's mask for each frame, took 88-120 nanoseconds of CPU on Windows and
-  takes 72-89, most of it now the `ByteArray` returned; on Linux 104-127 and
-  67-87.
-- The JWT types, for 1.0: `JWTPayloadData`'s `iat`, `exp` and `nbf` are
-  `Float`s rather than `Dynamic`, so a time that is not a number no longer
-  compiles; a literal may still give them as `Int`s, all of them, or as
-  `Float`s. `JWTPayload.audience` is a `JWTAudience`, one audience or several,
-  asked with `contains` and read with `toArray`. `JWTPayload.seconds` is
-  private. `Secret`, `JWTHeaderData`, `JWKSet.IgnoredKey`, `SigningKeyPair`,
-  `KeyExchangeKeyPair` and `SessionKeys` are `@:structInit` classes, which
-  object literals still build. `JWTPayload.ofData` says that a literal with
-  claims of an application's own converts through `ofClaims`.
-- Encoding BSON asks each value what it is once, on hxcpp its own type
-  code, rather than through a chain of up to six `Std.isOfType` tests
-  for a number and seventeen, with a class name compared as text, for a
-  nested document. A 12-field document encodes 17-28% faster natively, and
-  a document for an insert 14-29%; the bytes are the same on every target.
-- On hxcpp a document the MongoDB driver or `Bson.decode` reads is made
-  with fixed slots, as an object literal is, once its shape, its field
-  names, has been met before at its depth, rather than with every field
-  in a hash map allocated beside it. A 101-document reply decodes 4-15%
-  faster, reading its fields 13-22% faster, each document holds 25% less
-  memory, and a find of 101 documents from a local server took 35-44%
-  less CPU. Documents of shapes never seen twice, of more than 64 fields
-  or with names over 32 bytes are made as before, so a server sending
-  ever-new shapes costs no more than it did.
-- The MongoDB driver writes its own command fields, the command's name,
-  write concern, update and delete statements, cursor ids, straight into
-  the message, typed, rather than boxing them or building a
-  `BsonDocument` per operation to be encoded again; `findOne` no longer
-  copies its options; a reply's numbers are typed with one test each;
-  update and delete collect write errors once, and only when there are
-  any; the server's `hello` is read once. None of it shows through a
-  loopback round trip's noise.
-- MongoDB's option bags, `MongoFindOptions`, `MongoInsertOptions`,
-  `MongoUpdateOptions`, `MongoDeleteOptions`, `MongoAggregateOptions`,
-  `MongoCountOptions`: and `MongoIndex` are classes (`@:structInit`),
-  every field optional as before, so an object literal at the call still
-  compiles and each option is read directly rather than by name. `hint` is
-  a `MongoHint`: an index's name, a `BsonDocument` of its keys, or an
-  object of one field, checked when it is made; `collation` is a
-  `MongoCollation` with MongoDB's collation fields, `locale` required,
-  written in MongoDB's order; a write concern's `w` is a `MongoW`, a count
-  or a tag. `MongoWriteError` and the entries of `MongoWriteResult.upserted`
-  (`MongoUpserted`) are classes with final fields.
-- `ExtendedJsonParser` is private to `ExtendedJson`, whose `parse` is its
-  only door, and `MongoCursor`'s constructor is private to
-  `MongoConnection`, which makes every cursor.
-- Inflating, a compressed WebSocket message, a request body sent with a
-  `Content-Encoding`, a compressed response to the native HTTP client,
-  `ByteArray.uncompress`: goes through zlib natively (hxcpp's own), on
-  Node and on the jvm (the JDK's), where it was Haxe's `InflateImpl` on
-  every target, building its tables and a 64 KB window as objects for
-  each call. A 437-byte JSON message took 27-84 µs to inflate natively and
-  takes 2.1-2.5 µs; on Node 24 µs and 5-6 µs; on the jvm 6-21 µs and
-  1.4-6 µs. A 29.5 KB body, natively, 112-136 µs and 71-103 µs (the
-  audit's InflatePerf). The limit `uncompress` takes is still kept inside
-  the read, and a stream cut short is still an `IOError`.
-- Natively each thread keeps one deflate stream and resets it for the next
-  input, where `deflateInit` and `deflateEnd` ran for every compressed
-  response and permessage-deflate message: a 437-byte message compresses
-  in 3.4-3.7 µs instead of 5.8-6.9.
-- A `ConnectionPool.acquire` waiting for a connection is woken by the
-  `release`, `discard` or `close` that frees one, where it slept a
-  millisecond at a time and looked again: a waiter takes a released
-  connection in 11-30 µs (median; 18-77 µs at the 90th percentile), where
-  it took 0.5-1 ms (1-2 ms), and seven waiting threads no longer wake a
-  thousand times a second each. A wait still ends at its deadline.
-- SQLite statements are prepared once and kept, by the connection, for
-  their text (64 texts), with their `:name` parameters bound as their
-  types, where every run wrote its values into the statement as literals
-  and had SQLite prepare the whole text again. A statement with six values,
-  run again and again, took 4.0-7.3 µs a run and takes 0.8-2.2 µs (W1 and
-  W6 of the audit's SqlitePerf, natively, against 0.37-0.81 µs for SQLite
-  itself). A statement prepared before a schema change is prepared again
-  by SQLite, its new columns read. Rows of SQLite, and of Postgres's
-  `request()` and `executeParams`, are objects with fixed slots (see
-  `AnonBuilder`), which a field is read from faster: a page of SQLite rows
-  costs 34-53% less to read, and their fields 44-57% less.
-- Postgres's `request()`, and `PostgresStatement.execute()`, read the
-  result from the bridge's binary block, as `requestParams()` does, where
-  the bridge rendered every row as JSON and Haxe parsed it: 2.7-3.9 µs a
-  row of 8 columns became 0.32-0.42 µs, and a query of one row went from
-  4.4-6.2 µs to 1.6-2.2 µs (the audit's PostgresPerf, against a stand-in
-  libpq).
-- `itemClass` works out once a page which field each column goes to,
-  where every row asked for its field names and looked each up along the
-  class's: its cost over plain rows fell by about two thirds (SqlitePerf
-  R2i against R2).
-- A statement's text is split at its placeholders once and kept, where it
-  was copied a character at a time on every run, placeholder or none:
-  a SELECT with no placeholder costs 32-42 ns there instead of 240-410.
-- The HTTP server's access log (on by default, category `http.access`) is
-  written to standard output by a thread of its own, a few times a second,
-  rather than by the runtime as each response goes. To a Windows console a
-  write is drawn before it returns, and an HTTP/1.1 server at its ceiling
-  answered 10,830 requests a second with the log on where it answered
-  91,363 with it off; it answers 70,246 now (87,802 off), and to a file
-  82,769 where it answered 78,898 (medians of three interleaved runs). The
-  queue holds about a megabyte of text: past that a line is dropped and
-  counted, never waited for, and the next write says how many were, about
-  2% of lines at 50,000 a second to a console. What is queued is written as
-  the server closes or finishes draining and as a runtime that logged exits
-  (`Sys.exit` skips that). Lines keep their order, one connection's and
-  every runtime's of a spread server. With a `Logger.sink` or `recordSink`
-  set, and on Node, lines go through `Logger` as they are made, as before.
-- Internal records of the HTTP server and clients are classes rather than
-  anonymous structures or `Dynamic`: the server's connection maps are keyed
-  by `Socket`, and a byte range, a cookie the client keeps, a DER element of
-  a pinned certificate, an HTTP/2 client exchange, a directory listing and a
-  PHP request and response are each a class of their own. Nothing public
-  changes; their fields are read directly natively.
-- `RouteContext`, `RewriteRule` and `RewriteCondition` are `@:structInit`
-  final classes rather than anonymous structures, built from the same object
-  literals; a `RewriteCondition` may now leave out `key` (null) and `negate`
-  (false). Their fields are read directly natively, where a structure's
-  were looked up by name, for a `RouteContext`, at every use in a route.
-  A middleware's `next` takes `?error:Any` rather than `?error:Dynamic`:
-  the same values, an `Int` status or anything thrown.
-- `HTTPRequestContext`, what an `HTTPBackend` is handed, is a `@:structInit`
-  final class rather than an anonymous structure, built from the same object
-  literal (the fields that were optional may still be left out), and its
-  `data` is an `HTTPRequestBody`: text or bytes, assigned from a `String` or
-  `haxe.io.Bytes` as before. It was `Dynamic`, which each backend told apart
-  with `Std.isOfType`, the built-in client did so twice, once in
-  `URLLoader` and again before writing. `requestData`, the caller's form
-  object, stays `Dynamic`.
-- The HTTP/1.1 client (`URLLoader` and `Http` on every target but the
-  browser and Node) reads a response a buffer at a time and takes its
-  status line, header lines and body out of that, where it read the head a
-  byte at a time, a `recv()` per byte, on the jvm a selector wait and a
-  read per byte, and writes a request's head in one write rather than a
-  `send()` per line (over TLS, a record per line). A load of a small
-  response cost the client 95 us of CPU natively where it cost 189, and
-  with a 2 KB response head 100 where it cost 925 (medians of three
-  interleaved runs). A connection with bytes read past its response is not
-  kept for the next request.
-- Choosing a response's content coding reads the request's `Accept-Encoding`
-  once and keeps it with the connection, rather than splitting and
-  lowercasing it, and building a map and four anonymous options, for every
-  response that might be compressed, and again for a static file's
-  precompressed sibling. Media types and field names are compared without
-  case rather than lowercased, the kept compressed bodies are a list moved
-  in constant time rather than scanned on every hit, and a lookup no longer
-  builds its key. Each is under a microsecond and too small to see beside
-  the file system calls of a compressed static file (162 us of CPU after,
-  160 before).
-- The HTTP server asks the system about a static file once: whether it is
-  there, a directory, its size and modification time, in one call (one
-  `stat` and an exact size natively, one `readAttributes` on the jvm, one
-  `statSync` on Node), shared by the resolver and the handler, where it
-  asked seven times. A precompressed sibling is one call where it was up to
-  four, and the document root is normalized once rather than for every
-  path. Small files are also kept in memory (see `fileCacheSize`). A 79-byte
-  static file cost the server 125 us of CPU natively where it cost 345
-  (kernel time 84 us where it was 267; medians of four interleaved runs on
-  a busy machine).
-- An HTTP/2 response body the server made, or keeps and never changes, is
-  queued as it is rather than copied, and each frame is written into the
-  socket from where its bytes lie, its 9-byte header, then the slice of
-  the stream's queue or header block it carries, rather than built whole
-  first. Every body was copied twice more under HTTP/2 than under HTTP/1.1.
-  `respondBytes` still copies, since the caller may write into its bytes
-  again. A request's fields are checked against RFC 9113 8.2.1 once per
-  HPACK table entry rather than on every request that names it, the
-  server's own response fields are lowercased from constants, and `:status`
-  comes from the static table. A 64 KB response cost the server 42 us of
-  CPU under HTTP/2 natively where it cost 51 (user time 16 where it was
-  24), and a small one 7.2 where it cost 8.6 (medians of four interleaved
-  runs).
-- The HTTP/2 server hands each frame's header and payload to the socket as
-  the `Bytes` they are, where each was wrapped in a new `ByteArray` to be
-  written: one object less per frame. Too small to see beside the rest of a
-  request: over eight interleaved runs a small response cost 5.99 us of CPU
-  natively against 5.93 before, and a 64 KB one 32.5 against 32.0 (paired
-  differences -0.05 and -0.32 us, within the runs' spread).
-- An HTTP/2 stream's request handler no longer makes the read buffer, header
-  map and body that only the HTTP/1.1 parser uses, nor copies the body the
-  frame layer already holds; a request without a body makes no body object
-  at all until `requestBody` is asked for, on either protocol. The server
-  hears each response through a hook of its own rather than a listener for
-  `HTTP_RESPONSE_STATUS`, so the event is made and dispatched only when
-  something else listens for it, and an HTTP/2 stream no longer adds a
-  listener and a closure. An HTTP/2 request cost the server 6.5 us of CPU
-  natively where it cost 7.5, and an HTTP/1.1 one 14.1 where it cost 14.9
-  (medians of four interleaved runs).
-- The HTTP/1.1 server reads a request's header block where its bytes lie,
-  cutting each line out whole, and splits each field by index, lowercasing
-  its name only when it has a capital letter. It walked the block twice, a
-  byte at a time through `ByteArray`'s read calls, and made five or six
-  strings a field. A response's head is built in one buffer, where `+=`
-  made a new string of all of it so far some thirty times. With the
-  fourteen fields a browser sends, a request cost the server 16.2 us of CPU
-  natively where it cost 18.0 (user time 6.2 us where it was 9.6; medians
-  of four interleaved runs), and about 10% less on the jvm.
-- On eval HTTP/2 works, and the HTTP/1.1 client keeps connections for the
-  next request to their origin, as on every other target with threads.
-  Both were off there because eval raised a reset connection's error past
-  every `catch`, ending a pooled connection's reader thread or the
-  interpreter; it is an error a catch sees now. `HTTP2Backend.isSupported`
-  is true there, where a request for HTTP/2 was refused, and a request
-  that may be sent twice goes out on a kept connection with
-  `Connection: keep-alive`. An HTTP/2 connection's threads wait on a
-  `Semaphore` there, where a `Lock`'s wait polls and holds the interpreter
-  from the threads it waits for.
-- A `LocalConnection` name is its user's own, and with it a `SharedChannel`
-  name and a `local://` address. Names were one namespace for every user of
-  the machine: on Linux and macOS a name's socket was in /tmp, where another
-  user could listen on it first and take its clients, or put a link there
-  that `connect()` followed to their own listener; on Windows a pipe was made
-  with the default security, which lets everyone, the anonymous user
-  included, open it to read, and a client went to whichever pipe had the
-  name, another user's put there first included. On Linux and macOS a
-  name's socket and lock file now live in `/tmp/crossbyte-<uid>`, made 0700,
-  which `listen` and `connect` refuse with an `IOError` unless it is a
-  directory the user owns that nobody else can enter, not a link, and not
-  one another user made first, and `connect` refuses anything at the
-  socket's path but a socket of the user's. On Windows the pipe's name
-  carries the user's SID, its security admits the user and SYSTEM alone,
-  it refuses clients on other machines, and a client refuses, with an
-  `IOError`, a pipe under the name that another user made, and connects
-  for identification only, so the listener cannot act as it.
-- `System.totalSystemMemory()` and `freeSystemMemory()` ask macOS's kernel
-  directly in a native build, as Windows and Linux are asked. Each ran a
-  process, `sysctl` and `vm_stat`: the two took 0.11 s on the CI runner.
-  The jvm on macOS still runs them.
-- A `timeout` of 0 (or less) on `LocalConnection` and `SharedChannel`
-  means no deadline, as it does for every other connect: `connect()`, and
-  a `send` to a channel not yet connected to, wait on the calling thread
-  until something listens on the name. It made a single try, and a
-  connect to a listener a moment late failed at once. A timeout of 50 or
-  less makes the single try now, 50 ms being the pause between tries.
-  `NetConnection`'s `connectTimeout` for `local://` is this `timeout`.
-- A `timeoutMs` of 0 sets no deadline for a STUN question,
-  `StunClient.discover`, `probe` and `classifyMapping`,
-  `ReliableDatagramServerSocket.discoverPublicAddress` and
-  `PeerConnection.gatherReflexive`: and for a session that
-  `ReliableDatagramServerSocket.connect` or `connectRelayed` dials, as 0
-  does for every connection's `timeout`; it meant three seconds for a
-  question and twenty for a dial, so neither could wait longer without a
-  number. A question with no deadline is asked, each gap twice the last,
-  until it is answered, or until what it is asked through closes, a
-  `StunClient` question through a socket of the caller's now ends the
-  moment that socket closes, where it lasted until its next ask failed. A
-  dial's timeout is twenty seconds unless given, as
-  `ReliableDatagramSocket.DEFAULT_TIMEOUT`, new, says, and a negative one
-  throws a `RangeError`, as the session's `timeout` does.
-  `StunClient.classifyFiltering` needs a deadline, a filtering NAT
-  answers with silence, and fails at once for 0 or less, its cause an
-  `ArgumentError`.
-- `IceAgent.DEFAULT_TIMEOUT`, the time an agent has from `start` to select
-  a pair, is 80 seconds, where round three made it 40. A nomination is a
-  check, given up on 39.5 seconds after it goes out, and forty was a moment
-  past that one schedule: an agent whose nominated pair went quiet moved on
-  to another pair that had answered only if the first had answered within
-  half a second, so a NAT that dropped a pair's first checks put the
-  agent's deadline ahead of its nomination's. Eighty is a moment past two
-  schedules, one for a pair to be answered however late, one for its
-  nomination to go unanswered, and still ends every wait nothing else
-  does. `PeerConnection` keeps its own `readyTimeout`.
-- With the hxcpp fork on mbedTLS 3.6.7 (its `production` now; 2.28.2
-  before it), native TLS negotiates TLS 1.3 with every peer that offers
-  it: CrossByte's own sockets, WebSocket, HTTPS and HTTP/2 with each
-  other, and Node's OpenSSL as client and as server. TLS
-  1.2 remains for peers without 1.3. A returning client resumes over TLS
-  1.3 too, presenting its ticket back as a pre-shared key, from the same
-  per-server ticket keys. TLS 1.0 and 1.1 stay refused, as hxcpp's sockets
-  already refused them, and now are by the MySQL client as well, as DTLS
-  1.0 is by WebRTC's data channels, 2.28's defaults let both through.
-  `TlsProtocolTest` pins the version at both ends of a native connection,
-  against OpenSSL in either role, the resumption and the refusal,
-  expecting TLS 1.2 where the build still has 2.28.
-- On mbedTLS 3.6.7, AES-GCM runs on AES-NI in MSVC builds too, where 2.28
-  did every byte of AES in plain C. Measured on Windows (Ryzen 9 9950X) as
-  Node uploading into one native TLS socket, medians of three interleaved
-  runs: AES-256-GCM over TLS 1.2 went from 129 to 328 MB/s, and from 7.7
-  to 3.0 ms of server CPU per MB. mbedTLS's ChaCha20-Poly1305 is still its
-  faster cipher here (415 to 440 MB/s over TLS 1.2, 473 over TLS 1.3, 2.1
-  ms per MB), and it is what CrossByte's own client offers first, so
-  CrossByte talking to itself got faster. But where 2.28's TLS 1.2 server
-  chose ChaCha20 for every client by its own order, a TLS 1.3 server takes
-  the client's, and OpenSSL's comes with AES-256-GCM first: a Node client
-  that uploaded at 361 MB/s (2.7 ms per MB) now uploads at 324 (3.1), about
-  10% slower. AES-128-GCM, which BoringSSL-based clients put first on AES
-  hardware, gives 384 MB/s (2.6).
-- A full TLS handshake costs a native server about a quarter of the CPU it
-  did on mbedTLS 2.28.2, measured the same way with an ECDSA P-256
-  certificate and Node opening a connection per request: 252 handshakes a
-  second at 3.9 ms of CPU each before, 936 at 1.0 ms over TLS 1.3 now
-  (1,049 at 0.94 ms held to TLS 1.2), on one thread.
-- CrossByte's native code that calls mbedTLS, RSA and ECDSA signatures,
-  DTLS certificates and sessions, ALPN, a TLS peer's certificate, builds
-  against mbedTLS 3.x as well as 2.28, so it works with the hxcpp fork
-  whichever it bundles, and compiles against the include path and
-  configuration hxcpp builds the library with (its `mbedtls-flags.xml`)
-  instead of a partial copy of that configuration. Against 3.6.7, four of
-  those files did not compile: 3.x takes randomness to parse a private key
-  and a buffer's size to sign into, made the ALPN list and an EC key's
-  group private, and dropped `mbedtls_sha256_ret`. A DTLS certificate's
-  serial is set with `mbedtls_x509write_crt_set_serial_raw` from 3.4 on,
-  still in DER's shortest form.
-- Off native, `DtlsCertificate`'s constructor, `generate`, `fingerprintOf`
-  and `matches` throw an `IllegalOperationError` naming the target, and
-  each says so in its documentation. The constructor threw "That
-  certificate could not be read" whatever it was given, `generate` a bare
-  String, and `fingerprintOf` and `matches` answered null and false, a
-  certificate that would not parse, a mismatch.
-- `PeerConnection.addLocalCandidate` and `PeerConnectionHost.
-  addLocalCandidate` refuse a relayed candidate with an `ArgumentError`
-  naming `gatherRelayed` and `gatherRelayedFrom`. A relayed address works
-  only through the allocation that lent it, made from the connection's own
-  socket; one added from outside was taken in silence, and its checks went
-  straight at the peer while the peer was told to answer the relay. The
-  `TurnClient` and `IceAgent` examples now show the wiring a relayed
-  candidate needs, the way to send through the relay, and what it
-  forwards handed back, and call methods that exist.
-- `SecureRandom.getSecureRandomBytes` throws an `IllegalOperationError`
-  naming the target where there is no secure random source, the
-  interpreter, neko, HashLink, where it threw a String, as the other
-  crypto members now do.
-- `JWT.safeBase64UrlEncodeString` is `safeBase64UrlDecodeString`: it
-  decodes, and was named for the opposite. The auth docs were corrected
-  besides: `OAuth.getAccessToken` said the exchange ran inline on the jvm
-  and the interpreter, where it has run on `URLLoader`'s threads, bounded
-  by `timeout`, since loads moved to a pool; `JWTHeader.algorithm` carried
-  `type`'s doc and `type` none; and `generateToken` and
-  `normalizeBase64Url` did not say what they throw.
-- A JWT verifier with no `expectedAudience` refuses a token that names an
-  audience, as `WRONG_AUDIENCE`. RFC 7519 has a recipient that does not
-  identify itself with a token's `aud` reject it; accepting one let a token
-  minted for another service of the same issuer and key be replayed here.
-  A token naming no audience is accepted as before. `expectedIssuer`,
-  `expectedAudience` and `leeway` are documented.
-- A crypto or IPC member that cannot work on the target throws an
-  `IllegalOperationError` naming the target, before looking at its
-  arguments: `Aead`, `GenericHash`, `HKDF`, `X25519`, `KeyExchange`,
-  `Blake3`, `PublicKeySignature`, `SignatureKey`, `Argon2id` (which names
-  the Node version where Node is too old), the EdDSA, RS256 and ES256 JWT
-  signers, `LocalConnection`, `SharedChannel` and `SharedObject`. They
-  threw a String there, or for the IPC classes an `ArgumentError`, which
-  says the arguments were at fault. `Aead.decrypt` and
-  `PublicKeySignature.verify` throw there instead of answering `null` and
-  `false`, the answers for a forged message and a forged signature, as
-  `Ed25519.verifyDetached` does; `PublicKeySignature.keyType` and
-  `joseSignatureLength` throw instead of answering `UNKNOWN` and `-1` for
-  every key. Each class's doc says so, and `isSupported` on the IPC classes
-  says where they work.
-- `Ed25519.verifyDetached` throws on a target with no Ed25519 backend,
-  anything but native cpp, instead of answering `false`, which is the
-  answer for a forged signature: code checking signed messages there
-  refused every one, genuine ones included, by what looked like a working
-  check. `Argon2id.verify` throws for the same reason. `keypair`,
-  `signDetached` and `verifyDetached` there throw an
-  `IllegalOperationError` naming the target, where the first two threw a
-  String, and before looking at their arguments.
-- A `URLRequest` setting means the same on every target, or its member
-  says where it cannot. `idleTimeout = 0` is no idle limit natively, as it
-  already was on JavaScript; natively it was 30 seconds. On Node a request
-  asks for HTTP/1.1 or is refused, saying so, since Node's http client
-  speaks no other: it went out as HTTP/1.1 whatever was asked, where
-  natively HTTP/2 speaks it or fails. In a browser a request with
-  `followRedirects = false` is refused, since the browser follows every
-  redirect itself and the 3xx could not be handed back.
-- A `NetConnection` ends the same way over TCP, WebSocket and reliable
-  UDP: `onError` for what went wrong, then `onClose` exactly once, with
-  the reason it ended, and nothing after. Over TCP a connect that failed
-  called `onError` alone, where the other two called both; `onClose`
-  after an error was told `Reason.Closed`, or a WebSocket's 1006, rather
-  than the error; and closing a TCP connection told `onClose` again each
-  time, and once more after its peer's close.
-- A native Windows build no longer raises its process to
-  `HIGH_PRIORITY_CLASS`. Every one did, unasked and undocumented, as the
-  runtime loaded, a library deciding for the process it is part of, and
-  a busy server at that class can starve the rest of the machine. It is
-  `CrossByte.windowsHighPriority = true` now, which takes effect when set
-  and, set back, returns the process to the class it had.
-- `writeObject` frames an HXSF or JSON object as the length in bytes of
-  its text, an unsigned 32-bit integer in the stream's `endian`, then the
-  text as UTF-8, on a `ByteArray` and on `Socket`, `WebSocket` and
-  `ReliableDatagramSocket`, which write through one. It was framed as
-  `writeUTF` frames a string, behind a 16-bit length, so an object past
-  65,535 bytes of text, a list of a few thousand records, was refused
-  with a `RangeError`, and nothing documented a limit. `readObject` reads
-  the new framing, and an object only part of which has arrived leaves
-  `position` where it was, so a socket's reader can try again; it left it
-  past the length. Objects written by 1.0.0-rc.1 do not read back.
-- `FileStream` starts in `ByteArray.defaultEndian` and
-  `ByteArray.defaultObjectEncoding`, as every CrossByte `IDataInput` and
-  `IDataOutput` does, little-endian and HXSF unless the application
-  changed them. A synchronous stream was big-endian, set by `open()`
-  whatever `endian` said, and an asynchronous one little-endian.
-- `FileStream.writeObject` frames HXSF and JSON with a 32-bit length in the
-  stream's byte order, as `ByteArray.writeObject` does, and `readObject`
-  reads it: an object is no longer capped at 65,535 bytes of UTF-8, the
-  limit of the 16-bit `writeUTF` framing it used.
-- `File.applicationDirectory`, `System.appDir` and `Resources` are the
-  program's own directory, the executable's natively, the jar's on the
-  jvm, the script's on Node, the bytecode file's on neko and HashLink,
-  rather than the working directory, which is wherever the program was
-  started from: a Windows service, started in System32, looked for its
-  resources there and found none. The build copies the project's
-  `resources` beside the program it writes, where it copied it onto
-  itself, or for a Windows native build into a `bin/windows/bin` that
-  nothing ran from. The interpreter, which has no program file, keeps the
-  working directory.
-- `File.applicationStorageDirectory`, and every `Store` kept in it, is the
-  application's own: `System.applicationId` inside `%APPDATA%` on Windows,
-  `~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` or
-  `~/.local/share` elsewhere, created the first time it is asked for. It
-  was `%APPDATA%` or `$HOME` itself, the account's root, which every
-  CrossByte program on the account shared, so two applications that
-  opened a store of the same name opened one store, where `Store` promised
-  each its own. An environment with no `APPDATA` (and no `USERPROFILE`) or
-  no `HOME` is an `IOError` that says so, where the path came out as
-  "null".
-- Reliable UDP sends what a pass produces from one socket in as few system
-  calls as the system allows. Each datagram was a `sendto` of its own,
-  which was nearly all a server sending reliable UDP spent: 5.9 us a
-  1,200-byte datagram on Windows, against 6.2 for the bare call. On Linux
-  a run to one peer now goes as a single send the kernel cuts up (UDP
-  segmentation offload) and the rest 64 to a call (`sendmmsg`): a bulk
-  send costs the server 1.15 ms of CPU a megabyte where it cost 2.9, and a
-  game server with a thousand clients a few percent less a client a step.
-  Elsewhere each datagram is still a call of its own. Sessions also keep
-  their peer's resolved address, where the shared socket kept only the
-  last, so a server sending to each of its clients in turn built an
-  address for every datagram.
-- `SQLiteConnection.lastInsertRowID` is a `Float`, as
-  `SQLResult.lastInsertRowID` already was, and `DBStats.pageCount` and
-  `freeListCount` are `Float`s: all three can pass 2^31, and a `Float` is
-  exact to 2^53.
-- Native TLS servers resume a returning client's session (TLS 1.2 session
-  tickets, from the hxcpp fork's `production`). Every connection was a full
-  handshake, 3.9 ms of CPU for ECDSA and 6.9 ms for RSA on an MSVC build,
-  on the runtime's own thread, and a browser reconnects whenever it comes
-  back after the keep-alive timeout. Returning clients, a connection per
-  request: 7,700 connections a second where it managed 257 (ECDSA) and 145
-  (RSA). Each server has its own ticket key, random, in memory only and
-  rotated hourly, so a ticket opens only on the server that issued it and
-  for an hour at most. A resumed TLS 1.2 session reuses the keys it began
-  with rather than agreeing new ones, as nginx's and Node's do by default;
-  build with `-D HXCPP_SSL_NO_TICKETS` to keep every handshake a full one.
-- On native, gzip, zlib and raw DEFLATE, `ByteArray.compress`, and the
-  HTTP server's `gzip` and `deflate`, come from hxcpp's own zlib at its
-  default level, where they came from the Deflater written in Haxe. 64 KB
-  of JSON took 743 microseconds and came to 8.3 KB; it takes about 235 and
-  comes to 6.0 KB, as Node's zlib writes it. A native server answering
-  gzip for that page serves 3,655 a second where it served 1,264. A
-  response compressed as it streams comes from the same zlib, flushed
-  after each write so the client can inflate it as it arrives: that page
-  streamed as gzip in eight writes serves 3,560 a second where it served
-  1,330, and comes to 5.8 KB where it came to 8.4. CRC-32 runs eight bytes
-  a step, four times as fast on every target.
-- A body the HTTP server encodes for one response goes as gzip before
-  Brotli when the client takes both equally, as every browser's
-  `Accept-Encoding` does, unless Brotli is native (`crossbyte-brotli` with
-  `-D crossbyte_brotli_native`). Brotli in Haxe takes 1.3 ms for 64 KB of
-  JSON and gzip a fifth of that, so a server answering browsers was held to
-  about 800 compressed responses a second, where it now manages 3,700. A
-  static file, compressed once and kept, still goes as Brotli, the
-  smallest; and a client whose q-values prefer Brotli still gets it.
-- `HTTPServerConfig.keepAliveMaxRequests` defaults to 1,000, as nginx's
-  does, where it was 100. Every close costs the client a new connection,
-  and over HTTPS a full handshake: a native HTTPS server with 64 clients
-  spent two thirds of its time on them and served 18,900 requests a second,
-  where 1,000 serves 55,800. Plain HTTP serves 14% more as well. What to
-  change: nothing, unless a load balancer relied on connections recycling
-  every hundred responses, then set it back.
-- `HTTPServerConfig.maxConnections` defaults to 10,000, where it was 256,
-  and is documented. At 256 the 257th connection was closed as it was
-  accepted, and a few dozen browser users at six connections each reach
-  that. A held connection costs a few kilobytes on native, so the default
-  is tens of megabytes at most. What to change: a server that relied on the
-  old cap to bound its memory sets it.
-- A WebSocket stops reading when a read comes back short of its buffer, as
-  `Socket` does, where it read on until the socket said it would block: a
-  system call that read nothing, and an exception thrown and caught, on
-  every arrival. On native, 64 clients echoing small messages get 110,600
-  a second where they got 77,900 (Node with `ws`: 86,800). A `wss://`
-  session reads on as before, since TLS can hold bytes `select` cannot see.
-- On Node, gzip, zlib, raw DEFLATE and Brotli come from Node's own zlib,
-  where they came from the encoders written in Haxe: 64 KB of JSON took
-  888 microseconds as gzip and 2.5 ms as Brotli, and takes about 170 as
-  either, with gzip 6.0 KB where it was 8.3. With Brotli native there, a
-  browser's per-response body goes as br, half gzip's size. A Node server
-  answering browsers 64 KB of JSON serves 1,100 a second where it served
-  636, the rest held by encoding the text. The gzip header is the one
-  written everywhere else, and Brotli declares the window the Haxe encoder
-  does, not Node's 4 MB.
-- On JavaScript, text is encoded to UTF-8 through the platform's
-  `TextEncoder`: `ByteArray.writeUTFBytes` and `writeUTF`, every
-  `Socket.writeUTFBytes`, `respond`, a WebSocket's `sendString`, ten
-  times as fast as the Haxe encoder for 64 KB. An unpaired surrogate goes
-  as U+FFFD, as from a browser; the Haxe encoder took the next character
-  into it, or wrote bytes UTF-8 does not allow. `respond` hands the
-  encoded text over as the body rather than copying it into another
-  buffer, on every target. A Node server answering `respond` with 64 KB
-  serves 9,260 a second where it served 1,390, and browsers 64 KB of
-  compressed JSON 4,450 where it served 1,100; a native one answering
-  64 KB serves 34,200 where it served 28,300, and small answers 5% more.
-- The HTTP server reads a response's header names and values before
-  rebuilding them, and sends a clean one as it is. Every one was rebuilt a
-  character at a time on every response, the constant ones included: 4% of
-  a native server's time. Small answers: 81,500 a second where it served
-  77,700.
-- On Node, log records go to stdout in one write a turn of the event loop,
-  where each was two: `Sys.println` there writes the line and then its
-  newline, and to a file each is a synchronous system call. A warning or an
-  error is written at once, after whatever was held, so the order holds;
-  held records go when the turn ends, when the runtime flushes, and as the
-  process exits. Output written other ways in the same turn, `trace`,
-  `Sys.println`: can come out ahead of them. A Node server with the
-  access log on, the default, answers 54,300 small requests a second where
-  it answered 44,400.
-- On Node, what a socket receives is copied into its input once. It was
-  sliced out of Node's pooled buffer into one of its own, wrapped in a
-  `ByteArray` and copied again, for every arrival, on plain sockets and
-  WebSockets. A `ByteArray` on JavaScript is made with one buffer and one
-  view, where it made two views and a `Bytes` it threw away;
-  `writeUTFBytes` no longer wraps what it writes in another; and the HTTP
-  server makes one empty request body a request where it made two. A Node
-  server answering small requests serves 59,000 a second where it served
-  54,300, Node's own `http` module, sending three fewer headers and
-  logging nothing, serves 61,500 to 64,900.
-- On JavaScript, text is decoded through the platform's `TextDecoder`:
-  `ByteArray.readUTFBytes`, `readUTF` and `toString`, and `URLLoader`'s
-  text. 64 KB took 206 microseconds and takes 3 (53 with non-ASCII
-  characters, where it took 228). Haxe's decoder stopped at the first NUL
-  byte, so "a", NUL, "b" read back as "a"; every byte is read now, on
-  HashLink too, which also stopped there. A malformed sequence reads as
-  U+FFFD, as in a browser. `URLLoader` decodes strictly: a text body that
-  is not UTF-8 is an `IO_ERROR` with the bytes in `data`, where only some
-  malformed sequences were and the rest came through as other characters.
-- An HTTP/2 connection answers what one read asks for in one write. Every
-  frame was flushed on its own, the SETTINGS, its acknowledgement, each
-  response's HEADERS and DATA, a system call apiece, so a request cost
-  two or more where HTTP/1.1 costs one. A frame sent at any other time,
-  an answer that comes later, the next DATA once a window opens, still
-  goes at once, and a GOAWAY is flushed before its connection closes.
-  Cleartext, 64 streams in flight on 8 connections: a native server answers
-  187,000 small requests a second where it answered 44,000, at 5.8
-  microseconds of CPU each where it took 22 (Node's own `http2`: 111,000).
-  Over TLS, as browsers use it: 175,000 where it answered 32,700 (Node:
-  109,000). A Node server, cleartext: 60,000 where it answered 26,500.
-- A response streamed with `beginResponse` while its request is handled
-  goes out in one write when the handling is done, or every 64 KB. Its
-  head, each `write` and the last chunk were each flushed on their own,
-  a system call apiece: a 64 KB body in eight writes was served at a third
-  the rate of the same body through `respond`. Written later, a producer
-  feeding the stream from a timer or a callback, it still goes at once.
-  Native, 64 KB in eight writes: 31,200 a second where it served 11,400.
-- An HTTP/2 frame is built in one allocation, and a DATA frame straight
-  from its stream's queue. Every frame was assembled in a `BytesBuffer`
-  that grew a byte at a time, and DATA was cut out of the queue first and
-  copied again; an HPACK header encoded its name and value only to measure
-  them, where an ASCII one, nearly all, is its length. A Node server
-  answering over HTTP/2 serves 99,000 small requests a second where it
-  served 65,000 (Node's own `http2`: 111,000); a native one, 204,000 where
-  it served 193,000.
-- `readBytes` into a `ByteArray` past its end zeroes only the gap before
-  where the bytes land, where it zeroed everything it grew and then wrote
-  over it; and on JavaScript a `ByteArray` zeroes natively, where Haxe's
-  `fill` set a byte at a time, a third of a Node server's working time
-  taking uploads. 64 KB uploads: 23,600 a second where a Node server took
-  16,500, and 49,300 where a native one took 43,300; 1 MB uploads to Node,
-  1,250 where it took 920.
-- What one pass of the runtime sends a WebSocket goes in one write when
-  the pass ends, on Node, a turn of its event loop, where each message
-  was a write of its own, a system call apiece. A server relaying a chat
-  room's messages to everyone in it made one for every message to every
-  member. Nothing waits past the pass, the loop flushes before it polls
-  again, and what is held goes at once from 64 KB, as does a send from
-  another thread than the session's runtime. `outputBufferLength` counts
-  what the pass holds. 64 clients each sending 20 messages a second, every
-  one relayed to all: natively 107 microseconds of CPU a message where it
-  took 485, and on Node 98 where it took 589, a median of 0.8 ms from send
-  to receipt where it was 12 (Node with `ws`: 516, and 6.2 ms). At 60 a
-  second the native server kept up where it fell 2 seconds behind,
-  delivering 253,000 messages a second at an eighth of a core.
-- libsodium built by gcc and clang, native Linux, macOS, Android and iOS,
-  works the curve25519 field in 64-bit limbs where the target has
-  128-bit products, as its own configure build does, and loads and stores
-  a word at a time on little-endian targets. With no configure run it
-  took the 32-bit fallbacks. On a Ryzen 9 9950X with gcc 13: an X25519
-  key agreement in 24 microseconds where it took 41, an Ed25519 signature
-  in 11 where it took 16, a verification in 29 where it took 48. On
-  x86-64 it also builds libsodium's SSE, AVX2 and AVX-512 code and asks
-  the CPU which to run: Argon2id at its interactive limits, checking a
-  password, in 45 ms where it took 72, and XChaCha20-Poly1305 at 1.9 GB/s
-  where it ran at 0.9. BLAKE2b keeps the portable code, which ran twice
-  as fast as the SIMD one there. Every answer is byte for byte the
-  portable code's. MSVC's build already worked all this out. Its 546
-  lines of "compiled using an undocumented method" warnings are gone from
-  every native build log.
-- Every socket's byte order is `ByteArray.defaultEndian` when it is made,
-  little-endian unless the application changed it, as a ByteArray it
-  makes is, and a WebSocket's messages arrive in its `endian`.
-  `DatagramSocket` and `ReliableDatagramSocket` payloads came big-endian,
-  and a WebSocket message big-endian whatever its socket's `endian` said,
-  while TCP sockets, `FrameCodec` and every new ByteArray were
-  little-endian. A game sending snapshots written into a `new ByteArray()`
-  over reliable UDP or a WebSocket, CrossByte at both ends, read every
-  tick and position byte-swapped, where the same code over TCP worked.
-  `Socket`'s documentation said its default was big-endian; it was
-  little. What to change: code that reads datagram or WebSocket payloads
-  in network byte order sets `endian = Endian.BIG_ENDIAN` on the socket,
-  or `ByteArray.defaultEndian = Endian.BIG_ENDIAN` once for the whole
-  application.
-- A `DatagramSocket` asks the system its own address once, and keeps it
-  until a bind, connect or close can change it. Every read of
-  `localAddress` or `localPort` was a getsockname() call, and a
-  `ReliableDatagramSocket` reads both for every message it hands over: two
-  system calls a message, about an eighth of a game server's time with a
-  thousand clients sending it inputs over reliable UDP.
-- `PostgresStatement` and `MongoStatement` throw a failed statement's
-  `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
-  does. They dispatched it and returned, so to a caller not listening, an
-  `AsyncDatabase` task among them, a failed statement read as one that
-  had run. What to change: a caller that listened for `SQLErrorEvent` and
-  expected `execute()` to return now catches too. `SQLEvent.RESULT` is
-  dispatched outside the statement's own error handling, so a listener that
-  throws is no longer reported as the statement failing. `MongoStatement`'s
-  pages read ahead say `complete` only for the last one, as the SQL
-  drivers' do now.
-- Setting `receiveBufferSize` or `sendBufferSize` on a `DatagramSocket`,
-  or on a reliable datagram session or server, which pass it on, throws
-  `IllegalOperationError` on HashLink and Neko, and the new
-  `DatagramSocket.bufferSizeSupported` says whether it can be set. Neither
-  target has a native for either socket option: the size read 0 and a size
-  set there was dropped without a word, so a socket sized for a burst had no
-  way to find out it was not. Both still read 0, which means not known. What
-  to change: check `bufferSizeSupported` before sizing a socket's buffers,
-  as reliable datagram sessions now do before asking for their window.
-- `INetHost` declares `allocateRelay`, `dialRelayed` and `permitRelayedPeer`.
-  They were on the `NetHost` abstract alone, which found a relay by
-  downcasting to the reliable datagram host it makes itself, so a host of an
-  application's own was refused whatever it could do, and code holding an
-  `INetHost` could not ask. Like `dial`, they are for a host whose one socket
-  both listens and dials; a TCP or WebSocket host refuses all three, where it
-  refused only `allocateRelay` before. What to change: an `INetHost` of your
-  own implements the three, refusing them as it refuses `dial` if it cannot
-  dial. The refusals name the protocol through the new `Protocol.toString()`:
-  joined to the text, the protocol was its number, and they read "A 0 host
-  cannot dial".
-- The HTTP server compresses only what is worth it: a body of 1 KB or
-  more, of a text-like type, in a response that is not an error. Every
-  non-empty body was compressed, a 429 or a 404 cost the setup of a
-  Brotli encoder whenever the client listed br, which every browser does,
-  so the rate limiter did not bound what a flood of refused requests cost
-  (18.8 ms a refusal on Node rather than 0.57); a two-byte answer came
-  out as 22 bytes of gzip, and PNGs and archives grew. A response that
-  could have been encoded now says `Vary: Accept-Encoding`, which none
-  did, so a cache replayed br bodies to clients that had not asked for
-  them; an encoded variant's `ETag` is made weak, as nginx does, since one
-  strong tag went out on every coding of a body; and a `HEAD` is
-  negotiated as its `GET` is, naming the coding and leaving out a length
-  it cannot know, where it reported the identity length beside a br
-  `GET`: and a route's `HEAD` gives its `GET`'s length rather than 0.
-  What to change: to compress smaller bodies or other types, set
-  `HTTPServerConfig.compression.minimumSize` and `.types`; to compress
-  nothing, `compression.enabled = false`.
-- `ci/doc-examples.js` reads doc comments written with a ` * ` down the
-  left, which it passed over as holding no examples: 49 of the 96 source
-  files with examples are written that way. It checks 73 examples in 23
-  files and the RPC guide, where it checked two files: the MongoDB
-  client's and BSON's, `Completer`, `Config`, `DtlsCertificate`,
-  `HostApplication`, `HTTP2Backend`, `LogCategory`, `Logger`,
-  `NetConnection`, `PrimitiveValue`, `Rectangle`, `Store`, `StunClient`
-  and `URLVariables` join `File` and `RPCCommands`.
-- `SlotHandle` no longer converts to `Int` by itself. A handle passed where
-  an id belongs, `grid.set(entity.handle, x, y)` for `entity.slot`,
-  compiled, and worked until the slot's first reuse made the handle
-  1,048,576 or more, when `SpatialGrid` and `InterestSet` grew their arrays
-  to fit it: 117 MB by the third reuse. What to change: use `handle.index()`
-  for the slot, and `handle.toInt()` for the whole handle where it is
-  written down; an `Int` assigned to a `SlotHandle` still reads one back.
-- `MongoConnection.lastInsertRowID` is gone: MongoDB has no row ids, and it
-  read 0 whatever was inserted. `lastInsertId` is the `_id` of the last
-  document inserted. `request()` takes Extended JSON and answers a cursor
-  over the result's documents, where it answered the command's reply as
-  one row, and `MongoStatement` binds its `:name` parameters as BSON values,
-  `parameters` takes any value, not only a string. The php backend,
-  PHP's `mongodb` extension, is removed; the wire client builds for php,
-  and has not been run there. What to change: read `lastInsertId`, and
-  expect the documents themselves from a `find` through `request()`.
-- `ReflexiveAddress.toString()` brackets an IPv6 address,
-  `[2001:db8::7]:3478`; unbracketed, the port reads as the address's last
-  group. And `preservesPort` no longer claims a kept port shows an
-  endpoint-independent mapping: it shows neither that nor the opposite,
-  and `StunClient.classifyMapping` finds the mapping itself.
-- `MySQLStatement.parameters` is a `FieldStruct<Dynamic>`, and each value is
-  written as the MySQL literal for its type: `null` as `NULL` (the
-  placeholder used to stay in the SQL), numbers unquoted so `LIMIT :n`
-  works (MySQL refuses `LIMIT '50'`), `haxe.Int64` exactly, `Bool` as
-  `TRUE`/`FALSE`, `haxe.io.Bytes` as a hex literal that carries NUL bytes
-  (a string was cut at its first), a `Date` as its UTC fields, and anything
-  else quoted as a string. A NaN or infinite `Float` throws
-  `ArgumentError`. What to change: code that set numbers as strings to get
-  them quoted keeps working; set them as numbers where the column is
-  numeric, and set dates as `Date` rather than formatted strings, which
-  were written in local time.
-- `MySQLConnection.request()` throws a `MySQLError` where it threw the
-  driver's string, and a MySQL error's message no longer begins with the
-  statement. The native client prefixed the whole SQL text, values
-  included, so a duplicate-key error on a row holding an API token wrote
-  the token into whatever logged the error. What to change: catch
-  `MySQLError`, or `SQLError`, instead of `String`, and read `code` and
-  `sqlState` rather than the message. `MySQLStatement` and the
-  transaction methods throw `MySQLError` too, still an `SQLError`.
-- A native MySQL connection uses TLS whenever the server offers it:
-  `MySQLConfig.sslMode` defaults to `PREFERRED`, as MySQL's own clients do,
-  which encrypts without checking the certificate, MySQL generates a
-  self-signed one by default. The session and the password were sent in
-  the clear. What to change: nothing to keep working; set `sslMode:
-  VERIFY_IDENTITY` and `sslCa` to know which server you reached, or
-  `DISABLED` for the old behaviour.
-- MySQL and SQLite column values come back exact on the native targets,
-  which changes their types. MySQL `BIGINT` and `INT UNSIGNED`, and every
-  SQLite `INTEGER`, are an `Int` when the value fits in 32 bits and a
-  `haxe.Int64` when it does not: BIGINT was a `Float`, exact only to 2^53,
-  INT UNSIGNED stopped at 2147483647, and SQLite kept only the low 32 bits
-  (1727600000000 read as 1023147008). `DECIMAL` is a `String` holding the
-  exact value, where it was a `Float`. `DATE`, `DATETIME` and `TIMESTAMP`
-  are read as UTC, fractional seconds included: they were read in the
-  local time zone through a 32-bit `mktime`, so a DATE past 2038 read as
-  1904 and one before 1970 as -1000 ms. The zero date `0000-00-00` reads as
-  `null`. A NULL column is in the row, holding `null`, instead of missing
-  from it; a column named by an expression keeps its name (`COUNT(*)` was
-  `???`); `Bytes` is for binary columns only, where a text column with a
-  `_bin` collation was `Bytes` too; `TIME` and `YEAR` are `String`. What to
-  change: take a BIGINT or INTEGER that can pass 2^31 as `var id:haxe.Int64
-  = row.id`, which accepts an `Int` as well; parse a DECIMAL with
-  `Std.parseFloat` where a `Float` is close enough; read a date's fields
-  with `getUTCHours()` and the other UTC getters, and set
-  `MySQLConfig.timeZone` to `"+00:00"` so the server renders TIMESTAMP
-  columns and `NOW()` in UTC as well; look for NULL with `== null` rather
-  than `Reflect.hasField`. From the hxcpp fork (`fix/mysql-client`).
-- `MySQLStatement.execute()` throws an `SQLError` when the server refuses
-  the statement, after dispatching the `SQLErrorEvent` it always did. It
-  returned normally, so a failed write read as a successful one to any
-  caller not listening: an `AsyncDatabase` task completed, with `null`. What
-  to change: code that listens for `SQLErrorEvent.ERROR` and counts on
-  `execute()` returning should catch the `SQLError` as well.
-- The hxcpp fork CrossByte builds on takes in its `develop` branch: the
-  June and July fixes for memory corruption, the moving collector, sockets
-  and TLS, processes and threads, and the performance work beside them
-  (fork branch `merge/develop-into-production`; CI builds the fork's
-  `production`, so it applies once that branch is merged there). What an
-  application can see, and what to change: `Std.string` of a `Float`
-  prints the shortest text that reads back as the same number, as the
-  other targets do, `0.1 + 0.2` is `0.30000000000000004`, not `0.3`,
-  `NaN`, `Infinity` and `-Infinity` are spelled that way, an exponent has
-  no leading zeros (`1e-7`), and neither printing nor `parseFloat` follows
-  the process locale, so anything that compares or stores those strings
-  sees the new ones. TLS is 1.2 at least: a 1.0 or 1.1 peer is refused,
-  and one TLS read or write moves at most 16 KB, so a caller must use the
-  count it returns. `sys.net.Socket`'s `listen`, `setBlocking` and
-  `setTimeout` throw when the system call fails rather than carrying on,
-  `setTimeout` refuses a negative or NaN value, `shutdown` throws for any
-  failure but "not connected", and `select` refuses a closed socket (and,
-  on Linux and macOS, a descriptor past `FD_SETSIZE`). `Std.parseInt`
-  saturates a decimal outside the `Int` range, the same on every OS.
-  SQLite integers wider than 32 bits come back as `Float` instead of
-  wrapped. An exception that escapes a thread is printed as `Uncaught
-  exception in thread: ...` and ends that thread instead of aborting the
-  process. Maps iterate in a different order: their tables are sized
-  differently, and `Int`, `Int64` and object keys are mixed before they
-  are placed. `Math.floor`, `round` and `ceil` of `NaN` are 0 everywhere.
-  The exit code of a child process killed by a signal is 128 plus the
-  signal, not 0. Strings of eight characters or more are four bytes
-  larger, which is where their hash is kept. On Windows `Sys.println` to
-  a redirected stdout, a file, a pipe, a service's log, no longer
-  flushes each line, so the output arrives in 512-byte blocks and a crash
-  can lose the last of it; `Logger` writes there by default, so set
-  `Logger.sink` to a function that prints and flushes where each line
-  must land at once.
-- Every compression codec now says a stream is bad the same way:
-  `ByteArray.uncompress` throws `crossbyte.errors.IOError` for data it
-  cannot read, damaged, cut short, or in another format, and
-  `crossbyte.errors.RangeError` for a result that would pass
-  `maxOutputSize`, whatever the algorithm. They threw bare strings
-  ("Brotli decompression failed", "Could not perform decompression",
-  "Invalid data"), `haxe.io.Eof`, or a plain `haxe.Exception`, so a caller
-  could not tell a bad body from a fault in the code, and the HTTP client
-  reported every such string as an unsupported content coding. Code that
-  caught a `String` from `uncompress` should catch these instead.
-- `ReliableDatagramServerSocket.connect()` to a name, and so
-  `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
-  thread. It was looked up in the call, so every session the server
-  carries, and every other socket and timer on the runtime, waited on the
-  resolver: two seconds, natively, for a single-label name that does not
-  exist. Now the session is returned at once and filed under the address
-  the name resolves to, its handshake begun, when the answer comes; its
-  timeout counts the lookup, and its `remoteAddress` reads empty until
-  then. What to change: what the call threw `ArgumentError` for, given a
-  name, it now reports on the session as an `ioError` event followed by
-  the session's close, a name that does not resolve, and an endpoint
-  this server has a session to already, so listen for `ioError`.
-  `congestionControlFor` is asked about a session dialled by name once
-  the name is looked up, and one that throws is reported the same way.
-  Closing the server closes a session still waiting on its name. An
-  address is still resolved, and refused, in the call; on Node a name is
-  still refused.
-- `DatagramSocket.connect()` to a name looks it up off the runtime's
-  thread, as `send()` to one already did. It was looked up in the call,
-  so every socket and timer on the runtime waited on the resolver: a
-  single-label name that does not exist held it for 2.0 s natively and
-  1.1 s on the jvm. Now `connect()` returns at once, and the socket is
-  connected to the address the name resolves to when the answer comes;
-  until then `connected` reads true, `remoteAddress` reads empty, and
-  datagrams sent with no destination wait for the answer, up to 64 of
-  them. What to change: a name that does not resolve is reported by an
-  `ioError` event after the call returns, the datagrams waiting on it
-  are dropped, and the socket is left unconnected, `connect()` used to
-  throw `IOError` for one, and no longer does, so listen for `ioError`.
-  An address is still connected to in the call, and on Node a name is
-  still refused. `connect()` on a closed socket throws `IOError` before
-  anything else.
-- `URLLoader` runs its loads on a shared pool of threads kept between loads,
-  rather than on a thread started and ended for each. At most
-  `URLLoader.maxConcurrentLoads`: 16 by default, run at once across the
-  process, and more wait their turn in the order they were made; a program
-  holding many slow requests open at once, long polls say, should raise it
-  to at least that many. A thread with nothing to do ends after 30 seconds.
-  Against a local keep-alive server natively, 4,100 sequential loads a
-  second became 6,400, and 10,200 with eight in flight became 18,600 to
-  22,300. On hxcpp a host that drives the runtime with `pump()` in a loop
-  that neither blocks nor allocates must sleep or call
-  `cpp.vm.Gc.safePoint()` in it: the load threads allocate, a collection
-  one of them starts waits for every thread, and such a loop is never
-  stopped for it.
-- The HTTP server's access log, one `INFO` line per response, logs under
-  the category `http.access`. `Logger.setLevel("http.access", WARN)` quiets
-  it and leaves everything else at `INFO`; it used to share the one global
-  level, so quieting it quieted everything.
-- `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
-  and need a CrossByte runtime on the calling thread; the callbacks run on
-  that thread. On native targets and Node they return before the token
-  endpoint answers, where native used to run the callbacks before the call
-  returned. On the jvm and the interpreter `URLLoader` still runs its
-  request inline, so there they return after it, as before.
-- `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
-  `Null<Float>`, not `Null<Int>`, and `JWTPayloadData`'s `iat`, `exp` and
-  `nbf` take an `Int` or a `Float`. Code that read one into an `Int` has to
-  convert it, with `Std.int` where the value is known to fit. `generateToken`
-  throws `ArgumentError` for a time that is not a finite number, and writes a
-  whole number of seconds that fits an `Int` as an integer on every target.
-  `JWTPayload.ofData` is no longer an implicit conversion; object literals
-  convert through `JWTPayload.ofClaims`, which lets them carry other claims.
-- `Argon2id.verify` throws where no Argon2id backend exists, as `hash`
-  does, rather than returning `false`: that refused every password on the
-  jvm, the interpreter and the browser while looking like a working check.
-  Call `Argon2id.isAvailable()` first where a target may lack one.
-- `BCrypt.hash` makes `$2b$` hashes rather than `$2y$`, and
-  `BCrypt.needsRehash` reports a hash of any other revision, `$2y$`
-  included. That is how the `$2y$` hashes earlier versions stored, which
-  lack the key's terminating NUL and verify nowhere else, are found: rehash
-  on a successful sign-in when `needsRehash` says so, and they are replaced
-  as users return. Until then a wrong password against one costs two hashes
-  instead of one. `$2b$` is what OpenBSD, Node, Python and Rust produce, and
-  current PHP verifies it; a `$2y$` hash from PHP is replaced the same way,
-  harmlessly.
-- A synchronous `FileStream.readBytes` asking for more than the file holds
-  throws `EOFError`, as its documentation says, and reads nothing; it used
-  to pad the rest with zeros and return. Code that read "up to" a length
-  should ask `bytesAvailable` first. `File.size` throws an `IOError` for a
-  file larger than 2 GB rather than answering with a number that is wrong.
-- `PostgresConnection` and `MySQLConnection` `begin`, `commit`, `rollback`
-  and the savepoint methods throw an `SQLError` when the server refuses,
-  after dispatching the `SQLErrorEvent` as before. They dispatched and
-  returned, so a caller that did not listen could not tell a failed COMMIT
-  from a committed one; `SQLiteConnection` has always thrown. Code that
-  handled the event and called these without a `try` now sees the error
-  thrown as well, and should catch it where it handled the event.
-- `System.memoryUsage()` returns a `Float` rather than an `Int`, since a
-  heap outgrows an `Int`. It is still 0 on the interpreter, hl, neko and in
-  a browser, which report no figure.
-- On Node and the jvm, `ProcessLifecycle.installDefaultHandlers()` takes
-  over SIGINT and SIGTERM, as it already did natively, and returns `true`:
-  the process no longer exits on them by itself, and the shutdown callbacks
-  and `exitOnShutdown` decide when it ends.
-- `SlotHandle` has 20 index bits and 11 generation bits, where it had 24 and
-  8, so a `SlotMap` or `PackedSlotMap` holds at most 1,048,576 entries
-  rather than 16,777,216. A map created with a larger `maxCapacity` now
-  throws, as one past the old limit did.
-- Log timestamps are UTC with milliseconds, `2026-09-25T09:00:00.123Z`,
-  where they were local time to the second with no zone, and a control
-  character in a message or field is written as an escape. Anything parsing
-  the text format should expect both.
-- On the jvm, the interpreter, hl and neko, `CrossByte.current()` called
-  from a thread no runtime belongs to throws `IllegalOperationError` rather
-  than returning the primordial runtime, as it already did natively. Code on
-  a worker thread that needs a runtime should capture it on the runtime's
-  own thread and hand work back through its post queue.
-- A timer armed from inside a timer callback for a time already reached,
-  `setTimeout(0)`, or a reschedule into the past, fires on the next frame
-  rather than in the pass that armed it. Recurring timers still catch up
-  within a pass as before.
-- `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
-  handler threw during the step, and neither does a `PassFlush` holder's
-  failure escape the pass: both are contained and reported through
-  `UncaughtErrorEvent.UNCAUGHT_ERROR`, as they are under the runtime's own
-  loop. A host that caught failures around `advance` should listen for that
-  event instead.
-- A `LocalConnection` delivers what arrives for up to 2 ms at a time on
-  its runtime's thread. It delivered 32 messages a tick, whatever they
-  cost, 384 a second at the default tick rate, and anything faster
-  waited in a queue with no bound: 2000 small messages took 63 ticks, and
-  now arrive in one. Delivery is posted to the runtime when there is
-  something to deliver, where a listener ran on every tick for every
-  connection, and a reader with nothing to do looks every 10 ms rather
-  than every millisecond, easing off from 1 ms as it stays idle. What
-  waits to be delivered is bounded by `maxQueuedBytes`: past it the
-  reader stops reading, and what the peer sends waits on its side. A
-  `SharedChannel` keeps a connection to each channel it sends to, up to
-  16, each closed after 45 s without a send, where it kept one, and
-  closed it and dialled again whenever a send went somewhere other than
-  the last one had.
-- An RPC round trip costs less than half what it did natively: a request
-  answered 928 ns to 405 ns, one answered later 1.88 us to 537 ns, and one
-  with a `then` callback 2.13 us to 568 ns (BenchRpc, best of 11). Every
-  `Future`: so every `RPCResponse`, and every `Completer`, made a
-  `sys.thread.Mutex`, an object with a finalizer, and two handler lists,
-  and the caller took the lock twice a round trip at about 250 ns each,
-  since taking one on hxcpp enters and leaves a GC-free zone. On cpp the
-  lock is now a word of the future's own taken with an atomic
-  compare-and-swap, and the handler lists are made only for a second
-  handler of a kind. A handler's throw is contained without a closure
-  made to run it. Other targets keep their `Mutex`.
-- `RPCSession.start()` heartbeats whether or not the session has commands,
-  so a server that calls it on the sessions it accepts now pings its
-  clients and closes one it hears nothing from for `heartbeatTimeout`. Its
-  clients answer only if they run this version: a session of an earlier
-  one does not answer pings, so heartbeat an older peer only from a side
-  that also calls it often enough to be answered. A ping no longer passes
-  through `beforeCall` and `afterCall`, which could refuse it or count it
-  against a caller's allowance; a handler's own `ping()` is still told of
-  each. On a heartbeat timeout `onClose` is told once, with the reason the
-  transport gives for a close, `Closed`, rather than `Closed` and then
-  `Timeout`; the calls waiting fail with a message saying it timed out.
-- A host name is looked up off the runtime's thread. `Socket`, `WebSocket`
-  and `ReliableDatagramSocket` looked the name given to `connect()` up in
-  the call, and `DatagramSocket` looked one up in every `send()`, so every
-  socket and timer on the runtime waited on the resolver: a name that does
-  not exist held the loop for a second on the interpreter, two natively,
-  and a client reconnecting in a loop did it again exactly while the
-  resolver was failing. Now the name is looked up on a thread of its own
-  and the connect finished on the runtime's thread when the answer comes;
-  the attempt's timeout counts the lookup. A `DatagramSocket` looks a name
-  up once and uses the answer for a minute, refreshing it in the
-  background, and datagrams sent while the first answer is awaited wait
-  for it (up to 64 per name). What to change: a name that does not resolve
-  is reported by an `ioError` event after the call returns,
-  `ReliableDatagramSocket.connect()` and `DatagramSocket.send()` used to
-  throw `ArgumentError` for one, and no longer do, so listen for `ioError`;
-  the reliable session then closes, as a timed-out attempt does. A
-  malformed address is still thrown at once. On Node, a `DatagramSocket`
-  send that fails, a name that does not resolve, a datagram too large,
-  is reported as `ioError` and leaves the socket receiving, as natively;
-  it stopped the socket receiving.
-- A WebSocket session pings a peer it has heard nothing from for 30
-  seconds, and closes with 1006 one it has heard nothing from for 60. The
-  heartbeat was dead code on both ends and there was no idle timeout, so a
-  peer that vanished without closing was held for good with everything sent
-  to it piling up. Both are set per session or, for its sessions, on the
-  server; zero turns either off. And an accepted subprotocol is now echoed:
-  with no `upgrade` hook, the first one a client offers is accepted.
-- `WebSocket.closeWith()`: and so `ServerWebSocket.drain()`, carries out
-  the closing handshake. The close frame carries its code and reason, where
-  it carried nothing and a peer saw 1005 or 1000, so a drain's 1001 never
-  arrived; the connection stays up for the peer's answer, with everything
-  written before the close still going out first, natively it was closed
-  straight after queueing the frame, which dropped both the frame and what
-  was queued ahead of it, and closes once the answer comes, or after five
-  seconds. The `close` event reports the code and reason the peer answered
-  with, or 1006 if it never did. A peer that breaks the protocol is sent a
-  close frame saying why before the connection goes. `close()` still closes
-  at once.
-- A reliable datagram session that has nothing to say stays up, and one
-  whose peer has gone is given up after a minute. A session sent no
-  keepalive and closed itself when it had heard nothing for 75 seconds, so a
-  quiet session died somewhere between 75 and 150 seconds in with both ends
-  running, while a dead peer took as long to notice. Now a session that has
-  sent nothing for `keepAliveInterval` (15 seconds, which also holds a NAT's
-  mapping open) sends a keepalive, and one that has heard nothing for
-  `idleTimeout` (60 seconds) dispatches `ioError` and closes. Both are set
-  on `ReliableDatagramSocket`, or on `ReliableDatagramServerSocket` for the
-  sessions it accepts and dials; zero turns either off. The keepalive is
-  the session's HANDSHAKE sent again, which every version answers with an
-  acknowledgement, so an older peer keeps the session up as well.
-- A `wss://` client checks the server's certificate: that it chains to an
-  authority the client trusts, and that it names the host being connected
-  to. Every secure `WebSocket`, and so every `NetConnection` to a
-  `wss://` address, was built with verification off natively, and
-  accepted any certificate for any host, so whoever could sit in the path
-  could present one of their own and read the session. There was no way to
-  turn it on. `WebSocket.verifyCert` (on by default) and
-  `WebSocket.certAuthority` now say what to trust, on every target,
-  including Node, which verified already but could be told neither.
-  `secure` is a documented public setting. A client of a development server
-  with a self-signed certificate must now either trust it,
-  `certAuthority = Certificate.fromFile("server.pem")`: or set
-  `verifyCert = false`.
-- The HTTP/1.1 client keeps connections. It asked for `Connection: close` on
-  every request, so each `URLLoader` load paid for a new connection, and over
-  `https` a new TLS handshake. Now a response read to its framed end, from a
-  server that did not ask to close, leaves its connection for the next
-  request to the same scheme, host and port, for up to four seconds, six an
-  origin and 64 in all. A kept connection the server has closed is noticed
-  before use, or else the request goes again on a new one, which is why
-  only `GET`, `HEAD`, `OPTIONS`, `PUT` and `DELETE` are sent on one. Plain
-  requests on loopback went from about 375 to 150 microseconds natively.
-  Not on eval.
-- The server's rate limiter keys an IPv6 client by its /64 rather than its
-  whole address, the block one subscriber is given; keyed on the whole
-  address, a client stepping through its own /64 had a new budget for every
-  request, and a thousand attempts from one against a limit of five were
-  refused none of the time. An IPv4-mapped address counts as the IPv4
-  address it maps. An HTTP/1.1 request is now counted once its headers are
-  read rather than as soon as they have arrived, so a key can come from
-  them; one refused before that, as malformed, is not counted.
-- An `HTTPServer` with no `rootDirectory` serves no files, and listens on
-  `127.0.0.1` unless told otherwise. A missing root used to mean
-  `File.applicationStorageDirectory`: the account's home directory on
-  Linux and macOS, `%APPDATA%` on Windows, and the address defaulted to
-  `0.0.0.0`, so a server with only routes answered every other path from
-  there, to anyone who could reach the port: `GET /.ssh/id_rsa` returned the
-  key, and a session the application had saved through `Store`, which keeps
-  its files in the same directory, was one guessable path away. Now a request
-  no middleware answers is `404` without the filesystem being touched, and
-  `validate()` refuses PHP, `rewrites` and extra `tryFiles` entries without a
-  root, since each names files under it. A server that serves files must set
-  `config.rootDirectory = new File(...)` to the directory it means, and one
-  that other machines must reach, anything deployed, or in a container,
-  must set `config.address = "0.0.0.0"`. The address guards against the
-  mistake that does not show: a public server left on loopback fails its
-  first request from outside, while a private one left public keeps working.
-  Static files whose path has a segment starting with `.`, `.env`,
-  `.git/config`, `.htpasswd`, are answered `404` as well, except under
-  `/.well-known/`, which RFC 8615 reserves for files meant to be published;
-  set `serveDotFiles` to serve them. Middleware and routes still see every
-  path.
-- A handler's `@:rpc` method is no longer held to eight arguments. Nothing
-  else was: a commands stub or a contract with more built, and a handler
-  written without a contract could not answer it. Nothing in the encoding
-  needs a limit.
-- A runtime RPC handler that throws answers its caller with
-  `RPCError.INTERNAL_MESSAGE`, "Internal error", unless it threw an
-  `RPCError`. It sent `Std.string(error)`, which put whatever the error held,
-  a path, a query, a stack, in the hands of whoever made the call. The
-  error itself goes to `RPCSession.onHandlerError`.
-- Reliable datagram sessions find loss from what arrives rather than
-  waiting it out. A receiver holding frames past a gap says which, in a map
-  on its acknowledgement, bit `i` for frame `ack + 1 + i`, up to 512
-  frames, cut after its last set byte, which older peers ignore. A sender
-  takes a frame as lost once one sent after it has arrived and it has had
-  that one's round trip to arrive in, as RFC 8985's RACK does, and sends it
-  again at once. That counts time rather than frames held past the gap, so
-  it works in the small windows a lossy path leaves, and it catches a
-  resend that is lost again. One burst of loss halves the window once, and
-  frames the peer holds no longer count against it. When nothing comes back
-  for two round trips, the last frame goes again as a probe before the
-  timeout is waited out. A peer that sends no map is recovered after three
-  duplicate acknowledgements. Natively over loopback, 1000-byte messages
-  under 1% loss went from 0.35 MB/s to 58, under 5% from 0.01 to 47.7, and
-  under 10% from nothing, its handshake's last message was lost, below,
-  to 14.3, with 65 MB/s unchanged at no loss. At a 20 ms round trip, 1% loss
-  went from 0.25 MB/s to 0.63, 5% from 0.01 to 0.28, and 10% from nothing
-  to 0.19. What limits it there is the window, halved for each burst of loss
-  as TCP's is, not recovery: none of those losses waited for a timeout.
-- Reliable datagram sessions and servers ask for a megabyte of socket
-  buffer in each direction, `ReliableDatagramSocket.WINDOW_BUFFER_SIZE`, and
-  expose it as `receiveBufferSize` and `sendBufferSize`. A session sends its
-  window in one pass, so it lands on the receiving socket at once, and on
-  the system default, 64 KB on Windows, most of a large window was
-  dropped, each loss then waiting out a retransmission timeout. Natively
-  over loopback, 1000-byte messages went from 7,700 a second to 71,000,
-  1200-byte ones from 4.2 MB/s to 81, 16 KB messages from 4.6 MB/s to 74,
-  and 64 KB messages from 4.3 MB/s to 97. Only ever raised, and only asked
-  for: where a system grants less, a session survives the losses it
-  causes, only more slowly.
-- The `http2` sample ends on its own and says whether it worked: it checks
-  both bodies against what it served and exits 1 on anything else, so CI now
-  runs it rather than only building it. Its status line never printed, it
-  listened for `HTTP_RESPONSE_STATUS`, which is the server's event, where a
-  loader reports `HTTP_STATUS`, and it listens on a port the system picks.
-  `Http2Sample serve` keeps it serving for a browser, as before.
-- The `rpc-greeter` sample's loopback connection stamps its traffic with
-  CrossByte uptime, which is what `INetConnection` documents and what
-  `RPCSession` measures heartbeats and timeouts against, instead of the time
-  of day.
-- A reliable datagram session gathers what it sends and sends it when the
-  runtime's loop finishes its pass, after the tick's handlers, after each
-  round of socket polling, at the end of `HostApplication.advance`, and on
-  Node when the platform's turn ends, several frames to a datagram where
-  the peer takes them. Every frame was its own datagram and its own system
-  call, and every packet that arrived was answered with an ACK of its own.
-  Now a pass owes one cumulative ACK at most, and none when a frame going out
-  already carries it. A bundle is never larger than the largest single frame,
-  so nothing is sent that a path carrying frames cannot carry; one frame
-  still goes out as itself, byte for byte; and the capability is a flag on
-  CONNECT and HANDSHAKE that an older peer ignores, so it is sent one frame a
-  datagram as before. `flush()` sends what is gathered at once, in either
-  mode, where before it only turned stream bytes into frames and threw in
-  `DATAGRAM` mode, and `close()` sends it before the FIN. Natively over
-  loopback, 100-byte reliable messages went from 45,000 to 258,000 a second,
-  1000-byte ones from 4,700 to 7,700, and 100-byte unreliable sends from
-  85,000 to 283,000.
-- The samples drive their runtime through `HostApplication.advance()`. Four
-  of them, arena, websocket-echo and both halves of socket-chat, reached
-  `CrossByte`'s private constructor and `pump()` through `@:access`, which is
-  what anyone copying a sample would have copied.
-- `RateLimiter` lives in `crossbyte.net`. Nothing in it was about HTTP, and
-  what a game server meters, admissions, a datagram path, an RPC caller,
-  is not HTTP either. `crossbyte.http.RateLimiter` remains as a deprecated
-  typedef, so existing imports keep compiling.
-- `ReliableDatagramSocket` sends at the rate the path carries. It
-  retransmitted on a flat three seconds with 500 frames always allowed in
-  flight, which on a path already dropping packets makes the drops worse. The
-  retransmission timeout is now measured as RFC 6298 describes, smoothed
-  round trip plus four times its variation, between 200 ms and 10 s, doubled
-  on loss, and the window starts at ten frames, grows by slow start and
-  then congestion avoidance, and halves on loss, never below two. The
-  repeating timer each frame armed is gone, which with a full window was
-  hundreds of live timers per connection, and what waits for the window is
-  bounded by the new `maxOutputBufferSize` and `outputOverflowPolicy`, with
-  `bufferedAmount` reporting the backlog.
-- SCTP flow control, in both directions. A receiver advertised its whole
-  window in every SACK however much it held, and nothing capped the total
-  across 65536 streams: 16.6 MB across 16384 streams was kept in full. It now
-  advertises what is free and holds no more than the 2 MB it offers, giving
-  up unfinished messages past that. A sender ignored the window it was told;
-  it now queues when there is no room, probes a closed window so it learns
-  when it reopens, and reports the backlog as `DataChannel.bufferedAmount`.
-  `DataChannel.send` throws once 8 MB is waiting, rather than growing until
-  the process dies.
-- `HTTPServerConfig` ships defaults a server can run on. The rate limiter
-  allowed ten requests a minute per address, fewer than one page with its
-  assets, and now allows 240. `maxOutputBufferSize` was unbounded, so a
-  client that stopped reading held its whole response in memory; it is now
-  8 MB, above anything an ordinary response buffers. Both are named
-  constants, `DEFAULT_REQUESTS_PER_MINUTE` and `DEFAULT_MAX_OUTPUT_BUFFER`,
-  with the reasoning beside them.
-- ICE drops a remote candidate whose address is a name rather than a literal.
-  Browsers publish host candidates as random `.local` mDNS names, which
-  nothing here resolves, and each send to one blocked the event loop on a
-  lookup: 15.8 seconds to connect to a real browser, every other connection
-  frozen meanwhile, against 1.3 with the names dropped. Nothing is lost,
-  since the browser's own checks arrive and its address is learned from them.
-- `ByteArray.readObject`, `writeObject` and their `FileStream` counterparts
-  throw for an encoding this build cannot handle, AMF without the optional
-  `format` haxelib, instead of reading `null` and writing nothing. The
-  message names `-lib format`.
-- `ByteArray.endian` and `objectEncoding` are declared as ordinary
-  properties. They were forwarded from the underlying type, with documented
-  declarations behind a `doc_gen` flag nothing defined, so neither appeared in
-  the generated API documentation.
-- The documentation describes CrossByte rather than the Flash and AIR runtime
-  it was adapted from: security sandboxes, policy files, `Std.is`, types this
-  library does not have, and defaults it does not use. Its replacement was
-  checked against the code, `readMultiByte` and `writeMultiByte` ignore
-  their character set, `URLRequest.method` takes any verb, and the default
-  compression is LZ4. Every example in `File` compiles, and CI keeps it that
-  way. The README lists the build defines, including the ones that enable the
-  native Brotli and LZ4 backends.
-- The HTTP request path no longer compiles a regular expression per request,
-  and skips building the access-log line when the level would discard it,
-  about 1.8% of a request, measured inside the real workload.
-- `ByteArray` writes no longer call out to `__resize` when the buffer already has room. Growth, gap zeroing and the length bookkeeping are all unnecessary for a write landing inside existing capacity at or before the current end, which is every append an encoder makes, so that case is now an inline capacity check. `writeByte`, which is inline and where the call was proportionally largest, went from 494 to 766 MB/s on the machine that measured it; `writeInt` gained about a tenth. The gap between reads and writes that prompted this turns out to be mostly inherent: `Bytes.setInt32` costs roughly 1.6 times `Bytes.getInt32` at the platform level, and the constant `ByteArray` overhead above that is an interface method call which cannot be inlined away.
-- The three places that ask a STUN server what address it sees, `StunClient`, `ReliableDatagramServerSocket.discoverPublicAddress` and `PeerConnection.gatherReflexive`, now share one implementation of the parts that were never different: the transaction a reply is matched against, the doubling retransmission schedule, the deadline, and the handful of ways a reply can be unhelpful. Their transports genuinely differ and still do. The duplication had already cost something: the retransmission fix earlier in this release had to be applied by hand twice and the second was nearly missed. The extracted logic needs no socket and no clock, so it is now directly tested on every target rather than only through three socket-bound paths.
-- `ByteArray`'s integer accessors read and write a word at a time. `readInt`, `readUnsignedInt`, `readShort`, `readUnsignedShort`, `writeInt` and `writeShort` each made one bounds-checked byte access per byte and shifted them together; they now use `getInt32`/`getUInt16` (little-endian by definition on every target) with a swap for big-endian streams, which is most network traffic and all of STUN and SCTP. `readInt` went from 526 to 889 MB/s on the machine that measured it, and little-endian now costs the same as big-endian, the swap was never the expense, the per-byte bounds checks were.
-- A multi-byte read that cannot be satisfied now throws without moving the position. Those readers used to lean on `readUnsignedByte` for bounds checking, one byte at a time, so a truncated stream advanced the cursor by however many bytes happened to be present before throwing, leaving a caller that catches `EOFError` to find its position somewhere it never put it.
-- CRC-32C is slicing-by-eight with direct word loads instead of a single table fed one byte at a time through the stream API: 638 to about 2700 MB/s on the machine that measured it, and since the checksum was nearly the entire cost of an SCTP packet in either direction, whole-packet encode and decode roughly tripled. Same published vectors before and after, plus a new case comparing every offset and length across the word boundaries against the one-bit-at-a-time definition, the aligned vectors never exercise an odd offset, which is exactly where slicing bugs live.
-- The DTLS transport no longer copies. Every record was copied byte-at-a-time up to four times over its life, into a scratch buffer on receive, out of the native session, into the handler's ByteArray, and the mirror of it on send, and a `ByteArray` is a `haxe.io.Bytes` underneath, so the conversion is free. Receive and send now hand the datagram's own storage to the native session, and the record paths write straight into the ByteArray the handler receives. At a typical record size the byte loop cost seven times a blit, and the receive path needed no copy at all.
-- Asking a STUN server is repeated on RFC 5389's schedule rather than asked once. `StunClient.discover` and `ReliableDatagramServerSocket.discoverPublicAddress` each sent one datagram and waited out a deadline, so a single dropped packet lost the whole query and was reported as a server that is not there, which sends whoever reads it looking at their configuration for a fault that is not in it. `PeerConnection.gatherReflexive` already did this; now all three agree.
-- ICE pairs a reflexive local candidate as its base. RFC 8445 section 6.1.2.2 replaces a reflexive candidate with the address it was discovered through when forming pairs, and 6.1.2.4 drops what that leaves redundant, because nothing sends *from* a reflexive address, the datagram leaves the socket that asked. Without it a peer that gathered a reflexive address sent every connectivity check twice, from one socket, to the same place. A relayed candidate is not collapsed: RFC 8445 section 5.1.1.2 makes it its own base, since a relay lends an address that really does send.
-- The browser interoperability test faces the browser people actually run. It used to start Chrome with mDNS candidate obfuscation switched off, which no visitor's browser has: every host candidate a browser publishes is a random `.local` name, meaningless off its own link. Left on, the connection is still made, CrossByte's addresses are real, so the browser's own checks arrive, and the address one arrives from is somewhere the browser demonstrably is, which is what a peer-reflexive candidate is for. The test now asserts that is the mechanism rather than observing a connection and assuming why, and runs both signalling directions against both browsers. So browser interoperability needs no mDNS resolver, and one would not help much: those names resolve only on the link the browser is on, where a peer is already reachable this way.
-- BLAKE3 is built with its vectorised backends rather than the portable path alone. SSE2, SSE4.1 and AVX2 were all switched off for build determinism, a real concern, but one about the build and not the output: BLAKE3 is specified so that every implementation emits identical bytes, and `blake3_dispatch.c` chooses between them by CPUID at runtime. What the flags cost was the entire reason to vendor BLAKE3 rather than use the BLAKE2b libsodium already provides. Measured on 128 MB, 977 MB/s becomes 3,459 MB/s and `simdDegree` goes from 1 to 8, with the known-answer vectors unchanged byte for byte. Unlike libsodium's vectorised sources, BLAKE3's do not guard their own bodies, so they are compiled only where the instruction set can exist and each carries the flag its own translation unit needs. AVX-512 stays off: many Intel parts drop their clock while executing it, so a short hash can leave the rest of the process slower than it found it. Changing these flags needs the hxcpp object cache cleared, a stale `blake3_dispatch.obj` goes on referencing SIMD symbols that are no longer compiled, and the link fails on them.
-- `PHPBridge.execute()` returns a `Future<PHPResponse>` instead of a `PHPResponse`, and the runtime no longer stops while PHP thinks. A CrossByte runtime serves every connection from one tick and `execute()` was called from inside it, blocking in a read loop until `END_REQUEST`: for as long as one script ran, nothing else on that runtime did, no other request read, no response written, no timer advanced. With `maxConnections` at its default of 256, one slow page held up 255 clients that had nothing to do with it. Native targets now read non-blocking from the tick and Node from its events, both feeding one transport-independent parser (`PHPExchange`), and both sharing the deadline sweep. A `Future` rather than the callback pair first drafted, because `crossbyte.Future<T>` exists now and two ways of saying "later" is one too many. The deadline test gained the two assertions that were impossible before, that `execute()` returns before the deadline elapses, and that the runtime goes on ticking while an exchange is outstanding, and a pipelined request arriving mid-exchange is covered where it was previously only reasoned about: with the handler's request-boundary guard disabled, the static response overtakes the PHP one and the test goes red.
-- CI builds the hxcpp a developer builds. `HXCPP_REF` pointed at `socket-fixes`, the narrow branch kept clean for the upstream pull request, while local work used `production`, that fix plus the Windows `file_write` correction and a catch-up with upstream. Both currently pass the whole suite, measured rather than assumed, so nothing was broken; but CI and every developer were testing different compiler backends, and the gap widened with each upstream merge one branch took and the other did not.
-- `CompressionRoundTripTest` asserts that compressing makes data smaller. It checked only fidelity before, same length back, same bytes back, which a codec storing its input verbatim satisfies perfectly, and three of the four do exactly that: `deflate`, `gzip` and `lz4` emit stored blocks, so 6000 bytes of a repeating phrase come back as 6005, 6028 and 6025. Brotli reaches 23 and is asserted. The other three warn on every run rather than failing, because pinning "does not compress" as expected would make the gap look intended and failing would leave the build red for something needing a real encoder written.
-- The test topology is checked rather than remembered. `SuiteCoverage` now reads every `tests/*Main.hx`, not just the two it knew about, so a group an entry point calls is no longer reported as dead and an entry point that hand-lists cases is reported instead, with `@:topologyExempt("reason")` for the three that do so deliberately. The JavaScript suite's list moved into `PortableSuite`, which `SuiteCoverage` requires to be a subset of what `addAll` runs, so a case cannot run on js and nowhere else. The check now runs in the two JavaScript builds as well, which had been the only test builds without it. `-D suite_topology` prints which entry points run each case.
-- `BloomFilter` is covered at a size that is not a power of two, and runs in the portable Node suite. Its index derivation relies on `i * h2` wrapping, which happens where an `Int` is 32 bits and not on js, the two differ by exactly 2^32, which a power-of-two size divides away, and both existing tests used one. At `size = 10000` the targets really do set different bits. Not a defect while nothing can read those bits, and the guarantee that is observable, never a false negative, holds on both; the comment on `__indexAt` now says so, and says that adding serialization would make it a defect.
-- **Breaking:** the TLS surface takes `crossbyte.net.Certificate` and `crossbyte.net.Key` rather than `sys.ssl.Certificate` and `sys.ssl.Key`. Affects `ServerSocket.setCertificate`, `addSNICertificate` and `requireClientCertificate`, and `ServerWebSocket.cert` and `certAuthority`; `HTTPServerConfig` is unchanged, having always taken paths. Load with `Certificate.fromFile(path)` / `Key.fromFile(path, ?password)` in place of `loadFile`, or `fromPem` for material that never touches disk, which is how a key arrives from a secret manager, and a reason not to make every deployment write one to a file first. Naming a `sys.ssl` type in a signature was a decision about which targets could implement it: Node terminates TLS through `tls.createServer` but has no `sys.ssl`, so the method could not be compiled there at all and the refusal read as "Node cannot serve TLS", which was never true. The jvm target has no TLS backend and both types refuse there, matching the secure `ServerSocket` that already did.
-- **Breaking:** `HTTPServerConfig.tryFiles` defaults to `["$uri", "$uri/"]`. It ended with `"/index.html"`, which made a request matching neither of the first two answer 200 with the root index rather than 404, a single-page application fallback, carried by every server whether or not it served an application. It was documented and it was deliberate; what was wrong was which way round the failure fell. An SPA that wants the fallback and does not have it breaks on the first refresh of a deep link: loud, immediate, one entry from fixed. A static site that did not want it and had it answers 200 for every path that does not exist, so a broken link looks alive to a crawler, a monitor sees a healthy page, and a cache stores the wrong body under the missing URL, silent, and indistinguishable from working. Restore it with `config.tryFiles = ["$uri", "$uri/", "/index.html"];`. `"$uri/"` is untouched, so a directory still resolves to its index.
-- `Socket` can hold a connection open after the peer half-closes. A read ending in `Eof` was turned straight into a full teardown, so a peer that shut its write side to mark the end of a request, the end-of-request signal for a great many hand-rolled TCP protocols, and the only one available to a protocol that does not length-prefix, was treated as a peer that had gone, and any answer to it went unwritten. `peerShutdownPolicy` decides: `CLOSE` is the default and exactly the previous behaviour, `HALF_OPEN` ends the read direction only and dispatches the new `Event.PEER_CLOSE` while the socket stays writable. `peerShutdown` reports the fact under either policy, and `shutdown(read, write)` surfaces the outbound half, which every target already implemented. Measured on cpp: a half-closed peer does receive a response written after its FIN. `HALF_OPEN` carries a hazard documented on the value, a departed peer is indistinguishable from a half-closed one, and the first write after either succeeds by reaching only the kernel send buffer, so it needs a bound of the consumer's own. The HTTP server stays on `CLOSE`, since HTTP/1.1 frames bodies explicitly and a client FIN tells it nothing new.
-- **Breaking.** `HTTPServerConfig.rewrites` now defaults to empty. It shipped carrying one rule, every `^/api/.*$` to `/index.php` with the `PHP` flag, while `phpEnabled` defaults to false, so the out-of-the-box answer for a path a great many services use was an error rather than a 404, and before the guard below it was a segfault. Nothing is routed anywhere now unless it is asked for. Restore the old behaviour by passing the rule explicitly
-- **Breaking.** `HTTPServerConfig.validate()` rejects a `tryFiles` list that is not spelled in the order the server follows, and `HTTPServer` calls it on construction. `$uri` and `$uri/` are tested before the list is read and before the rewrite rules, whatever the list says, and even when it omits them, so a literal placed first does not get priority and leaving them out does not switch direct file serving off, which is the reading most likely to be mistaken for a restriction. The list must now begin `["$uri", "$uri/"]`, which is what the default already was. Configs differing only in those decorative entries behaved identically before, so writing them out changes nothing but what the file admits to
-- A directory index is chosen from candidates the server can actually serve. `directoryIndex` leads with `index.php`, so with PHP off a directory holding both it and an `index.html` selected the one that cannot be executed, and once serving PHP source was refused, answered 404 with a usable index sitting beside it. Both selectors skip what cannot be delivered, and they share the rule so one directory cannot resolve two ways depending on which reached it first
-- `tryFiles` and `rewrites` carry the resolution order in their documentation: `$uri`, then `$uri/`, then every rewrite rule, then the remaining `tryFiles` entries. The consequence worth knowing is that an existing file wins over a rewrite, which is Apache's `RewriteCond !-f` idiom applied for you rather than written out, and not nginx's model where `try_files` runs after the rewrite phase in the order written. Invert it for a given rule with a `FileExists` condition and `negate`
-
-- a timing wheel scheduler, selected per runtime with `TimerStrategy.WHEEL`. The heap remains the default and remains right for almost everything; this is for the shape where its remaining O(log n) still shows, a timer armed per entity or per connection and re-armed on every event, where the work is in the arming rather than the firing. Time is divided into 1ms ticks with 512 of them in a ring, so arming inside that range is an index calculation and a list link, with nothing that grows with how many timers are already held. Against the heap, both freshly optimised, CPU to simulate one second at sixty ticks: 1,000 timers **4.2x**, 10,000 **5.2x**, 30,000 **6.3x**; arm and cancel churn roughly **1.6–2.0x**. What it gives up is measured too, timers past the ring wait in an unordered overflow list reconsidered once per revolution, so ten thousand timers thirty seconds out cost 0.55ms over ten simulated seconds against the heap's nothing, and a runtime whose timers are mostly long should stay on the heap. Ordering within a tick is bucket order rather than exact time, and a timer may be late by up to a tick but never early, since buckets are chosen with `ceil`, a callback that reads the clock should never see a time before the one it asked for. Chosen per runtime rather than per build, `CrossByte.make(loopType, timers)` and the `Application` constructors take a `TimerStrategy`, beside the `MainLoopType` that already works this way, because a process runs a runtime per thread and they need not agree: a simulation thread holding a timer per entity and a network thread holding a handful want different structures. There is no public way to supply an arbitrary scheduler; `ITimerScheduler` remains internal, since publishing an eighteen-member contract with generation-stamped handles and resume policies means committing to it. The full test suite runs green with the wheel driving the runtime, which is the actual contract: no timer-dependent behaviour in the framework can tell the two apart
-- the timer scheduler keeps each timer's heap position on the timer rather than in a hash map. `TimerHeap` ordered its nodes through `crossbyte.ds.PriorityQueue`, which is generic and so cannot require its elements to carry anything, it tracks positions in a side `ObjectMap`, making every sift swap two hash writes, around thirty per arm at thirty thousand live timers against fifteen comparisons of actual heap work. A timer node can carry its own index, so `TimerQueue` is the same binary heap with the same ordering and complexity, writing a field where the generic one wrote a hash entry. CPU spent per simulated second, one recurring timer per entity: 1,000 entities **8ms → 1ms**, 10,000 **125ms → 10ms**, 30,000 **499ms → 40ms**. At sixty ticks a second that last figure is the difference between the scheduler taking half the frame budget and taking four percent of a core; arm and cancel churn went from roughly 2.3 million a second to 18 million. `PriorityQueue` is unchanged and still right for callers that cannot make this trade, the map is the price of being generic, and only `TimerHeap` was placed to stop paying it
-- a streamed response no longer closes its connection. The two halves now combine: the head is written when a transfer begins and the body follows over many ticks, so settling the connection at head time would either close it before the first body byte or reset for a next request whose response would interleave into the body still going out. Settling moved to the pump, which runs it once the last byte has left the process; the keep-or-close decision is still made once at header-write time, so what the `Connection` header promised is what happens. The framing never needed to change, a streamed body is delimited by the `Content-Length` that went out with its head, exactly as a buffered one is. Bytes arriving during a transfer are kept rather than dropped and are picked up when it settles, through the same path a pipelined request takes after a buffered response
-- `-D precision_tick` is type-checked in CI. It replaces the frame wait with one that spins the tail rather than sleeping it, and no hxml defined it, so the branch compiled nowhere: rewriting the wait to anchor its deadline touched it blind and nothing would have reported it broken. A `Core | hxcpp API Audit` step now builds it, beside the timer burst audit that exists for the same reason
-- the HTTP suites share one wire harness instead of five. Each carried its own pump loop, and three their own response parser and completeness predicate, duplication accepted while those suites were built on parallel branches, whose cost had arrived by the time they landed: the predicates disagreed about a response carrying no `Content-Length`, only one knew to skip a `1xx` interim block, and one sliced `Content-Length` from a fixed offset that a single leading space turns into a zero-length body. `HTTPTestSupport` now holds the most capable version of each. What stays local is what genuinely differs, the metrics suite steps the runtime tightly because it reads gauges rather than a socket, and the streaming suite works in `ByteArray` because it asserts byte-exactness on binary payloads
-- `tps` now delivers the rate it names. The frame wait was measured from the frame's own start, so an overrun was absorbed permanently rather than compensated, the configured rate acted as a floor on frame time instead of a target for it, and the faster a runtime was asked to tick the worse the shortfall got, with nothing reporting it. Ticks actually delivered in a wall-clock second, measured: 12 tps **11.9 → 12.0**, 60 tps **56.6 → 59.9**, 144 tps **122.3 → 143.9**. The deadline is carried forward by one interval per frame instead of recomputed, so a long frame leaves the next a shorter wait: four frames at 60 tps containing one 30ms overrun take 65ms against an ideal 66.7, where they took 83ms before. Debt is bounded at a quarter second, since repaying minutes of it after a suspend would run a burst of zero-wait frames starving everything else to catch up with a schedule nobody is watching; past that the schedule restarts. Changing `tps` restarts it as well. `pump()` is unaffected, it keeps no schedule and its delta comes from the caller
-- the frame wait sleeps once rather than stepping the remainder out a millisecond at a time. At the default tick rate that was over eighty syscalls per frame, roughly a thousand a second, to arrive at the moment a single sleep would have. The bulk now goes in one sleep with a small margin for the operating system to overshoot into, and only that margin is stepped out. Frame accuracy is unchanged where it matters: measured against target across twenty frames, 12 tps gives 84ms against 83, 60 tps 18ms against 17, and 144 tps 8ms against 7. Building with `-D precision_tick` keeps its existing behaviour, including the spin on the tail that buys accuracy with CPU
-- event dispatch no longer copies its listener list on every dispatch. The copy existed so that a listener list could not change while it was being walked; the list is now immutable instead, with `addEventListener` and `removeEventListener` building a replacement rather than mutating in place, so a dispatch already in flight keeps the array it started with. The contract is unchanged and was already pinned by tests, a listener added during dispatch is not invoked until the next one, a listener removed during dispatch still runs for the event in flight, and the cost moves from dispatch, which happens forever, to registration, which happens once. Measured over 200,000 dispatches: two listeners **10ms → 6ms**, four **12ms → 8ms**, sixteen 30ms → 27ms, sixty-four 95ms → 87ms. A single listener was already fast-pathed past the copy and is unchanged
-- the fallback poll backend stops rescanning to identify ready sockets. It mapped each ready socket back to its position by walking the whole registered set, so a busy pass cost registered × ready comparisons, 65,536 of them for 256 sockets all readable at once, on every pump. Positions cannot change until the registered set does, so they are built once when it changes and looked up thereafter. The non-cpp registry also stops allocating a fresh array to hand `select` each pump, reusing one it keeps; it still cannot pass its own list, since that array is the `DenseSet`'s backing store and `select` may treat what it is given as scratch. Both are on the fallback path, cpp resolves readiness through `cpp.net.Poll`, or through the `crossbyte-libuv` extension where one is built in and installed, which is optional and off by default, so they matter to eval, jvm, neko and hl
-- the server loop waits inside poll rather than beside it. `ServerApplication`'s loop polled its sockets with a zero timeout and then slept out the rest of the frame, so sockets were serviced exactly once per tick, measured at the default twelve ticks a second, one poll every 84ms, which every arrival that missed a poll waited for and a request/response pair could pay twice. The frame budget is now poll's timeout, so a ready descriptor wakes the loop and an idle one returns at the deadline: measured A/B with a peer writing 30ms into an 83ms frame, the handler saw it after **54ms before and 1ms after**. Tick cadence is unchanged, an idle frame still measuring the interval. The comment being replaced held that poll must never own the frame wait, because Windows UDP poll could starve timers with an idle socket registered; that was tested rather than assumed away, and with an idle UDP socket bound alongside a 20ms timer the loop fires 50 of an expected 51 per second. The `DEFAULT` loop is deliberately untouched, a fixed timestep is what a general application loop, one that might pump a renderer, is for
-- inbound socket data is appended to the input buffer instead of rebuilding it. Every arrival allocated a fresh buffer the size of the unread backlog plus the new bytes, copied the backlog in, copied the new bytes after it, and replaced the buffer, on top of the `BytesBuffer` that had already accumulated the reads. Four copies per arrival, one of them the whole backlog, which made receipt quadratic in the number of arrivals for any consumer reading slower than its peer writes: exactly the shape a WebSocket assembling a large frame or an HTTP body spread across ticks produces. Measured as bytes copied per byte arrived over 200 arrivals, by how much the consumer drains each time: fully **3.0x → 1.0x**, half **52.8x → 2.7x**, an eighth **90.1x → 1.6x**, nothing **102.5x → 1.0x**, and the new figures stay flat as arrivals grow where the old ones did not. `__input` was already a `ByteArray` with geometric growth and retained capacity; the old path allocated raw `Bytes` and threw all of it away
-- the socket read buffer holds 64 KB rather than 4 KB, so a megabyte arrives in 16 reads instead of 256, and it is shared per thread rather than held per socket. That sharing is what makes the larger size affordable: 64 KB per socket across the default 256 connections would be 16 MB of idle buffer, where one shared buffer is 64 KB whatever the connection count, less than the 1 MB those sockets held between them before. It is safe to share because the buffer is drained into the socket's own input before anything is dispatched, so no listener can re-enter and find it changed
-- the `Date` header is formatted once per second instead of once per response. `__formatHttpDate` was `inline` and rebuilt both month and weekday array literals at every call site on every response; the tables are statics now, shared with `Last-Modified` formatting, and the rendered string is cached on its second, measured at 22x with byte-identical output. The cache is written string-first so a second runtime thread that sees the new stamp finds the matching string in place; the worst a race costs is one redundant format, never a wrong date
-- removed three private methods from `HTTPServer`, `sanitizePath`, `pickIndex`, `contentType`, and the `_internal.http.ContentType` enum, none of which had a single caller. They were a parallel implementation of serving decisions that actually live in `HTTPRequestHandler` (`__resolveSafePath`, `__findIndexFile`, `__getMimeType`), which made them worse than dead weight: `sanitizePath` was a fourth copy of path-containment defense, and four copies of a security check is how one of them drifts
-- `Worker` delivers every message queued for it on each tick of its owning runtime, bounded by the new `Worker.maxMessagesPerTick` (256 by default; `0` or less drains until the queue is empty), where it used to deliver exactly one. One per tick meant a background job reporting progress drained at the runtime's tick rate, twelve a second under the default `tps`, however often the host pumped, so a `NativeProcess` reading a child's stdout, an async `FileStream` read, a `URLLoader` download and `SQLiteConnection`'s long-lived query worker each fell further behind the more they reported, with the backlog held in the queue rather than lost. Ordering is unchanged: the queue drains in order, and every consumer's handler was already written per-message. The bound is there so one talkative worker cannot hold the tick and starve the socket poll that runs after it, and the drain re-reads the queue on every pass rather than trusting the reference it started with, since a handler is free to `cancel()`, `clean()` or `run()` the worker from inside dispatch. Verified by pinning the bound to 1, which reproduces the old pacing exactly and fails the new test with 1 message delivered where 64 were queued
-- WebSocket payload masking and unmasking now XOR 32 bits at a time over `haxe.io.Bytes` instead of a byte at a time through `ByteArray`'s array access, measured at 595 → 1666 MB/s on a 32 MB payload (2.8×). The cost was not the `ByteArray` abstraction, which is `inline` over a `Bytes` subclass and compiles away, bulk `writeBytes` runs at 14 GB/s against a 29 GB/s memcpy floor. It was that `@:arrayAccess set` calls `__resize` on every element to bounds-check an index the loop already knows is in range, because the buffer was allocated at full size immediately before. Unmasking runs once per inbound byte on a server, which is the one place that per-element check was worth removing
-- rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
-
-### Fixed
-- A reliable UDP session under the `THROW` `outputOverflowPolicy` queues
-  a message larger than a frame whole before it throws for
-  `maxOutputBufferSize`. It threw part way through: what was queued said
-  more of the message followed, nothing did, and the peer put the next
-  message sent together onto it. And a `STREAM` session's `flush()` past
-  the limit queues what was written once: the bytes stayed in the output
-  buffer when it threw, and the next `flush()` queued them again.
-- A reliable UDP frame lost behind one that was sent again needlessly,
-  its first copy had arrived, only the acknowledgement was held up or lost,
-  is sent again a round trip after that copy, where it waited for the
-  tail probe or the timeout: 72 ms later in the test, with a 20 ms round
-  trip and the default 25 ms acknowledgement hold. The acknowledgement
-  that comes back faster than any round trip is the first copy's, and
-  RACK (RFC 8985) rightly takes nothing from it, since what was sent
-  between the two copies may still be on its way. But the copy sent again
-  arrives as a duplicate, and a receiver now says so in the
-  acknowledgement it draws, the resend bit, which no ACK set before,
-  RFC 2883's D-SACK in a bit, and the sender takes that copy as
-  delivered: what went before it and is still missing is lost. Both
-  peers on 1.0 for it; an older peer neither sends the bit nor reads it,
-  and recovers as before.
-- The TURN relay interoperability test (`ci/relay/run.js`) no longer
-  fails on a loaded runner. node-turn 0.0.6 never finds the allocation a
-  client already has when an Allocate arrives, so a retransmitted one,
-  sent when the first answer takes more than half a second, made a second
-  allocation and filed it over the first: the client advertised the first
-  address, the server installed permissions on and sent from the second,
-  and every datagram was refused ("permission fail") until the run gave
-  up, "the peers never connected through the relay". Under 64 spinning
-  processes it failed 16 runs in 30, each with four allocations for two
-  clients. The harness now answers a retransmission from the allocation
-  already made, as RFC 5766 section 6.2 has it, and requires exactly two:
-  30 in 30 under the same load (retransmissions answered in half of them),
-  200 in 200 without.
-- One SCTP packet from a connected WebRTC peer costs what its size
-  allows, not what the peer sent before it. Measured on the jvm, each
-  from one packet of 16 KB or less, the runtime serving nothing else
-  meanwhile:
-  - a SACK listing 4,000 gap blocks highest first took 84 ms to sort
-    (half a second on the interpreter), each block costing more the more
-    there were (3.1 -> 13.6 us a block from 500 to 4,000): the first 256 are
-    read now, as many as a SACK fits in the largest packet this end sends
-    (0.2 us a block at 4,000); and only the first SACK in a packet is
-    read, where a packet of a thousand walked everything outstanding a
-    thousand times (12 ms against 0.85 ms over 8,192 fragments);
-  - a FORWARD TSN naming a stream 500 times cost more with every message
-    the stream held (0.9 -> 7.8 ms over 1,000 to 8,000 held; 1.9 s for
-    2,000 entries over 8,000 on the interpreter): a stream costs the
-    shorter of the range an entry names and what it holds now (28 us at
-    every size);
-  - 200 FORWARD TSN chunks asked every stream reassembling for fragments to
-    drop (6.2 -> 22 ms over 1,000 to 8,000 streams; 1.6 s on the
-    interpreter): streams are found by the TSN each starts at now, so a
-    chunk costs what it drops (13 us at 8,000).
-  The association also holds at most 18,432 pieces, fragments and
-  messages waiting their turn, every stream together, the most an honest
-  peer can make it hold (`MAX_TSN_AHEAD` above the acknowledgement, one
-  message of `MAX_FRAGMENTS` below), where its bounds counted bytes alone
-  and pieces of no bytes pinned 20,000 objects and more with the window
-  untouched; past it, it gives back half, as past the window. Packets of
-  300 HEARTBEATs drew 300 answers and 60 INITs 60 INIT ACKs: one HEARTBEAT
-  is answered a packet, and an INIT not alone in its packet (RFC 9260
-  section 6.10) is not acted on. A packet of 800 stream-reset requests
-  built a 25,612-byte answer, past the largest datagram DTLS sends, which
-  threw and ended the connection: eight answers are owed at most, the rest
-  going as if lost. And no more than 16,384 fragments go past the peer's
-  cumulative acknowledgement: a peer acknowledging everything but the
-  first fragment made this end keep everything sent after it with
-  `bufferedAmount` at 0; past it what is sent waits where `bufferedAmount`
-  counts it. Tests: `SctpDataTransferTest` and `SctpAssociationTest`, each
-  attack at four sizes with the cost staying flat, and the bounds' edges;
-  all failed before.
-- A WebRTC message missing a fragment is no longer dropped when a later
-  message on its data channel completes first. Delivering a message took
-  every fragment of its stream before it too, so an earlier message
-  waiting on a retransmission lost what it had, and, ordered, the later
-  one then waited for good on a sequence that could no longer complete,
-  holding the channel. Test: `SctpDataTransferTest`, a message whose middle
-  fragment is retransmitted after the next message completes; failed
-  before.
-- An ICE agent's answers no longer cost more with each one. Each answer
-  to a check names where the peer saw it arrive from, and one naming a
-  place the agent had no candidate for made a peer-reflexive candidate of
-  it, with no bound, and paired the whole candidate list again: a peer
-  that named a new place in every answer (re-asked each time with a role
-  conflict) made the 2,000th answer cost 5.7 ms on the jvm, and answers
-  1,000 to 2,000 took 137 seconds on the interpreter, with the runtime
-  serving nothing else. An agent now learns at most
-  `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` (64, one per remote candidate,
-  as libwebrtc keeps one per connection) and never pairs them, RFC 8445
-  section 7.2.5.3.1: a check leaves from the candidate's base, already
-  paired, and a candidate added is paired with the other side alone
-  rather than both whole lists again. Answer 4,000 costs what answer 500
-  did (jvm: 13 us, from 9 ms). `PeerConnection` and
-  `ReliableDatagramServerSocket.attachIceAgent` both used it. Tests:
-  `IceAgentTest`, 4,000 answers each naming a new place (failed before:
-  165 us an answer in the first 500, 8,975 us in the last 2,000), and the
-  list paired a candidate at a time against `IceCandidatePair.pair`.
-- Natively on macOS, an address written out on several threads at once
-  could read back as "[inet_ntoa error]": hxcpp formatted it with
-  `inet_ntoa`, whose buffer is one for the whole process there, filled
-  with that text before the address is written over it. The resolver
-  writes its answers out on its own threads, and CI read the text back
-  where 127.0.0.1 was answered. The fork now formats with `inet_ntop`
-  into a buffer of the caller's on every system but Windows, whose
-  Winsock keeps one per thread. Test: `ResolverTest`, eight threads
-  writing their own address 20,000 times each.
-- A server spread over `runtimes` hands a stalled runtime a bounded
-  number of connections. Each accepted connection was posted to the next
-  runtime in turn whether or not it was taking up what it had been handed,
-  so a runtime stalled by a blocking handler or a long collection held
-  every connection that came its way, a socket and its descriptor each, for
-  as long as the stall lasted. A runtime with 256 handed to it and not yet
-  taken up is now passed over for the next in turn, and once every runtime
-  is that far behind a connection is closed as it is accepted, counted in
-  `refusedConnections`, and logged once. And a runtime that exits while the
-  server is open gives up its share: TLS handshakes and WebSocket upgrades
-  still under way there are dropped and their connections closed, where
-  they stayed open and counted in `pendingHandshakeCount()`, and against
-  `maxPendingHandshakes`: for as long as the server ran, and the places
-  its connections held under `maxConnections` are given back. Tests:
-  `ServerSpreadTest`, a stalled runtime and two, and an exit under a raw, a
-  TLS and a WebSocket server; each failed with the change switched off.
-- A server out of descriptors no longer spins. A peer that opened
-  connections past the process's descriptor limit left the listener
-  readable with a connection the system would not hand over, so a server
-  polled it on every pass and failed: natively on Linux 380,000 accepts a
-  second at a whole core (474,000 with an accept made to fail, 118,000 on
-  the jvm), and nothing else served meanwhile. After a failed accept the
-  listener is now set aside for 5 ms, twice as long after each failure
-  that follows, at most a second, and back to 5 ms once a connection is
-  taken, Go's `net/http` schedule; libuv, Netty and nginx set the
-  listener aside the same way, so a second out of descriptors costs
-  about seven accepts and no measurable processor time, and the waiting
-  connection is taken once a descriptor frees (on Linux: macOS drops a
-  connection whose accept found no descriptor, so its listener never
-  spun, and its client finds the connection closed). `ServerSocket` and
-  `ServerWebSocket` alike; `acceptFailures` still counts every one and
-  the first of a run is still an `ioError`. HashLink's accept answers
-  nothing for any failure, which read as nothing waiting: a listener still
-  readable after it is now counted as a failure too. And natively on Linux
-  and macOS the process's soft limit on open descriptors is raised to its
-  hard one as it starts, as Go and the JVM do, so a shell's 1,024 no
-  longer stops a server near a thousand connections; `-D
-  crossbyte_keep_nofile` keeps the limit it started with, and the first
-  server to listen warns, once, where the limit is still under 4,096.
-  Tests: `ServerSocketAcceptBackoffTest`, every threaded target, and
-  natively on Linux out of descriptors for real.
-- A WebSocket session answers a flood of pings with one pong, not one
-  each. A peer sending pings and reading nothing was answered with a
-  frame per ping, each offered to the full socket as it was made, a
-  refused write and an exception apiece, and kept: natively 32 MB of
-  pongs waited after 10 s, single passes took 1.4 s, and another session
-  on the runtime waited 380 ms for each echo. A session now owes at most
-  one answer at a time, the newest ping's, as RFC 6455 5.5.3 allows and
-  libwebsockets does: while the last pong has not gone, a later ping's
-  payload is kept in its place (125 bytes at most) and answered once it
-  has, so the last ping is always the one last answered. Under the same
-  flood nothing waits, and the other session's echo takes 7 ms, where a
-  flood of as many small messages costs it 15 ms. A frame sent while the
-  socket is full is added to what waits rather than offered again, for
-  every frame, and a control frame's payload is read into one buffer per
-  session rather than one per frame. HTTP/2 bounds the same flood with a
-  budget of replies (`maxControlReplies`) and closes past it, because it
-  must answer every PING; WebSocket need not, so there is nothing to
-  close or tune.
-- A WebSocket upgrade is read to 16 KiB at most, the head of the
-  request a server session reads and of the answer a client reads.
-  There was no limit: each arrival was appended to a string, copied
-  whole every time, and the whole of it searched again for the blank
-  line, so one connection sending a header without end made a server
-  hold 221 MB in 10 s, with single passes of the runtime taking a
-  second, until `handshakeTimeout` closed it, and a few such
-  connections could exhaust its memory inside that window. A server now
-  answers a request past `ServerWebSocket.maxHeaderSize` (new; 16 KiB,
-  Node's limit, which the `ws` library inherits) with `431 Request
-  Header Fields Too Large` as soon as that much has arrived without an
-  end, counts it in `handshakeFailures`, and drops whatever else the
-  peer sends; a client gives up on an answer past it with an `ioError`
-  saying so and `close` 1006, where it waited out its `timeout`. The
-  head stays where it arrived and each arrival is searched once. A
-  server session also answers a request that is not a `GET` with 400,
-  and a client takes an answer that is not HTTP as a failed connect;
-  both waited for their deadline.
-- A `DatagramSocket` keeps receiving when its datagrams' destinations
-  turn out unreachable. Windows reports a datagram's ICMP "port
-  unreachable" as a failed read on the socket that sent it, natively, and
-  the socket counted those as failed reads: at the 64th in a row it stopped
-  receiving for good. So anyone could deafen a reliable UDP server on
-  Windows to every session it had, 64 sockets each sending it a frame and
-  closing, its resets to them coming back that way. The reports are now
-  switched off on every datagram socket natively, and a read that meets one
-  anyway, or on another system a connected socket's refusal, is skipped
-  rather than counted. The jvm, Node, neko and the interpreter were not
-  affected.
-- On neko and HashLink on Linux, a `DatagramSocket` is never given a port
-  another socket holds. Their binds set SO_REUSEADDR, with which Linux lets
-  two datagram sockets share a port: a bind to port 0 could be handed one
-  already held, 18 in 1,000 binds, and the one of the two that got the
-  datagrams was not always the one they were for, and a bind to a port in
-  use succeeded. hxcpp's bind stopped setting it in round two; these
-  natives cannot be told not to, so the port is checked against
-  /proc/net/udp once bound: a port held is refused with an `IOError`, as
-  it is on every other target, and port 0 handed one is asked for again on
-  a socket of its own. It was a neko CI failure,
-  `testInterleavedSendersAreEachNamed` receiving none of six datagrams.
-- A datagram too large to send says so. `DatagramSocket.send`, and the
-  `ioError` event, said "Socket operation failed" for one, as for any other
-  failure, all CI's macOS leg reported for a 20,000-byte datagram, which
-  macOS refuses past the socket's send buffer, 9,216 bytes unless raised.
-  They now say "a datagram of N bytes is larger than this socket can send
-  (sendBufferSize M)", with UDP's limits: 65,507 bytes over IPv4 and
-  65,527 over IPv6 everywhere, and on macOS the send buffer. Natively, on
-  the jvm and on Node (as the event Node reports a send's failure in);
-  HashLink and Neko report every failed send alike, so there only a
-  datagram past 65,527 bytes is named so. A failed send on HashLink is
-  told to the `ioError` listeners too: it came as an `Eof`, which only the
-  caller heard. `send` and `sendBufferSize` say what the largest datagram
-  is on each system and how to raise it.
-- On Node, a `DatagramSocket`'s `receiveBufferSize` or `sendBufferSize`
-  set between `bind()` and Node binding the socket, `bind()` returns
-  first, is applied once Node has. It was applied to a handle with no
-  socket yet, which refused it (ENOTSOCK), and the `ioError` reporting
-  that also stopped the socket receiving. A size Node refuses is still
-  reported, and the socket goes on receiving.
-- A listener that throws out of `dispatchEvent` no longer leaves its
-  dispatcher copying its listeners on every `addEventListener` and
-  `removeEventListener` after. A dispatch to two or more listeners counts
-  itself as walking the list, so that a change made meanwhile replaces the
-  list rather than changing it under the walk; a throw left the count
-  raised for good. Still right, but each change then cost every listener
-  the dispatcher had.
-- Reading an object bounds what it can make of its bytes. HXSF writes a
-  run of nulls in an array as a count, so twelve bytes, `au100000000h`,
-  made an array of 100,000,000 slots, 840 MB natively, through any
-  socket's `readObject`, `SharedObject` or `SharedChannel`. A negative
-  string or bytes length moved the read back over what it had read, so
-  six bytes read the same value until memory ran out. And AMF made a
-  buffer or a vector of whatever length the bytes claimed before reading
-  any of it: eight bytes asked for 2 GB. An object holding more than
-  `ByteArray.maxObjectValues` values is refused with an `IOError`, in
-  HXSF, JSON and AMF, and from a `FileStream` as from a socket; a negative length, or a run of no nulls, as
-  malformed. AMF reads text, bytes and vectors as they arrive, an AMF
-  object that runs out is an `EOFError` with `position` left where it
-  was, as HXSF's and JSON's are, where it was a `haxe.io.Eof`, and AMF3
-  no longer traces a vector's class name.
-- A timer handle kept after its timer has fired or been cleared no longer
-  names another timer later. A handle was a slot and a twelve-bit count of
-  that slot's reuses, and slots were reused the most recently freed first,
-  so under churn the same handle came round again after 4,096 timers, a
-  fraction of a second on a busy server, and a stale `Timer.clear`
-  cancelled whichever timer held it then: another connection's idle
-  timeout or heartbeat. A runtime now numbers the timers it arms, and gives
-  a number again only after 2^31 timers, never while a timer still holds
-  it. A runtime with 524,288 timers alive refuses the next with an
-  `IllegalOperationError`, where it threw a string.
-- A NaN delay, interval or time is refused with an `ArgumentError`. One
-  NaN timer on the default heap scheduler stopped every timer on its
-  runtime: NaN compares false with every due time, so at the top of the
-  heap it read as never due, and nothing behind it fired. A negative delay
-  counts as zero, the next frame, and an infinite one never fires, as
-  `crossbyte.Timer` now says.
-- A timer whose callback runs a frame of its own, `pump`, or
-  `HostApplication.advance`, called from inside it, and then resumes
-  itself through its handle is no longer lost. Which timer's callback was
-  running was one field of the scheduler, and the timers of the inner frame
-  cleared it: a one-shot paused and resumed afterwards had its slot freed
-  as if it had run, so it never ran again and `Timer.clear` could not find
-  it, and on the `WHEEL` scheduler it was left in a bucket where it had
-  been freed. Each timer now knows whether its own callback is running.
-- Natively, on the jvm and the interpreter, a load's progress that its
-  runtime has not yet told is folded into the latest, where a message was
-  queued for each: the client reports progress per read and per chunk, so
-  a body arriving faster than the runtime drained, or while it was busy,
-  queued messages without bound, about 300,000 in two seconds for one
-  load, measured, and then dispatched every one. The first report, at
-  nothing loaded, which carries the total, is always told.
-- The PHP bridge joins a repeated response header once, at the end, where
-  it added each repeat to the whole value so far: 40,000 lines of one field
-  held the runtime 5.6 s. It reads a response a megabyte a pass at most and
-  has the loop poll again before it waits, where a backend sending fast was
-  read for as long as it sent, every other connection on the runtime
-  waiting. And it looks the backend up and connects to it within what is
-  left of the exchange's deadline, where neither had a bound and one
-  backend whose host dropped the connect held every exchange queued behind
-  it.
-- `OAuth.timeout = 0` is no deadline, as `0` is everywhere in CrossByte:
-  the exchange waits as long as the client does on its own. It was a
-  deadline of no time at all, which failed every exchange at once. A
-  negative or `NaN` timeout is refused with an `ArgumentError` where it is
-  set, where `NaN` was taken and reached the client's idle timeout as
-  whatever `Std.int` made of it; `Math.POSITIVE_INFINITY` is no deadline
-  too. And an exchange's deadline, once it has run, is no longer cleared
-  again as the exchange settles, which could clear a timer armed since in
-  its place.
-- A MySQL `connectTimeout` is one deadline for the whole of `open()`
-  natively, the connect, TLS, the greeting and the login. Each read of
-  the handshake waited the whole timeout again, so a server that answered
-  a byte at a time held `open()` for as long as it went on: a greeting
-  trickled at 0.25 s a byte took 20.8 s under a 1 s timeout, and then
-  logged in. It now fails at the deadline with error 2013. A
-  `connectTimeout` of 0 is no limit, where it meant 50 seconds for each
-  read of the handshake. Fixed in the hxcpp fork
-  (`fix/mysql-hostile-counts`). On every target `open()` refuses a NaN or
-  negative `connectTimeout`, `readTimeout` or `writeTimeout` and a
-  negative keepalive timing with an `ArgumentError`, as Postgres refuses a
-  negative `connectTimeout`: each was taken for no limit, or for the old
-  defaults.
-- `ProcessLifecycle.installServiceControl(name, 0)` waits for its
-  handshake with the Service Control Manager to settle, 0 being no limit,
-  where it did not wait at all: the handshake was still pending when it
-  answered, so a process the SCM had started could report itself a
-  console run. A negative `connectTimeoutMs`, and a negative hint to
-  `reportServiceStopPending`, throw an `ArgumentError`; a hint of 0 is
-  the SCM's default of 30 seconds, there being no hint without a limit.
-- The native MySQL client no longer lets one packet from the server end
-  the process. A result header's column count sized an allocation before
-  any column arrived, with no bound and no check: nine bytes, from the
-  server, or from whoever answers in its place, which the default
-  `sslMode`, `PREFERRED`, does not rule out, since it checks no
-  certificate, asked for 150 GB and wrote to the NULL that came back,
-  and four bytes allocated 1.2 GB. A column or row length near 2^31, a
-  column without a name, an empty packet among the rows and a request
-  for a file of the client's (`0xFB`) ended the process too, and an error
-  cut short at its SQLSTATE was reported with the state of a success,
-  "00000". A result now has 1 to 65,535 columns, checked before anything
-  is allocated; every length is checked against its packet; and an
-  answer no server sends fails the statement with error 2027
-  (`CR_MALFORMED_PACKET`) and closes the connection. Fixed in the hxcpp
-  fork (`fix/mysql-hostile-counts`). `PREFERRED` stays the default, as in
-  MySQL's own clients: insisting on TLS would refuse servers that offer
-  none and still not keep out a man in the middle, which only
-  `VERIFY_CA` and `VERIFY_IDENTITY` do, `MySQLConfig.sslMode` has the
-  trade-off.
-- A compiled RPC call with a null `String` or `Bytes` argument, where the
-  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
-  before anything is framed, on every target; natively a null `Bytes`
-  crashed the process and a null `String` went as an empty one, and on the
-  interpreter and the jvm either threw a null access. A handler's answer
-  of such a type that is null fails its call as a throw does: the caller
-  is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
-- An `RPCSession`'s heartbeat pings on every beat that nothing else has
-  been sent for an interval before, where the clock's rounding put the
-  beat after a ping a hair short of the interval, 2.8 s less 1.8 s is
-  0.99999999999999978 s, and the ping waited for the beat after: a ping
-  every other beat, about one in five lost in a test pumped a tenth of a
-  second at a time. With the defaults, 45 seconds between pings against a
-  90-second timeout, a session could hear its peer's pongs 90 seconds
-  apart and time out a peer that was answering.
-- `TypedWorker.run` (and `Worker.run`) hands the work a copy of a message
-  of bytes, made before it returns. The work read the caller's own bytes
-  on its thread later, as whatever they had become, a datagram's
-  `event.data` handed to a worker from its listener read empty or as the
-  next datagram, while the caller's thread could be writing them.
-- `File.data` after `save(bytes)` is a copy of what was saved, read from
-  position 0, as its doc says it is what was saved. It was the caller's
-  `ByteArray` itself: one reused after saving, or a datagram's
-  `event.data` saved from its listener, changed `data` into bytes that
-  were never saved, empty, in the datagram's case.
-- An `SQLiteStatement` executed on an asynchronous connection binds the
-  bytes its parameters held when `execute()` was called. Their map was
-  copied but the bytes were not, and the worker bound them later: a blob
-  stored from a datagram's `event.data` inside its listener was stored
-  empty, and bytes changed after `execute()` returned were stored changed.
-- `URLLoader.load` copies a request body of bytes as it begins, so what
-  goes out is the body as it was at the call. Natively and on the jvm it
-  was read later, on a load thread, and on Node handed to Node as a view
-  written once connected, and read again for a redirect that keeps it: a
-  datagram's `event.data` forwarded as a POST body from its listener went
-  out empty, or on Node as the next datagram's bytes over the first's,
-  and a body changed after `load` returned went out changed.
-- `HTTPRequestHandler.respondBytes` sends the body as it was at the call
-  when the body is past `maxOutputBufferSize` too. Such a body goes out
-  over later drains, and it went from the caller's own `ByteArray`: a
-  body changed or reused after `respondBytes` returned, for the next
-  response, or a payload valid only during the listener call that
-  answered with it, went out as its later bytes after the first burst.
-  It is now streamed from a copy, made only past the cap; below it the
-  writer's one copy is unchanged.
-- `NodeChannel.send` copies the message before it returns, as every other
-  send does. It held the caller's `ByteArray`, queued while the link was
-  down, and until the pass ended while it was up, to take back if the
-  link failed first, and sent what its bytes were by then: a buffer
-  reused after `send` went as its later contents, and a listener
-  forwarding what arrived (`channel.send(event.data)`) forwarded whatever
-  the payload held when the link came back. A pass now keeps what it
-  wrote in one buffer of the channel's, kept between passes up to 64 KB,
-  so the common case allocates nothing more.
-- Natively, a process whose threads end as it exits, a server spread
-  over runtimes, which exits them after `drain()`, is one, no longer
-  hangs there on Windows, nor crashes there when built with stack traces
-  (`-debug`, `HXCPP_STACK_TRACE`). Each thread hxcpp starts removes its
-  root from the collector as it ends, and once `main` had returned the
-  main thread could already have destroyed the set it removes it from,
-  among the static destructors: the removal faulted holding the
-  collector's root lock, Windows let that thread end, and the next one to
-  end waited on the lock while holding the loader lock, which the
-  process's exit waits for. With stack traces the thread also left a
-  destroyed map, and that fault ended the process. The multicore sample
-  hung so about once in 600 runs under load, and this is the likeliest
-  cause of its one CI failure, which ended at the same point with no
-  verdict printed. Fixed in the hxcpp fork (`fix/thread-exit-root-set`).
-  The sample now flushes its verdict as it prints it and says on stderr
-  why it exits with 1, and CI prints a failing run's exit code in full,
-  which the step reported as 1 whatever it was.
-- On HashLink a spread `HTTPServer` or `ServerWebSocket` no longer answers
-  wrongly. The front of a spread server publishes the application's
-  `connect` listeners to its runtimes, leaving out the one the class
-  attaches for itself; on hl that one is stored wrapped for
-  `addEventListener`'s generic signature, so it was never recognised and
-  the front ran it for every runtime's connection as well: WebSocket
-  sessions counted twice, and two HTTP handlers on two threads reading one
-  socket, which left clients with empty answers. It is now recognised by
-  the order it was added in.
-- On Windows a server's listen queue holds as many connections as its
-  backlog asks, up to 65535, where it held 200: Windows grants 200 to any
-  larger backlog asked as a number, the default's included, and refused
-  every connection arriving while 200 waited, the refusals the load pass
-  saw under a connection storm. `listen()` asks as `SOMAXCONN_HINT`
-  natively, on HashLink and on neko: with nothing accepting, 300 connects
-  all wait now, where the 201st was refused after 2 s of retrying. The jvm
-  and the interpreter cannot ask that way, and still get 200.
-- On the jvm, neko, HashLink and the interpreter, two runtimes reading
-  sockets at once no longer hand one client's bytes to another client's
-  connection. The socket read buffer is shared per thread, as it already
-  was natively; on those targets it was one buffer for every thread, so
-  two runtimes reading at the same moment could copy each other's data.
-  The spread-server tests caught it: clients received each other's
-  responses on the jvm, neko and the interpreter.
-- The HTTP/2 Huffman decoder's tables are published with the one checked
-  for completeness last, so a second thread decoding while the first
-  built them can no longer find two of the three missing.
-- On Linux and macOS a process holding more than about a thousand
-  descriptors can still connect and accept. CrossByte asks `select` about
-  single sockets, whether a client's connect has finished, whether a
-  listener has a connection waiting, and `select` there takes no
-  descriptor at or past FD_SETSIZE (1,024), which hxcpp refuses rather
-  than overflow its set: so every socket made after the thousandth failed,
-  a WebSocket or `Socket` client's connect with "Socket descriptor too
-  large for select", and a `ServerSocket`, `ServerWebSocket` or
-  `HTTPServer` opened then accepted nothing. The load harness's idle
-  scenario stopped at 1,018 WebSocket clients a process. `sys.net.Socket.select`
-  now uses `poll` there, natively; Windows, where a set is a counted array,
-  keeps `select`.
-- A process supervising children with `NativeProcess` no longer dies with
-  an access violation when one of them ends. The thread that waited for
-  the child sent its completion and then closed the child through a field
-  that the runtime clears as it dispatches `EXIT`; when the runtime got
-  there first the thread closed null, which natively no `catch` takes,
-  and elsewhere left the child's handles for the collector. The load
-  harness's game server, whose clients run as child processes, died this
-  way in three of four runs with a thousand clients. The child is now
-  closed before the completion goes, so by `EXIT` its handles are
-  released.
-- `CrossByte.frameOverruns` counts frames whose work outran their tick,
-  as it says, on a `POLL` loop on Windows too. It counted every frame that
-  ended past its deadline, and the `POLL` loop waits in poll until its
-  deadline, which Windows ends on the system timer's tick, up to a
-  millisecond or two late: a game server with nothing to do at sixty
-  ticks a second reported 165 overruns in 301 frames, so the count could
-  not tell a server keeping up from one falling behind. Each loop now judges
-  a frame by its work, as the default loop and JavaScript's already did.
-  `loopLag` still reports the lateness, and says what is usual for it.
-- `HTTPServer.drain()` called from another thread is handed to the
-  server's runtime, as `ServerWebSocket.drain()` already was, and finishes
-  there. It ran on the calling thread: it closed the runtime's connections
-  and put its wait on the runtime's tick from there, and with nothing to
-  wait for it called `onComplete` there, where the doc says the runtime's
-  thread.
-- A runtime woken from another thread as it exits no longer writes to a
-  closed socket. Every hand-off wakes a POLL runtime by writing a byte to
-  a socket it polls, a `post`, an `exit()`, a parent exiting its
-  children, and the runtime closes that socket as it exits, on its own
-  thread; the wake checked and wrote without holding anything against the
-  close. On the interpreter the write raised an error no `catch` sees,
-  which ended the process; natively it went to a descriptor the system
-  may already have handed another socket. The wake and the close now take
-  the same lock.
-- A `FileStream` open in `UPDATE` mode reads back what it wrote on macOS.
-  It reads and writes through two handles, flushing the writer and
-  seeking the reader before each read; BSD stdio, macOS's, keeps a
-  read-only stream's buffer across a seek into what it holds, so the
-  reader went on reading what had since been overwritten, "abcdef"
-  where "abXYef" had been written, and the same after `truncate()`. The
-  reading handle is opened for reading and writing natively, which BSD
-  stdio seeks for every time.
-- `StunClient.classifyMapping` answers `ENDPOINT_INDEPENDENT` after its
-  first question when the server saw the socket as it is, its address
-  and its port, as RFC 5780 section 4.3 does: with no NAT the mapping is
-  the socket itself. It went on to its other two questions, so a host
-  whose source address follows the destination was reported
-  `ADDRESS_DEPENDENT`, its own addresses taken for a NAT's mappings: a
-  host with a route out on each of two networks, or macOS on loopback,
-  which sends to an alias from that alias, the native suite failed on
-  the macOS runner that way.
-- `PostgresConnection` loads libpq on macOS. It looked there for
-  `libpq.so.5` and `libpq.so`, names macOS does not use, so a Mac could
-  load libpq only from a path given in full. It looks for `libpq.5.dylib`
-  and `libpq.dylib` where dyld looks, beside the program, and in
-  Homebrew's, Postgres.app's, the PostgreSQL installer's and MacPorts'
-  directories; `PostgresConfig.libraryPath` lists every place, on each
-  system. A directory given there stands for `libpq.so.5` as well as
-  `libpq.so` on Linux, it stood for the development package's
-  `libpq.so` alone, and a failed open names each path it tried once.
-- A `LocalConnection` moves large frames through small socket buffers
-  quickly: on macOS, which gives a local socket 8 KB a direction, three
-  3 MB frames took longer than ten seconds. Two costs grew as the buffer
-  shrank. The reader thread moved at most what the socket held each pass
-  and then slept, from 1 ms to 10 ms as passes found the socket still full
-  or still empty, so the two sides took turns at 8 KB a turn; it now waits
-  on Linux and macOS for the socket to be readable or writable, up to the
-  same time, and is woken by it. And each pass copied whatever of a frame
-  had arrived to a new array and back, so a 3 MB frame arriving 8 KB at a
-  time was copied 384 times over; what has arrived now stays where it is
-  until what has been framed outweighs it. On Linux, through 8 KB buffers,
-  the nine megabytes took 3.0 s and take 0.12 s, and through the system's
-  0.32 s and 0.10 s. A send that macOS refuses for want of buffer space
-  (`ENOBUFS`) waits, where it ended the connection.
-- A connected `DatagramSocket` sends on macOS and the BSDs. Every send
-  named the peer, as the socket names it whether or not it is connected,
-  and those systems refuse an address on a connected datagram socket's
-  sends (`EISCONN`), where Linux and Windows take the one it is connected
-  to: each failed with "Socket operation failed", a connect to a name too.
-  Such a send goes without the address now.
-- A `Socket` whose `CONNECT` listener closes it, in the tick the peer
-  also hangs up, no longer ends a native process. The tick went on to the
-  close it had already decided on and cleaned the socket up a second time,
-  calling `close()` on the one the listener's close had let go: a null
-  dereference, which a native build does not catch. A server that answers
-  and closes at once lands its hangup in the connect's tick on macOS,
-  where the native suite died this way every run. After each event it
-  announces the tick now stops if a listener closed the socket.
-- An HTTP/2 connection that reaches `keepAliveMaxRequests`, has
-  `keepAlive` off, or is drained, no longer refuses the requests its
-  client already had in flight. Its one GOAWAY named the last stream at
-  once, so every stream the client had sent before reading it was reset
-  `REFUSED_STREAM`: 42 of 12,001 small requests from eight concurrent
-  CrossByte clients, a connection ending every thousand requests, as on
-  the base before the request-body budget. The server now ends a
-  connection in the two steps RFC 9113 6.8 describes: a GOAWAY naming no
-  stream and a PING, the streams that arrive meanwhile taken and
-  answered, and once the client has answered the PING, two seconds on
-  for one that never does, a final GOAWAY naming the last stream taken.
-  Only a stream opened after that is refused. A connection may carry a
-  few requests past `keepAliveMaxRequests` for it. Closing it no longer
-  repeats the final GOAWAY.
-- The HTTP/2 client no longer fails the requests in flight on a
-  connection whose server has said GOAWAY. A request refused on such a
-  connection was retried on another, as it should be, but the connection
-  it was refused on was closed on the spot, and every other request still
-  waiting on it failed with "connection closed before the response
-  headers arrived" though the server was answering it. With the server
-  fix above, eight concurrent clients making 12,001 small requests still
-  lost 42, 330 and 1,599 of them to this when CrossByte's server ended a
-  connection every 1,000, 100 and 20 requests; none now. The pool takes a
-  connection that has heard GOAWAY out of service and leaves it to close
-  once its last request ends; so does the pool's idle sweep, for a
-  connection still carrying requests when it is swept.
-- An HTTP/2 client can no longer stall the server, nor grow the server's
-  HPACK table, with its SETTINGS_HEADER_TABLE_SIZE. The server's encoder
-  followed whatever size a client advertised: a megabyte kept every
-  distinct response field in the server's memory for the connection's
-  life (28,745 bytes after 300 responses, where 4,096 is the default),
-  each searched for every field after; and a size of 2^31 or more, which
-  reads negative, sent the thread reading the connection round the
-  table's eviction loop forever on the one SETTINGS frame, and with it
-  every connection that thread serves. The server's encoder now keeps to 4 KB
-  (`H2Connection.MAX_ENCODER_TABLE_SIZE`) whatever the client says, as
-  the client's does, and still uses less when told less; and the HPACK
-  table takes a capacity below zero as zero rather than evicting toward
-  it.
-- An HTTP/2 server that stops reading no longer holds the client's
-  requests past their timeouts, nor a cancel, nor a close. Every frame a
-  connection sent, a request's head and body, a reset, the answers to
-  the server's PINGs and SETTINGS, its WINDOW_UPDATEs, was written under
-  the connection's lock by whichever thread made it, so once the socket's
-  buffers filled, that thread waited in the write for good holding the
-  lock: no request on the connection could look at its stream and reach
-  its timeout, `cancel()` waited with them on whatever thread called it,
-  the runtime's, for `URLLoader.close()`, and so did a pool closing the
-  connection. A 1.5 s request under a flood of PINGs whose answers the
-  server never read, and a 1.5 s upload to a server that opened every
-  window and read nothing, never ended; a cancel of that upload did not
-  return in five seconds. Nothing is written under the lock now: frames
-  are queued in order and written by whichever thread holds the write,
-  a writer thread each connection has now, the reader writing its own
-  answers, or a request with no body writing its own head while the
-  writer watches it. A request waits on its stream, or for its body's
-  queued frames to go, within its own timeout, the longest a window may
-  keep its body from going out now counts the socket's, and gives the
-  connection up when a write has been held that long; `cancel()` and
-  `close()` return at once, a cancelled request's held head has a second;
-  the reader stops reading while 64 KB of answers wait unwritten, and a
-  body has at most 256 KB queued, so a server that reads nothing holds no
-  more of the client than that; and a closed connection whose last write
-  does not go is ended a second after it closed. Each case now ends at its
-  timeout, and the connection's threads with it. Natively, and on neko and
-  HashLink, on Windows a TLS write the server is not taking still holds the
-  writer thread until the server reads or goes, as a TLS read there already
-  does; the requests do not wait with it. On HashLink the request under a
-  PING flood still did not end in CI, under Linux and Windows, for a
-  reason not yet found (HashLink is not run locally). Sequential small requests over
-  loopback cost about the same (106.6 to 109.1 microseconds, medians of nine native runs);
-  downloads and uploads are as fast or faster, a DATA frame no longer being
-  copied twice.
-- The HTTP/2 client's HPACK encoder holds no more than the protocol's
-  default 4 KB table, whatever SETTINGS_HEADER_TABLE_SIZE the server
-  sends; an encoder may use less than the peer allows (RFC 7541 4.2), and
-  Go's and nghttp2's clients keep to the same. It held what it was told,
-  so a server saying a megabyte, or 2^31 - 1, kept every distinct field
-  the client sent in the client's memory for the connection's life, each
-  searched for every field after: 300 requests with an id of their own
-  left 28,743 bytes in the table, and the next 300 would have left twice
-  that. And the client says SETTINGS_ENABLE_PUSH 0 whatever settings it is
-  given: `H2Settings` allows push unless told otherwise, so an
-  `HTTP2Backend` given settings of its own invited pushes and then failed
-  the connection over the first.
-- The HTTP/2 client holds a response's header section to one 64 KB
-  allowance, its interim (1xx) responses included, as the HTTP/1.1 client
-  does, and takes a header block after the response's own only as its
-  trailer section, which ends the stream and carries no pseudo-header
-  (RFC 9113 8.1). Every block after the first was taken as more of the
-  response, its fields added to the stream's and its status put over the
-  last, so a server repeating a block grew the response by a block's
-  fields each time, 20 blocks of 1,200 fields kept 24,000 of them, at
-  three bytes a block after the first, and 200 grew the heap by 20 MB
-  natively, where the second is refused now; and 103s were held to the limit
-  one at a time and dropped, so a server could send them for as long as
-  it liked, each keeping the request from its idle timeout. Either is a
-  malformed or oversized response now: its stream is reset and the
-  request fails, and the connection carries on.
-- The HTTP/2 client holds a response body to `Http.MAX_BODY_SIZE`, 64 MB,
-  as the HTTP/1.1 client does: past it the request fails with "Response
-  body exceeded N bytes", its stream is reset and what had arrived is let
-  go, and the connection carries on with the requests on it. Nothing held
-  it. The stream's window was opened again as each half of it arrived, so
-  a server sending a body without end grew it, and the client's memory,
-  for as long as it went on: a 4 MB body completed against a 256 KB limit,
-  and 256 MB sent within the windows the client opened grew the heap by
-  688 MB natively. The same server now costs the 64 MB of the limit, 161
-  MB of heap at its peak, however much it sends.
-- On a synchronous `SQLiteConnection`, a `cancel()` from another thread
-  stops a `request()` or a statement that is only starting. SQLite clears
-  an interrupt that lands while a statement is prepared, so a cancel made
-  within the first dozen microseconds or so of a request was lost, and
-  the request ran on: an aggregate for its hours, a SELECT through every
-  row. Each request is now a run the progress handler can stop, as on an
-  asynchronous connection, and one asked for before a cancel but not yet
-  started fails as interrupted. It costs nothing measurable: trivial
-  requests, inserts and a 20,000-row aggregate moved +0.7%, +0.1% and
-  -0.7% (medians of 16 interleaved runs). On an ARM processor the cancel's
-  stop is fenced ahead of SQLite's interrupt, which there could otherwise
-  be seen first, cleared as the statement started, and lost.
-- A `MySQLStatement`'s `SQLResult.rowsAffected` is the server's count,
-  whole past 2^31, as `MySQLConnection.affectedRows` is. It was the length
-  of the driver's result: for a write natively held at 2^31 - 1, though
-  the client had the count whole, and on hl negative past 2^31; for a
-  SELECT read a page at a time, the rows read so far. A statement that
-  returns rows reports 0, as AIR's and `SQLiteStatement`'s do. Natively
-  its `lastInsertRowID` is the statement's own as well, where it was read
-  from the connection as each page was taken: a SELECT run before an
-  INSERT's result was taken made the INSERT's id 0.
-- MongoDB counts are whole past 2^31. The server counts in 64 bits, and
-  an update or delete over a large collection answers past 2^31; every
-  count was read as an `Int`, held at 2^31 - 1, so three billion
-  documents updated read 2147483647. `MongoConnection.affectedRows` and
-  `count()`, `MongoWriteResult`'s `inserted`, `matched`, `modified` and
-  `deleted`, and a `MongoStatement`'s `SQLResult.rowsAffected` are
-  `Float`s, exact to 2^53, as MySQL's and Postgres's counts are.
-- Work asked of an asynchronous `SQLiteConnection` just as its worker
-  stops, after an open that failed, is answered. A statement, a `begin()`
-  or any other operation that found the worker's queue still open, and
-  reached it only after the worker's last look at it, was neither run nor
-  refused, and never answered; a `close()` caught there left the
-  connection refusing every later open, waiting for a `CLOSE` that would
-  not come. Asked across that moment 6,000 times, about one in a hundred
-  was lost. Such work now takes itself back out and is refused, as on a
-  connection that is not open: an `IllegalOperationError`, and a
-  `close()` with nothing to close.
-- On Linux and macOS a `SharedObject` is its user's alone. A region was
-  made readable by every local user (0666 less the umask: 0644 as a rule),
-  so any of them could read what any `SharedObject` held, and on Linux
-  hold its lock and stop every participant; and one another user had made
-  first under the name, writable by all, was used as if it were this
-  user's, where the system allowed it, as macOS does. Regions and macOS's
-  lock files are made 0600 now, an older one of this user's is made so as
-  it is opened, and one that is not this user's is refused with an
-  `IOError` saying so.
-- macOS's `SharedObject` lock file, `/tmp/cbso_<hash>.lock`, is not opened
-  through a link, another user's link there made the process make, or
-  lock, a file wherever it pointed, nor waited on as a FIFO, which held
-  the constructor, and the process's collections, until someone wrote to
-  it. And one deleted while its region is open, macOS's cleaner deletes
-  what in /tmp nobody has touched for three days, and a lock touches
-  nothing, no longer parts the participants: the next to open made a
-  new file and locked that while those open locked the old, so two wrote
-  at once. A participant checks, each time it locks, that the file it
-  holds is the one at the path still, and takes that one if not; a lock
-  file in use has its times brought up to date hourly; and only
-  `SharedObject.remove` deletes one. A `LocalConnection` listener's lock
-  file on Linux and macOS is opened the same way and kept up to date while
-  it listens: a cleaner that deleted a long-lived listener's let a second
-  `listen()` take the name.
-- On macOS a `LocalConnection` send to a peer that has stopped reading no
-  longer waits for good. The socket was left blocking and each write asked
-  not to wait with `MSG_DONTWAIT`, which Linux honours for a send and macOS
-  does not: once the 8 KB macOS gives a local socket was full, the send
-  waited on the runtime's thread, holding the lock the reader thread and
-  `close()` need, the native suite hung there on the macOS runner. Every
-  connected socket is non-blocking now. So is a connect, which on Linux
-  waited in the kernel, past any `timeout`, for a listener whose backlog
-  was full to take someone; it is tried again until the deadline instead.
-- A `SharedChannel` client method that throws is reported instead of
-  dropped without a word: logged, and dispatched as
-  `UncaughtErrorEvent.UNCAUGHT_ERROR` on the channel's runtime, as a
-  posted callback's failure is, and the channel goes on listening. So is
-  what a `LocalConnection` callback throws, which still ends the
-  connection, as a socket handler's does, but went unreported when no
-  `onError` was set, and entirely when `close()` called `onClose`, and
-  what a `Task`'s listeners and handlers throw: one of them stopped the
-  rest from hearing the outcome and kept the task in its pool for good,
-  and on a pool thread, for a task with no runtime, nothing at all was
-  reported. `cancel()` no longer throws what a `CANCEL` listener threw.
-- A `Task` made on a thread no runtime belongs to always calls the
-  handlers given to `onComplete`, `onError` and `onCancel`. Each looked at
-  the task's state and then added a listener, in two steps, and such a task
-  finishes on the pool thread: one finishing between the two was never
-  heard, and whatever waited on the handler, a password hash's `Future`
-  among them, waited for good. About one handler in two hundred was lost
-  natively, one in two thousand on the jvm, and more for `onCancel`. A
-  handler given before the task is done is now kept by the task and taken
-  by the step that makes it done, under the same lock; one given after is
-  called at once.
-- On eval a read or a write on a connection its peer reset, a write to
-  one the peer had closed, a `shutdown`, a `bind` to a port in use, a
-  `listen`, and a `select` naming a closed socket throw an error that can
-  be caught, as on every other target. eval raised each as an OCaml
-  `Unix_error` that passed every Haxe `catch` and ended the interpreter,
-  on Linux a second write to a closed connection ended it with SIGPIPE,
-  so a development server ended over one client's reset, and a
-  `ServerSocket.bind` to a port in use ended the program it should have
-  told with an `IOError`. A call that could fail that way is made on a
-  helper thread, where the error ends only the helper, and SIGPIPE is
-  taken by a libuv signal handle; a read or a write that a zero-time
-  `select` and `peer()` show cannot fail is made at once, as before. A
-  reset landing in the microseconds between that check and a write made
-  at once can still end the interpreter. eval's `setTimeout` waits as
-  long as it is told on Linux and macOS, where it handed the system a
-  thousand times the timeout, and a read that times out throws
-  `Blocked`, as natively. The interpreter suite runs 5% longer on
-  Windows, where every read is made on a helper, and 8% on Linux, most of
-  it in four HTTP client tests that read an endless header a byte at a
-  time.
-- A `ServerSocket`, `ServerWebSocket` or `DatagramSocket` closed from
-  another thread closes on its runtime, as a `Socket` does: `close()`
-  hands the close over and returns. Made on the calling thread, it took
-  the listener or the socket out of the runtime's poll set and its tick
-  listeners, neither thread-safe, while the runtime might be polling
-  them, and a `DatagramSocket` dispatched `close` there. The same for
-  `stopAccepting()`; `ServerWebSocket.drain()`, which with no session open
-  called `onComplete` on the calling thread; `DatagramSocket.stopReceiving()`;
-  and `ReliableDatagramServerSocket`'s `detachIceAgent()` and
-  `releaseRelay()`, which failed an `allocateRelay` still waiting on the
-  calling thread.
-- An HTTP/2 connection holds the header sections of requests whose bodies
-  are still to come to a quarter of `http2MaxRequestBodyBuffer`, a
-  megabyte at the default, by HPACK's count, and refuses a stream whose
-  section would go past it with `REFUSED_STREAM`, never having reached the
-  application. Each was held until its body had arrived, flow control
-  cannot hold a HEADERS back, and HPACK makes a large one cheap to send:
-  128 streams each carrying a 4 KB cookie fifteen times grew the heap by
-  9.3 MB from 318 KB on the wire, for good with `requestTimeout` at `0`.
-  The same client now has 17 streams taken and 2 MB held (native).
-  Bodiless requests are handed over at once and are not counted.
-- An HTTP/1.1 request still being answered keeps its answer when the
-  requests pipelined behind it outgrow what one connection holds,
-  `maxRequestBodySize` and the header allowance. They were counted with
-  it, and past that the request being answered was answered `413` over its
-  own answer, which was lost: three pipelined 600 KB uploads, each under
-  the 1 MB limit, behind a route answering a moment later came back as one
-  `413`. The whole buffer was held to the limit before any of it was
-  parsed, too, so a read bringing the end of one request and the ones
-  behind it at once, as reads on Linux do, was answered `413` before
-  the first was handed over. Behind a file being sent, the file was cut
-  off where it was and the connection closed. A read is parsed first now,
-  and what is left behind the request being answered is held to the
-  limit: what does not fit is dropped, with whatever arrives after it,
-  and the connection closes once the answer has gone, saying
-  `Connection: close` when its head has not gone yet; the requests it
-  held go unanswered, which a client that pipelines sends again (RFC 9112
-  9.3.2). A request still arriving is held to the limit as before.
-- One HTTP/2 connection holds no more than
-  `HTTPServerConfig.http2MaxRequestBodyBuffer` of request bodies at once,
-  4 MB by default, never less than one body at `maxRequestBodySize`.
-  Each stream let its body grow to `maxRequestBodySize`, and both
-  flow-control windows were opened again as every byte arrived, so a
-  client uploading slowly on all 128 streams made the server hold 128
-  bodies, 128 MB at the defaults, and with `requestTimeout` at `0` for
-  good: 16, 64 and 128 MB measured for 16, 64 and 128 uploads of a
-  megabyte stopped a byte short (heap +25, +99 and +197 MB, native). The
-  same client now leaves 2.3, 3 and 4 MB (heap +7, +9 and +13 MB), and
-  none of its uploads is refused. It is held with HTTP/2's own flow
-  control. The connection's window is opened to the budget and given back
-  only for bytes let go; every stream's first window, which a client may
-  use unasked, is made small enough for all 128 to fit beside one whole
-  body, 16 KB at the defaults, the protocol's 64 KB from a budget of
-  about 9 MB, and a stream's window is opened past it as its HEADERS
-  arrive, up to a megabyte at a time, oldest stream first, from what is
-  left once every older stream's remaining body is set aside. The oldest
-  upload always finishes, and uploads that do not all fit wait for window
-  rather than each taking a share and none finishing. Parallel uploads go
-  faster than before, a stream's window having been held to 64 KB (one
-  connection, native: 8 x 1 MB 292 to 313 MB/s, 1 x 4 MB 246 to 282, 32 x
-  64 KB 269 to 323); a body between 16 and 64 KB waits one round trip for
-  its window. Nothing checked that a client kept to its windows at all,
-  so one that ignored them sent what it liked: DATA past a stream's window
-  now resets the stream, and past the connection's ends the connection,
-  with `FLOW_CONTROL_ERROR`. A stream left waiting for window, with no
-  body arriving and none finishing on its connection for 30 s, is reset
-  with `REFUSED_STREAM`, never handed to the application, so safe to
-  send again, whatever the timeouts are.
-- A reliable UDP session asks for its window of socket buffer on Linux
-  whatever the system's default reads. Linux reads back twice what was
-  asked, counting its own bookkeeping, and a default that read a window's
-  size, the GitHub runner's, was taken for enough and kept: half the
-  buffer asking grants. It asks unless the buffer reads past twice the
-  window, and puts back a default larger than asking grants.
-- On the jvm on Linux, a `NativeProcess` stopped with `exit()` reports
-  `EXIT`. The JDK's `destroy()` closes the child's streams there, and the
-  wait for its exit code first read what was left of them, which threw;
-  with the process already stopping, nothing was reported, and `EXIT`
-  never came. The wait asks the JDK's process directly now, and an end
-  that fails to read its code is still reported, as `EXIT` with -1, on
-  every threaded target.
-- A native server on macOS shuts down gracefully on SIGHUP when its shell
-  had handled SIGHUP itself. macOS keeps a signal's SA_SIGINFO flag across
-  exec while putting its handler back to the default, and
-  `installDefaultHandlers()` read the flag as another handler and left
-  SIGHUP alone, so a hangup still ended the process at once: the native
-  suites on the macOS CI runner died that way. A signal is judged by its
-  handler now.
-- On neko, what another thread posts to a runtime, a `Task`'s first
-  listener and an HTTP request's cancel are no longer lost. A neko object
-  gains a field when it is first set, which can move its field table, and
-  a write another thread made meanwhile went with the old table. A
-  runtime first set two of its own fields after other threads could post
-  to it: about one child runtime in 400 lost a post, and as many posts
-  threw while holding the post lock, which hung the runtime for good. A
-  `Task` lost its first listener about once in 15,000, so an asynchronous
-  BCrypt or Argon2id call or `db.submit(...).onComplete` waited for good;
-  and a cancel landing as a load started was lost about once in 800, the
-  request going out as though never cancelled. Found by auditing every
-  thread `Worker`'s fix above suggested.
-- On the jvm a refused connect is reported as refused by `WebSocket`,
-  `Socket` and so `NetConnection`, whichever select finds it first. NIO
-  closes a channel whose connect failed, so a select after the one that
-  found the refusal finds nothing: when the runtime's poll found it before
-  a WebSocket's own check, about one connect in 150, the connect waited
-  out its ten-second deadline and ended as a timeout. `Socket` read the
-  reason only from its own select as well.
-- A `Worker` on neko whose work ends it at once, `cancel()` from inside
-  `doWork`: reaches `CANCELLED`. About one run in 600 it stayed `RUNNING`
-  for good, and `run()` then refused it: a neko object gains a field when
-  it is first set, which can move its field table, and `run()` first set
-  one just after starting the thread, so the worker's `CANCELLED` was
-  written into the table being left.
-- A client that connects and resets before a server takes it is passed
-  over, by `ServerSocket` and `ServerWebSocket`. Linux hands such a
-  connection over with no address for its peer, and the server read
-  through the missing address, asking `admit` and again naming the
-  connection: natively that ended the process, so any client could stop a
-  server on Linux by connecting and resetting at once. A TLS connection
-  whose client leaves the moment its handshake is done is announced from
-  the address it was accepted with, and its first read finds it gone, as
-  on Windows. macOS and the BSDs fail the accept for such a connection
-  instead (`ECONNABORTED`), which a native server counted in
-  `acceptFailures` and reported as an `ioError` of its own; it takes the
-  next connection now, as libuv and Go do.
-- A connection a native TLS server accepted no longer reads freed memory
-  once the server has closed its listener: after `stopAccepting()` or
-  `HTTPServer.drain()`, or under a server closed with connections still
-  open. hxcpp sets every accepted connection up on its listener's TLS
-  configuration, and freed that configuration with the listener. With the
-  fork's mbedTLS 3.6.7 on Linux the next read on such a connection
-  crashed the process, the posix native suite did, in
-  `HTTPServerTLSTest`, on every run, where 2.28 read zeros unnoticed.
-  The fork now keeps a configuration until the last connection on it has
-  gone; `TlsProtocolTest` reads the configuration through an accepted
-  connection after `stopAccepting()`, and sends over it.
-- `Socket.alpnProtocol` on such a connection still names the protocol it
-  agreed. The connection points into its listener's ALPN list, which
-  CrossByte freed when the listener closed, and the next allocations of
-  that size took the memory over. Each distinct list is now kept for the
-  life of the process, one copy however many sockets install it, so the
-  HTTP/2 client no longer allocates one for every connection either.
-- `FileStream.readObject` refuses an object nested past the same depth
-  `ByteArray.readObject` now does, with an `IOError`, in both open modes:
-  a file holding an object nested a few thousand deep ran the reader out
-  of stack, which natively ended the process.
-- `readObject` refuses an object nested more than 256 levels deep (128 in
-  AMF) with an `IOError`, on `ByteArray` and so on every socket. A peer's
-  object nested a few thousand deep, 12 KB of HXSF, JSON or AMF, made
-  the reader recurse until the stack ran out, which natively ended the
-  whole process: any server that called `readObject` on a socket could be
-  stopped by one message.
-- `HTTPServerConfig.maxOutputBufferSize` holds an HTTP/2 connection, as it
-  says, across its streams: what flow control holds back on each stream
-  counts with what the socket holds. Each stream's response waited whole on
-  its client's window, up to the cap apiece, so a client that opened 128
-  streams and no window held 128 times it, 896 MB measured for 7 MB
-  answers, a gigabyte at the default cap. Past the cap a connection's next
-  requests now wait to be handed to the application, as an HTTP/1.1
-  connection's next request waits behind the response going out, and go on
-  in order as the client takes what is held; the same client holds the cap
-  and one answer, however many streams it opens (9 MB at 16, 64 and 128
-  streams of 1 MB answers, where it held 16, 64 and 128 MB). Requests an
-  application was handed before the connection filled, and answers later,
-  are still held whole, the cap cannot refuse work already done, and
-  are bounded by the deadline below. And a response held for its client
-  has a deadline: one whose own window keeps it from moving for 30 s is
-  reset, and when the connection's window is what holds them, every
-  response waiting is reset and the requests waiting for room are refused
-  with `REFUSED_STREAM`, never having reached the application. A response
-  written whole had none, and waited for as long as the connection lasted.
-  The socket's buffer is held to the 256 KB the file pump uses, the rest
-  waiting in the stream's queue, so a client granting large windows over a
-  slow network no longer piles responses up past the socket's cap, which
-  closed the connection. A stream's queue no longer copies all it holds
-  for each piece written into it.
-- A response its client stops reading is given up at the 30 s stall
-  deadline over HTTP/1.1 too, whatever `requestTimeout` and
-  `keepAliveTimeout` are, as a file being sent already was: a body written
-  whole, under the output cap, or what a `beginResponse` stream wrote,
-  waited in the socket's buffer with no deadline but the idle one, so with
-  `keepAliveTimeout` at `0` for good. And a connection is idle from when
-  its last response has gone, not from when it was written: a response
-  larger than the system takes at once, to a client slower to read it than
-  `keepAliveTimeout`, was cut off by the idle close. A response with
-  `Connection: close`, and a connection `drain()` closes, likewise close
-  once what they sent has gone; closing at once threw it away.
-- The server's `output_buffer_bytes_max` and `output_buffer_bytes_total`
-  gauges count what an HTTP/2 connection holds behind flow control, which
-  they left out.
-- An HTTP/2 client's `GOAWAY` ends its connection as RFC 9113 6.8 says:
-  the streams it opened are still answered, and what it sends on them
-  still read, and the connection closes once they have ended; a stream it
-  opens after it is refused with `REFUSED_STREAM`. It was taken as the end
-  of the connection there and then: nothing the client sent after it was
-  read and no response went out after it, a request being worked on got
-  nothing, one whose body was still arriving was never served, while
-  the socket stayed open for as long as a stream did. A `GOAWAY` carrying
-  an error closes the connection at once, and a malformed one is a
-  connection error.
-- An `Event.CLOSE` listener added to an `HTTPRequestHandler` after its
-  client had gone, the connection closed, or an HTTP/2 stream reset by
-  either end, hears it, once, in a later turn. It heard nothing, or only
-  the connection closing whenever that came, so a route that looked
-  something up before listening, and the producer `HTTPResponseStream`'s
-  example stops on `CLOSE`, ran on for a client that had left. And such a
-  listener no longer makes the others hear `CLOSE` a second time when the
-  connection closes.
-- An HTTP/2 request refused at its headers whose answer could not be
-  written, its `413` threw, and the `500` after it, has its stream
-  reset `INTERNAL_ERROR`. It was reset `NO_ERROR`, which tells a client a
-  response was complete, for one that never began. And the reset that asks
-  a client to stop sending a refused request's body now waits for the
-  refusal to have gone out: sent straight after it, it cut off an answer
-  the client's window could not take at once, an `errorDocument` over
-  64 KB, after its first 64 KB.
-- A response the server sends in bursts, a file over 256 KB, a body too
-  large for the output buffer, is held to its 30 s stall deadline
-  whatever `requestTimeout` and `keepAliveTimeout` are, over HTTP/1.1 and
-  HTTP/2. The deadline was checked by the sweep those two arm, so with both
-  at `0`, which sets no deadline for what they bound, nothing checked it:
-  a client that stopped reading held its file and its connection for good.
-  The sweep now also runs while such a response is being sent, and with
-  both timeouts off visits only those.
-- A request carried on from a later tick is answered `500` when serving it
-  throws, as one carried on at once is: a middleware calling `next()` from
-  a timer or a callback, and, over HTTP/1.1, a pipelined request parsed
-  behind an answer given that way. What the files or the rate limiter's
-  key threw went to the runtime's timer instead, and the request was never
-  answered at all, nor, for the pipelined one, any request after it on
-  that connection.
-- What serving an HTTP/2 request throws outside any middleware, the rate
-  limiter's key, a listener on the response, the static files, is
-  answered `500` on its stream, as over HTTP/1.1. The stream was reset
-  `INTERNAL_ERROR`, so the client got no status for a request the server
-  could still answer. And a response whose head has gone out is never
-  answered again, on either protocol: when a write after the head throws,
-  a socket past its output cap under `OutputOverflowPolicy.THROW`,
-  the response is given up, the connection closed under HTTP/1.1 and the
-  stream reset under HTTP/2, which the client can tell from the length the
-  head promised. HTTP/1.1 wrote the `500`'s status line into the middle of
-  the first response's body, and HTTP/2, from a middleware, sent the
-  `500`'s text as that body, ended as though whole.
-- An HTTP/2 stream the server resets ends its response as one its client
-  resets does: a handler listening for `Event.CLOSE` hears it, once, and a
-  file being sent on it is let go. Only the client's reset was passed on,
-  so a stream the server reset for something the client sent on it, DATA
-  after the client had ended the stream, a `WINDOW_UPDATE` of nothing,
-  left a producer waiting for something to write hearing nothing, and a
-  download holding its file open until the 30 s stall deadline.
-- `SharedObject` and `SharedChannel` refuse a payload whose values nest
-  more than 256 deep, before reading it gives the stack out. Unserializing
-  takes a frame or two per level, so natively a region, or a message's
-  arguments, nested 6,000 deep, 12 KB, which any process writing the
-  region or sending to the channel could leave, overflowed the stack and
-  ended the reading process, past any catch. `sync()` throws an `IOError`
-  for such a region, the constructor starts from `defaultData`, and the
-  channel drops the message.
-- `ProcessLifecycle.installDefaultHandlers()` handles SIGHUP, the
-  terminal a server was started from going away, with the same graceful
-  shutdown as SIGTERM: natively on Linux and macOS, on the jvm, and on
-  Node, where it is also how a Windows console window closing arrives.
-  SIGHUP's default ended the process at once, with no `onShutdown` and no
-  drain. One ignored as the process started (`nohup`) or handled by
-  something else is left alone; Node on macOS, which cannot tell, leaves
-  it to its default.
-- Natively on Windows, a process that has loaded user32.dll, a window, a
-  GUI toolkit, a Shell function, shuts down gracefully at a logoff or a
-  system shutdown. Windows tells such a process through its windows, not
-  its console, and it had none: the session ended it with no `onShutdown`.
-  `installDefaultHandlers()` gives it a hidden window that runs the
-  shutdown and holds the session's end while it runs, as the console
-  handler holds a close. CrossByte loads no user32 itself, so it is only
-  made where something else has.
-- A Windows service, or a process one started, keeps serving when a user
-  logs off. Windows sends services a logoff whenever anyone signs out and
-  does not end them, and `ProcessLifecycle` shut down on it; in session 0,
-  where no one logs on, it is now ignored.
-- A `SharedObject` waits at most `lockTimeout` for its region's lock, five
-  seconds by default, then throws an `IOError` saying the lock was not
-  released in time, having read, written and cleared nothing. The wait had
-  no deadline, so a participant stopped while holding the lock,
-  suspended in a debugger, sent SIGSTOP, stopped every other participant
-  with it. 0 means no deadline. The constructor waits as long as the
-  default allows, and a lock it cannot take is an `IOError`, not an empty
-  region to start from `defaultData` in. A free lock is taken without
-  entering a GC-free zone: natively on Windows a sync racing a flush on
-  another thread ran five times as fast (1.27 M syncs a second, from
-  0.25 M).
-- `JWKSet.parse` and `OAuth`'s token exchange refuse JSON whose objects
-  and arrays nest more than 32 levels deep, measured before it is parsed,
-  as `JWT.verify` refuses such a header. Parsing takes a frame per level,
-  so natively a JWK Set, a token endpoint's answer or its error document
-  nested 6,000 deep, 12 KB from the provider, or from whoever could
-  answer for it, overflowed the stack and ended the process. `parse`
-  throws, and the exchange fails as a malformed response.
-- `ReliableDatagramServerSocket.close()` may be called from any thread
-  too, and is handed to the server's runtime as a session's close is.
-  Made elsewhere, it took the runtime its ticks run on from the calling
-  thread, which threw there and was swallowed: an attached agent's, a
-  relay's or a waiting public-address question's tick stayed on the
-  runtime for good, and the question was failed on the closing thread.
-  The server's ticks are added to and taken off its own runtime now,
-  whichever is current.
-- `ReliableDatagramServerSocket.attachIceAgent` says when the agent's
-  `connected` fails, every pair failed, or none selected within the
-  agent's `timeout`, 80 seconds by default, and its example handles the
-  failure, where a session dialled on `connected` waited for an answer it
-  was never told would not come. A relayed reliable session leaves its
-  peer's channel to `TurnClient.sendTo`, which asks for it with the first
-  datagram, rather than asking again before every one.
-- A STUN question's `timeoutMs` of 0 or less is documented as what it
-  is, the default of three seconds, `StunClient`'s questions,
-  `ReliableDatagramServerSocket.discoverPublicAddress`,
-  `INetHost.discoverPublicAddress` and `PeerConnection.gatherReflexive`,
-  rather than no deadline, as 0 is for a connection's `timeout`:
-  nothing but a deadline ends a question over UDP that nobody answers.
-  It said so nowhere, and the failure told the caller the server had not
-  answered "within 0ms"; it gives the time the question had.
-- `close()` may be called from any thread on a `Socket`, a `WebSocket`
-  (and `closeWith()`), a `ReliableDatagramSocket` (and `abort()`) and a
-  `NetConnection` over any of them. From a thread that is not the
-  connection's runtime's, the close is handed to the runtime, as
-  `CrossByte.post` hands work over, and happens there after the call
-  returns, so `close` and `onClose` are told on the runtime's thread.
-  A WebSocket's `close()` threw there part way through, inside its
-  heartbeat's timer, and the error was swallowed: the close frame went,
-  the connection stayed open, the heartbeat ran on for good and `close`
-  was never dispatched. Its `closeWith()`, and a reliable session's
-  `close()`, threw at their callers, the reliable one with its FIN never
-  sent; a plain socket and a `NetConnection` closed, and told their
-  listeners on the wrong thread. A session's timers are now its runtime's
-  whichever thread arms or clears one, which on Node also keeps the
-  sessions a child runtime's server accepts on the child's timers, where
-  a heartbeat or keepalive armed in a socket's callback went on the
-  application's.
-- A reliable or WebSocket `NetConnection` stamps `inTimestamp` and
-  `outTimestamp` with the uptime of the runtime its socket runs on, read
-  off the socket. It asked `CrossByte.current()` on every message, a
-  thread-local lookup each way, about 5 ns natively, some 1.5% of what a
-  small reliable message costs, and on Node got the application's
-  runtime rather than a child's whenever a socket's callback sent or
-  received, so a child's `RPCSession` heartbeat read the connection
-  against a clock that was not its own. A session a `ServerWebSocket`
-  accepts runs on its server's runtime on Node too, where it took the
-  application's.
-- A `NetHost` made from a URI on port 0, `tcp://127.0.0.1:0`, and
-  `ws://`, `wss://` and `rudp://` alike, listens on a port the system
-  chooses, as `ServerSocket.bind(0)` does, and `localPort` says which. The
-  URI was read as one to dial, where port 0 names nothing, and refused, so
-  a host made from a URI could only be given a port someone had found free
-  a moment before. A URI to dial still refuses port 0.
-- A statement executed on an asynchronous `SQLiteConnection` whose open
-  has failed, before that failure is dispatched, throws an
-  `IllegalOperationError`, as on a connection that is not open: the
-  worker had stopped, and the statement never answered.
-- MySQL counts and ids are whole past 2^31, on every target.
-  `MySQLConnection.affectedRows` and `lastInsertRowID` are `Float`s, exact
-  to 2^53, as SQLite's and Postgres's are. Natively both were held at
-  2^31 - 1, and off the native client `affectedRows` was read with
-  `Std.parseInt`: null past 2^31 on the interpreter, other numbers
-  elsewhere. On hl and neko an insert id is asked for in SQL, as text,
-  every time, the round trip their drivers' own 32-bit read made, where
-  one past 2^32 wrapped back into range and was taken as it was.
-- Postgres counts are whole past 2^31. The native bridge read a
-  statement's count with `atoi`, into 32 bits, on both of its paths: a
-  write of three billion rows read 2147483647 on Windows and a negative
-  number on Linux. `PostgresConnection.affectedRows` and `lastInsertRowID`
-  are `Float`s, exact to 2^53, as SQLite's are, and the OID is read
-  unsigned. A `PostgresStatement`'s `SQLResult.rowsAffected` is the
-  statement's own count: it was the rows its result held, 0 for every
-  write.
-- `SQLiteConnection.cacheSize` is an `Int`, and says what SQLite says: a
-  positive number of pages, or a negative number of KiB, SQLite's own
-  default is -2000, about 2 MB. As a `UInt` it could hold no negative:
-  `-4096` set was written as 4294963200, which SQLite took as 0, and a
-  size kept in KiB read back as four billion pages.
-- `SQLiteStatement.cancel()` stops the statement, and only it, as AIR's
-  does. On an asynchronous connection its work not yet run is dropped, its
-  work running now is interrupted, and the rows it left unread are let go
-  of, ending the read they held; nothing more is dispatched for it, and the
-  connection's other work carries on. On a synchronous connection, another
-  thread cancelling a statement that is running interrupts it. It only
-  reset the statement's own fields: an INSERT cancelled before its turn
-  still inserted, a statement running ran on to its end, holding up the
-  work behind it, and a statement read a page at a time kept its read open,
-  a writer elsewhere was told "database is locked", until the next
-  statement on the connection read all its rows.
-- On an asynchronous `SQLiteConnection`, its `cancel()` and a statement's
-  own stop a statement whose work is just starting. SQLite clears an
-  interrupt as a statement starts when no other is running, so a cancel
-  that landed while the worker prepared the statement was lost, and the
-  statement ran on: an `execute()` and `cancel()` in a row lost it within
-  the first few of 150 tries. A progress handler stops it now, and on a
-  synchronous connection too: see the entry for a synchronous `cancel()`.
-- An asynchronous `SQLiteConnection` no longer crashes the process when
-  the calling thread asks it something while its worker runs a statement.
-  `request()`, and the properties and methods that ask SQLite,
-  `journalMode`, `cacheSize`, `lastInsertRowID`, `inTransaction`,
-  `stats()`, `tableList()` and the rest, ran on the calling thread, on
-  the connection the worker was stepping a statement on, and hxcpp's glue
-  finalizes the live statement as the next request starts: the worker
-  read freed memory, five runs in five. The worker runs them now, in turn
-  behind the work queued before them, while the calling thread waits for
-  the answer, for at most the new `queueTimeout`. So one asked right after
-  `openAsync()` waits for the open, where it threw "not open", and
-  `lastInsertRowID` after a queued insert is that insert's. `connected`
-  answers from the connection's events, and asks nothing. The savepoints
-  a `commit()` or `rollback()` ends are let go of on the calling thread,
-  which names them; the worker replaced the list the calling thread was
-  adding to.
-- A `-D final` build compiles again, Lime's `-final` defines `final`,
-  on every sys target. `final` inlines the socket registry's `update()`,
-  and a return added in the middle of it for a failing poll backend
-  stopped every final build at "Cannot inline a not final return". CI
-  type-checks a final build now.
-- A `ServerSocket`'s `handshakeTimeout` of 0 sets no deadline, as every
-  other timeout does and as `ServerWebSocket`'s does. It failed every TLS
-  handshake at the first accept tick natively, and at 1 ms on Node.
-- A WebSocket `NetConnection` whose connect or idle deadline passes ends
-  as `Reason.Timeout`, as a TCP or reliable one does: `WebSocket`
-  dispatches those `ioError`s with `IOErrorEvent.TIMEOUT_ERROR_ID`. They
-  carried no id, so `onError` and `onClose` heard `Reason.Error` with the
-  time in its text.
-- A `Socket`'s `localAddress`, `localPort`, `remoteAddress` and
-  `remotePort` read null and 0 while it has no such end, before
-  `connect()`, after `close()`, and on the jvm, hl and neko while a
-  connect is under way, instead of throwing. A close handler asking
-  whom it had talked to threw on every target, and an `RPCSession`
-  started on a connection still connecting threw a NullPointerException
-  on the jvm.
-- `SharedObject` opens on macOS. A region's name there was the one Linux
-  uses, longer than the 31 characters macOS allows a shared memory name,
-  and its lock was `flock()` on the region's descriptor, which macOS
-  refuses for anything but a file, so no `SharedObject` could open. On
-  macOS a region now takes a short name, a hash of its whole name, and is
-  locked through a file beside it, `/tmp/cbso_<hash>.lock`. Linux and
-  Windows are unchanged.
-- An `RPCSession` whose heartbeat hears nothing closes its connection as
-  `Reason.Timeout`, so the connection's `onClose`, a `NetHost`'s
-  `onDisconnect` and the session's `onDown` hear `Timeout`; they heard
-  `Closed`, as for an application's own `close()`. A connection ended for
-  breaking the protocol closes with that error as its reason.
-- A reliable `NetConnection` whose connect, idle or close deadline passes
-  ends as `Reason.Timeout`, as a TCP or WebSocket one does:
-  `ReliableDatagramSocket` dispatches those `ioError`s with
-  `IOErrorEvent.TIMEOUT_ERROR_ID`. They carried no id, so `onError` and
-  `onClose` heard `Reason.Error` with the time in its text.
-- A reliable session given a new `congestionControl` while messages wait
-  for the window sends them first. They stayed queued until an
-  acknowledgement drained them, none came with nothing in flight,
-  and the next message, finding room under the new policy, went out
-  ahead of them, so a `RELIABLE` message arrived before ones sent earlier.
-- `ReliableDatagramServerSocket.discoverPublicAddress` and
-  `localAddressFor` say what they do with a question they cannot ask:
-  return it failed, its `cause` an `IOError` for a server not bound and
-  listening, as `allocateRelay` does. They said they threw, so a caller
-  catching the throw never heard of the failure.
-- `ReliableDatagramSocket.readMultiByte` and `writeMultiByte` say they
-  read and write UTF-8 and ignore the character set named, as
-  `ByteArray`'s already do; they promised the named set.
-- `DeliveryMode.RELIABLE` and `ReliableDatagramSocket.send()` say how
-  large a reliable message can be: as large as the receiving session's
-  `maxMessageSize`, eight megabytes unless changed, past which the
-  receiver ends the session with an `ioError` and both sides close. They
-  said "however large" and "of any size".
-- `ReliableDatagramServerSocket.connect()` says what a dialled session
-  does: it dispatches `Event.CONNECT` itself when its handshake completes.
-  The documentation promised the server's
-  `ReliableDatagramSocketConnectEvent.CONNECT` "exactly as an accepted one
-  is", which never came, the caller holds the session already, so code
-  waiting on it waited for good.
-- A `ReliableDatagramSocket` whose `timeout` is zero has no deadline: it
-  goes on trying until the peer answers or it is closed, as a `Socket` on
-  Node does. It set a timer of zero, which gave the attempt up at the
-  first pass, by address and by name alike.
-- `ReliableDatagramSocket.close()` delivers what was sent before it. It
-  sent the frames gathered in the pass and a FIN, and let the rest go:
-  frames the congestion window was holding back, frames lost and waiting
-  to be sent again, and in `STREAM` mode bytes written and not flushed.
-  The FIN carried no sequence, so the receiver closed the moment it came,
-  dropping whatever it held past a gap, and a FIN that overtook a lost
-  frame took the frame with it: a client writing 300 messages and closing
-  at once had 10 of them heard. Now the close waits for the peer to
-  acknowledge everything, sending again what is lost, with a FIN that
-  holds the next place in the sequence behind it; the peer dispatches its
-  `close` only once all of it has been delivered, and this side's follows
-  when the peer has acknowledged it. A peer that acknowledges nothing for
-  `closeTimeout` seconds, ten unless changed, is given up, with an
-  `ioError` if more than the FIN went unacknowledged. `abort()` ends a
-  session at once, as `close()` did. A server's own `close()` and
-  `releaseRelay()` end their sessions that way, and so do a message past
-  `maxMessageSize` and an output queue past its limit.
-- `PeerConnection.poll` and `PeerConnectionHost.poll` say `now` must be
-  `haxe.Timer.stamp()`'s time. They said a test could drive them with a
-  clock of its own, which cannot work: what arrives on the socket comes
-  with no time and is handled on `haxe.Timer.stamp()`, so timers armed on
-  one clock and checked on the other fire at once or never.
-- `DtlsTransport`'s documentation says which peer is the DTLS client as
-  `PeerConnection` and `SessionDescription` do: the description's
-  `a=setup` decides (RFC 5763, RFC 8842), and the answerer, the
-  ICE-controlled peer, takes the client role by convention, as a browser
-  answering does. It said the controlling agent was the client, the
-  opposite. Its example calls methods that exist.
-- The `PeerConnection` class example advertises an address: it binds the
-  wildcard, which names no interface, and now asks `LocalAddress` for the
-  default route and adds it, where it advertised nothing a peer could
-  check. The class documentation said such a peer ended up advertising
-  loopback; it advertises no address at all.
-- With `TurnClient.useChannels` on, the first datagram `sendTo` sends to a
-  peer asks for a channel, and once the relay binds it the rest go as
-  ChannelData, as the class documentation said they would "on its own".
-  Only callers that asked for the channel themselves got one: a client
-  used directly sent every datagram as a thirty-six-byte indication.
-- A TURN relay reached over TCP or TLS that answers 300 Try Alternate is
-  followed to the relay it names, over a connection of its own, for
-  `PeerConnection.gatherRelayedFrom` and
-  `ReliableDatagramServerSocket.allocateRelay` alike. The connection was
-  opened once, so the retry reached the relay that had just redirected it,
-  which redirected it again, and the allocation failed as a redirection
-  back to a relay already asked. Over TLS the alternate's certificate is
-  checked against the ALTERNATE-DOMAIN the relay names (RFC 8489 section
-  14.16), and its address when it names none.
-- Closing a `DataChannel` closes it at both ends, by resetting its stream
-  as RFC 8831 section 6.7 has it (RFC 6525's RE-CONFIG), and a peer's
-  close, a browser's `channel.close()`, reaches `onClose` here. What
-  was sent before a close arrives before it. There was no stream reset:
-  `close()` was this end's alone, the peer went on sending into a channel
-  nothing read, a browser's channel never finished closing, and a
-  browser's close was never heard. Checked against Chrome in both
-  directions by `ci/interop/run.js`.
-- `PeerConnection.setRelayCredentials` with a new username leaves the
-  allocation held on the username it was made with, as its documentation
-  says, and uses the new one for the next relay asked. It compared the new
-  username with the held allocation's after rewriting the list entry that
-  allocation came from, so they always matched: the relay refused the next
-  Refresh with 441 and the allocation was lost, at the first renewal of
-  TURN REST credentials, whose usernames carry their expiry.
-  `TurnClient.setCredentials` now refuses a username other than the one
-  an allocation held or being made was signed with, where it took it and
-  lost the allocation the same way.
-- A `PeerConnection` gives up an ICE restart that has found no path within
-  `readyTimeout` of beginning, or whose agent finds none, and goes on as it
-  would have without it: over the old path while the peer answers consent
-  checks there, closing when it does not. Nothing ended a restart the peer
-  never answered, and while one was under way lost consent closed
-  nothing, so `restartIce()` toward a peer that had gone held the
-  connection open for good, and no later restart could begin. A restart
-  that found no path also failed the connection however well the old path
-  was doing.
-- An `IceAgent` gives up when it has not selected a pair within `timeout`
-  seconds of `start`, 80 by default, 0 for none, and `connected` fails
-  saying what it was waiting for. It could wait for ever: with no pair to
-  check (a peer offering only names, and no check arriving), as a
-  controlled agent whose pairs answered and was never nominated, or as a
-  controlling agent whose nomination went unanswered while another pair
-  had answered, which now nominates that pair instead. A nomination also
-  goes out under a transaction of its own, so a late copy of the answer
-  that proved the pair is no longer taken for the nomination's.
-- An `IceAgent` that has failed stays failed, answering and sending
-  nothing, as RFC 7675 has a sender whose consent expired stop. A check
-  nominating a pair brought one whose consent had run out back to
-  CONNECTED, through the path meant for the first selection, with nothing
-  reported. `connected`'s documentation said an agent that connected stays
-  connected until closed; it says now how the path can change and end.
-- `IceAgent.receive` returns true only for what is the agent's: a check
-  addressed to its credentials and signed with them, or an answer to a
-  check it sent. It returned true for every binding message, so a check
-  for another session or an answer to something it never asked was kept
-  from whatever else shared the socket.
-- `IceAgent.MAX_REMOTE_CANDIDATES` bounds the candidates an agent learns
-  from where a peer's checks arrive, as it bounded those a peer advertised.
-  Each check from a new address became a peer-reflexive candidate, paired
-  and checked back, so checks from 192 ports left 192 candidates and drew
-  384 datagrams. Past the cap a check from a new address goes unanswered.
-- An ICE candidate pair nothing answers is given up on 39.5 seconds after
-  its first check, as RFC 8489 gives up a transaction: seven transmissions
-  over 31.5 seconds, and sixteen times the first timeout for the last to be
-  answered. `IceAgent` waited one more doubling after the last and gave up
-  at 63.5, where its documentation said half a minute.
-- `JWT.secureCompare` answers `false` for a null on either side, where it
-  read the null's length: a header or cookie that was not sent threw from
-  inside the check, and natively a null dereference need not throw.
-- `OAuth.getAuthorizationUrl` adds the flow's parameters after a query the
-  authorization endpoint carries of its own. They followed a second `?`,
-  so a parameter put in the endpoint, Google's `access_type=offline`,
-  without which no refresh token is issued, took the rest of the URL as
-  its value.
-- `JWT.verify` refuses a token whose header carries `crit`, as
-  `UNSUPPORTED_CRITICAL`, a new `JWTRejection`. The extensions it names
-  are ones the token may not be accepted without, none is implemented
-  here, and RFC 7515 makes such a token invalid; `crit` was ignored, so a
-  token with `"b64":false` (RFC 7797), whose payload travels unencoded,
-  was read as though it were base64url and accepted.
-- A JWT nested deeply enough no longer ends the process verifying it. JSON
-  is parsed a frame per level and a token's header is parsed before its
-  signature is checked, so no key was needed: natively a 16 KB token,
-  inside a raised `maxTokenLength`, which the doc suggests for tokens with
-  many claims, nested 6,000 deep overflowed the stack, on the runtime's
-  thread or a worker's. A header nested more than 32 deep is refused as
-  `MALFORMED` before it is parsed; the claims are parsed only once the
-  signature has shown the issuer wrote them. The check costs a typical
-  token's verification 35 ns of 11.9 us natively.
-- `SharedObject` reads a region whole and never replaces `data` with `{}`.
-  `sync()` and the constructor read the payload's length and its bytes
-  under two acquisitions of the region's lock, so a flush by another
-  participant in between left a copy cut short: it failed to parse and
-  `data` became `{}`, which the next flush wrote over the shared state, or
-  the read threw. With a second handle flushing for three seconds, 176,256
-  of 613,235 syncs read `{}`. The length and the bytes are one read now,
-  under one lock. A payload this build cannot read makes `sync()` throw an
-  `IOError` and leaves `data` as it was; the constructor starts from
-  `defaultData` then, which it dropped. A handle asking for more than the
-  region's creator made is told the region's real capacity, it was told
-  its own, and its first large flush wrote past the end of the mapping,
-  and on Linux and macOS one opening a region its creator had not sized yet
-  sizes it, where it failed. The class says how long a region lives on
-  each OS: on Windows until its last handle closes, on Linux and macOS
-  until the machine restarts.
-- The README says where the IPC classes and the crypto work. It called
-  `LocalConnection`, `SharedChannel`, `SharedObject` and the native crypto
-  native or jvm features: all of them are native only, `Argon2id` runs on
-  Node too, and of that sentence only ALPN works on the jvm. The crypto
-  list names each class and where it runs. `SecureRandom.isSupported`'s
-  doc names HashLink beside the interpreter and neko as where it is false.
-- `Metrics.shared` is one registry however many threads read it first.
-  It was made at the first read, with nothing to stop two threads from
-  both finding it missing: on the jvm, eight threads reading it first got
-  eight registries, and the counters registered in the seven that were
-  dropped never appeared in a scrape. It is made when the class
-  initializes now, so reading it costs nothing more than before.
-- `Metrics.toPrometheus()` prints whole numbers past 2^31 as they are.
-  They went through `Std.int`, which holds 31 bits: a counter of bytes
-  sent at three billion printed -1294967296 (2147483647 on the jvm), a
-  gauge at five billion 705032704, and a counter that falls reads to a
-  collector as the process restarting. Every sample is written the same
-  way, counters, gauges, histogram bounds, sums and counts, and every
-  whole number up to 2^53 now prints exactly.
-- `SnowflakeId` no longer hands out the same identifier twice when its
-  clock reads fractions of a millisecond, as its default clock does
-  natively: microseconds on Linux and macOS, and on Windows a thousandth
-  per millisecond that lands either side of the whole one. A reading that
-  differed only in its fraction was taken for a new millisecond, the
-  sequence went back to zero and the fraction was then dropped; two
-  million identifiers on Windows held 32,635 repeats. The clock is read
-  in whole milliseconds now.
-- In a browser, `HTTP_RESPONSE_STATUS` says a response was redirected only
-  when it was. A relative URL was compared, as written, with the absolute
-  one the browser reports, so every load of one said it had been.
-- An `HTTPBackend` is handed a request's headers as `"Name: value"`, as
-  `HTTPRequestContext.headers` says; `URLLoader` passed them as
-  `URLRequestHeader.toString()` writes them, with no space. And the client
-  and RPC documentation says what the code does: HTTP/2 registers itself
-  on first use, where `HTTP2Backend`, `HTTPVersion` and
-  `URLRequest.httpVersion` said it had to be registered; `URLRequest`'s
-  `contentType` and `data` say what each sends, where `data` pointed at a
-  note that did not exist; `RPCSession.stop()` says it fails the calls
-  waiting; and `onHandlerError` has its description back.
-- The RPC runtime lane carries a `ByteArray`, as the bytes it holds, in an
-  argument or an answer: the guide says it carries `haxe.io.Bytes`, and a
-  `ByteArray` is one. It was refused as "Unsupported runtime RPC value",
-  the codec matching the `Bytes` class exactly where a `ByteArray` is a
-  subclass of it at run time.
-- The HTTP/2 client sends `Accept-Encoding: identity` unless the caller
-  sent one, as `URLRequest.requestHeaders` says the client does and as the
-  HTTP/1.1 client and Node do. It sent none, which a server may read as
-  leave to use any coding at all, one the client cannot decode among them.
-- The native HTTP/1.1 client reports no informational status, as the
-  client contract says: `URLLoader` dispatched `HTTP_STATUS` for a
-  `100 Continue` ahead of the 200. And a body of unknown length, chunked
-  or ended by the close, reports a `bytesTotal` of 0, as on JavaScript,
-  where it reported -1, which `ProgressEvent.bytesTotal`, a `UInt`, read
-  as 4294967295.
-- `RPCResponse.respond()` replaces the responder, as it says it does:
-  only the one bound last hears the outcome. It added one each time, so a
-  response bound to one responder and then another told both, the one
-  passed to the constructor included. One bound after the call has been
-  answered is told at once, and `then` still adds.
-- `URLLoader` on Node and in a browser sends an object's fields as a
-  form, as it does natively: a POST's as its body, a GET's as its query.
-  Only a `URLVariables` was encoded there, and an object went out as
-  `Std.string` made it, "{ user : bob }", a GET's as a body.
-- `URLLoader` on Node sends `User-Agent: CrossByte` while
-  `URLRequest.userAgent` is unset, as the member says; it sent none. In a
-  browser a `userAgent` set is handed to the browser, which has the last
-  word on it; a response a redirect took from `https` to `http` is refused
-  unless `followInsecureRedirects` allows it; and a coded body the browser
-  decoded past `maxDecompressedSize` fails the load. A page ignored all
-  three.
-- `URLLoader` sends a `URLVariables`, or an object's fields, over HTTP/2
-  as it does over HTTP/1.1: a GET's or HEAD's as its query, any other
-  method's as a form body. The HTTP/2 backend never read them, so a form
-  went out as an empty POST with no Content-Type, and a GET without its
-  query, though setting `httpVersion` is all a request is told to change.
-- `URLLoader` on Node carries the cookies a redirect sets to the hops
-  after it, as `URLRequest.manageCookies`, on by default, says: by the
-  native client's rules, a cookie goes back only to the host that set it,
-  a `Secure` one only over TLS, and a `Cookie` the caller wrote wins. Node
-  kept nothing, so a sign-in answering 302 with a session cookie reached
-  the page it sent the client to without it. In a browser the browser's
-  own jar applies, and `manageCookies` now says so.
-- `URLLoader.close()` ends the load in flight on Node and in a browser,
-  and `cancelToken` cancels one there. `close()` only stopped the next
-  load being refused as busy: the request it closed went on, and its
-  COMPLETE arrived after the next load's, on the same loader. And there
-  was no token at all. The request is now aborted where it stands, which
-  the server sees at once, and what a closed load still reports is
-  dropped; cancelling the token fails the load with "Request cancelled",
-  as it does natively.
-- `URLLoader` on Node and in a browser sends a `ByteArray` body as the
-  bytes it holds. Both clients sent the buffer beneath it, which runs on
-  past `length` into the room it keeps to grow, and into whatever it held
-  before it was cleared: "hello" written after a cleared secret went out
-  as 69 bytes, the rest of the secret among them. Natively the body was
-  always `length` bytes.
-- `RateLimiter.reset(null)` resets the bucket a null key spends from, as
-  `tryAcquire(null)` spends it; it did nothing. Its doc says what it does
-  for a key sharing the overflow bucket: nothing, since refilling that
-  would refill every key sharing it.
-- A `socketData` event's `bytesLoaded` is the bytes that arrived for it,
-  on Node and in a page as natively; there it was everything still
-  unread, so an event for 4 bytes said 7 when 3 before them were unread.
-- A TCP or WebSocket `NetHost` reports `discoverPublicAddress` and
-  `allocateRelay`, which it cannot do, as a failed `Future`, as every
-  member answering with a `Future` reports failure; they threw, so a
-  caller handling failure on the `Future` never saw them. `INetHost` says
-  so, and says that `maxConnections` is the listen backlog, not a limit.
-- `Socket.close()` sends what was written first, as far as the system
-  takes it without waiting. Writes go at the end of the pass, so bytes
-  written just before `close()` were thrown away, on every target.
-- A `Socket`'s `timeout` of 0 means no deadline natively too, as it did
-  on Node; natively it failed every connect that took any time at all.
-- `Socket.writeBytes` throws the `RangeError` its doc promises for an
-  offset or length past the bytes given, as `DatagramSocket.send` does,
-  where it wrote whatever part of them there was; and `new Socket(host,
-  port)` throws the promised `SecurityError` for a port outside 0-65535,
-  where it made a socket that never connected. `flush()` and
-  `readMultiByte`/`writeMultiByte` say what they do: every write is sent
-  without a flush, and a character set is not used.
-- On Node a TLS `ServerSocket` drops a client that has not finished its
-  handshake within `handshakeTimeout`; Node's own two minutes applied. A
-  handshake that finished after `close()` or `stopAccepting()` is closed,
-  where it was adopted, with no runtime, and announced to the stopped
-  server.
-- On Node a `ServerSocket` that cannot have its port, in use, or an
-  address that is not local, dispatches an `ioError` saying why before
-  `close`, as a `DatagramSocket` does; it dispatched `close` alone. A
-  connection Node could not accept once listening, a process out of
-  descriptors, is counted in `acceptFailures` and reported once, as
-  natively, where it closed the server.
-- `ServerSocket.listen()` on a server never bound is the `IOError` its
-  doc promises, on every target. Windows threw "Listen failed", the jvm
-  a string, eval stopped altogether, and Linux and macOS listened on a
-  port of the system's choosing that `localPort` did not report.
-- `ConcurrencyLimiter.tryAcquire` no longer keeps capacity nobody can
-  release. It took the capacity before delivering what its sweep had
-  decided for waiters, so a refusal callback that threw carried its
-  exception out with the permit just made: held for good, and in the
-  hands of no caller. It delivers first now.
-- `NetConnection.close()` on a WebSocket connection whose peer had closed
-  it no longer throws "Operation attempted on invalid socket"; on any
-  connection that has ended it does nothing.
-- `Socket` and `WebSocket` start in `ObjectEncoding.DEFAULT`, accepted
-  sockets included, as `ByteArray` and `ReliableDatagramSocket` do.
-  `objectEncoding` was never set: natively and on the jvm it read 0,
-  which is AMF0 and throws without `-lib format`, and elsewhere null, so
-  `readObject` and `writeObject` threw on every socket until the
-  application chose an encoding.
-- A `NetConnection` dialled over TCP works on Node and in a browser. It
-  stamped each send and each arrival with the uptime of the socket's
-  runtime, read from a field only a native connect sets: every send threw
-  a TypeError, and on Node the first bytes to arrive threw inside Node's
-  data callback, which closed the connection, so `RPCSession.dial` with
-  a `tcp://` address could never carry a call there.
-- A `Key` loads from every form a key file comes in, with its password,
-  on every target. The jvm read an unencrypted PKCS#8 key alone: an
-  encrypted one, or a PKCS#1 or SEC1 key, what `openssl genrsa` and
-  `openssl ecparam -genkey` write, was an error saying to convert the
-  file. Natively, and on hl, neko and eval, mbedTLS decrypts PKCS#8 only
-  with DES, so the AES-encrypted key OpenSSL writes by default failed
-  with "Requested encryption or digest alg not available", and eval's
-  `Key.fromPem` passed no password at all. On Node a certificate chosen by
-  SNI was given its key without the passphrase, so every handshake for
-  that name failed when the key was encrypted; each name's context is now
-  made once, at `listen()`, rather than at every handshake.
-- A `Key` shows nothing of itself when printed. On Node it held its PEM
-  text and passphrase in two plain fields, and `trace`, `Std.string`,
-  `JSON.stringify` and `console.log` each printed both, so one debugging
-  line put a server's private key, and the password protecting it, in a
-  log. It prints as `[Key: redacted]` on every target now.
-- A `WebSocket`'s `socketData` event reports in `bytesLoaded` the bytes of
-  the message that has just arrived, as a `Socket`'s does. It reported
-  everything unread, so a reader that had left one message in the stream
-  was told the next was both together.
-- `WebSocket.readMultiByte` and `writeMultiByte` say what they do, as
-  `ByteArray`'s already did: the character set is ignored, and the bytes
-  are UTF-8. They promised `"shift_jis"` and the rest. Its `readObject` and
-  `writeObject` say they use `objectEncoding`, where they said AMF.
-- `WebSocket.writeBytes` and `sendBinary` refuse a range outside the bytes
-  given, with a `RangeError` (an `ArgumentError` for `null`), as
-  `writeBytes` promised and as `DatagramSocket.send` does. They wrote
-  whatever part of the range fell inside and said nothing, so a message
-  cut short went out as if whole.
-- A `WebSocket`'s output limit honours `outputOverflowPolicy`, as a
-  `Socket`'s does: `CLOSE` dispatches an `ioError` saying why and then
-  closes the session with 1011, and `THROW` throws an `IOError` from the
-  send that left more than `maxOutputBufferSize` waiting and keeps the
-  session. Whatever the policy, the session closed with 1011 and said
-  nothing; and on Node it ended its socket rather than destroying it, so
-  what was queued for the peer that was not reading stayed queued.
-  `shutdown()`, which on a `WebSocket` returned having done nothing,
-  throws an `IllegalOperationError`: a session has no half-close, and the
-  class now says `peerShutdownPolicy` is not consulted either.
-- On Node a `ServerWebSocket` that cannot listen, a port in use, an
-  address that is not local, dispatches an `ioError` saying so and then
-  `close`, as a `DatagramSocket` reports a failed bind there, and as
-  `bind()` now documents. Node claims the address only once `listen()`
-  starts, so the failure cannot come out of `bind()` as it does natively,
-  and it was dispatched as `close` alone.
-- A session a secure `ServerWebSocket` accepted says it is `secure`, as a
-  socket a secure `ServerSocket` accepted does. It read `false`.
-- `ServerWebSocket.listen()` throws an `IOError` for a server that is not
-  bound, as its doc says, natively as on Node. Natively it never asked:
-  Windows refused the listen with an error of the socket's own, and Linux
-  and macOS bound the socket to a port of their own choosing and listened
-  there.
-- A `ServerWebSocket` survives a connection the system will not hand over,
-  the process out of descriptors, the system out of memory, as
-  `ServerSocket` does: counted in `acceptFailures`, reported once as an
-  `ioError` for a run of them, and the server goes on listening, taking
-  the connection once a descriptor frees. It missed that fix: hxcpp's
-  refusal, a bare string, was swallowed without a trace, and the jvm's
-  closed the server.
-- A `WebSocket` client's failed connect ends one way, however it failed,
-  as a browser's WebSocket does and as the class now says: `ioError` saying
-  why, then `close` with 1006. A TLS failure closed with 1015 natively, an
-  upgrade the server refused closed with 1002 and no error, as if an open
-  session had broken the protocol, and a server that hung up before
-  answering closed with 1006 and said nothing.
-- A `WebSocket` client's `timeout` bounds the whole of a connect, as one
-  deadline from `connect()`: the host's lookup, the TCP connect, a
-  `wss://` TLS handshake and the upgrade. Natively the TLS handshake gave
-  up at a fixed three seconds whatever `timeout` said, and on Node nothing
-  bounded a connect until the transport was up, so a client of a server
-  that never answered TLS waited for good. A `timeout` of 0 waits for as
-  long as it takes, as it did on Node, where natively it failed a lookup
-  at once and still gave TLS its three seconds.
-- A `ServerWebSocket` lets go of the sessions still upgrading when it
-  stops: `stopAccepting()`, `drain()` and `close()` close each one, as
-  `ServerSocket` drops a TLS handshake in flight. None did, and the
-  deadline on those sessions is kept from the tick they take away, so a
-  peer caught mid-upgrade was held with no deadline at all, and one that
-  finished upgrading afterwards opened, and was announced, on a server
-  that had stopped or was draining. On Node a TLS handshake that finishes
-  after the server stopped is refused for the same reason. `drain()`
-  refuses a close code that may not be sent before it stops anything:
-  each session's `closeWith` refused it and the refusals were swallowed,
-  so no session was told why it was dropped.
-- A secure `ServerWebSocket` gives a session all of `handshakeTimeout` from
-  accept, over its TLS handshake and its upgrade together. Natively an
-  accepted session gave its TLS handshake a fixed three seconds whatever
-  `handshakeTimeout` said; on Node the TLS server was never given it, so a
-  peer that connected and said nothing held its descriptor for Node's
-  default of two minutes.
-- `ServerWebSocket.pendingHandshakeCount()` is the sessions still arriving,
-  in their TLS handshake or their upgrade, what `maxPendingHandshakes`
-  bounds, and `handshakeFailures` counts those that never arrive: a TLS
-  handshake or upgrade request that failed, a peer gone first, or
-  `handshakeTimeout` run out. Both stayed at 0 on every `ServerWebSocket`.
-  A refusal by `upgrade` is not counted, nor a session stopping or closing
-  the server let go of. A session under a `handshakeTimeout` of 0 is
-  counted and dropped like the rest; it had been left off the list.
-- A `ServerWebSocket` takes the TLS methods it inherits from `ServerSocket`:
-  `setCertificate()`, `addSNICertificate()` and `setALPN()`, as well as
-  `requireClientCertificate()`. Each reached into the listener
-  `ServerSocket` builds, which a `ServerWebSocket` never does, natively a
-  null dereference, which on hxcpp ends the process, and on Node each was
-  kept where this server's listener never looked: a certificate given to
-  `setCertificate()` left `listen()` refusing for want of one, and the SNI
-  entries and ALPN list were ignored. On Node each SNI certificate's
-  context is made once, with the server, and opens a key's passphrase. A
-  session reports what its handshake agreed in `alpnProtocol`, which read
-  `null` on every `WebSocket`.
-- A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its
-  documentation now says, and a secure server will not `listen()` without
-  one. A native server builds its TLS configuration in `bind()`, so a
-  certificate assigned afterwards was taken without a word and never
-  presented, and `listen()` did not ask whether there was one: the server
-  listened and every handshake failed silently. `cert` is now refused once
-  bound, and on a plain server, which would never present it.
-- A secure `ServerWebSocket` with `certAuthority` set asks every client for
-  a certificate that authority issued, and refuses one that presents none,
-  natively as on Node. Natively the authority was installed with
-  verification left off, as the constructor set it so that ordinary
-  clients would not be asked, so a server told to require client
-  certificates let in clients that had none. `requireClientCertificate()`,
-  which dereferenced a listener a `ServerWebSocket` never builds, now does
-  the same thing, and both are refused on a plain server and once bound.
-- On Node an application made once the program is running runs. Its loop
-  went through `haxe.EntryPoint`, as a child runtime's did, which runs
-  what it is handed only until the program has started; an `Application`
-  made after an asynchronous load never got an INIT or a tick. It starts
-  in a later turn now, as a child does.
-- A `NativeProcess`'s output keeps a character a read cuts in two whole,
-  natively, on the jvm, hl and neko. Each read of the child's output was
-  decoded on its own, so a UTF-8 character split between two reads, at
-  a 4,096-byte boundary, or wherever the pipe handed back less, arrived
-  as replacement characters. Node decoded across reads already.
-- `ByteArray.fromBytes`, and assigning a `Bytes` to a `ByteArray`, say
-  what they make: a ByteArray over the `Bytes`' own storage, where a change
-  through either shows in the other until the ByteArray grows, on every
-  target but the interpreter, which copies. The doc said "a new
-  ByteArray".
-- `ByteArrayOutput` grows as its doc says, in every writer. The
-  fixed-size ones, byte, short, int, float, double, bytes, only
-  checked, outside `final`, and threw, so a `new ByteArrayOutput()` could
-  not take `writeInt(1)` without a `reserve(4)` first; in a `final` build
-  they did not check at all and wrote past the end of the chunk. A writer
-  short of room takes a new chunk at least as large as what the output
-  already holds, so value after value takes a handful of chunks;
-  `reserve()` still takes one of exactly the size asked for.
-- On Windows, closing the console window, logging off or shutting down
-  runs the `onShutdown` callbacks of `ProcessLifecycle`. Windows ends the
-  process as soon as the console handler for those returns, and the
-  handler returned at once, so the process was gone before the runtime's
-  next tick saw the request: only Ctrl+C and Ctrl+Break shut down cleanly.
-  The handler now holds the event while the runtime shuts down, for as
-  long as Windows allows, about five seconds for a closed window, and at
-  most 20, and the process ending lets it go.
-- A `MainLoopType.CUSTOM` loop body can run its runtime. It calls
-  `CrossByte.pump(delta, socketTimeout)`, public and documented now, for
-  a frame, what was posted, the timers, the tick, the sockets, which
-  waits up to `socketTimeout` for a socket to be ready or for a post.
-  `pump` refused every runtime that was not host-driven and the rest of a
-  frame was private, so a custom loop could run nothing but itself, though
-  `CUSTOM` promised a body that drives the timers and the sockets. `pump`
-  on a runtime that runs its own loop, or on a `CUSTOM` one from another
-  thread, throws an `IllegalOperationError` saying so, where it threw a
-  `String`.
-- A `Worker` cancelled after its work has sent its COMPLETE, but before
-  its runtime has delivered it, ends `CANCELLED`. `cancel()` went by
-  `completed`, which is set as the work sends, and left the state alone;
-  the delivery was then discarded as cancelled, and the worker read
-  `RUNNING` for good, so `run()` refused it as already running.
-- On JavaScript a `Task`'s events and a `Worker`'s messages arrive in a
-  later turn, as they do from a thread elsewhere. With no threads the job
-  runs inside `TaskPool.submit`, and a worker's work inside `run()`, and
-  everything it reported was dispatched there too: before `submit` had
-  returned the task, so a listener added to it never heard anything. The
-  work still holds the one thread while it runs, as `TaskPool`, `Task` and
-  `Worker` now say, and a listener that throws is reported as a posted
-  callback's failure is rather than thrown into Node's loop.
-- On JavaScript a child runtime made once the program is running runs.
-  `CrossByte.make()` handed its loop to `haxe.EntryPoint`, which on Node
-  runs what it is given only until the program has started, so a child
-  made later never started: no INIT, no tick. And a child no longer takes
-  the program's timers. There is one thread, and a child's loop bound
-  `crossbyte.Timer` to itself as it started and never gave it back, so a
-  timer the application armed from then on ran on the child's scheduler,
-  and never at all once the child had exited. While a child's own work
-  runs, INIT, its ticks and timers, EXIT, `CrossByte.current()` is the
-  child and `crossbyte.Timer` schedules on it, as on a child's own thread
-  elsewhere; the rest of the time they are the application's.
-- `TickEvent.delta` says what the first tick reports: the time since the
-  runtime's loop started, which is zero natively, on the jvm, hl, neko and
-  the interpreter, where the loop ticks as it starts, and about one tick
-  interval on JavaScript, where the first tick waits for the platform's
-  timer. It said zero everywhere, and JavaScript's first was 83 ms.
-- `Timer.fromWallClock` and `toWallClock` convert at the present: the
-  scheduler's time now is the clock's now, and other times follow by the
-  difference. Both counted the scheduler's time on top of when it started,
-  so a runtime that had run for an hour put every wall time an hour out.
-  `Timer.stamp()` with no application throws an `IllegalOperationError`
-  that says so, where it was a null access, natively, in a release
-  build, a crash, and `Timer` on a thread with no runtime throws one, as
-  `CrossByte.current()` does there, where it threw a `String`. The class
-  doc pointed at a `CrossByte.runThread()` that does not exist.
-- `NativeProcess` starts a child process on the jvm. Its support check
-  asked for an OS define, which only native builds have, so the jvm
-  refused though it can; it asks for threads now. The jvm's `exitCode()`
-  buffers away whatever output is left before it waits, so the output is
-  read to its end first, everywhere, and the child's id is looked up as
-  the jvm's own `getPid()`, which answered -1, did not (Java 8 on Windows
-  keeps none, as `pid` says). The interpreter still cannot, its process
-  calls hold every thread while they wait, so a quiet child stopped the
-  program, and `start` says so with an `IllegalOperationError` naming
-  it, where it threw an `ArgumentError`. `isSupported` and the README say
-  where it runs.
-- `EventDispatcher.addEventListener` documents `priority` as what it is:
-  higher runs first, and equal priorities run in the order added. It called
-  it an insertion index, clamped to the list's length, with lower values
-  "inserted earlier (i.e. called later)". `Application.removeGlobalListener`
-  says its `priority` is not used, where it asked for the one a listener
-  was added with.
-- `EOFError` keeps the message and id it is given, as its doc says; given
-  none, they are still Flash's "End of file was encountered" and 2030. It
-  replaced both whatever was passed, so `FileStream`'s account of what ran
-  out, "Asked for 8 bytes with 3 left in the file", reached nobody.
-- `IDataInput` and `IDataOutput` describe CrossByte's defaults: values in
-  the object's `endian`, which for a `ByteArray` and the sockets starts as
-  `ByteArray.defaultEndian`, little-endian unless changed, and objects in
-  HXSF unless changed. They said big-endian and AMF, AIR's defaults, which
-  no class here has. `readUnsignedInt` says it returns the 32 bits as an
-  `Int`, negative from 2^31 up, where it promised 0 to 4294967295 in a type
-  that cannot hold them; and `ByteArray.defaultObjectEncoding` says it is
-  HXSF on every target, where it said it varied between platforms.
-- `ByteArray.clear()` says it keeps the memory the bytes took. Its doc,
-  AIR's, said it freed it, which it never did: a byte array cleared and
-  filled again reuses its buffer, which is what the sockets rely on when
-  they clear theirs after every message. Dropping the byte array is what
-  gives the memory back.
-- The varint writers write every value they take. `ByteArray.writeVarInt`
-  (`writeVarUInt` now, under Removed) and `ByteArrayOutput.writeVarUInt`
-  looped while a signed `v > 0x7F`, so a value with bit 31 set went out as
-  one byte: 0x80000000 read back as 0, and 0xFFFFFFFF as a varint that
-  never ended. `ByteArrayOutput.writeVarInt` sent every ZigZag value from
-  2^30 up in magnitude that way, and
-  `varUIntSize` sized them at one byte. The readers refuse a value past 32
-  bits, where they shifted the extra bits off the top and read 2^32 + 1 as
-  1: a `RangeError` from a `ByteArray`, an `IOError` from
-  `ByteDelta.decode`, "varuint overflow" from a `ByteArrayInput`. And
-  `ByteArrayInput.readVarUInt` reads the whole unsigned range it is
-  documented for, where it stopped at 2^31 - 1, so `readVarInt` reads every
-  `Int` back. A varint a `ByteArray` holds only part of leaves its
-  `position` where it was, so it can be read again once the rest arrives;
-  one whose fifth byte asks for a sixth is a `RangeError`, not an
-  `EOFError` that says to wait for more.
-- An SQLite statement read a page at a time keeps its rows when other
-  statements run on the same connection between its pages, a cursor
-  whose rows are each written elsewhere. hxcpp's glue keeps one live
-  result per connection and finalizes it as the next request starts, so
-  the statement stopped after the page in hand, and its next page read as
-  the empty, complete last one: 10 rows of 100. The result still live now
-  reads what it has left into its own hands first; only a result
-  interleaved that way pays for it.
-- Postgres statement parameters are not substituted into a dollar-quoted
-  string or past an escaped quote in an `E'...'` string. The scan did not
-  know either: it substituted a `:name` the server reads as inside the
-  literal, and a value holding the dollar tag, `$$; DROP TABLE users;
-  --`, or no quote at all ended the server's literal for it, the rest
-  statement text. A placeholder inside such a literal is left as written,
-  as one inside any other literal is.
-- A `MySQLStatement` given its connection before `open()` runs once the
-  connection is open; it copied the connection's handle when
-  `sqlConnection` was set, held none, and refused. And a MySQL isolation
-  level the server refuses is thrown as a `MySQLError`, as every other
-  refusal is: the setter went round `request()`, so the driver's own error
-  escaped, on the jvm a `java.sql.SQLException`.
-- The PostgreSQL docs say what the driver is: libpq natively, PDO on php,
-  nothing elsewhere, the class said "backed by PHP PDO", and the README
-  listed PostgreSQL with no target at all, and that
-  `PostgresConnection.lastInsertRowID` reads 0 on PostgreSQL 12 and later,
-  which assign no OIDs. MongoDB's `batchSize` sizes the first batch too,
-  as it is sent with the `find`; the doc said it applied after the first.
-- Off cpp, a MySQL insert id past 2^31 reads back whole in
-  `SQLResult.lastInsertRowID`, and `MySQLConnection.lastInsertRowID`
-  holds at 2147483647 as it does natively. Haxe's drivers keep it in an
-  `Int`: hl and neko wrapped it, and on the jvm Haxe's JDBC binding read a
-  single insert's key with `getInt` after the insert had run, so a
-  committed insert was reported as failed. An id that cannot be right is
-  asked for with `SELECT LAST_INSERT_ID()`, as text, as the SQLite driver
-  does; on the jvm that `getInt` failure, SQLSTATE 22003 with no error
-  number, from an `INSERT` or `REPLACE`, is taken for the success it was.
-  And `MySQLStatement.parameters` says per target how a `DATETIME` written
-  from a `Date` reads back, which is as UTC natively only.
-- `MongoConfig.connectTimeout` bounds the whole of `open()` with each
-  server, the connect, TLS, the hello and the login, as MySQL's bounds
-  its login. It was only a socket timeout set before the connect, which
-  Windows ignores for a connect (21 s to a host that drops the SYN), and
-  was replaced by `socketTimeout`, no limit by default, before the hello:
-  a server that accepted and never answered held `open()` for good, and on
-  the interpreter neither timeout applied at all. The connect is made
-  without blocking and finished within the deadline natively and on neko;
-  the interpreter bounds the hello and login with `select`. Where a target
-  cannot bound a step, `connectTimeout` says so.
-- `itemClass` works on every statement, SQLite, MySQL, Postgres and
-  MongoDB, as AIR's does: each row is made an instance of the class, with
-  no arguments, and each field set from the column of its name, and a
-  column the class has no field for fails the statement with an
-  `SQLError`. It was declared on all four and read by none, so every row
-  was an anonymous object whatever it said.
-- A statement parameter set to `null` is written as `NULL` by Postgres's
-  and SQLite's statements, as MySQL's has been, and bound as BSON null by
-  MongoDB's. Postgres and SQLite took it for a parameter never set and left
-  `:name` in the SQL, the server refused it, and SQLite read it as an
-  unbound parameter, NULL by luck, and MongoDB refused it as "no
-  parameter named". `ExtendedJson.parse` takes whether a parameter exists
-  apart from its value for this, and `MongoConnection.request()` binds a
-  key mapped to null.
-- `PostgresConnection.autocommit` works: set `false`, a transaction begins
-  before the next statement and lasts until `commit()` or `rollback()`, as
-  on MySQL and in JDBC, and `inTransaction` reads true meanwhile, as
-  MySQL's does, so `ConnectionPool` rolls back and retires a connection
-  handed back that way. Set back to `true` it commits what is open.
-  PostgreSQL has no such setting on the server, and the flag was stored
-  and never read: every statement committed on its own. And setting
-  `isolationLevel` throws the `SQLError` the server refused it with,
-  where the refusal was swallowed and the level read as set.
-- `PostgresConnection.request()` throws an `SQLError` for a statement the
-  server refuses, as `requestParams()` and the other drivers' `request()`
-  do, and for a connection that is not open. It threw an `IOError` for the
-  one and a `String` for the other, so code catching `SQLError`, as
-  `MongoError` says the other drivers' failures are caught, caught
-  neither.
-- An SQLite database opened with `autoCompact` shrinks as rows are deleted,
-  as AIR's does. It was made INCREMENTAL, which gives nothing back until
-  `PRAGMA incremental_vacuum` runs, and nothing ran it: after 200 rows of
-  8 KiB were deleted the file stayed 1.7 MB with 425 free pages, while
-  `autoCompact` read `true`. New databases are FULL, which truncates the
-  file at every commit, and `autoCompact` is true for FULL only; a
-  database made by an earlier version reads `false`, and `compact()`
-  reclaims its space.
-- SQLite's `foreignKeyCheck()` and `totalChanges` read row ids and counts
-  whole, as `lastInsertRowID` already does. Both were parsed into an `Int`
-  with `Std.parseInt`, which past 2^31 answers differently on each target
-  and never the number: a violation at rowid 3,000,000,000 was reported at
-  2147483647, the row a repair would then have touched. `FKViolation.rowid`
-  is a `Null<Float>`, null for a `WITHOUT ROWID` table, which has none,
-  and `totalChanges` a `Float`.
-- An SQLite connection opened with `SQLiteMode.READ` cannot write, as
-  AIR's `READ` cannot. It only checked that the file existed and then opened
-  it to read and write: an `INSERT` through it succeeded. It is held to
-  reading with SQLite's `query_only` now, which `SQLiteMode.READ` documents.
-- `SQLiteConnection.cancel()` stops the work and keeps the connection, as
-  AIR's does. On an asynchronous connection the statement running is
-  interrupted (`sqlite3_interrupt`, on cpp) and fails with "interrupted",
-  everything queued before the call is dropped with an `SQLErrorEvent`
-  saying so, and `CANCEL` follows them; the connection then runs what it is
-  asked as before. It cancelled the connection's worker instead: the
-  running statement went on to its end unreported, the queued work was
-  dropped without a word, `CANCEL` came at once, and `close()` never
-  closed, holding the connection and its file for the life of the process.
-  On a synchronous connection it interrupts a statement running on another
-  thread.
-- `SQLiteConnection.deanalyze()` removes the statistics `analyze()`
-  gathered, as AIR's does: the rows of `sqlite_stat1`, and of
-  `sqlite_stat4` where there is one, in every database the connection has
-  open, and the query planner reads them again. It closed the connection
-  and opened it again instead, touching no statistics: an in-memory
-  database lost every table, a file kept its statistics, and the session
-  lost its transaction, attached databases and settings. On an
-  asynchronous connection `DEANALYZE` came before the work, which then
-  left the connection answering nothing; it comes once the work is done.
-- Opening a Postgres or SQLite connection that is already open no longer
-  leaks the first. Postgres replaced its native handle and left that
-  server connection open for the life of the process; it now closes it
-  first, dispatching `CLOSE`, as MySQL does. SQLite replaced its handle
-  too, leaving the first holding its locks, and `openAsync()` started a
-  second worker over the same object; it now throws an
-  `IllegalOperationError`, as AIR's `open()` does, and, after an
-  asynchronous `close()`, until its `CLOSE` arrives, when the old worker
-  has let go. An SQLite operation, `request()` or property read on a
-  closed connection throws `IllegalOperationError` where each
-  dereferenced the connection it did not have, and an open that failed
-  part way closes what it had opened.
-- An asynchronous `SQLiteConnection` survives a failure, and each of its
-  statements gets every row. Any error on one killed the process: the
-  connection's own failures, a refused `BEGIN`, a failed open, were
-  taken for a statement's message and its absent statement dereferenced,
-  and a failed statement had its absent result set read. And the worker
-  handed each statement its result set and went on to the next statement
-  while the runtime's thread read the rows, but hxcpp's glue starts a
-  statement by finalizing the one before it: of two SELECTs queued
-  together, the first got one row. Rows are read on the worker now and
-  sent back a page at a time; work queued behind a `close()`, or behind an
-  open that failed, is told it will not run instead of waiting for ever;
-  and `SQLResult.rowsAffected` is what a write changed, and 0 for a
-  SELECT, where reading it stepped through the rest of a SELECT's rows.
-- An SQLite SELECT returns all its rows once the connection's last rowid
-  has passed 2^31. A statement read that rowid as soon as it had started,
-  and past 2^31 reading it is a query of its own, which hxcpp's glue starts
-  by finalizing the statement before it: every SELECT came back with its
-  first row only. The rowid is read once the statement's rows are all read.
-- SQLite reports its failures as the other drivers do. An operation or
-  statement SQLite refuses on a synchronous connection is dispatched as an
-  `SQLErrorEvent` and thrown as an `SQLError`, and `request()` throws an
-  `SQLError`; each let hxcpp's raw `String` escape, told no listener, and a
-  statement dispatched no `RESULT` at all. A statement whose connection is
-  not open throws an `IllegalOperationError` where it dereferenced the
-  connection it did not have, and it asks its connection for its state when
-  it runs: it copied the connection when `sqlConnection` was set, so one
-  given its connection before an `openAsync()` had finished held none, and
-  one kept across a `close()` and `open()` held the closed one. A second
-  `close()` does nothing, and a savepoint SQLite refused is not the one a
-  nameless release reaches for next.
-- The HTTP/2 client keeps an interim response, `100 Continue`, `103 Early
-  Hints`, apart from the response. Every header block's fields were
-  added to the stream's, so a 200 after a 103 came back carrying the 103's
-  `link`. An interim block is now dropped and the final one waited for, and
-  one that ends the stream is a malformed response, its stream reset
-  `PROTOCOL_ERROR` while the connection carries on (RFC 9113 8.1); it was
-  taken as the response, a `100`.
-- On Windows, a request path that names an environment variable,
-  `/%25X%25`: reaches no file but one of that name. A `File` reads
-  `%NAME%` in its path from the environment, and the server made one from
-  the request path after the dotfile and root checks had been made on the
-  path as written, so the request was served whatever `X` held: a
-  dotfile's name, or `..` steps to a file outside the root. A path the
-  `File` rewrites is now answered as one that is not there.
-- An HTTP/2 file download lets go of its file when its client resets the
-  stream, and is held to the 30 s stall deadline when its client stops
-  taking it. The pump waits on its stream's writable callback, which a
-  reset drops, and only the socket closing stopped it, so each download a
-  client reset or simply never opened its window for held a file open
-  until the connection closed; the stall deadline was checked by the
-  HTTP/1.1 sweep alone. A stalled one is reset, and the connection
-  carries on.
-- `Router.head()` says what `respond()` does for a `HEAD`: states the
-  length of the body it is given and sends none of it. It said a `HEAD`
-  was framed as zero-length, which has not been so since `HEAD` answers
-  began stating their `GET`'s length.
-- A server's `HTTPStatusEvent.HTTP_RESPONSE_STATUS` says what was answered,
-  as the event's doc has it: `responseURL` is the request's path and
-  query, where it was the client's address (`remoteAddress` has that), and
-  `responseHeaders` every field the response carries but its framing,
-  where it was only the fields a caller had added, for a static file, no
-  `Content-Type`, `Date` or `Server`.
-- A `POST` goes where the rewrite rules send it, as a `GET` does: it was
-  resolved against the path it named, so a form posting to a rewritten
-  path was answered 404. And a rule's query, merged with the request's
-  under `QSA`, reaches a script whether or not the rule has the `PHP`
-  flag: without it the script was given the request's query and lost the
-  route the rule had captured. `RewriteRule.target` no longer says it can
-  name a route, which rules, running after middleware, cannot reach.
-- `HTTPServerConfig.http2ResetWindowSeconds` says that it also measures the
-  budget of PING and SETTINGS frames a peer may make the server answer, a
-  hundred a window, and that `0` turns both defences off: it read as the
-  reset budget's window alone.
-- An `HTTPServer` given a TLS certificate path and no key path, or a key
-  and no certificate, is refused at construction. `tlsEnabled` asks for
-  both, so it was false, and the server listened in plain HTTP for a
-  caller who had asked for HTTPS and been told nothing: one misspelt
-  environment variable was an unencrypted server.
-- `HTTPServerConfig.errorDocument` is the body of every error the server
-  answers by itself, a missing file's 404, a 403, a 405, a refused or
-  late request, a 500, with the status each would have had, and the
-  `Content-Type` its extension names. It was accepted and kept and never
-  read, so every error went out as a line of plain text. It is read once,
-  when first wanted, and `validate` refuses one that is not there. An
-  answer middleware or a route gives with `respond()` is never replaced.
-- The server's own error answers, a 404 for a missing file, a 403, 405,
-  429, 501 and the rest, carry no body for a `HEAD`. They went out with
-  their text whatever the method, so a `HEAD` for a missing file had
-  "404 Not Found" after its head, which a client keeping the connection
-  reads as the start of the next response, and which HTTP/2 makes a
-  malformed one.
-- A precompressed `.gz` beside a static file is sent to a client that also
-  takes Brotli, which every browser does. Only the sibling for the coding
-  the client was going to be given was looked for, and that was Brotli, so
-  a file with only a `.gz` went out as br encoded on the spot, or, too
-  large to hold, as it is on disk: 307,200 bytes where its `.gz` held
-  49,755. Siblings are tried in the client's order of preference now, and
-  an absent one costs one filesystem call rather than two, so looking for
-  both costs what looking for one did.
-- `$uri` in a `tryFiles` entry after the first two is the request path, as
-  in nginx's `try_files`: `"$uri.html"` serves `/about` from `about.html`.
-  It was looked for as a file named `$uri.html`.
-- A rewrite rule with a `FileExists` or `DirExists` condition can win over
-  a file the request names, as `HTTPServerConfig.tryFiles` says: it is
-  tried in its place even then, and with `FileExists` (not negated) it
-  applies to exactly those requests. Every rule ran only once the request
-  had been found to name no file or directory index, so none could, and
-  the doc's recipe, `negate` set, asked the opposite. Rules without such
-  a condition are passed over for a request naming a file, as before.
-- A rewrite's `Header` condition matches its field in any case, as HTTP
-  names one. Both parsers store a request's fields lowercase, and the key
-  was looked up as written, so `X-Test` matched nothing a client could
-  send and only `x-test` worked.
-- DATA on an HTTP/2 stream its client has already ended is refused with
-  `STREAM_CLOSED`, as RFC 9113 5.1 has it. It was taken as more body, and
-  a second END_STREAM delivered the request again, so a second handler
-  answered a stream the first was answering.
-- An HTTP/2 response the server has to give up on partway, a file that
-  came up short, a read that failed, a stream written faster than its
-  client takes it, resets its own stream and leaves the connection's
-  others be. The file pump closed the socket, which under HTTP/2 is every
-  stream's, so one file changing under a download took down every request
-  on the connection. And a producer stopped at `maxOutputBufferSize` hears
-  `Event.CLOSE` over HTTP/2 as it does over HTTP/1.1: nothing told it, so
-  one writing on a timer wrote on for good.
-- An HTTP/2 request's method is read in capitals, as an HTTP/1.1 one is and
-  as `HTTPRequestHandler.method` says. It was taken as it came, so `get`
-  was refused `405` over HTTP/2 and served over HTTP/1.1, and a route
-  matched one and not the other.
-- An HTTP/2 request is held to `requestTimeout` from its own HEADERS. Every
-  frame read or written set the connection's one clock back, so a client
-  sending a byte of body every 0.4 s held a request open under a
-  `requestTimeout` of one second for as long as it liked, and was answered
-  200, where HTTP/1.1 answered 408 at 1.05 s. A late request is answered
-  `408` on its stream, which is then reset, and the connection carries its
-  other requests on; it used to be the whole connection that went. And an
-  HTTP/2 connection is idle, for `keepAliveTimeout`, while it has no stream
-  open: PINGs, SETTINGS and WINDOW_UPDATEs counted as activity, so a client
-  sending only PINGs held a connection for good.
-- `keepAliveMaxRequests` and `keepAlive = false` hold for HTTP/2, which took
-  no notice of either. The stream that reaches the limit, the first, with
-  keep-alive off, is the last the connection takes: a GOAWAY naming it
-  goes out as it opens, a stream opened after it is refused with
-  `REFUSED_STREAM`, which tells the client it is safe to send elsewhere, and
-  the connection closes once the streams it took have been answered.
-- An HTTP/2 request is weighed when its headers arrive, as an HTTP/1.1 one
-  is at the end of its header block, rather than once the whole body has.
-  A `content-length` past `maxRequestBodySize` is answered `413` before a
-  byte of the body is sent, one was refused only once that much had
-  arrived, the rate limiter and the content codings are asked then, and
-  `onExpectContinue`, which was never asked over HTTP/2, is asked of a
-  request carrying `expect: 100-continue`: a refusal answers its stream and
-  resets it, and going ahead sends an interim `100`.
-- An HTTP/2 request's duration, in the server's `_request_seconds`
-  histogram, is measured from its HEADERS, as an HTTP/1.1 request's is from
-  its first byte. It was measured from when its body had all arrived, so an
-  upload that took a second was recorded as taking none.
-- A PHP backend that fails or does not answer in time is answered with a
-  whole `502` or `504`. Each went out as a `HEAD`'s answer, with a
-  `Content-Length` counting its text and no text after it, so the client
-  waited for a body that was never coming until the connection closed.
-- `HTTPServerConfig.blacklist` and `whitelist` hold for every request that
-  ends at a file, whatever its method and however it got there. They were
-  checked only where a static file is served, so a blacklisted PHP script
-  was refused to a `GET` and run for a `POST`, or for a rewrite with the
-  `PHP` flag onto it. A `POST` to a listed file is answered `403` as a
-  `GET` is. Both fields had no documentation, and now say this.
-- `File.copyTo` merging a directory into one that holds another name for
-  one of its own files, a hard link, leaves that file as it is. The
-  copy truncated the destination before reading the source, which was
-  the same file, and its data was gone, on every target. On neko and
-  HashLink under Windows, which cannot tell two names of one file apart,
-  a copy onto a hard link to the file itself is spared the same way,
-  where it emptied the file.
-- `System.totalSystemMemory()` and `freeSystemMemory()` ask the system:
-  `GlobalMemoryStatusEx` natively on Windows, the HotSpot bean on the
-  jvm, `/proc/meminfo` on Linux, `sysctl` and `vm_stat` on macOS. Each
-  figure started a process, `wmic` on Windows, natively and on the jvm
-  too, 0.2 s for the two; `grep` on Linux, and macOS, or a Windows
-  without wmic, answered 0. The interpreter, neko and HashLink under
-  Windows still run wmic, or PowerShell where it is gone; both members
-  are documented, and throw an `IllegalOperationError` where nothing
-  answers.
-- `File.isHidden` on Windows reads the attribute of the file it names. It
-  ran `attrib` through `cmd.exe`, which expanded any `%NAME%` in the path,
-  so a hidden file with one in its name was asked about under another
-  name and read as not hidden. Natively it asks `GetFileAttributesW` and
-  on the jvm the JVM, starting no process; elsewhere `attrib` runs
-  directly, without a shell.
-- `File.spaceAvailable` is documented, and for a file is the room it has
-  to grow on its volume: on Windows it was 0, since `fsutil` takes only a
-  directory. A path with nothing there is 0, where Node threw `ENOENT`.
-  Natively (`GetDiskFreeSpaceExW`, `statvfs`) and on the jvm the file
-  system is asked directly, where each read started `fsutil` or `df`.
-- `System.totalCpuUsage()` measures the process: the processor time all
-  its threads used since the previous call, as a percentage of all the
-  machine's processors, one busy thread of eight reads 12.5. It
-  returned 0. On Node it asks `process.cpuUsage()` and on the jvm the
-  HotSpot bean, since `Sys.cpuTime()` is the wall clock on both; it
-  throws an `IllegalOperationError` in a browser.
-- `System.getDeviceId()` answers on every target: Windows' `MachineGuid`,
-  Linux's machine id, macOS's `IOPlatformUUID`, the same on every target
-  on one machine and read once. It answered `""` everywhere but native,
-  and `null` natively on Linux and macOS. `null` now means there is none:
-  in a browser, or on a Linux system without `/etc/machine-id`.
-- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
-  throw an `IllegalOperationError` where there is no process affinity,
-  natively on macOS, and on every target but native, where they
-  answered `[false]`, `[]` and `false`, which read as "no processor
-  usable". Natively on Windows and Linux an index past the processors,
-  or past the 64 a Windows mask holds, is a `RangeError`; it shifted a
-  bit past the mask in C.
-- `File.canonicalize()` follows links, as documented, to the path the file
-  system gives for the file, natively and on Node through the system's
-  own call, on the jvm `toRealPath`, and on the interpreter, neko and
-  HashLink under Linux and macOS `realpath`, so a symbolic link or a
-  junction on the way is resolved. It only corrected the case of each
-  name, which it still does for a path with nothing at the end, and on
-  the interpreter, neko and HashLink under Windows, which resolve no link.
-- `new File("file:///C:/x")` names `C:\x`, as the constructor documents a
-  URL to: a `file:` URL was taken for a native path, `file:\C:\x`, which
-  names nothing. `file:///home/x` is `/home/x`, `file://server/share/x`
-  the share, and `%XX` escapes are decoded as UTF-8.
-- `File.extension` and `type` are `null` for a name with no dot, as
-  documented, where they were `""`, the extension of a name ending in a
-  dot.
-- `File.data` throws an `IllegalOperationError` until a `load()` or
-  `loadAsync()` has succeeded, as documented, where it answered `null`.
-  A load unsets it first, so one that fails or is cancelled no longer
-  leaves the previous load's bytes in place, looking like its own.
-- `File.documentsDirectory` and `desktopDirectory` follow xdg-user-dirs on
-  Linux and the BSDs, as documented: a desktop in another language, or a
-  user, can keep them somewhere other than `~/Documents` and `~/Desktop`,
-  which was all that was looked at.
-- `File.clone()` copies the File's path and names, and starts no process.
-  It read every property through its getter to set it on the clone, so
-  each clone ran `fsutil` or `df` for `spaceAvailable` and read the file's
-  size and dates: 200 clones took 1.2 s on the interpreter and 3.5 s on
-  the jvm.
-- `File`'s documentation no longer promises what AIR does and CrossByte
-  does not: no `SecurityError` is thrown or `securityError` dispatched,
-  `copyTo` copies a file's contents and not its attributes, and a file
-  that is open can be copied, what Windows refuses, unless the program
-  that has the file open allowed it, is moving or deleting it, which it
-  says now.
-- On the jvm under Windows, writing a file that another handle has open
-  replaces its contents. The standard library's write deletes the file and
-  opens it afresh; Windows refuses the delete while the file is open, and
-  the old file was then opened without being cut, so `File.save`,
-  `saveBytes`, `saveText`, `copyTo` onto it and a `FileStream` opened to
-  write overwrote its start, kept its old length, and said nothing. They
-  cut it through the handle they write with now.
-- A `File` path is taken literally on every platform. On Windows the first
-  `%NAME%` in a path was replaced by that environment variable, in
-  `nativePath`, the constructor and every `resolvePath`, after
-  `resolvePath` had normalized the path, so a name sent by a peer,
-  `%SystemRoot%` or `%USERPROFILE%`, reached a directory nobody had named:
-  the HTTP server could be led by it to files outside its root. AIR's
-  `File` expands nothing, and neither does the operating system's own
-  file API.
-- `File` throws the `IOError` it documents, with AIR's error number where
-  one applies, 3003 for a path with nothing there, 3002 and 3011 for one
-  in the way, 3007 for a file where a directory was wanted, 3010 for a
-  directory that is not empty, 3012 for one that could not be deleted,
-  and the real cause in its message. It threw the base `Error` from
-  `deleteDirectory`, `getDirectoryListing` and its listings, bare strings
-  from `save()`, and whatever the standard library threw from
-  `createDirectory`, `deleteFile`, `load` and the static `getFileBytes`,
-  `getFileText`, `saveBytes` and `saveText`, so `catch (e:IOError)` caught
-  none of them. `deleteDirectory` said "Folder is not empty" for every
-  failure, a file held open and a permission refused among them, and
-  `save()` "File is open" for every failure to write.
-  `getDirectoryListingAsync` reports a path that is not a directory as an
-  `ioError` event, as documented, where it threw.
-- `File.cancel()` cancels. With nothing pending it was a null access; with
-  something pending the work went on, a 64 MB `copyToAsync` finished
-  after it had been cancelled, because nothing in it asked. Each
-  asynchronous operation now asks between steps and stops: a copy between
-  blocks, removing a destination it had made (or, copying onto one that
-  was there, the file it was part way through); a move across volumes
-  putting the source and whatever it was replacing back; a recursive
-  delete between entries; a load between blocks. A cancelled operation
-  dispatches nothing more, and the File dispatches `cancel` once. Two
-  operations at once on one File both report now: they shared one worker
-  field, so the first to finish disposed of the other's worker, whose
-  result was never heard, or found the field empty.
-- `File.openWithDefaultApplication()` opens the file, or a directory, in
-  the file manager, with the application the operating system has
-  registered for it: through `explorer.exe` on Windows, `open` on macOS
-  and `xdg-open` on Linux and the BSDs, on Node through `child_process`.
-  It starts the application and returns without waiting for it. It was
-  empty: a documented member that did nothing. As in AIR, a file the
-  system would run rather than open, an executable's extension, or on
-  Linux and macOS the executable bit, is refused with an
-  `IllegalOperationError`, a missing file is an `IOError`, and a browser,
-  another operating system or a missing `xdg-open` is an
-  `IllegalOperationError` that says which.
-- `File.size`, `modificationDate` and `creationDate` are read from the disk
-  when asked for, as `exists` always was. They were a snapshot taken when
-  the path was set, so a File made before its file was written reported a
-  size of 0 for good; and a missing file read a size of 0 and null dates
-  where an `IOError` is documented, which it is now. Making a File no
-  longer touches the disk at all. `creationDate` is the time the file was
-  made, natively from `statx` on Linux and `st_birthtime` on macOS, on
-  Node its `birthtime`, on the jvm its `creationTime`, where it was
-  POSIX's `ctime`, which a chmod or a write moves on; `null` where the
-  file system keeps none, and on the jvm on Linux before Java 22, whose
-  `creationTime` is the modification time standing in for a birth time
-  it cannot read; and an `IllegalOperationError` on the
-  interpreter, neko and HashLink under Linux and macOS, whose `stat` has
-  no such time.
-- `FileStream` keeps the contract `IDataInput` and `IDataOutput` describe,
-  and `ByteArray` keeps, opened either way. A synchronous stream's
-  `readByte` returned the unsigned byte, `readBoolean` was true only for
-  1, `writeShort` threw `Overflow` outside -32768..32767 rather than
-  keeping the low sixteen bits, every read but `readBytes` let
-  `haxe.io.Eof` escape, having consumed what it read, where an
-  `EOFError` consuming nothing is documented, and `writeBytes` passed an
-  out-of-range offset or length to the file, which on the interpreter
-  ended the process. Each does what `ByteArray`'s does now, and an
-  asynchronous read that fails leaves the position where it was too.
-- `FileStream.endian`, `objectEncoding` and `position` mean the same
-  whether the file was opened with `open()` or `openAsync()`. `endian`
-  read a file handle, so before opening it was a null access, set before
-  opening it was lost, and `open()` made it big-endian whatever it said;
-  an asynchronous stream read and wrote through a plain `ByteArray`,
-  little-endian and HXSF whatever the stream said, and its writes went
-  on from wherever the writer had got to, so moving `position` back and
-  writing changed nothing. Writes to an asynchronous file are now queued
-  where the position is, and the buffer that held everything ever
-  written to one is gone.
-- `FileStream.truncate()` refuses a stream opened to read, as documented,
-  rather than cutting the file it was reading, and truncates in place
-  through the system's own call, natively `SetEndOfFile` or `truncate`,
-  `RandomAccessFile.setLength` on the jvm, `fs.truncateSync` on Node,
-  where it closed the stream, read the whole file into memory and wrote
-  back the part it kept. An asynchronous stream truncates after the
-  writes already pending, which it read the file before.
-- `FileStream.openAsync` keeps its documentation. On a stream already
-  open it closes that file first, without a `close` event; it made its
-  worker and then disposed of it in the close, a null access. A file that
-  cannot be opened is an `ioError` event, heard by a listener added after
-  the call returns; it threw. `UPDATE` reads the file into the buffer with
-  `progress` and `complete`, as `READ` does, and a write lands in the file
-  and in what is read back; it opened only the writer, and every read
-  threw. Writes still pending on a stream reopened elsewhere are written
-  before the next file opens.
-- An asynchronous `FileStream`'s events are its own: `complete`,
-  `progress` and `outputProgress` with the stream as their target, and
-  failures as `ioError`. The worker's own events were passed on as they
-  were, `ThreadEvent`s whose target was a private `Worker`, and its
-  failures were its `"error"` event, which no `ioError` listener hears. A
-  file closed while it was still being read dispatched `complete` before
-  `close`; it dispatches only `close`.
-- `FileStream.readObject` in AMF0 and AMF3 reads one object: it read the
-  rest of the file into a buffer, decoded one object from it and threw
-  away the rest, so a second `readObject` found nothing.
-- `FileStream.readMultiByte` and `writeMultiByte` say what they do: UTF-8,
-  whatever `charSet` names, as `ByteArray`'s do. They listed `shift-jis`,
-  `cn-gb` and `iso-8859-1` among the character sets they would honour.
-- `FileStream`'s documentation no longer claims files past 2^32 bytes,
-  a position is an Int, 2 GB, or a read-ahead in file-system pages it
-  does not have; it reads in 4 KB blocks.
-- `File.copyTo` and `moveTo` refuse to copy or move a file onto itself, and
-  `moveTo` is a rename. The standard library's copy truncates its
-  destination before it reads the source, so `copyTo(itself, true)`
-  emptied the file and reported success, and so did copying onto
-  another name for it: its name in another case on Windows, a hard link, a
-  path through a junction. `moveTo` was a copy and then a delete, so it
-  did the same and then deleted what was left, which made renaming a
-  file's case on Windows or macOS lose the file. The two ends are compared
-  as files now, by the volume and index the file system keeps for each,
-  and an `IOError` says they are one; a name changed only in case is
-  renamed. Within a volume `moveTo` renames, so a directory moves in one
-  step whatever its size and a file replaced through it is never seen half
-  written; onto another volume it copies and then deletes, and leaves
-  nothing behind if the copy fails. With `overwrite` an existing
-  destination is replaced, a directory as a whole, where it was merged
-  into, and put back if the move fails. A directory is no longer copied
-  or moved into itself, which copied what it had just copied until the
-  path grew too long. Errors on these paths are `IOError`s carrying AIR's
-  error numbers, as documented, where some were the base `Error`.
-- `File.resolvePath` normalizes, as its documentation says: `.` is
-  dropped, `..` consumes its parent and never climbs past the file
-  system's root or the application storage directory, and an absolute
-  path is returned as that path. It concatenated, so
-  `File.applicationStorageDirectory.resolvePath(name)` climbed out of the
-  storage directory on a name holding `..`, and an absolute name came
-  back appended to the directory, on Windows a path naming a stream on
-  a file called `C`. Windows drives, shares and `\\?\` paths keep their
-  roots. Its documentation now says plainly that it is not a sandbox, and
-  shows the check that is: `dir.getRelativePath(file) == null`.
-- `File.getRelativePath` answers as documented: null for a path that is
-  not the File's own or below it unless `useDotDot` is given, `/`
-  between segments on every platform, null across drives and shares
-  even with `useDotDot`, and an `ArgumentError` for a null reference. A
-  sibling came back as its bare name, which reads as a child; the answer
-  was joined with `\` on Windows; across two drives it named the other
-  drive; and a null reference was a null access.
-- The metrics compile wherever hxcpp does. Their lock-free updates use
-  `std::atomic` in code that was inlined into each caller without
-  `<atomic>`, so they compiled only where the hxcpp fork's headers happened
-  to include it: an application built against haxelib's hxcpp 4.3.2
-  stopped at `Counter.cpp`.
-- A reliable UDP session is no longer closed when its socket's send buffer
-  is momentarily full. The send raised an IOError for it, and the session
-  took any send error as fatal, so a burst could close a healthy
-  connection; the datagram is dropped now, as a full queue anywhere on
-  the path drops one, and sent again by the protocol.
-- On Linux and macOS a refused connect is reported as a failure, with the
-  system's reason. POSIX leaves a socket whose connect was refused
-  writable, as one that connected, so a `Socket` announced CONNECT and
-  then, at its first read, CLOSE, a hangup, which a caller does not
-  retry, where Windows said ioError, and a `WebSocket` client sent its
-  upgrade into nothing and closed with a 1006 that did not say why. The
-  connect's outcome is now read from `SO_ERROR`; a refusal is an ioError
-  naming it ("Connection refused") everywhere, Windows included.
-- `Socket`, `WebSocket` and `ReliableDatagramSocket` read and write objects
-  in every `objectEncoding` a `ByteArray` does: JSON always, AMF with
-  `-lib format`. They took only HXSF, and anything else read `null` and
-  wrote nothing without a word, the fault `ByteArray` had been fixed for,
-  left in its three siblings. An encoding the build cannot do now throws,
-  as it does on a `ByteArray`.
-- SQLite rowids past 32 bits read back whole, from the connection and from
-  every statement's result. `sys.db.Connection.lastInsertId` is an Int,
-  which hxcpp holds at 2^31 - 1 and the other drivers wrap, so a Snowflake
-  id or a millisecond timestamp used as a key came back as something else.
-  Below that the id is read as before; at or past it SQLite is asked in
-  SQL. A statement's rowid is also read where it ran, on the worker for an
-  asynchronous connection: `getResult()` read it on the caller's thread,
-  and so reported whichever insert had happened last. And
-  `SQLiteConnection.stats()` multiplied page size by page count in 32
-  bits before widening, so a database past 2 GB reported a wrapped size.
-- On the jvm, a thread's selectors are closed once the thread has ended.
-  Java says nothing when a thread ends, and each thread that ever selected
-  kept up to three selectors, an epoll descriptor and wakeup pipe each
-  on Linux, a loopback socket pair each on Windows, for the life of the
-  process, so a server whose workers came and went leaked them a thread
-  at a time. The next thread to select closes those of threads that have
-  ended.
-- `HTTPCancelToken.removeHandler` removes a bound method handed back to it.
-  It compared by identity, and on eval and the jvm each mention of
-  `object.method` is a new closure, so the handler stayed registered and
-  ran at a later cancel, for a request that had long finished.
-- `Socket` and `WebSocket` dispatch `OutputProgressEvent.OUTPUT_PROGRESS`.
-  `bytesPending` is documented to be read in that event's handler, and the
-  event was never dispatched, so a writer streaming to a slow reader had
-  nothing to wait on but a timer, and one waiting for its last bytes to go
-  before closing waited for ever. It now follows each pass in which bytes
-  reached the network, once a pass however many writes moved them, with
-  `bytesPending` still waiting and `bytesTotal` written since the
-  connection opened; the last of a backlog says 0. On Node it follows
-  Node's handing the bytes to the system, and in a page the page's
-  WebSocket sending what it held. What a progress handler writes is
-  reported at the next pass, not the one it was written in, so a writer
-  feeding a socket that never fills, TLS to a fast reader, cannot
-  hold the runtime by answering each event with another write.
-- A WebSocket server receiving large messages spent its time copying, not
-  receiving. After every 64 KB parsed, the session copied the whole unread
-  rest of its input into a new buffer, so a burst cost the square of its
-  length: one client uploading 64 KB messages was received at 19 MB/s, at
-  50 ms of server CPU a megabyte, 82% of it in that copy, and four such
-  clients stalled the runtime for seconds at a time. The unread tail is
-  now moved down once per arrival, in place, and only once the parsed part
-  is at least as long. The first frame of a message is also kept as the
-  message rather than copied into an empty buffer, and the masking key is
-  read where it lies instead of into a buffer made for each frame. One
-  uploader: 650 to 930 MB/s at about 1.05 ms a megabyte; four: 700 to
-  820 MB/s.
-- A peer sending faster than the server reads no longer holds the runtime
-  or the server's memory. `Socket` and the WebSocket session read for as
-  long as their reads came back full, which a client uploading over a fast
-  link keeps them doing: no timer ran and no other socket was read until
-  it paused, and everything read meanwhile was held before any listener
-  saw it. Over loopback, one TCP uploader's backlog reached 2 GB of heap
-  and four uploaders' 450 to 950 MB. Each socket now reads at most a
-  megabyte a pass, sixteen full reads, as Netty reads sixteen a wakeup.
-  The rest stays in the kernel, and the loop polls again at once rather
-  than waiting the frame out while any socket stopped that way. That
-  holds for the `POLL` loop, the `DEFAULT` loop and a host's `pump`, which
-  polls again while the frame it was given lasts. A `DatagramSocket` at
-  its 1,024-datagram cap a pass tells the loop the same, where a runtime
-  polled once a frame took no more than that a frame: 12,288 datagrams a
-  second at twelve ticks, however many arrived. Heap during the same
-  uploads is now 3 to 10 MB, and throughput stays within the range it
-  varied over before: Windows loopback swings by half from run to run,
-  with or without the cap.
-- A TLS socket reads more than one record a pass. A TLS read returns one
-  record at most, 16 KB of plaintext, which never filled the 64 KB read
-  buffer, so every TLS read was taken for the last of its pass. An upload
-  over TLS was read at one record a pass: 16 MB/s at 1,000 ticks a second
-  for one connection and 63 MB/s for four. A read that returns a whole
-  record now reads on, within the same per-pass megabyte: 410 and
-  390 MB/s, which is mbedTLS's software AES on an MSVC build. Not on eval,
-  whose sockets block, so that a read past the last record would wait for
-  the next.
-- A `POLL` loop reads its sockets every frame. Poll was given only what was
-  left of a frame once that was at least a millisecond, so a runtime at
-  1,000 ticks a second, whose frames never have a whole millisecond left
-  once the tick has run, never accepted or read anything, and said
-  nothing; and a runtime whose tick ran past its deadline skipped its
-  sockets for every frame it stayed behind. A game server that fell behind
-  stopped reading its clients' inputs and acknowledgements, which only put
-  it further behind: 2,000 clients over TCP waited seconds for theirs.
-  Each frame now polls at least once, without waiting when there is no
-  budget left to wait in.
-- On Linux, a datagram socket bound to port 0 could be given a port
-  another socket already held, and one of the two then received the
-  other's datagrams: hxcpp set SO_REUSEADDR on every socket it bound, and
-  Linux lets two datagram sockets that both set it share a port. 25 of a
-  thousand game clients connecting over reliable UDP never connected, each
-  sharing a port with another; any local process could have bound a UDP
-  server's port too. Fixed in the hxcpp fork's production (7ddf550b),
-  which now sets it on stream sockets only. Windows never set it.
-- On Node, logging no longer syncs stdout. The runtime's flush after each
-  frame that logged, and every warning and error, called
-  `Sys.stdout().flush()`, which is `fs.fsyncSync` there: Linux refuses it
-  for a pipe, Docker's, systemd's, a `| tee`, so a warning threw from
-  inside whatever reported it, and to a file it was a disk sync a frame.
-  A Node server with the access log on, the default, answered 18,300 small
-  requests a second; it answers 39,000, and 46,500 with the log off.
-- A native or jvm `Socket` reads its peer's address and port once per
-  connection. Each `remoteAddress` or `remotePort` was a `getpeername`
-  call, a `Host` and a string, and the HTTP server asks for the address on
-  every response it sends, about one percent of its time.
-- Converting `Bytes` to a `ByteArray`, `ByteArray.fromBytes`, and every
-  implicit conversion, no longer allocates and zero-fills a buffer the
-  size of the bytes only to drop it for theirs. Every socket read went
-  through that conversion with its 64 KB scratch, so each one, however
-  small, allocated and cleared 64 KB. An HTTP server answering a small JSON
-  body on native serves 74,600 requests a second on 8 connections where it
-  served 65,900, at 12.9 microseconds of CPU each rather than 15.7, with
-  0.4 MB of heap in use rather than 40 MB; at 4,096 connections, 43,300
-  where it served 33,300.
-- Brotli on hl no longer writes broken streams for input with zero bytes
-  in its first four places, at qualities 1 to 4, 4 being the default, for
-  `Brotli.compress` and `ByteArray.compress`. Some came out undecodable,
-  and some decoded to different bytes with nothing to say so: eight zero
-  bytes ahead of text came back altered. The encoder's guard against
-  reaching back past the start of the input compared a `UInt` with an
-  `Int`, which HashLink compares as signed numbers where every other
-  target compares them unsigned. The first positions reached into the
-  empty end of the ring buffer and matched its zeros. hl output is now
-  byte for byte what eval writes, and Node's own Brotli reads all of it.
-- On hl, a server whose `maxRequestBodySize` is raised to `Int` max, or
-  within 64 KB of it, serves requests again. What a connection may buffer
-  is that limit plus the headers', the sum wrapped negative, and HashLink
-  compared the buffer's length with it as signed numbers and answered
-  every request `413`. The sum now stops at `Int` max.
-- Lowering a `ReliableDatagramSocket`'s `maxMessageSize` below what a
-  message in progress already holds now closes the session at its next
-  fragment, as the limit says. The frame's length was compared with the
-  limit less what was held, a negative number by then, and every target
-  but hl compares a `UInt` with a negative `Int` as unsigned: four billion,
-  so nothing more of that message was refused.
-- HTTP's `deflate` coding is zlib, as RFC 9110 has it, on both sides. The
-  server sent raw DEFLATE under the name, which a client following the
-  standard cannot read, and refused a standard `deflate` request body; the
-  URLLoader client failed on a standard `deflate` response. Bodies are
-  read as zlib when they start with a zlib header and as raw DEFLATE when
-  not, since servers commonly send raw. A request body that is not what its
-  coding says is answered 400; one that inflates past the ceiling is still
-  413, where both were 413.
-- HTTP/2 on hl refuses a NUL in a field as well. `Bytes.toString` stops at
-  the first NUL there, as it does on JavaScript, and the HPACK decoder's
-  fix for JavaScript below left hl out: an hl server took `a`, NUL, `b` as
-  the value `a` and served a request RFC 9113 calls malformed, where it
-  now resets the stream.
-- On hl, a `MySQLConnection.open` that cannot reach its server no longer
-  corrupts the process heap. When HashLink's mysql library fails to
-  connect, it frees the connection it made and leaves the collector a
-  finalizer that frees it again; the next major collection did, into memory
-  the heap had by then given to someone else, and the process died at some
-  later allocation, the hl suite, of heap corruption, four hundred cases
-  after the MySQL case that failed to connect. `open` now tries the server
-  with a connection of its own first, and refuses a server it cannot reach
-  (2003), a host it cannot resolve (2005) and a Unix socket, which the
-  library does not support, without asking the library. That covers what a
-  pool retrying against a restarting database meets again and again; a
-  login the server refuses still reaches the library, and only a fix there
-  spares it. The check costs a connection per open, which the server sees
-  close before it logs in.
-- On hl, an HTTPS request waiting for a slow server no longer stops every
-  other thread: `FlexSocket`, the TLS client `URLLoader`, `Http` and the
-  HTTP/2 backend read through, makes an `HlTlsSocket` there, as the entry
-  about it below describes, where it made the standard library's socket. A
-  client waiting 1.5 s for a TLS server's answer held the rest of the
-  process for the whole of its 10 s timeout, the server included; it holds
-  it for a few milliseconds now.
-- A record `Logger` writes to stdout reaches a pipe or a file within a
-  frame, and a warning or an error at once. The hxcpp fork's develop line
-  flushes `Sys.println` only to a console, a flush per line being a syscall
-  per line, so natively a server's log piped to a supervisor arrived when a
-  buffer filled or the process ended, and not at all after a crash: a
-  record logged four seconds before exit arrived at it. The runtime flushes
-  what was logged once a frame, one flush however many records the frame
-  wrote.
-- On Linux and macOS, a process started while a server holds a connection
-  does not inherit the connection, so closing it ends it. A server accepts
-  through CrossByte's own `crossbyte_socket_accept`, which set no
-  close-on-exec; it does now, atomically through `accept4` on Linux, and
-  retries an accept a signal interrupted, and sets `SO_NOSIGPIPE` on macOS,
-  as hxcpp's own accept does. Windows was fixed in the hxcpp fork.
-- On the jvm, a runtime whose last connections close lets them go.
-  `select` keeps what it asks about on its thread between calls, and
-  emptied that list only as the next call began; a runtime with nothing
-  left to poll made no next call, so the sockets of its last one stayed
-  reachable with their buffers and `userData`: 40 closed connections of
-  64 KB each survived five collections.
-- On the interpreter, a socket's second `close()` does nothing, where it
-  threw "not a socket", and `peer()` and `host()` name their `Host` by its
-  address as a resolved one is named; `host.host` was null, and
-  `ServerWebSocket` names a client by it.
-- Natively, a connection reset is a failure when read a byte at a time, not
-  the end of the stream. `readByte` took every error but a blocked read for
-  the end, so a line reader, or anything reading to the connection's end,
-  took what it had as whole when the peer was cut off. It goes through
-  `readBytes` now, as it does on hl, neko and eval.
-- A miss in a `Map<Int, T>` on the jvm costs what a hit does. Haxe 4.3.7's
-  `IntMap` for the java targets never stopped probing at an empty bucket,
-  so every miss read the whole table: 110us a miss at 100,000 entries,
-  where a hit took nothing measurable. CrossByte puts a fixed copy ahead of
-  it there (`std/java`, added to the class path by
-  `crossbyte._internal.macro.StdOverrides` from `extraParams.hxml`). A build
-  from `-cp` rather than `-lib crossbyte` adds
-  `--macro crossbyte._internal.macro.StdOverrides.use()` itself, before any
-  other macro, as the suites' build files do.
-- `Logger` leaves text past ASCII alone on neko. A string there is its UTF-8
-  bytes, and the escaping read them one at a time: the second or third byte
-  of the euro sign, of most Cyrillic, of CJK and of a C1 control all fall
-  between 0x80 and 0x9F, so each was written as an escape and the bytes
-  around it raw, "€100 за файл" was logged as a broken character, `\x82`,
-  another, and so on, and a control or line separator went out half
-  escaped. Those characters are recognised by their bytes now, and every
-  other byte goes out as it came.
-- On neko, ICE tries a host pair before a relay, and `SchemaMigrator` runs
-  migrations numbered by date in order. neko's `Array.sort` is a native merge
-  sort that reads any comparison too large for neko's 31-bit Int as "less",
-  and both sorts answered with a difference: of two pair priorities' high
-  words, which run to 2^31, and of two versions, which for 2026093001 and 1
-  is past 2^30. Every pair list came back with the relay first and the host
-  last, and a date-stamped history ran out of order. Both compare now,
-  answering -1, 0 or 1; the migrator's subtraction could also wrap anywhere
-  versions of opposite sign meet.
-- A reliable datagram session on neko measures its round trips, probes a
-  silent tail and sends a lost frame again once. Its clock there is the time
-  of day to the millisecond, moving once a system tick, a millisecond at
-  best, 15.6 by default on Windows, so a frame acknowledged in the tick it
-  went out in measured a round trip of nothing, which is thrown away, and a
-  frame sent again in the tick it first went out in counted as sent before
-  the one whose arrival showed it lost, and was sent again for nothing. A
-  session's clock on hl, neko and the interpreter never repeats a reading
-  now, and stands still rather than going back when the time of day is set
-  back; elsewhere it is the monotonic clock it was.
-- `PostgresStatement` hands back a result paged ahead of `getResult()` in
-  the order it was read, and calls only its last page complete, the last
-  of a result that divides evenly into pages as well. Once the last page
-  had been read every page still waiting said it was complete, and off cpp
-  the pages came back newest first. Four rows in pages of two read
-  "1,2+ 3,4+" and now read "1,2 3,4+"; five read "1,2 3,4 5+".
-- `HTTPServerDefaultsTest` no longer leaves its canary store behind: every
-  full native run on Windows left an `http-root-canary-*` directory in
-  `%APPDATA%\stores`, its value file still there. It cleared the store
-  asynchronously and closed it at once, then deleted the directory a
-  single time, and a file just written is often held a moment on Windows;
-  it now closes the store and removes the directory, trying again for up
-  to two seconds.
-- On neko the HTTP server answers a conditional request dated past
-  January 2038 with a 304, as it does elsewhere. It read `If-Modified-Since`
-  through a local `Date`, which neko cannot make past 2038 (`new Date`
-  threw `std@date_set_hour`), so such a revalidation was answered with the
-  whole file. HTTP dates are read and written in UTC by arithmetic now,
-  both ways, the same on every target.
-- The HTTP client's request-target case passes on neko. It built its
-  non-ASCII path with `String.fromCharCode(0xE9)`, which on neko, whose
-  strings are bytes, is one Latin-1 byte rather than the UTF-8 a typed
-  URL carries, so the client rightly sent `%E9` where the case expected
-  `%C3%A9`.
-- A request whose connect times out says so, on every target: `Connection
-  Failed: host:port did not answer within 1 s` over HTTP/1.1, and
-  `Connecting to ... timed out after 1s` over HTTP/2. Natively the reason
-  given was `Blocked`, the read the TLS handshake waited on having timed
-  out; on the jvm, whose handshake now holds to the deadline, it came
-  wrapped as `Custom(Timeout: ...)`, and an HTTP/2 connect there was not
-  taken for a timeout at all.
-- On the interpreter, each thread serving HTTP keeps its own compiled
-  rewrite patterns and directory listings, as it does on every other
-  threaded target. They were held per thread only on cpp, neko, hl and the
-  jvm, so runtimes on two eval threads shared one map and one `EReg`,
-  which carries its last match: one could read the other's captures.
-- Closing an HTTP/2 client connection, the pool's idle sweep,
-  `H2ConnectionPool.closeAll`, a request discarding a failed one, no
-  longer closes its socket under the thread reading it. For TLS that
-  freed the socket's mbedTLS context mid-read, and when the read returned,
-  with the server answering the GOAWAY, mbedTLS went on with the freed
-  context: a segmentation fault in `mbedtls_ssl_read`, seen natively on
-  Linux. The connection is shut down instead, and the reading thread
-  closes the socket once its read has ended, as the HTTP/1.1 client
-  already did for a cancelled load.
-- The HTTP/2 server takes a request sent with trailers. The trailer
-  section, a second header block on the stream, replaced the request's
-  header section, so the request was read from the trailers, found to
-  have no `:method`, and reset: it never reached a handler. Trailers are
-  now checked and dropped, as the HTTP/1.1 server drops a chunked body's,
-  and a trailer section that does not end the stream, or that carries a
-  pseudo-header or a line break, resets the stream as RFC 9113 8.1 says.
-- The interpreter suite no longer hangs, now and then, in
-  `URLLoaderHttpTest`. The HTTP tests' pump loops slept a millisecond
-  between pumps with `Sys.sleep`, which on eval under Windows times a
-  yield in 15.6 ms ticks of CPU time and sleeps for what is left of the
-  millisecond, a negative remainder, when a tick lands in the yield,
-  that OCaml hands to `Sleep()` as about 49 days. One thread doing nothing
-  else stalled in five of six minute-long runs, and the case hung in 2 of
-  20. The pump loops sleep through `System.sleep` now.
-- An HTTP request that cannot connect says why, as in `Connection Failed:
-  X509 - Certificate verification failed` natively or the JDK's `PKIX path
-  building failed` on the jvm. Every failure, an untrusted or expired
-  certificate or a refused port alike, read `Connection Failed` and
-  nothing more.
-- HTTP/2 on Node and in the browser refuses a NUL in a field, as it does
-  on the other targets. The HPACK decoder read each string with
-  `Bytes.toString`, which on JavaScript stops at the first NUL, so a field
-  holding one arrived as the part before it: the NUL that RFC 9113 makes
-  it malformed for never reached the check, and the rest of the value was
-  dropped without a word.
-- `URLLoader` on Node decodes a compressed response, with Node's zlib and
-  within `maxDecompressedSize`, as the other targets' clients do: gzip, br,
-  deflate (zlib-wrapped or raw) and lz4, two stacked at most. It handed the
-  body on as it came, so a gzip JSON answer arrived as garbage, and it
-  sends `Accept-Encoding: identity` unless told otherwise, as the native
-  client does. A body that cannot be read as the loader's `dataFormat`,
-  text that is not UTF-8, is an `IO_ERROR` on every target, with the bytes
-  in `data`: on Node it threw a RangeError out of the completion, which
-  ended the process.
-- An HTTP/2 request's connect and TLS handshake are held to its timeout,
-  and its cancel reaches them. A server that accepted TCP and never
-  answered the handshake held the request for good, and every other
-  request to its origin, which waited behind the connect on a lock with no
-  deadline: three requests had no outcome in 15 seconds, and a cancel did
-  nothing. A request waiting on another's connect now leaves at its own
-  timeout, or at once when cancelled, and is told how that connect failed
-  rather than making it again in turn. A timed-out handshake says so,
-  where natively it read as "Blocked".
-- The HTTP/1.1 client holds a response's header section to 64 KB,
-  `Http.MAX_RESPONSE_HEADER_BYTES`, the limit the server holds a request's
-  to. It read header lines for as long as a server sent them, one line for
-  as long as it went without ending, and 1xx responses for as long as they
-  kept coming, during which the idle timeout never fired, so a server,
-  or one a redirect led to, chose how much memory and time the client
-  spent. Trailers are held to the same limit, a chunk-size line to 4 KB,
-  repeated fields are joined once rather than each onto everything before
-  it, and the cookie jar keeps 180 cookies a host and ignores one longer
-  than 4,096 characters, where it kept every one and read through all of
-  them on each request.
-- The cookies `URLRequest.manageCookies` carries across a redirect match
-  their host whatever its case, and are kept per host. A cookie set by
-  `Example.com` was not sent to `example.com`, so a redirect that changed
-  only the host's case kept the caller's credentials and lost the session;
-  a second host setting a cookie of the same name replaced the first
-  host's; and a host's cookies went back in an order that differed by
-  target. They go back in the order they were set.
-- HTTP/2 refuses a field holding a CR, LF or NUL in its value, or a name
-  that is not visible lowercase ASCII, as RFC 9113 8.2.1 says: on the
-  server the request's stream is reset, and in the client the response
-  fails, both leaving the connection to its other streams. HPACK carries
-  any byte, so a line break reached the request a middleware saw, and a
-  response header the caller might pass on over HTTP/1.1.
-- The HTTP/2 server sends `Set-Cookie`, `WWW-Authenticate`,
-  `Proxy-Authenticate` and any `Authorization` or `Cookie` a response
-  carries never-indexed. Every response field went into the HPACK dynamic
-  table, session tokens included, where RFC 7541 7.1.3 says an entry's
-  presence can be inferred from the compressed size of a later response an
-  attacker can influence, and one-off tokens evict the entries worth
-  keeping. The client already sent its own credentials this way.
-- HTTP/2 on hl sends the headers it was given. HPACK found a static-table
-  pair by its name and value joined with a NUL, and a HashLink string ends
-  at its first NUL, so every pair of one name looked the same and the last
-  one won: `:method GET` went out as POST, `:scheme http` as https and
-  `:status 200` as 500, both ways. The table is kept as a map per name now.
-- One HTTP/2 request can no longer hold the server for tens of seconds. A
-  header section could decode to eight megabytes, a limit never advertised,
-  and repeated fields were joined by appending each to everything before
-  it: 200,000 one-byte references to one cookie crumb, about 200 KB on the
-  wire, held the runtime's thread for 23.5 seconds, and every other client
-  with it. The server now advertises `SETTINGS_MAX_HEADER_LIST_SIZE` of 64
-  KB, the limit an HTTP/1.1 request's header block already had, and answers
-  a section past it `431` on that stream alone: the block is still decoded
-  to its end, so the connection and its other requests carry on (the same
-  request now takes 54 ms on the jvm, the 431 included). Repeated fields
-  are collected and joined once, on both versions. The HTTP/2 client holds
-  a response to the same 64 KB, advertised, and refuses one past it without
-  losing the connection, joins repeats once, and ends a connection whose
-  header block runs on through CONTINUATION frames past 256 KB, as the
-  server already did.
-- Requests to an IPv6 literal carry its brackets. `URL` takes them off
-  `[2001:db8::1]:8080`, and both clients put the host back bare, so `Host`
-  and `:authority` read `2001:db8::1:8080`, which no server can split, and
-  a relative redirect from such a host named `http://::1:8080/...`, which is
-  not a URL. And `Host`, and a relative redirect, dropped the port for 80
-  and 443 whatever the scheme: `http://host:443/` was sent as `Host: host`,
-  which means port 80.
-- A URL can no longer add a header to the request made from it. `URL` kept
-  control characters, and the HTTP/1.1 client wrote the path, query and host
-  into the request line and `Host` as they were, so
-  `http://host/a\r\nX-Injected: evil` put that header on the wire, and a
-  longer URL could smuggle a second request. `URL` now refuses a control
-  character anywhere, and a space in the host. The request target is
-  percent-encoded where it holds a space or anything past ASCII (a space ended
-  it early), `User-Agent`, `Host` and `Content-Type` are sanitised as the
-  caller's own header lines already were, and a method that is not an HTTP
-  token, `URLRequest.method` takes any string, is refused before anything
-  is sent. The HTTP/2 client encodes `:path` and sanitises its header values
-  the same way, the Node and browser clients report a method or header their
-  runtime refuses as an `IO_ERROR` rather than throwing out of `load()`, and
-  a `Set-Cookie` holding a control character other than a tab is ignored, as
-  RFC 6265bis says, instead of going back out in `Cookie`.
-- Concurrent first HTTP/2 requests all find the bundled backend. It marked
-  itself registered and was only added once the registry's lock was let go,
-  so a request arriving in between found the mark, no backend, and failed
-  with "HTTP/2 has no registered HTTPBackend": 5 of 6 concurrent first
-  requests on the jvm, and the http2 sample every time.
-- Metrics, `Future`, `ConnectionPool` and `ProcessLifecycle` take their locks
-  on eval too. Their locks were gated on neko, hl and the jvm by name, which
-  left out eval, threaded since workers became real threads there, so a
-  counter updated from several threads could lose a whole thread's increments
-  (a suite run counted 150,000 of 200,000), and a future completed on a worker
-  while the runtime was registering its handler could lose the handler. They
-  gate on `target.threaded` now; hxcpp keeps its lock-free paths.
-- The whole suite builds and runs on hl and neko, and CI does both
-  (`ci/hl-tests.hxml`, `ci/neko-tests.hxml`, `.github/workflows/hl-neko.yml`):
-  neither target had been built anywhere, which is how neither compiled for
-  five months unnoticed. `RPCSession` also compiles for a HashLink older than
-  1.13, which is what Haxe assumes unless told otherwise with `-D hl-ver`: its
-  session counter takes a lock there, as on neko, rather than stopping the
-  build inside the standard library with "Atomic operations require HL
-  1.13+". Cases that cannot run on these targets say why and check what
-  happens instead: socket buffer sizes, which hl cannot read, and public
-  address discovery and WebSocket clients, which need a secure random source
-  neither has.
-- On hl, a thread waiting for a slow TLS server no longer stops every other
-  thread. HashLink's collector stops every thread and waits for each to
-  reach a safe point or say it is blocked; its TLS layer read the network
-  without saying so, so an HTTPS response that took six seconds held the
-  runtime for six (5,986 ms between two ticks, and 4.5 s of CPU spent
-  waiting), and a TLS client whose server ran in the same process waited
-  out its whole socket timeout, the server unable to answer until the
-  collection finished. `HlTlsSocket`, the TLS client `FlexSocket` makes on
-  hl, gives mbedTLS reads and writes through HashLink's plain socket
-  natives, which do say so: the same response held the runtime for 91 ms.
-- `NativeProcess` runs on hl and neko, and its `pid` is the child's
-  everywhere. It asked for an OS define before it would start anything,
-  and nothing gives one to hl or neko, their bytecode runs unchanged on
-  any OS, so both refused, though their `sys.io.Process` works wherever
-  they do. On hl a child's output is read, and its exit waited for, inside
-  a blocking section: HashLink's natives for both wait without telling its
-  collector, which stops every thread until each reaches a safe point, so a
-  child quiet for five seconds held the whole runtime for five. And the id
-  was looked up as a `pid` field, by reflection, which no target's
-  `sys.io.Process` has, so `pid` and every event's `pid` read -1 natively
-  too. It comes from `getPid()`, which they all have.
-- On neko, `File.createTempFile` and `createTempDirectory` work, and so
-  does every `Store.put`. Where there is no secure random source, both drew
-  names from `Std.random(0x7FFFFFFF)`, and neko's Int is 31 bits: that
-  bound is not an Int there, and the native under `Std.random` refused it,
-  so each threw before touching the disk, a store could be opened and
-  read but never written. They draw sixteen bits at a time now.
-- hl and neko have sockets again. CrossByte replaces `sys.net.Socket` and
-  `sys.net.UdpSocket` on every target, and since 2026-04-28 neither target
-  had a branch there, so both got a stand-in that threw, and each
-  target's own `sys.ssl.Socket` extends that class and reaches into its
-  private surface, so anything touching TLS, which is anything touching the
-  network, failed to compile inside Haxe's standard library with errors
-  that named nothing in CrossByte. Both now get their standard
-  implementations, with the changes callers here were written against: an
-  accept with nothing waiting is a would-block rather than null (hl); a
-  peer's `host` is its address, where hl left it null and neko named every
-  peer `127.0.0.1`; a second `close()` does nothing where neko's threw, and
-  so did an unconnected socket's `peer()`; and a connection reset is a
-  failure rather than the end of the stream, hl read both as `Eof`, and
-  so did neko's `readByte`, so a body delimited by its connection's end was
-  reported complete when the connection was cut partway through it. hl's
-  `select` builds its descriptor sets per thread: the standard library kept
-  one buffer for every thread, and two threads selecting at once got an
-  answer for the wrong sockets up to one time in seven, or a failed select.
-  And on hl every received datagram threw before it was delivered, because
-  `Address.getHost` wrote an `ipv6` field hl's `Host` does not have: UDP,
-  RUDP, STUN and ICE received nothing there. Its `host` text is the sender's
-  address now wherever it is not converted natively, rather than `0.0.0.0`.
-- `IndexedMap` and `PackedSlotMap` can have the entry a loop is on removed,
-  as `ListedMap` and `DenseSet` now can. Both move their last entry into a
-  removed one's place, and iterated with the value array's own iterator, so
-  the entry moved in was skipped; `PackedSlotMap.forEach` counted its
-  entries before it began and read past the end after a removal.
-- `Array2D.clear()` empties the grid for every reference to it; it replaced
-  the rows, so the same grid held elsewhere kept them. `fill(value)` sets
-  every cell, the way to give an `Array2D` of `Int`, `Float` or `Bool`
-  the same cells everywhere, since made without a value they are 0 on
-  static targets and null on eval and JavaScript, which the documentation
-  now says.
-- A `RadixTree` lookup reads the key in place and allocates nothing. It
-  built the common prefix of each label and the key a character at a time,
-  and a substring of the key at every level: 2.3 microseconds and 6.4 KB a
-  lookup on the jvm, now 0.1 microseconds.
-- `WeightedGraph` finds a node by hashing rather than a pass over every
-  node, so building a graph of n nodes no longer costs n^2 comparisons:
-  20,000 edges in a chain took 15 s on eval and now take tens of
-  milliseconds. Strings and integers are found by value and objects by
-  identity, as `==` finds them.
-- `Deque` keeps its items in a ring rather than a linked list, so adding
-  one allocates nothing once the ring has grown: it made a 24-byte node
-  for every item added on the jvm. It has `iterator()`, front to back, and
-  `clear()`, and takes a starting capacity.
-- `ObjectPool` no longer lends one object to two owners after a double
-  release in a release build. It kept both releases, so the next two
-  `acquire`s returned the same object; it now refuses an object released
-  twice in a row, and any release while everything it made is already free,
-  and `release` answers whether it took the object back. Debug builds
-  still check every release. `maxFree` bounds how many free objects it
-  keeps, where a burst of a hundred thousand used to stay for good.
-- `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
-  bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
-  answered 2147483648 there and -2147483648 elsewhere. Zero and below
-  answer 0, as documented, `INT32_MIN` too, which answered 2^31; and
-  nothing in it overflows an Int, which native targets survived only
-  because C++ compilers happen to wrap, a signed overflow is undefined
-  there, and clang warned of it.
-- `Seq32` prints and divides as the unsigned number it is on the jvm. It
-  printed through a Float, which the jvm writes in scientific notation,
-  "4.294967295E9", and in hex saturated to 7FFFFFFF; and `%` passed a
-  remainder of 2^31 or more through `Std.int`, which saturated it at
-  2147483647. The documentation's example, `0xFFFF_FFFF`, did not compile.
-- `PrimitiveValue.toInt` reads a number the same way on every target, or
-  throws. It went through `Std.parseInt`, which read "4294967396" as null on
-  eval, as that number on Node and as a thrown `NumberFormatException` on
-  the jvm, and `Std.int`, which made the Float 3e9 2147483647 on the jvm
-  and -1294967296 elsewhere. A string is now spaces, an optional sign and
-  decimal or `0x` hex digits, within the range of `Int`, "12abc" throws
-  rather than reading 12, and a Float outside that range throws. The
-  documentation's example named a type, `Primitive`, that does not exist.
-- `BloomFilter` packs its bits 32 to an `Int` and allocates nothing per
-  check. It held an array element per bit, a 10-million-bit filter took 40
-  MB on the jvm and 76 MB on Node for 1.25 MB of bits, and hashed a UTF-8
-  copy of each item and a second, concatenated copy, 336 bytes per check on
-  the jvm. It hashes the characters in place, mixes the second hash out of
-  the first, and steps through the positions without multiplying, so every
-  target sets the same bits. `clear()`, and `addInt`/`containsInt` and
-  `addBytes`/`containsBytes` for items that are not strings, are new.
-- `crossbyte.ds.Vector` works off hxcpp. `v[i]` threw on eval and the jvm
-  and on JavaScript set a property of that name, losing the write: it was a
-  class implementing `ArrayAccess`, which only hxcpp honours, and is now an
-  abstract with array access over it. As in ActionScript, reading at or past
-  the length throws `RangeError` and writing at it appends. Callbacks are
-  called once each with as many of `(item, index, vector)` as they take;
-  they were tried with two arguments and, on a throw, with one and none, so
-  a callback that threw ran again without its index. `fixed` is enforced:
-  what would change the length of a fixed Vector throws `RangeError`.
-- `BitmapData.threshold` returns the pixels that passed and recolours all of
-  them. Each case of the operation ended in `break`, which in Haxe leaves
-  the loop the switch is in, so every call returned 0. It compares unsigned,
-  as ActionScript's `uint`s do, so an alpha of 0xFF is above 0x7F.
-- Removing entries while iterating works in `ListedMap`, `DenseSet` and
-  `OrderedMap`. `ListedMap`'s value iterator counted the entries when it was
-  made and read past the end after a removal, throwing on every target; its
-  pair iterator and `DenseSet`'s skipped the entry swapped into the removed
-  one's place (4 of 6 visited); `OrderedMap`'s walked an array of keys that
-  a removal shifted under it (3 of 6). Removing the entry a loop is on now
-  visits every other entry once in all three, and `OrderedMap` allows any
-  removal. `OrderedMap` keeps its entries on a linked list, so `remove` is
-  constant time, 20,000 removals took 332 ms on the jvm and 802 ms on
-  Node, now 3 ms, and iterating reads no map; `ofIndex` walks to its
-  position.
-- `ExpiringMap` holds one object per entry, whatever it is touched. Every
-  `set` and `touch` left a queue position behind, collected only once
-  everything ahead of it had expired, so one idle session in front of 1,000
-  busy ones touched 20 times a second held 2.4 million positions, 72 MB
-  on the jvm after two minutes, however small `maxSize` was. Entries now
-  sit on a list in deadline order and a touch moves one to the end: the
-  same run retains 196 KB, and a touch allocates nothing. `length` leaves
-  out entries that have expired unswept, as it always said it did, and
-  `keys()` lists the one due soonest first.
-- `InterestSet` and `BitSet` allocate nothing per round on the jvm and
-  Node. Their lists and words were `Array<Int>`s: the jvm boxed every id
-  above 127 as it was added and every word as it changed, and emptying a
-  list with `resize(0)` gave V8 its store back each round, 2,952 bytes a
-  round for a view of 50 on the jvm, and with the query's own array 2.2 MB
-  a tick for 1,000 views. They are unboxed vectors with counts now, and
-  iterating an `InterestSet` no longer copies its view.
-- `SlotMap` and `PackedSlotMap` reuse the slot freed longest ago. They
-  handed back the slot freed last, so one entity despawned and another
-  spawned each tick reused one slot every time and brought its 11-bit
-  generation round in 2048 ticks, 34 seconds at 60 Hz, after which a
-  handle kept to the first entity resolved to a newcomer. Now a slot's
-  generation comes round only after 2048 times as many inserts as there are
-  free slots. `SlotMap` also tracks whether a slot is held apart from its
-  value: an entry inserted as `null` was skipped by `forEach` and kept its
-  generation through `clear()`, so its old handle could still write, and a
-  handle made up for a free slot could `remove` it, `length` went to -1
-  and the slot was handed to two inserts. Its generations and free list no
-  longer box on the jvm.
-- `Random.int` and `inti` draw from all of a range wider than 2^31 values.
-  Its size was counted in 32 bits and overflowed, so `Random.int(0,
-  0x7FFFFFFF)` was 0 every time on eval and the jvm, half of Node's answers
-  fell outside the range, and the full `Int` range gave only negative
-  numbers. Narrower ranges draw exactly what they drew before, so seeded
-  sequences are unchanged. The shared generator's unseeded start no longer
-  repeats between runs on the jvm, hl and neko: `Std.int(stamp * 1e6)`
-  saturated there, on the jvm once the machine had been up 36 minutes,
-  so every run drew one sequence. And `Random` compiles on hl again, whose
-  default version has no atomics; hl before 1.13, neko and eval take a lock.
-- `GlobalTimer` locks its ids and its map wherever there are threads. It
-  locked them only on hxcpp, so on the jvm four threads setting and
-  clearing timers at once were issued 1,051 ids twice in 16,000 and left
-  entries behind, and a `clearTimeout` could stop another thread's timer;
-  hl, neko and eval were as exposed. An id is now reserved in the same
-  lock that picks it. The lock no longer allocates a closure per call, and
-  whether an id is in use is asked only once the counter has wrapped,
-  the jvm's `IntMap` answers that for a missing id by visiting every
-  bucket, so each `setTimeout` cost a pass over every live timer.
-- `Resources` reads only inside `resourcesDir`. Paths were joined to the
-  directory as given, so a server loading a map by a name a client sent,
-  `getText("maps/" + name)`: read whatever `"../../config.json"` named,
-  and on Windows `"sample.txt::$DATA"` read through an NTFS stream name. A
-  path with a `..` segment, a leading `/` or `\`, or a `:` (a drive letter,
-  a stream name) is refused: `exists` answers `false`, `resourceSize` `-1`,
-  and the loaders, the listings and `getAbsolutePath` throw
-  `SecurityError`. `\` separates on every target, and empty and `.`
-  segments are dropped.
-- `PriorityQueue` serves equal priorities first come, first served. Each
-  dequeue moved the newest element to the root and a strict comparison
-  never sank it past an equal, so the newest was served next: a matchmaker
-  holding one priority left 29 of its first 30 tickets queued at tick
-  20,000, and 5,969 of 5,970 tickets were served out of turn. Ties now go
-  by the order elements were enqueued; `update` keeps an element's place.
-  The heap also sifts slot numbers rather than rewriting its element map at
-  every level an element moves, which makes it about two and a half times
-  faster on the jvm and seven on eval.
-- A `MongoStatement` that fails reaches its `SQLErrorEvent` listeners on the
-  jvm. Its failure paths, and `MongoConnection`'s, passed the caught
-  exception where `SQLError` and `IOError` take a `String`, so on the jvm
-  each was a ClassCastException that escaped `execute()`, left the
-  listeners unrun, and lost what had gone wrong. The cause now travels as
-  text, and a server's refusal as the `MongoError` with its code.
-- A STUN answer whose FINGERPRINT does not match is dropped, and one
-  carrying a comprehension-required attribute this client does not
-  understand is not used (RFC 8489 sections 7.3 and 7.3.3). Both were
-  believed, a damaged datagram settled the question with whatever
-  address it now carried, and an attribute that changed what the answer
-  meant was ignored, by `StunClient`,
-  `ReliableDatagramServerSocket.discoverPublicAddress` and
-  `PeerConnection`'s gathering alike, which share `StunQuery`. A deadline
-  that passes after damaged answers says they came damaged, rather than
-  that nothing answered.
-- An IPv6 address in a STUN or TURN message is read. The family byte for
-  IPv6 was taken for no address at all, so a STUN server answering over
-  IPv6 reported no mapped address and a relay granting an IPv6 allocation
-  had "allocated nothing" while it held one. Pinned to RFC 5769's IPv6
-  sample.
-- A TURN Send indication costs half what it did: its transaction id comes
-  from random bytes drawn sixteen ids at a time, and the peer's
-  XOR-PEER-ADDRESS is written once per peer rather than parsed from the
-  address for every datagram, 610 to 350 ns for a 64-byte payload and
-  1.1 us to 540 ns for 1200 bytes, natively. ChannelData is unchanged.
-- A STUN message of more than 32 attributes (`StunMessage.MAX_ATTRIBUTES`)
-  is not read. The count was the sender's, and each attribute costs an
-  allocation and a copy, so one unauthenticated 64 KB datagram of empty
-  attributes cost 527 microseconds to decode on cpp and 4.4 ms on Node,
-  and a `PeerConnection` decoded every STUN-range datagram up to four times,
-  once each for its reflexive query, its relay, its agent and a restart's
-  agent. It decodes once now and shows the message to each, and a
-  `PeerConnectionHost` hands on the check it decoded to route.
-  `TurnClient.receive`, `IceAgent.receive` and `StunQuery.interpretMessage`
-  take a decoded message for that.
-- A `PeerConnection` whose relay refused, never answered or went away can
-  ask for another. The dead relay stayed attached for the life of the
-  connection, so asking again was refused as "already has a relay", and a
-  relay lost after a network change was never replaced.
-- Closing a `TurnClient`, or the `PeerConnection` holding one, frees the
-  allocation on the relay. No Refresh with a lifetime of zero was sent, so
-  the relay held the allocation and its port for as long as it had been
-  granted, up to an hour on coturn, the next client on the same socket
-  was refused with 437, and an application that reconnected ran into the
-  relay's quota. The release is sent once, signed, and also when the
-  Allocate is still unanswered, since the relay may have granted it.
-- `TurnClient` believes only its relay. Relayed data was taken from any
-  sender, a Data indication naming a peer, or ChannelData on a bound
-  channel's number, from anyone who could reach the socket, was delivered as
-  that peer, and a success answering a signed request was accepted without
-  its MESSAGE-INTEGRITY being checked, so whoever saw a request go by could
-  answer it with a relayed address of their own. Now only datagrams from
-  the relay's address and port are TURN traffic, a Data indication is
-  delivered only for a peer this client permitted, and an answer to a
-  signed request must be signed with the same key (a 401 or 438 excepted),
-  or carry a matching FINGERPRINT when it has one, or it is dropped as
-  though it never came, as RFC 8489 has it; a request answered only by such
-  messages fails saying so. A success carrying a comprehension-required
-  attribute the client does not understand fails its request rather than
-  being acted on.
-- A TURN relay named by hostname is looked up once per allocation. Every
-  request went to the name, which natively was looked up again every minute
-  and on Node for every datagram; against a round-robin pool the requests
-  bounced between relays that refused each other's nonces, and nothing was
-  allocated. `TurnClient` now sends to the address the relay first answered
-  from, and `serverAddress` says which. A relay that calls every nonce stale
-  is given up on after three (`MAX_STALE_NONCES`) rather than asked some
-  nine thousand times a second. Requests are transactions of their own, up
-  to eight in flight (`MAX_IN_FLIGHT`) and 64 waiting (`MAX_QUEUED`), and a
-  refresh never waits behind them: it was sent only when nothing else was
-  outstanding, so a caller asking for permissions faster than the relay
-  answered let the allocation expire. `permit` sends nothing for a
-  permission already in place or already asked for, so calling it before
-  every datagram, as `PeerConnection` now does, is cheap.
-- A stale nonce on a TURN channel rebind no longer blacks the channel out.
-  A 438 on a ChannelBind was neither retried nor used to take the new
-  nonce, and the channel stayed marked bound while the relay, whose binding
-  lapsed at ten minutes, dropped everything sent on it, for up to six
-  minutes, with nothing reported. A ChannelBind is retried like any other
-  request, and a rebind the relay refuses, or never answers, sends the
-  traffic back to Send indications once the old binding has lapsed.
-- A TURN relay refusing one peer refuses that peer, not the whole
-  allocation. Any CreatePermission error but 401 and 438 closed the
-  `TurnClient`, and ICE pairs a relayed candidate with every one of the
-  peer's candidates, private host addresses first, which a hardened relay
-  (coturn's `denied-peer-ip`, loopback by default) answers with 403. So the
-  relay was gone before the relayed pair that would have worked was tried,
-  and neither peer connected. A refused peer is now reported through
-  `TurnClient.onPermissionRefused` and not asked about again, the allocation
-  carries on, and `PeerConnection` gives up on the pairs the relay refused
-  through the new `IceAgent.refusePairs` instead of checking into them for
-  half a minute. A 437, the relay saying it holds no such allocation, still
-  ends it.
-- A TURN allocation survives a relay whose first answer is slow. The signed
-  retry after the relay's 401 reused the unsigned request's transaction, so
-  once that request had been sent twice, its answer took over half a
-  second, or natively the relay's name took that long to resolve and both
-  copies left together, the second 401 matched the signed retry and read
-  as the credentials being rejected, while the relay granted the signed
-  request and held an allocation nobody would use or free. Each
-  authenticated retry is a new transaction now, as RFC 8489 has it, and
-  answers to superseded ones are ignored. A CreatePermission success or a
-  ChannelBind error, from anyone or duplicated, no longer ends whatever
-  request is in flight: every answer is matched to its request by
-  transaction. And a relay that never answers is given up on after RFC
-  8489's 39.5 seconds rather than 63.5.
-- On the jvm, TLS sessions are resumed. Every connection built a TLS
-  context of its own, key store, key and trust managers, a random source,
-  and a context is where sessions are kept, so none was ever resumed and
-  each connection paid a full handshake. A listener now builds one for
-  everything it accepts, and client connections share one per way of
-  verifying, trusting and presenting a certificate, so a session made
-  without verification is never resumed by a connection that verifies.
-  Node's TLS 1.2 client now resumes 99 of 100 connections to a jvm server
-  (0 before), in half the handshake time; a jvm client resumes TLS 1.2
-  with a server that caches sessions (239 of 240, at 40% of the CPU) and
-  TLS 1.3 with one that issues tickets. The JDK 8 server does not resume
-  the TLS 1.3 sessions Node offers back, its own `SSLServerSocket`
-  included.
-- On the jvm, a TLS read takes every record that has already arrived, as
-  far as the caller's buffer goes, where it stopped after one: a large
-  upload was read 16 KB a pump, each pump paying a select over every
-  connection the runtime held, so 10 MB took 2.4 s beside 2,000 idle
-  connections. Records are decrypted straight into the reader's buffer, and
-  an idle TLS connection holds none of the engine's buffers: each held
-  three for its whole life, 64 KB a connection with its engine (15 KB now),
-  over half a gigabyte at 10,000. They come from a small per-thread pool as
-  reads and writes need them. And a handshake after the first is carried
-  through: a TLS 1.2 renegotiation, which nothing answered once the first
-  handshake was done, hung the connection with neither side told. A server
-  carries three through for its peer, as Node does, and closes the
-  connection at the fourth, each is a private-key operation on a
-  connection already admitted. A handshake that fails now sends the peer its
-  alert before the close, so the peer reports the reason, a certificate
-  refused, or not presented, rather than "Remote host terminated the
-  handshake". The connection then closes in order rather than at once: its
-  output is shut behind the alert, and what the peer still sends is read
-  and dropped until it closes, for a second at most. Closed at once, the
-  next thing the peer sent drew a reset, which threw the unread alert away,
-  on Linux a JDK client still writing its half of the handshake reported
-  "readHandshakeRecord" instead.
-- On the jvm, `select` keeps the sockets it is asked about registered from
-  one call to the next. It registered every socket it was handed, checked
-  every pair of them for duplicates and cancelled every key again, on each
-  call, and the runtime makes that call on every pump with every socket it
-  holds: 0.61 ms for 1,000 idle sockets, 5.8 ms for 4,000, and on Windows,
-  past 1,023, a selector helper thread started and stopped on every call.
-  It also leaves a blocking socket blocking, as native `select` does; a
-  blocking reader met a read that answered "would block" at once rather
-  than waiting for data on its way.
-- A jvm connect no longer holds the thread that makes it. A non-blocking
-  connect, every `crossbyte.net.Socket` and wss client connect, spun on
-  `finishConnect()` until the connection came up, on the runtime's thread:
-  two seconds of nothing else running against a listener whose queue was
-  full, and the whole SYN-retry time, 21 s on Windows and two minutes on
-  Linux, against a host that never answers. It returns at once now, as it
-  does natively, and `select` finishes it: writable once it is up, and a
-  refusal in the exception set. A blocking connect is bounded by
-  `setTimeout`, as reads are, where only the system bounded it.
-- A jvm https request whose server stalls or resets the TLS handshake
-  fails at its timeout, with the reason. The handshake caught every error,
-  a read that timed out, a reset, slept 2 ms and tried again, ten
-  thousand times: a server that accepted and said nothing held the request,
-  and one of `URLLoader`'s pool threads, for ten thousand times its timeout
-  (83 hours at the default 30 seconds), and a reset took 25 seconds to
-  report as a handshake that "did not complete". Only a record that has
-  arrived in part is waited on now, within what is left of the timeout as
-  a whole; anything else is thrown as it came. A record larger than the
-  read buffer grows the buffer rather than waiting for ever.
-- On the jvm, a certificate file is read whole. Only its first certificate
-  was, so a server given the `fullchain.pem` an authority issues presented
-  its certificate without the intermediate, and curl, Node, browsers and
-  the JDK all refused it; and a CA bundle, `setCA`, `DEFAULT_CA`,
-  `requireClientCertificate`, `certAuthority`, trusted its first
-  authority alone. Native and Node read every certificate, and now so does
-  the jvm, for a server's own chain, an SNI entry's and every trust store.
-  A key in the same PEM file as the certificates no longer stops it being
-  read either.
-- `Socket.timeout` holds on Node: a connect not open by then is ended and
-  reported as an `ioError`, a secure one's TLS handshake counted with it,
-  as natively. Node gave a connect no deadline of its own, so one to a
-  server that took the connection and never answered its TLS hello was
-  waited on for good.
-- A `Socket` connected again on Node keeps the new connection. The socket
-  given up went on reporting, and its reports were taken for the one that
-  replaced it: a refused connect's close, which comes a turn after its
-  error, released a connect retried from that `ioError`, which then
-  connected with nothing to write to; and a connect abandoned for another
-  still announced `connect` when it came up, and its end closed the
-  connection that replaced it.
-- A client `Socket` turns Nagle's algorithm off before it connects rather
-  than once the connect is under way. Windows refuses TCP_NODELAY on a
-  socket whose connect is in progress and hxcpp does not report it, so
-  natively on Windows a client kept Nagle's algorithm on every connect that
-  took any time, every one over a network, and a small write waited for
-  the acknowledgement of the last.
-- A jvm runtime holding many TLS connections pumps faster: the registry asks
-  every TLS socket on every pump whether its TLS layer holds decrypted
-  bytes, and asked through a dynamic call, 150 to 245 us of each pump at
-  2,001 idle connections. It asks through the socket's type now, 16 to 43
-  us.
-- On neko a runtime services more than 64 sockets. Its registry selected
-  every socket it held at once, and neko's `select` takes at most 64 on
-  Windows and throws past them, so from the 65th connection no socket was
-  serviced at all: 39 of 100 connections timed out. neko now polls through
-  its poll natives, which size their sets to what they are given on
-  Windows and call `poll()` elsewhere, so a descriptor of 1024 or more,
-  which overflowed `select`'s set on Linux, is watched too. hl's `select`
-  sizes its sets itself on Windows; on Linux it still cannot watch a
-  descriptor of 1024 or more.
-- A socket leaves its poll backend before it is closed, and a backend that
-  fails no longer leaves a runtime polling nothing. `Socket` closed its
-  descriptor and only then queued its deregistration, which a backend that
-  registers each descriptor with the system, libuv's, is not allowed:
-  libuv forbids closing a descriptor it is polling, and when a child
-  process had inherited the file its epoll registration outlived the
-  close, so the loop woke for it without sleeping for good. `PollBackend`
-  has a `remove(socket)` now, called as a socket is deregistered, while it
-  is still open, and every close deregisters first; the built-in backend
-  does nothing with it. A backend whose `prepare` or `events` throws is
-  replaced by the built-in one, which is prepared at once, where it failed
-  the same way every pass; a factory that throws gives the built-in one;
-  and a registry grows with the factory it was made with, making the
-  larger backend before disposing of the old, so installing a backend
-  later never moves a runtime onto it partway through its run. A backend
-  implementing `PollBackendGrowable` grows in place.
-- A half-open connection held by a server costs nothing while it waits.
-  After the peer's FIN a `HALF_OPEN` socket stopped reading but stayed in
-  the poll set, where end of stream is readable for good: it was reported
-  on every poll, so a POLL loop spun a core per connection held that way
-  (3.1 to 3.5 s of CPU per 3 s), and each report flushed again, a write
-  that failed was reported every time, 25,566 ioErrors in half a second on
-  a TLS 1.2 connection, and the socket was never closed. It leaves the poll
-  set's reads once the peer has finished, or `shutdown(true, ...)` has shut
-  them, and can still be written to; and a write that fails for a reason
-  other than a full buffer closes a socket that reads nothing more, after
-  its one `ioError`, since its read side will never reap it.
-- Connections are taken, dialled and secured as the system reports them,
-  not at the next tick. A POLL loop spends each frame blocked in poll,
-  which only a socket in the poll set can end, and listeners were never in
-  it: accepts ran from the tick, a connect in flight was watched from the
-  tick, and every TLS handshake, a `ServerSocket`'s, and both ends of a
-  `wss://` session, was stepped from the tick, a round trip a frame. So
-  connect to accept took 41 ms on eval and 52-57 ms on the jvm at the
-  default twelve ticks a second, a connect started from a data handler
-  waited 80 ms, and a jvm TLS client waited a median 132 ms to
-  secureConnect. Listeners are in the poll set now, and read when
-  connections are waiting, `maxAcceptsPerTick` at a time; a connect in
-  flight is watched for writing; and a handshake is stepped as its socket
-  turns readable. Measured at twelve ticks a second, connect to accept is
-  0.5 ms on eval and 0.9 ms on the jvm, and a connect from a data handler
-  1.2 ms. The tick stays for deadlines: a plain `ServerSocket` has none
-  now. A listener at `maxPendingHandshakes` leaves the poll set until one
-  finishes, so a full server does not spin.
-- A WebSocket client dials an IPv6 literal. The host it was given had to be
-  a run of letters, digits, dots and hyphens, so
-  `WebSocket.connect("::1", port)` threw "Invalid host" before a socket
-  existed, on every target, and a page's `Socket` read the same pattern.
-  A literal is taken bracketed, as a URL writes one (`[::1]`,
-  `ws://[2001:db8::1]/chat`), or bare, and written bracketed into the URL
-  and the `Host` header; names and IPv4 addresses read as before.
-- A `ServerSocket`, and so an `HTTPServer`, listens on neko. With no
-  backlog given, `listen()` asked for one of `0x7FFFFFFF`, which neko's
-  31-bit integers cannot carry, so its natives threw and no server could
-  start. The default is `0x7FFFFFF` on every target now, as
-  `ServerWebSocket`'s already was, and `FlexSocket.listen()`'s too; any
-  backlog past the system's maximum is granted as that maximum, so what a
-  server gets is unchanged, 200 connections on a client edition of
-  Windows, measured for each value.
-- A `ServerWebSocket` accepts sessions on eval, hl and neko. Each session
-  it accepted drew a client's handshake key from `SecureRandom` before
-  asking whether it was a client, and `SecureRandom` refuses on those
-  targets, so every upgrade threw in the accept tick and the peer was
-  reset: a server there accepted nothing, whatever this changelog said of
-  WebSockets on the interpreter. Only a client draws a key now. A client on
-  those targets still needs `SecureRandom`, for its key and its masks, and
-  is refused as before.
-- A closed connection is let go of. The socket registry's writable queue is
-  a `Stack`, whose `clear()` only reset its count, so the backing array held
-  every connection that wrote in a busy pass, and through the system
-  socket's `custom` the whole `Socket`, its buffers and its `userData`,
-  until a later write happened to take its slot; and the select buffer held
-  the last connections polled once nothing was left to poll. 150 closed
-  connections carrying 64 KB of `userData` each all survived five
-  collections on the jvm. `Stack.clear()` empties the slots it counts out,
-  and the registry lets go of its select buffer when its set empties.
-- `MySQLStatement` and `SQLiteStatement` return a result's pages in the
-  order they were read on every target. Off cpp the pages waited in an
-  Array read back with `pop()`, newest first, so a result paged ahead of
-  `getResult()`: `execute(2)`, then `next(2)` twice, came back last page
-  first on the jvm and the interpreter. And only the last page is
-  `complete`: it was taken to be complete whenever the result had been read
-  to the end, so every page still waiting said so, on cpp too.
-- `MySQLConnection.isolationLevel` reads on MariaDB before 11.1 and MySQL
-  before 5.7.20, which name the variable `@@tx_isolation` and refused
-  `@@transaction_isolation`. `MySQLConfig.charset` no longer accepts
-  `ucs2`, `utf16` or `utf32`, which MySQL refuses as a client character
-  set; it takes `utf8mb4`, `utf8mb3`, `utf8`, `latin1` and `ascii`. The
-  `AsyncDatabase` examples call `request()`, where they called a `query()`
-  no driver has.
-- After a failed SQLite statement the connection's next one works, and the
-  failure names its cause. The native binding left the failed statement to
-  be finalized by the next request or `close()`, and SQLite answered that
-  with the old error again, thrown as "Could not finalize request": one
-  constraint violation failed the next, unrelated statement too. The error
-  said only "SQL logic error"; it is now SQLite's own, "UNIQUE constraint
-  failed: users.email". And `SQLiteConnection.begin("IMMEDIATE")` on an
-  asynchronous connection begins immediate, as the synchronous one did: it
-  began deferred, taking no lock until its first write, where it could
-  then fail with SQLITE_BUSY part way through. From the hxcpp fork
-  (`fix/mysql-client`) and the driver.
-- MySQL `FLOAT` and `DOUBLE` columns read the same whatever the process's
-  locale. The native client parsed them with `atof`, which follows
-  `LC_NUMERIC`, so under a locale with a decimal comma 1.5 came back as 1.
-  From the hxcpp fork (`fix/mysql-client`).
-- A native `MySQLStatement` reads its rows as they are asked for, and costs
-  no statements of its own. A result was read whole before its first page
-  was returned, a million-row SELECT held 190 MB before `execute(1000)`
-  returned, 470 MB with `execute()`, where a page now holds its page.
-  Every `getResult()` sent `SELECT LAST_INSERT_ID()`, a round trip per
-  page, after which `affectedRows`, itself a `SELECT ROW_COUNT()`, read
-  -1; the insert id and affected rows now come from the statement's own
-  answer, as does `serverVersion`, from the greeting. `lastInsertRowID` in
-  `SQLResult` is exact past 2^31. Another statement on the connection
-  before the last page reads the rest of the result aside, so the page
-  after still comes. From the hxcpp fork (`fix/mysql-client`).
-- MySQL savepoints behave as SQLite's and Postgres's were fixed to.
-  `setSavepoint()` returns the savepoint's name, where it returned nothing;
-  names come from a counter, where they came from the clock, which gave
-  two made back to back the same name (8 distinct in 2000 on the
-  interpreter) and passed `Int` 36 minutes into a process;
-  `releaseSavepoint()` and `rollbackToSavepoint()` without a name act on
-  the innermost savepoint held, where the first released a name it had
-  just made up and the second rolled back the whole transaction. A
-  savepoint the server refused is not remembered.
-- On the jvm, a MySQL or SQLite failure arrives as the `SQLError` or
-  `IOError` it is, not a `ClassCastException`. The driver's
-  `java.sql.SQLException`: or the `ClassNotFoundException` when no JDBC
-  driver is on the class path, was passed where a String belongs, so no
-  listener ran and the error number and SQLSTATE JDBC reported were lost;
-  `MySQLError` now carries both. SQLite's asynchronous operations say why
-  they failed, where every error event said only "Execution failed", and
-  `SQLiteStatement.next()` before `execute()` throws the error it used to
-  make and drop.
-- `MySQLConfig.timeZone` and `sqlMode` work. Their values were escaped into
-  a buffer that was then dropped and the server was sent `SET time_zone =
-  :tz;`, a syntax error, so every `open()` naming either failed. A
-  connection whose session setup fails is now closed before `open()`
-  throws: it was left open, so a pool factory retrying an open that could
-  not succeed piled up server connections. An unsupported `charset` is
-  refused with an `ArgumentError` before connecting, where it connected and
-  then threw an `IOError`.
-- The native MySQL client logs in to a default MySQL 8 server. It spoke
-  only `mysql_native_password`, which MySQL 8 does not use by default, 8.4
-  disables and 9.0 removes; it took the server's switch to another auth
-  plugin for a broken packet ("Invalid packet error"); and against a
-  server whose collation is `utf8mb4_0900_ai_ci`, MySQL 8's default, every
-  escape threw "Unsupported charset : #255". The utf8mb4 collations 224 to
-  247 were missing too. From the hxcpp fork (`fix/mysql-client`).
-- On Windows, a `Date` before 1970 can be printed without ending the
-  process, and made from local fields. hxcpp's `Date` turned the CRT's
-  refusal of a time before 1970 into an all-zero date, which `strftime`
-  answered through the invalid-parameter handler that ends the process
-  (0xC0000409), a MySQL DATE of 1965, printed, did it, and `new
-  Date(1965, ...)` read as one second before 1970. `DateTools.makeUtc` is
-  exact arithmetic for any year. From the hxcpp fork (`fix/mysql-client`).
-- A `ConnectionPool` rolls back a MySQL or SQLite transaction that was
-  begun as SQL text or by turning autocommit off. `inTransaction` changed
-  only in `begin()`, `commit()` and `rollback()`, so a connection released
-  after `request("START TRANSACTION")` or `autocommit = false` read as idle
-  and nothing was rolled back, and on MySQL the next borrower's `begin()`
-  committed the abandoned writes, since MySQL commits an open transaction
-  when a new one starts. Natively, `MySQLConnection.inTransaction` and
-  `autocommit` now come from the status flags of the server's last reply,
-  with no round trip, and a session with autocommit off counts as in a
-  transaction, as MySQL documents it; `SQLiteConnection.inTransaction` is
-  SQLite's own `sqlite3_get_autocommit`. Elsewhere the MySQL driver follows
-  those statements when they are sent as text. A pool retires a connection
-  that still reports a transaction after its rollback, which is what a
-  MySQL session with autocommit off does.
-- MySQL values are escaped by the session's current rules. The native
-  client read `NO_BACKSLASH_ESCAPES` from the server's greeting and never
-  again, so after `SET sql_mode = 'NO_BACKSLASH_ESCAPES'` a quote was still
-  escaped with a backslash, which that mode reads as a backslash and the
-  end of the string: the value `x' OR 1=1 -- ` ran as SQL. The client now
-  keeps the flags of every OK and EOF packet (hxcpp fork, `fix/mysql-client`).
-- `MySQLStatement` reports an INSERT, UPDATE or DELETE as the success it
-  was. The native client threw "Invalid result" when the result of a write
-  was iterated, as the statement does with every result, so each write
-  dispatched `SQLErrorEvent` "Execution failed" after the server had
-  applied it, and code that retried on error wrote twice. Fixed in the
-  hxcpp fork (`fix/mysql-client`).
-- A MySQL statement with a non-ASCII character anywhere in it reaches the
-  server whole. The native client sent a query with its length in UTF-16
-  units instead of UTF-8 bytes, so each extra byte cut one off the end:
-  `UPDATE users SET city = 'Zürich' WHERE id = 12` ran as `... WHERE id =
-  1` and changed another row, and an escaped value lost its tail the same
-  way. Fixed in the hxcpp fork (`src/hx/libs/mysql`, branch
-  `fix/mysql-client`), which a native build needs.
-- A process a native program starts no longer gets its sockets. On
-  Windows every socket was inheritable and hxcpp started each child with
-  all of them, so a server that ran a command, through `NativeProcess`,
-  `System` or `File`, while a client was connected handed the command
-  that connection: closing it ended nothing, and the client saw the end
-  of the stream only when the command exited. A closed listener went on
-  taking connections on its port the same way. The fork's sockets are no
-  longer inheritable, and a child inherits its own three pipes and
-  nothing else (fork commit `2d91b834`, on
-  `merge/develop-into-production`). On Linux and macOS the sockets
-  CrossByte accepts itself, in `NativeSocketAddress.cpp`, are not yet
-  close-on-exec, so there an accepted connection still reaches a child.
-- The native Brotli and LZ4 backends (`-D crossbyte_brotli_native`,
-  `-D crossbyte_lz4_native`) are handed `maxOutputSize` and stop there.
-  They decoded the whole stream and left the limit to be checked
-  afterwards: refusing a 211-byte Brotli stream at 1 MB first took the
-  process 500 MB higher, and LZ4, which cannot tell what a block holds,
-  guessed and doubled its guess on every failure up to 256 MB, 200 MB to
-  learn that 100 bytes were garbage. Brotli is now given room for the
-  limit and stopped when it asks for more, and its own allocations are
-  held to what the limit could need, so four bytes announcing a 16 MB
-  meta-block no longer cost 16 MB; LZ4 adds up what the block's sequence
-  headers say before allocating anything, then decodes into exactly that,
-  which also holds a block to the format's end rules. Both
-  run in a GC-free zone, so compressing 2 MB at quality 11 on a worker no
-  longer holds every other thread's allocations for its 1.8 s, and native
-  Brotli compresses with the smallest window that holds its input. Their
-  errors are the same `IOError` and `RangeError` as the Haxe codecs'.
-  Building with either define now needs the extension as of this change,
-  whose `decompress` takes the limit.
-- An LZ4 block cut short is refused rather than decoded as though whole.
-  A block carries no length, so one cut where a literal run ended read as
-  complete: half of a 20 KB block decoded to 10,133 bytes and said nothing.
-  The format's end rules, the last five bytes literals, the last match
-  starting twelve or more bytes from the end, which every conforming
-  encoder keeps, are now enforced, and they catch nearly every such cut;
-  no bytes at all is refused too, since even an empty block is a one-byte
-  token. `Lz4.compress` given a plain `Bytes` no longer allocates a copy
-  of the whole input per literal run, which natively crashed on 900 KB;
-  it and the decoder now write straight into `Bytes`, faster on every
-  target.
-- gzip is read as RFC 1952 has it: a header with an extra field, a
-  comment or a header CRC (which is checked) is read rather than refused
-  as unsupported, and a stream of several members, what concatenating
-  gzip files gives, inflates to all of them together, under the one
-  limit. The second member failed its CRC, since the trailer was taken to
-  be the input's last eight bytes. Zero padding after the last member is
-  ignored and anything else there refused, as Node's gunzip does.
-- Inflating deflate or gzip no longer builds a decoder nothing uses.
-  `Inflater` has decoded through `haxe.zip.InflateImpl` all along, but every
-  call still allocated and cleared a 32K-entry window for a decoder of its
-  own that nothing called, and computed a CRC of every result that only
-  gzip reads, as `Deflater` did of every input. An 846-byte game message
-  took 115 us to inflate on Node and takes 28 us.
-- Brotli compression costs in proportion to what it compresses. Every call
-  built a ring buffer for a 4 MB window, 2^23 entries for a two-byte body,
-  and allocated and cleared a 2^17-entry hash table, so a server
-  answering browsers, which all ask for br, managed 45 two-byte responses a
-  second on Node and every error page paid the same. The window is now the
-  least that covers the input, the ring buffer is the input's size when it
-  fits one block, the hash tables for qualities 1 to 4 are kept per thread
-  and only the buckets an input uses are cleared, and input and output go
-  through `Bytes` rather than `Array<UInt>` copies. Output is byte for byte
-  what it was, bar a smaller window header. Node, served through
-  `HTTPServer` with br: 45 to 3,091 requests a second for a 2-byte body,
-  46 to 2,020 for 2.9 KB of JSON; compressing 700 KB of JSON takes 54 ms
-  rather than 81.
-- Decoding Brotli takes memory in proportion to what it produces. The
-  decoder allocated the whole window a stream's header named, 16 MB for
-  an eighteen-byte request body, which cost a Node server 33 ms a request,
-  and copied its input and output through `Array<UInt>` buffers at
-  several bytes per byte, so a 53-byte stream under the HTTP client's 64 MB
-  ceiling reached 1.4 GB on Node before the ceiling stopped it. The ring
-  buffer now grows with the output, the input is read where it lies, the
-  output is gathered in `Bytes`, and a meta-block announcing more than the
-  caller's limit is refused as its header is read. That stream now peaks
-  at about 160 MB on Node and is refused in 115 ms rather than 1.6 s, and
-  every Brotli decode measured got faster on Node and natively, a 2 KB
-  JSON body from 7.8 ms to 85 us on Node. Valid
-  streams with a small window over incompressible data, which were
-  refused, decode.
-- Several threads meeting the Brotli codec for the first time at once no
-  longer crash. Its dictionary tables were marked built before they were
-  built, so a thread arriving while another built them read a dictionary
-  that was null or half filled: natively a segfault, on the jvm a
-  NullPointerException. URLLoader decodes on up to sixteen pool threads,
-  so a burst of loads at startup was exactly that. The tables are now built
-  once, under a lock, and published only when complete, and no longer
-  decoded at startup by programs that never use Brotli. Deflate's symbol
-  tables are built as its class initialises, since their first-use build
-  could be seen half done on a weakly ordered CPU.
-- A Brotli stream that ends where its literal context map should begin is
-  refused rather than crashing a native process. The decoder scanned the
-  map before checking it had been read, so it walked one that was never
-  allocated: an exception from inside the decoder on eval and the jvm, and
-  natively a segfault, from the first four bytes of any stream.
-- Four bytes of Brotli no longer hang the decoder for good. A stream that
-  declared a metadata block and ended before it did kept the decoder asking
-  for input that was never coming, in a loop that allocated nothing, so no
-  output ceiling tripped: one request body sent with `Content-Encoding: br`
-  stopped a server answering anyone, and as a client response it froze a
-  native process at its next collection. It now fails at once, as the C
-  decoder it was ported from does, and the parser fuzz suite covers Brotli
-  too.
-- A jvm TLS server asks for client certificates only after
-  `requireClientCertificate()`, as a native one does. Once the jvm honoured
-  `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
-  its own followed it too, so turning the default on for an application's
-  outgoing connections made its servers refuse every client without a
-  certificate, every browser.
-- A closed `ServerSocket` or `ServerWebSocket` no longer keeps accepting.
-  Each path that wanted the accept tick running added it to the runtime
-  again, a `connect` listener added after `listen()`, as `NetHost` does,
-  and `ServerWebSocket`'s own, and close removed one, so the rest ran on
-  for good, a `ServerWebSocket`'s calling `accept()` on its closed listener
-  every frame and keeping the server alive. Natively those accepts fail on
-  the closed socket; eval keeps the closed socket's descriptor number, so
-  once a new listener took it the accept landed there, and since eval
-  cannot make a socket non-blocking it waited on it, stopping the runtime
-  for good. The interpreter suite hung on Linux that way. The
-  tick is now attached once and removed once, a closed server's tick does
-  nothing, and on eval a `ServerWebSocket` asks `select` before `accept`.
-- A jvm TLS client's engine is told the host and port it dialled. Made
-  without them, a certificate check the SNI name could not settle fell back
-  to a host of null: on Temurin's Java 8 a certificate for another host was
-  refused as "Hostname or IP address is undefined" rather than for its name.
-  And a connection to an IPv6 address threw before a byte was sent, since
-  the address went out as an SNI name, which the JDK refuses for an IPv6
-  literal. An address is no longer sent as SNI at all, which RFC 6066
-  forbids; it is checked against the certificate's IP entries.
-- `PostgresConnection.inTransaction` on the native driver is the server's
-  own account, taken from libpq after every statement. Only `begin()`,
-  `commit()` and `rollback()` changed it, so a transaction begun or ended
-  as SQL text, `request("BEGIN;")`, read as none, and a pool returning
-  the connection saw nothing to roll back.
-- Natively, a host loop that only calls `pump()`, no sleep, nothing
-  allocated, as a benchmark or an embedder's busy loop does, stalled every
-  other thread at its next garbage collection for good: the collector waits
-  for each thread to reach a safepoint, and that loop never did. `pump()`
-  reaches one now, at no measurable cost (an idle pump is 52-53 ns either
-  way).
-- On the jvm, a TLS socket's reads ignored `setTimeout`, so an https
-  response that stopped arriving was waited for for ever and the HTTP
-  client's idle limit never fired over https. The TLS socket now waits for
-  ciphertext the way the plain socket does since its own timeout fix.
-- On the jvm, `FlexSocket.DEFAULT_VERIFY_CERT` did nothing: a TLS socket
-  read only its own `verifyCert`, so turning verification off for every
-  socket, as a development setup does, still refused a self-signed server.
-  An unset `verifyCert` now falls back to the default, as it does natively.
-- On the jvm, a reliable datagram session a server dialled to an IPv6
-  address never connected. It was filed under the address as the jvm spells
-  it, `0:0:0:0:0:0:0:1`, while datagrams arrive from `::1`, so the peer's
-  replies found no session. A dialled address is filed compressed now, as
-  arriving ones and dials by name already were.
-- `ReliableDatagramServerSocket.discoverPublicAddress`: and so a
-  reliable-UDP `NetHost`'s, with a STUN server name that does not
-  resolve fails at once instead of at its deadline. The send it asks with
-  looks names up off the runtime's thread now, so the failure came after
-  the call, as an `ioError` on the socket every session shares, and
-  nothing told the question: it waited out its whole deadline. The name
-  is now looked up before the question is asked, and one that does not
-  resolve fails it with that reason. On Node, which looks the name up
-  itself for each request, it still waits for the deadline.
-- The PHP bridge looked its backend up and connected to it on the runtime's
-  thread, for every request, so each PHP request held every socket and timer
-  on the runtime for a name lookup and a connect: 0.29ms for an address and
-  0.47ms for `localhost` on loopback, measured, and for a name that does not
-  resolve as long as the resolver took, commonly a second. Both happen on a
-  thread of the bridge's own now, which hands the connection back through the
-  runtime's post queue: a request holds the runtime for 0.02ms, and the round
-  trip is no slower. A name is looked up once, and again only after a
-  connect to its address fails, so a backend that moves is found at its new
-  address. A request that times out while connecting says so.
-- A PHP response waited for the runtime's next tick before it was read. The
-  bridge read its FastCGI connection from a tick listener, so at the default
-  twelve ticks a second a response arrived up to 84ms after PHP sent it,
-  however quickly PHP had answered: measured against a backend that answers
-  at once, 49-53ms on average in a server's `POLL` loop. The connection is in
-  the runtime's poll set now, as `crossbyte.net.Socket`'s are, and the reply
-  is read when it arrives: 0.5-0.7ms on average in the same measurement. A
-  backend that hangs up mid-response is heard as it hangs up. On eval, where
-  a socket cannot be made non-blocking, the bridge no longer blocks the
-  runtime reading a reply that has not arrived yet. Node was already told of
-  arrivals by an event.
-- Recording a metric took a lock on hxcpp, and acquiring an hxcpp `Mutex`
-  enters and leaves a GC-free zone: about 230ns for each `Counter.inc`,
-  `Gauge` update and `Histogram.observe`, so the two an HTTP server records
-  for every response cost it close to half a microsecond. They are atomic
-  instructions now, measured at 5ns for an increment and 15ns for both of a
-  response's updates. A histogram observation adds to the one bucket it
-  falls in rather than to every bucket above it, which is cheaper on the
-  other targets too, and a histogram's count is the total of its buckets. A
-  scrape reads each histogram once, so its `+Inf` bucket and `_count` agree:
-  they were read separately, and an observation between the two reads made
-  them differ. On hxcpp a histogram's `_sum` can count an observation its
-  buckets do not show yet, or the reverse, while observations arrive.
-- A request body over 16 KB reaches the server whole over `https`, natively
-  and on the jvm. The client wrote it with `Output.writeBytes`, which writes
-  what it can and says how much, and a TLS socket takes one record, 16 KB,
-  at a time: the rest was dropped, and the server waited for it until the
-  request timed out. HTTP/2 wrote every frame the same way, so a full-sized
-  DATA frame lost its last nine bytes and the server closed the connection.
-- On the jvm, every `URLLoader` load left two sockets open until the process
-  ended: the thread it ran on opened a selector for its reads, and nothing
-  closed it when the thread ended. With eight loads in flight at a time,
-  9,000 of 15,000 failed with "Address already in use". Loads run on
-  long-lived threads now, so there are as many selectors as threads, not as
-  loads, and none of them fail.
-- A `URLLoader`'s `COMPLETE` or `IO_ERROR` listener can start its next load.
-  The loader was still busy while they ran, so the new load was refused with
-  "URLLoader is already loading".
-- Over HTTP/2 a redirect is followed, as it is over HTTP/1.1, on Node and in
-  the browser; a 3xx completed the load with its `Location` unread. The
-  HTTP/1.1 client's rules apply, through the same code: at most
-  `Http.MAX_REDIRECTS`, a relative `Location` resolved against the request,
-  a 301, 302 or 303 made a bodiless GET, `https` to `http` only with
-  `followInsecureRedirects`, `Authorization`, `Proxy-Authorization` and a
-  hand-set `Cookie` dropped once a hop leaves the origin, and, with
-  `manageCookies`, a cookie a hop sets sent back on the next. A hop to an
-  origin already connected rides that connection, and `HTTP_RESPONSE_STATUS`
-  names the URL the response came from. A HEAD stays a HEAD through a 301,
-  302 or 303 on both versions: over HTTP/1.1 it became a GET, and downloaded
-  the body it had asked not to be sent.
-- `idleTimeout` over HTTP/2 is an idle limit, as it is over HTTP/1.1 and on
-  Node: the longest a response may go with nothing arriving for it. It was a
-  deadline on the whole response, so a download still arriving steadily was
-  cut off when the timeout ran out, where HTTP/1.1 let it finish.
-- An HTTP/2 request cancelled before it started no longer closes the
-  connection it would have used. The session refused it before sending
-  anything, and the backend took that for a failed connection and closed
-  it, failing every other request in flight on it. It reports `Request
-  cancelled` now, as a cancel at any other point does.
-- Cancelling an HTTP/1.1 load, `URLLoader.close()` with a load in flight,
-  or its `cancelToken`, ends it on every target, and at once. A cancel that
-  landed after the load had looked at its token and before its socket
-  existed, while the connection pool was searched, while the socket was
-  made, or between two redirects, found nothing to close and was lost: the
-  request went out anyway, and its thread waited out the idle timeout for an
-  answer nobody wanted. And the cancel closed the socket from the cancelling
-  thread. On Linux that does not wake a read already waiting on the socket,
-  so the server heard nothing until the read gave up; on eval it killed the
-  loading thread with an error no catch sees, and the reset it caused killed
-  the server's reader too; and closing a TLS socket frees its mbedTLS
-  context under a read that may still be using it. Now the socket is
-  published under a lock the cancel also takes, so one always finds the
-  other, and it is shut down rather than closed, which ends the read and
-  tells the server at once; the loading thread closes it itself. A cancelled
-  load reports `Request cancelled` whichever step failed under it, and a
-  body that ends with the connection is no longer delivered as complete when
-  a cancel is what ended it.
-- `File.clone()` gave the clone the original's listeners, where its
-  documentation says registrations are not copied. It copied every instance
-  field by reflection, `EventDispatcher`'s listener map included, so once the
-  original had a listener, one added to either reached both; on the dynamic
-  targets it also copied the original's bound methods, so the clone's
-  `addEventListener` registered on the original. It copies the file's own
-  state now, and the clone starts with no listeners.
-- On eval, `sys.net.Socket`'s `input.readByte()` answered 0 at the end of a
-  connection instead of throwing `Eof` as every other target does, so a
-  reader waiting for a delimiter there, a line reader, read zeros for
-  ever. It reads through `readBytes` now, which knows the end when it sees
-  it. The HTTP client had worked around this for itself only.
-- On the jvm, `sys.net.Socket.setTimeout` did nothing, so a blocking read
-  with nothing coming waited for ever. A blocking NIO channel has no read
-  timeout of its own, `SO_TIMEOUT` reaches only the stream API, and the
-  value was stored and never read. CrossByte's HTTP client reads a response
-  that way with its idle limit as the timeout, so on the jvm it could wait for
-  ever on a server that stopped sending. A blocking read with a timeout now
-  waits for data on the thread's selector first and throws when none comes.
-- `FileStream.openAsync` for writing throws `IllegalOperationError` on a
-  target without threads, Node, in practice, instead of never returning.
-  Its writer is a worker that waits for writes, and with no thread of its own
-  it waited inside the call. Where there are threads, async reads now honour
-  `readAhead` on the jvm and eval as well, which run workers on threads now.
-- `StunClient.discover` with a server name that does not resolve fails at
-  once instead of at its deadline. Names are looked up off the runtime's
-  thread now, so the failure arrives as the socket's `ioError` after the
-  send returns, and the query was not listening for it.
-- On Node, a socket, server, WebSocket or datagram listener that throws is
-  reported as the runtime's `UncaughtErrorEvent`, with source `SOCKET`, as it
-  is natively. The failure was contained there already, but only logged: an
-  application watching `UNCAUGHT_ERROR` never heard of a failure Node's own
-  loop delivered.
-- `removeEventListener(type, this.handler)` removed nothing on eval and the
-  jvm. It reads the method again, and there every read of a bound method is
-  a new closure that `==` never matches, hxcpp compares two reads equal and
-  JavaScript caches the binding, so native and Node were right. The listener
-  stayed attached for good: a closed socket or a stopped component went on
-  being called, which is how `TCPConnection.close()` came to report its close
-  twice on eval. Listeners are now matched with `Reflect.compareMethods`
-  where `==` falls short.
-- OAuth's token exchange no longer blocks the runtime, and a provider
-  that never answers no longer leaves it waiting forever. Native targets
-  used the blocking `haxe.Http`, so a token endpoint taking 400 ms held
-  every connection the server had for 400 ms per sign-in; on Node a
-  stalled endpoint left both callbacks unfired. The exchange and refresh
-  now go through `URLLoader`, off the runtime's thread on native and
-  asynchronously on Node, answering on the calling runtime's thread, and
-  fail after `OAuth.timeout` seconds. A rejected grant reports the
-  provider's `error` and `error_description` whatever the status it came
-  with, and a failing status is never taken for a token. `expires_in` is
-  read with `IntParse`, so one too large for an `Int` is 0 on every target
-  rather than whatever `Std.parseInt` made of it on each.
-- A JWT expiring after January 2038, or at 2147483647 (a common "never"),
-  is judged the same on every target. Times were `Int`: 2147483647 plus the
-  leeway wrapped negative on the interpreter and the jvm, so the token was
-  expired there and valid on cpp and Node, and the jvm refused every time
-  past 2038. Times are now seconds in a `Float`, and may be fractional as
-  RFC 7519 allows. A registered claim of the wrong JSON type, a numeric
-  `sub`, a string `iat`, is refused as `malformed` rather than handed
-  back through a typed property.
-- `JWT.verifyToken` accepts tokens from other issuers. It refused any
-  whose `typ` was not exactly `JWT`: AWS Cognito's and Sign in with
-  Apple's, which carry none, RFC 9068 access tokens (`at+jwt`), and a
-  lower-case `jwt`. `typ` is now compared in any case, with an
-  `application/` prefix ignored as RFC 7515 allows, against
-  `acceptedTypes`: `JWT` and `at+jwt` by default, and a token with no
-  `typ` passes unless `requireType` is set.
-- RSA and ECDSA signatures no longer leave copies of the private key in
-  freed memory, and `JWTSigner.RS256` and `ES256` parse their keys once
-  instead of for every token. Each sign and verify parsed the PEM afresh,
-  from a copy in the GC heap made per call and a native buffer freed
-  without being wiped, and rebuilt an EC key's precomputed tables every
-  time. Keys are now parsed once, into native memory that mbedTLS wipes
-  when it is freed, and every buffer that held a key is wiped before it
-  is released. Signing and verifying also run in a GC-free zone, since a
-  4096-bit RSA signature takes about 25 ms: on a worker, it held every
-  collection in the process for the rest of the signature it landed in.
-- Password hashing on a worker thread no longer stalls every collection
-  in a native process. hxcpp collects only once every thread reaches a
-  safe point, and neither libsodium's Argon2id nor BCrypt's inner loop
-  ever reached one, so moving a hash off the runtime's thread moved the
-  stall onto all of them: a collection on the main thread waited 286 ms
-  of a 317 ms Argon2id hash on a worker, and 302 ms of a 332 ms BCrypt
-  hash. libsodium's password hashes now run in a GC-free zone, with the
-  password copied to native memory first and wiped after, and BCrypt
-  reaches a safe point every two rounds. The same collections take about
-  a millisecond.
-- `SecureRandom` on Linux and macOS made its lock on first use, so two
-  threads drawing their first bytes at once could each make one and read
-  `/dev/urandom` together. It is made up front.
-- BCrypt adds the key's terminating NUL for every revision. It was added for
-  `$2a$` alone, and `$2y$`, the default, was computed without it, so no hash
-  CrossByte made verified anywhere else, no hash migrated from PHP, Laravel,
-  Node or Python verified here, PHP's own manual example among them, and
-  a password matched its repetitions: without the NUL the key is the
-  password cycled to 72 bytes, so `hash("abc")` accepted "abcabc". Hashes
-  CrossByte stored before still verify: a `$2y$` hash that fails the
-  standard check is tried once more in the old form, and only `$2y$`, the
-  one revision it ever produced. `$2x$` hashes are checked with
-  crypt_blowfish's sign-extension bug and `$2a$` with its countermeasure, as
-  PHP checks them. A cost of 31 ran no rounds at all, since `1 << 31` is
-  negative in an `Int`; it runs 2^31.
-- `File.createTempFile` and `createTempDirectory` can no longer be steered
-  by another user of a shared temporary directory. The name was "ofl" and a
-  `Math.random` number below 2^24, and the file was made after checking the
-  name was free, by a write that follows symbolic links, so a user who
-  planted links at likely names had the next temporary file written
-  wherever they pointed. A name now carries 64 bits from the platform's
-  secure random source, and the file or directory is created only if
-  nothing is at the name, `O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its
-  owner only, on POSIX; `CREATE_NEW` on Windows; their equivalents on the jvm
-  and Node, with a taken name passed over for another. The interpreter,
-  which has neither, still checks first.
-- An asynchronous `FileStream` read hands out only bytes it has read. The
-  read buffer was allocated at the file's full size before anything was
-  loaded, so `bytesAvailable` counted the whole file from the first
-  progress event, and reading that much, which the class documentation
-  says to do, returned zeros for everything not loaded yet: 6.4 MB of them
-  from a 10 MB file on Node. The buffer now grows as data arrives. Where the
-  stream's worker has a thread of its own, `readAhead` is honoured as well:
-  loading pauses while that much is waiting to be read, and with a finite
-  `readAhead` consumed bytes are let go, so a stream holds about that much
-  rather than the whole file. Setting `position` outside what is held
-  starts loading again from there.
-- A chunked `FileStream` copy is exact. A synchronous `readBytes` past the
-  end of the file padded the missing bytes with zeros and returned as
-  though it had read them, so the usual loop, read a chunk until
-  `EOFError`: never saw one, and a 1 MB file copied in 64 KB chunks came
-  out 65,436 bytes longer, the tail all zeros. A short read now throws
-  `EOFError` and leaves the position where it was, so what is left can
-  still be read (see Changed).
-- `writeUTF` refuses a string of more than 65,535 bytes with a
-  `RangeError`, as documented, in `ByteArray`, and so in the sockets that
-  write through it, `ByteArrayOutput` and `FileStream`. The 16-bit length
-  in front of the string wrapped, so the reader stopped short and every
-  read after it landed inside the string: a `readInt` after a 70,000-byte
-  string returned 2021161080 for 42. A synchronous `FileStream.writeUTF`
-  also threw `Overflow` from 32,768 bytes, a string `ByteArray` accepted,
-  because it wrote the length as a signed short.
-- `File.size` no longer reports a file larger than 2 GB as some other size.
-  It is an `Int`, and what the standard library's `stat` made of a larger
-  file differed by target and was right on none: on Windows native a 3 GB
-  file read as 0. It now throws an `IOError`, as the HTTP server already
-  refuses such a file, checked against a 64-bit size where the target has
-  one and otherwise by asking the file whether it goes on past the
-  reported end.
-- A `Store` key survives a crash while it is being overwritten. The file
-  backend replaced a value by deleting it and then renaming the new one into
-  place, because the standard library's rename refuses to replace a file on
-  Windows; a process that died between the two left no value, and the next
-  open deleted the complete new one as debris. Between the two steps a
-  reader saw the key as absent, too: two runtimes on one store, one
-  overwriting and one reading, read it as missing in about half of 4,000
-  reads, and on Windows a reader holding the file failed the writer's
-  delete. The new value is now renamed over the old one in one step
-  (`MoveFileExW` on Windows, `Files.move` on the jvm), so the key is never
-  absent; each write uses a temporary file of its own rather than one name
-  shared by every writer; and the temporary file is flushed to disk before
-  the rename, as the store's design promised, with the directory flushed
-  after it on POSIX. The interpreter has no fsync to call. A temporary file
-  the old writer left as the only copy of a key is promoted on open rather
-  than deleted.
-- A PHP request body over 65,535 bytes reaches php-fpm intact. The bridge
-  put the whole body in one FastCGI STDIN record, whose length field is 16
-  bits, so a 100,000-byte POST declared 34,464 bytes and php-fpm read the
-  rest of the body as record headers; the parameters went in one record the
-  same way. Both are now split across records the way php-fpm reads them,
-  parameters only between pairs, since it parses each PARAMS record on its
-  own, and a single header too large for any record is refused with an
-  error rather than sent broken. On native the request was also written in
-  one burst on a non-blocking socket, so on Linux an upload larger than the
-  kernel would take at once (about 2.6 MB to a backend not yet reading)
-  failed as "Could not reach the PHP backend", a 502. The rest is now
-  written on the ticks that follow, as the backend reads it.
-- PHP responses reach the client byte for byte. The whole FastCGI output
-  was decoded as UTF-8 to find the end of the headers and the body
-  re-encoded from that string, which mangled images, PDFs, archives, gzip
-  output and Latin-1 pages; Node cut a body off at its first NUL, and eval
-  threw from inside the tick. The header block is now found on the bytes
-  and only it is decoded, as UTF-8 where it is valid, a byte per character
-  where it is not, and the body is passed on untouched. A `Status` header
-  that is not a three-digit code is ignored: `99999999999` became status
-  2147483647 on Windows and 1215752191 on Linux.
-- A failed PostgreSQL or MySQL transaction is no longer reported as
-  committed. `commit()` caught the server's refusal and dispatched an event
-  instead of throwing, so the documented `AsyncDatabase.transaction(c ->
-  c.begin(), c -> c.commit(), ...)` completed as success, `SchemaMigrator`
-  recorded a migration that had been rolled back, and the connection went
-  back to the pool still marked as inside a transaction. A COMMIT that
-  PostgreSQL answers with the tag ROLLBACK, which is what it does after a
-  statement in the transaction failed, discarding all of it, also read as
-  success, since only the tag says otherwise. Both now throw an `SQLError`
-  (see Changed), the tag is read on the native driver, and
-  `AsyncDatabase.transaction` rolls back when the commit throws, closing a
-  transaction an engine keeps open after a failed COMMIT before the
-  connection is pooled again. A savepoint the server refused is no longer
-  remembered as the innermost one.
-- Native PostgreSQL connections no longer share one result buffer. Every
-  connection and thread in the process wrote the bridge's single buffer,
-  results, escaped strings, and the reason an open failed, and
-  `requestParams` read its result back through a second call, a byte at a
-  time. With `AsyncDatabase`'s default of a worker per pooled connection, a
-  query could come back with another query's rows, an open could report
-  another connection's failure, and a thread could read a buffer another
-  had just grown and freed. Against a stand-in libpq, 8 workers running 400
-  bound queries each got an answer that belonged to another query and 7 of
-  them threw; another run crashed the process. Each connection now keeps
-  its own state, and each call returns its own result in one call, copied
-  from libpq's memory straight into the block the caller receives. Loading
-  libpq is locked. A connection configured with its own `libraryPath` now
-  gets that library even after another has been loaded; the first library
-  loaded used to serve every connection after it.
-- A PostgreSQL query or connect no longer holds up garbage collection on
-  every thread. The bridge called libpq with the thread still counted as
-  running Haxe code, so the next collection anywhere waited for the query
-  to finish: a slow report, a lock wait or an unreachable database host
-  stopped the runtime thread and every socket it served. Against a
-  stand-in libpq, a collection waited 2.3 seconds for a query and 1.25 for
-  a connect. Connecting, executing, cancelling and closing now run in a
-  GC-free zone, with the statement and its parameters copied out of the
-  Haxe heap first.
-- Adding or removing an event listener copies the listener list only while
-  a dispatch is walking it. It copied on every call, so n listeners on one
-  type, a connection or a task each attaching its own, cost n^2 to
-  attach and again to detach: a thousand added and removed took 5.6ms
-  natively, and takes 75us now (removed newest first, 20ms and 3ms, where
-  finding each one is the cost left). A listener added after the others of
-  its priority, the usual case, no longer walks the list to find its place.
-  What a dispatch sees is unchanged: a listener added during it does not
-  run for that event, and one removed during it still does.
-- `CrossByte.cpuLoad` counts a POLL loop's socket handlers, and the posted
-  callbacks any loop runs while it waits out a frame. It was measured before
-  the poll, so a POLL server busy with its sockets half of every frame
-  reported 0%. Time spent blocked in poll, waiting for a socket, still does
-  not count as load.
-- `System.memoryUsage()` reports the heap in use on the jvm and Node, and
-  natively takes the collector's 64-bit figure. It was the 32-bit one, which
-  wrapped negative past 2 GiB, and 0 on every other target.
-- Timer handles are never negative. The id took 20 bits and the 12-bit
-  generation above it reached the sign bit, so from a slot's 2,048th reuse
-  every handle for it was negative, against what `TimerHandle` said of
-  itself, and a live handle at the top id could equal `TimerHandle.INVALID`.
-  The id has 19 bits now: a runtime's scheduler holds up to 524,288 timers at
-  once and throws when asked for more, where ids past 1,048,576 used to wrap
-  onto other timers without a word.
-- A shutdown callback that throws is logged with `Logger.error` (category
-  `runtime`). It was swallowed silently; the callbacks after it and the exit
-  path still run.
-- A `ServerApplication` runs on Node, an `Application` can be made on the
-  interpreter, and `docker stop` or Ctrl+C on a jvm or Node service runs the
-  shutdown callbacks. `ServerApplication`'s POLL loop threw on JavaScript at
-  its first frame, since there is no socket set to poll there, which took
-  down the web-server sample; POLL runs the DEFAULT loop on JavaScript now.
-  On the interpreter `Thread.current() != mainThread` was true on the main
-  thread itself, only `==` compares threads there, so every
-  `Application` subclass threw "must only be instantiated in the main
-  thread". And `ProcessLifecycle.installDefaultHandlers()` armed nothing off
-  native: Node exits on SIGTERM and SIGINT unless something listens, and the
-  JVM's default halts after its shutdown hooks, so neither drained. It now
-  listens for both on Node and sets the JVM's own signal hook for INT and
-  TERM, latching the request as the native handlers do and waking the
-  runtime to run the callbacks.
-- A `SlotMap` or `PackedSlotMap` handle kept after its entry died no longer
-  comes to name whatever takes its slot 256 reuses later. The generation
-  was eight bits, and the free list hands the most recently freed slot back
-  first, so a missile's target or a last attacker resolved to an unrelated
-  entity within seconds of churn. It is eleven bits now, as `TimerHandle`'s
-  was widened for the same reason. The sign bit is no longer part of it, so
-  a handle is never negative, past 128 reuses every handle was, and a
-  live one at the highest index was `SlotHandle.INVALID` itself.
-  `SlotMap.clear()` counted the generation without keeping it in range,
-  bringing back the leak `remove()` was fixed for: a slot at the top of its
-  range held a value no handle could carry, and an entry put there after the
-  clear could never be read back.
-- `Config.getInt` refuses a value too big for an `Int` on every target, and
-  `Version` reads an oversized segment the same everywhere. Both used
-  `Std.parseInt`, whose answer past 32 bits depends on the target:
-  4294967296 read as 0 on Linux native and 2147483647 on Windows native,
-  threw a `NumberFormatException` on the jvm and came back wider than an
-  `Int` on JavaScript, so a configured connection limit could quietly become
-  0. `getInt` now throws `ArgumentError` for it as for any other malformed
-  value, and a version segment past three digits reads as 999, the most
-  `hash` has room for. A suffix such as `-beta` still reads as the digits
-  before it.
-- `haxe.Timer` and `GlobalTimer.setInterval` run at the rate they are asked
-  for. CrossByte's `haxe.Timer` counted tick deltas down itself and reset
-  to the full interval after each run, dropping whatever the tick had
-  overshot by, so every period rounded up to a whole number of ticks: at
-  the default twelve ticks a second a 100ms timer ran 12 times in two
-  seconds instead of 20. Libraries written against the standard API ran
-  slow without knowing it. It also kept every timer in one map under a
-  counter that wrapped after 2^32 timers, where a new timer taking a live
-  one's id evicted it and it never ran again, and copied every live timer
-  into a new array on every tick. A `haxe.Timer` is now a timer on the
-  runtime's own scheduler, each run due one interval after the last was
-  due; a timer that has fallen behind runs once a frame until it catches
-  up rather than in a burst; and it runs on the runtime of the thread that
-  made it. `GlobalTimer` skips ids still in use when its own counter wraps.
-  The heap scheduler now counts a timer due within a nanosecond of the
-  clock as due: two 50ms frames could land a rounding error short of a
-  100ms timer, which then waited a frame more.
-- A client can no longer forge records in the log. In text mode a message
-  or field value was written exactly as given, so a request path carrying
-  `%0A`, percent-decoded and logged at INFO, the default level, produced
-  a standalone `[ERROR]` line of the client's choosing. Line feeds, carriage
-  returns, the Unicode line and paragraph separators and the other control
-  characters are now written as escapes, in the message and in field keys
-  and values, and a quoted field value escapes its quotes and backslashes
-  too. `Logger.timestamps` gave local time to the second with no zone while
-  documented as UTC; it is now UTC with milliseconds and a `Z`, worked out
-  from the epoch rather than through `Date`.
-- A pending `Task` or running `Worker` no longer holds a tick listener of
-  its own. Each attached one to its runtime and polled its queue every tick,
-  and adding or removing a listener copies the runtime's whole list, so
-  submitting a burst of tasks cost time in proportion to the square of its
-  size, 8000 pending took 2.3 seconds to submit and 2.2ms of every idle
-  tick. Results now reach the runtime through its post queue, one post per
-  task and one per batch of a worker's messages, and so arrive without
-  waiting for the next tick. `Task.onComplete` and `onError` read a task's
-  state and its result together, under the task's lock: read apart, a task
-  completing on another thread could be seen as complete with its result
-  not yet there, and the handler given null.
-- Work handed to a runtime from another thread runs as soon as the runtime
-  is free, not at its next tick. A callback posted mid-frame waited out the
-  rest of the frame, 38ms on average and up to a whole frame at the
-  default twelve ticks a second, and every RPC answer finished on another
-  thread, every query result and every task completion paid it, a chain of
-  them once per step. A runtime now waits out its frame on a lock that a
-  post releases (DEFAULT), or inside a poll that a post ends by writing to a
-  loopback wake socket in the poll set (POLL). Measured natively at twelve
-  ticks a second, the mean wait fell from 39.7ms to under 0.1ms (DEFAULT)
-  and from 37.3ms to 0.1ms (POLL), the worst from 82ms to 0.1ms. It wakes
-  once per batch, when the queue goes from empty to not, and an idle
-  runtime costs what it did: 0.16% of a core at sixty ticks a second,
-  against 0.31% before. `exit()` called from another thread stops the loop
-  at once rather than after it has slept out its frame, what was posted
-  before a runtime exits still runs, and a post after that is refused
-  rather than dropped without a word.
-- `CrossByte.make()` no longer takes over the calling thread's timers, and
-  a child runtime exits with the runtime that made it. `make()` bound the
-  new runtime's timer scheduler to the thread that called it, so once a
-  server had started a simulation thread from its INIT handler, a
-  `crossbyte.Timer` armed on the main thread, an RPC heartbeat, a
-  retransmit clock, ran on the child's thread. Off native the binding was
-  one field for the whole process, so whichever runtime ran last owned
-  every thread's timers. And once the primordial runtime had exited, the
-  process went on waiting for children nothing would ever stop. A child now
-  binds its timers on its own thread, the binding is per thread on every
-  threaded target, a runtime that exits exits the ones it made, all of
-  them, from the primordial one, and a host-driven runtime that exits
-  hands its thread's timers back along with the thread.
-- `Worker`, `TaskPool` and `Task` run their work on other threads on the
-  jvm and the interpreter, as they already did natively. They were written
-  for native, hl and neko only, and everywhere else ran the work inline on
-  the thread that asked for it: a `TaskPool(4)` given four 200ms jobs held
-  its caller for 800ms, `Worker.run()` did the whole job before returning,
-  and so `AsyncDatabase`, `URLLoader` and `File`'s async calls stalled the
-  loop they exist to keep free. `System.processorCount` also answered 0 off
-  native, so `new TaskPool(System.processorCount)` threw. It now asks the
-  JVM, Node's list of CPUs or a browser's `hardwareConcurrency`, falls back
-  to the environment and `/proc/cpuinfo` on the interpreter, hl and neko,
-  and is never below 1.
-- `CrossByte.current()` answers the calling thread's own runtime on every
-  threaded target, not only natively. On the jvm, the interpreter, hl and
-  neko it returned the primordial runtime on every thread, although its
-  documentation said it resolved the thread's runtime first: a child
-  runtime's thread, or a worker thread, registered its sockets and timers
-  with the main runtime and then touched them from the wrong thread, the
-  race behind the LocalConnection failures, and `ThreadUtil.isPrimordial`
-  was true on every thread. The list of runtimes the process keeps is no
-  longer a map keyed by thread, which on the interpreter could never find an
-  entry again.
-- Every timer due in a frame now fires in that frame. The runtime fired at
-  most 256 a frame, about three thousand a second at the default twelve
-  ticks, and past that every timer ran late, and later every frame,
-  without bound: beside 400 reliable-UDP sessions each keeping a 50ms
-  retransmit clock, a 30 second idle timeout fired at 78 seconds. A frame's
-  timers are now bounded by time rather than by count. They may use one tick
-  interval, so only a burst that would hold the frame past its end, and keep
-  the sockets waiting, is spread over the frames after it; the new
-  `timerBacklog`, `timerLag` and `timerOverruns` on `CrossByte` say when that
-  happens. A timer armed during a pass waits for the next one, so a callback
-  that polls by re-arming itself for "now" runs once a frame rather than
-  filling the budget. A one-shot timer rescheduled or delayed from its own
-  callback now runs at its new time instead of being freed, and a timer that
-  pauses itself from its callback can be resumed instead of being destroyed.
-- The timing wheel (`TimerStrategy.WHEEL`) fires timers when they are due.
-  It placed a timer by the scheduler's clock, which a pass has already moved
-  to the end of the frame, instead of by where its cursor was: at sixty
-  frames a second `setTimeout(0)` fired after 517ms, a 5ms timer armed from
-  a callback fired in the same frame, early, and a 5ms `setInterval` fired
-  twice a second instead of 200 times. A timer due at once went into the
-  bucket the cursor had just left and waited a whole revolution. Timers are
-  now placed from the cursor's own time and never in a bucket already
-  walked, a pass stopped partway through a bucket finishes it on the next
-  pass instead of leaving the rest a revolution behind, and a timer more
-  than 24 days away no longer overflows its tick count and fires at once.
-  `new ServerApplication(WHEEL)` ran on the heap, because it built its
-  runtime without the strategy it was given; it now uses it.
-- An exception from a timer, a tick listener or a socket's handler no
-  longer ends the process. The loop had no catch of its own, so one
-  handler's bug, a null dereference in one session's idle timeout, one
-  malformed message, left it: EXIT was never dispatched, output held for
-  the end of the pass was never sent, every other connection went down with
-  the one that failed, and a recurring timer that threw was dequeued for
-  good while its handle still read as live. On JavaScript the runtime's
-  frame chain carried the throw out to the platform, which ended the process
-  on Node. Each callback the runtime runs is now contained where it runs. A
-  timer is settled as if it had returned, so a recurring one stays armed;
-  every tick, INIT and EXIT listener runs whether or not one before it
-  threw; a stream socket whose handler threw is closed, dispatching `CLOSE`,
-  and the others carry on; held output is flushed past a holder that
-  throws; and the loop carries on past anything that fails between
-  callbacks, waiting out the frame so a failure that repeats every pass
-  cannot spin. A datagram socket is left open, since it is usually the one
-  socket a whole UDP service answers on and each datagram arrives whole.
-  Every failure is logged with `Logger.error`, with where it was caught and
-  its stack where the target keeps one, and dispatched on the runtime as the
-  new `UncaughtErrorEvent.UNCAUGHT_ERROR`, to report it elsewhere or to
-  decide it is fatal. Callbacks posted to the runtime were already contained
-  and are now reported the same way.
-- ICE, STUN and TURN read an IPv4 address strictly. Its octets were read
-  with `Std.parseInt` and written modulo 256, so a peer's candidate of
-  `1.2.3.999` passed as numeric, was dialled through a resolver that took it
-  for a name, a blocking lookup on the event loop for every check, and
-  had a TURN relay permit 1.2.3.231; `010.1.1.1` was 10.1.1.1 here and
-  8.1.1.1 to the socket; and on the jvm an octet past 32 bits threw.
-  `IceAgent.addRemoteCandidate` now drops an IPv4 address that is not four
-  decimal octets up to 255 without leading zeros; `TurnClient.permit`,
-  `bindChannel` and `sendTo` refuse one with `ArgumentError`, keeping
-  nothing for `poll` to renew; and an ICE check from an IPv6 address is
-  answered without XOR-MAPPED-ADDRESS, which is written for IPv4 alone and
-  named 0.0.0.0, teaching the peer a local candidate that does not exist.
-- A WebRTC peer that changes network is followed. When the controlling
-  peer, a browser whose Wi-Fi went, say, nominated the pair from its new
-  address, this end answered and kept the pair it had, sending to an address
-  that no longer answered until consent failed 35 seconds later; and a
-  candidate trickled after connecting was never paired or checked. Now a
-  later nomination switches `IceAgent.selectedPair` (reported by the new
-  `onSelectedPairChanged`, with consent restarting on the new pair) and
-  `PeerConnection` sends the session there; pairs created or triggered once
-  connected are checked at the pacing interval, and not at all when there
-  are none; and a peer asking from a pair that failed earlier has that pair
-  checked afresh (RFC 8445 section 7.3.1.4).
-- An idle WebRTC peer no longer makes native calls every tick. Its DTLS
-  session was stepped on every tick, step, pending and available, three
-  native calls finding nothing, although nothing in an established session
-  runs on a timer: records are read as they arrive and written as they are
-  sent. `DtlsTransport.poll` now does nothing once the session is up, and
-  `receive` steps it. Measured natively, polling an idle established
-  transport went from 47 ns to under 1 ns.
-- WebRTC SDP and trickle ICE. An offer listing a second fingerprint under
-  another hash was refused, because each `a=fingerprint` line overwrote the
-  last and a hash this cannot check wrote nothing; the first sha-256 one is
-  now kept. An answer always said `a=mid:0`, which a browser whose offer said
-  `a=mid:data` cannot match; `PeerDescription.mid` carries the offer's into
-  the answer `PeerConnection.description()` writes. Every document claimed
-  `a=end-of-candidates`, telling the peer to stop listening for candidates
-  still being gathered; it is now written only when
-  `PeerDescription.endOfCandidates` is true, and read back. Trickle ICE was
-  the application's to build: `SessionDescription.readCandidate` and
-  `writeCandidate` are public (with or without `a=`, `raddr`/`rport`
-  included, `0.0.0.0` port 0 for a reflexive one with none given, and a
-  second component or an out-of-range priority or port skipped, parsed with
-  `IntParse`), `PeerConnection.onLocalCandidate` reports each candidate as it
-  is gained, and `PeerConnection.addRemoteCandidate` takes one the peer
-  trickled, before or after `connect`, saying whether it was usable.
-  `PeerConnection` also has a `userData` slot, as `DataChannel` does.
-- A data channel message larger than the peer takes is refused instead of
-  vanishing. The SDP promised `a=max-message-size:2097152`, the receive
-  window, while the receiver gives up on any message past 1 MB, so a
-  message in between had every fragment acknowledged and was then dropped
-  whole: the sender saw success and nothing arrived. And the peer's own
-  limit was never read, so nothing stopped this end sending past it.
-  Descriptions now advertise the 1 MB the receiver takes;
-  `SessionDescription.fromSdp` reads the peer's (RFC 8841: 64 KB when the
-  attribute is absent, 0 for any size) into the new
-  `PeerDescription.maxMessageSize`; `PeerConnection.maxMessageSize` reports
-  it; and a channel's `send` or `sendBytes` past it throws `ArgumentError`
-  before anything is sent.
-- WebRTC peers on different runtimes no longer share an unguarded DTLS
-  session table. Every native DTLS session in the process lived in one map,
-  named by one counter, and peers on two child runtimes inserted into,
-  erased from and searched it at the same time: a lookup landing mid-
-  rebalance found a live session gone (a stress test with four threads
-  failed three runs in three), and two sessions opened together could be
-  given the same handle. The table, the counter and the first seeding of
-  the shared RNG are now guarded by a mutex held for the map operation
-  alone, which costs about 9 ns per native DTLS call uncontended.
-- A WebRTC connection that cannot finish coming up now gives up. Only some
-  of its phases had an end: as the DTLS server it waited for a ClientHello
-  with no timer running, the SCTP listener waited for an INIT forever, a
-  DTLS client took 123 seconds to fail, and consent was checked only once
-  everything was up, so a browser tab closed just after ICE left a
-  socket, a tick listener and a TLS session held for the life of the
-  process, with `ready` pending. `PeerConnection.readyTimeout` (30 seconds
-  from `connect`, read at every poll) now fails `ready` with the phase that
-  did not finish; consent lost at any point after the path was found ends
-  the connection; and a DTLS handshake resends at 1, 2, 4 and 8 seconds and
-  fails at 15, with "The DTLS handshake timed out".
-- A WebRTC peer can no longer grow the SCTP receiver without bound. Any TSN
-  up to 2^31 past the cumulative acknowledgement was taken and remembered,
-  so a peer that never sent the next number and kept sending the ones after
-  it, as unordered one-byte messages, delivered at once, so the window
-  never moved, made the receiver hold 400,000 entries and 24 MB in the
-  audit. A TSN more than 16,384 past the cumulative acknowledgement is now
-  dropped unread, and with the advertised window shut nothing past the
-  highest TSN already received is taken, while one filling a hole below it
-  still is (RFC 4960 section 6.2); both are answered with an immediate SACK.
-  What has arrived past a hole is kept as runs, which are the SACK's gap
-  blocks, so building a SACK no longer probes 511 offsets every time, holes
-  or none; a SACK reports at most 128 gap blocks, the lowest first.
-- SCTP now answers a peer's HEARTBEAT and completes a peer's SHUTDOWN. Only
-  DATA and SACK reached anything: HEARTBEAT ACK was defined and never sent,
-  so a peer that probes idle paths, a browser's stack does, counted every
-  probe as a failure and could give up on a channel that only received after
-  a few minutes, and a graceful SHUTDOWN was ignored until the peer gave up
-  and aborted. A HEARTBEAT is now answered at once with its contents copied
-  back (RFC 4960 section 8.3). A SHUTDOWN stops new sends, waits for what
-  this end still has outstanding to be delivered and acknowledged, is
-  answered with SHUTDOWN ACK (resent if lost, given up after eight tries),
-  and on SHUTDOWN COMPLETE the association ends and `PeerConnection` closes
-  with "The peer shut the association down."
-- WebRTC data channels now have congestion control, and no longer flood a
-  path. One `send` put everything the peer's window allowed on the wire at
-  once, a megabyte was 1,024 packets in one call, and each fragment was
-  resent on its own fixed half-second timer, so a slow path got every
-  fragment several times before its acknowledgement could arrive, and a
-  congested one had most of each burst dropped and resent into the same
-  queue: through a bottleneck taking 64 packets at a time a megabyte never
-  arrived. SCTP now keeps a congestion window (RFC 4960 section 7): ten
-  packets to start, doubling each round trip while everything arrives,
-  halved when three SACKs report a fragment missing, which is then sent
-  again at once rather than after a timeout, and down to one packet when
-  a timeout runs out. The timeout is measured from round trips (RFC 6298),
-  between 0.4 and 10 seconds, and doubles on each expiry. No more than four
-  packets leave at any one opportunity (Max.Burst), small messages waiting
-  together share a packet, and a SACK is sent for every second packet of
-  data, or at once on a gap or a duplicate, rather than once a tick. The
-  association ends after ten timeouts in a row with nothing acknowledged.
-  A SACK is now read in one pass: 4,000 gap blocks over 8,192 outstanding
-  fragments cost 60 ms. Measured natively, a 100-byte message round trip
-  went from 2.25 to 1.86 us, a 1 KB one from 4.05 to 2.99 us, and an idle
-  transfer's poll from 18 to 4 ns.
-- A data channel fragment the peer never acknowledges ends the SCTP
-  association instead of wedging it. After its tenth attempt the fragment
-  was dropped with nothing sent to say so, which left an ordered stream a
-  hole no retransmission would fill: everything after it on that stream
-  stalled for good, later fragments were resent up to eleven times, and
-  the association went on reporting itself open. Past the limit the peer
-  is unreachable, as RFC 4960 section 8.1 has it, so the association now
-  ends with an ABORT, and `PeerConnection` closes with a reason through
-  `onClose` and `closed`.
-- A WebRTC peer that goes away is reported, and closing tells the peer.
-  `PeerConnection` had no close event: a peer's SCTP ABORT closed the
-  association below it without a word, a DTLS close_notify or fatal alert
-  was never read, and the one thing that noticed was ICE consent, thirty
-  seconds later, without an event either, so channels on a connection
-  the peer had closed went on reporting `open`, and the first sign was a
-  `send` that threw. `close()` sent nothing, so a browser's channels stayed
-  open until its own consent ran out, and it left this end's channels open
-  with `onClose` never run. `PeerConnection` now has `onClose(reason)`, a
-  `closed` future and `closeReason`, fed by an ABORT, a close_notify or
-  fatal alert, lost consent, the loss of the relay a path ran through, and
-  `close()` itself. Every channel is closed first and reports `onClose`,
-  and one still waiting for its acknowledgement settles `opened`.
-  `close()` sends the peer an ABORT and then a close_notify; a path whose
-  consent expired, or whose relay went, is closed without them. An ABORT
-  is now accepted only with this association's tag, or the peer's with the
-  T bit set, and a reason the peer gives is passed on.
-  `DtlsTransport.onClose`, `DtlsTransport.close(notifyPeer)` and
-  `TurnClient.onLost` are the pieces underneath.
-- A `NetConnection` over a WebSocket tells `onClose` how its peer closed:
-  `Reason.Code` with the close frame's code and reason. It said
-  `Reason.Closed` whatever the peer sent, so a server going away (1001)
-  and one refusing a client by policy (1008) were one close to the
-  application, and to an RPC call that failed because of it, whose
-  `cause` is now that `Reason` too. `Reason.Closed` is what a close with
-  no code known reports.
-- A `LocalConnection` whose peer stops reading no longer stops its own
-  side. `send` wrote on the runtime's thread until everything had gone,
-  five seconds a send on Windows, for good on Linux and macOS, holding
-  the lock its own reader needed, so two processes filling each other's
-  channels each waited on the other; it waited where the collector could
-  not reach it, so a frame larger than the channel stalled any thread
-  that collected meanwhile, the peer's reader among them, until the write
-  gave up; and a write that gave up part way through a frame left the
-  peer reading from its middle. `send` now writes what the channel takes
-  and queues the rest, which the reader thread writes as the peer reads,
-  each frame whole. A peer that leaves more than `maxQueuedBytes` unread
-  is taken to be stuck: the connection is closed, with an error saying so
-  that is its close reason too. On Linux a send to a peer that had gone
-  raised SIGPIPE, which ends the process; it is sent with `MSG_NOSIGNAL`
-  (`SO_NOSIGPIPE` on macOS), and the connection closes instead.
-- A second `listen()` on a `LocalConnection` name in use throws, on both
-  platforms, where Windows made a second instance of the pipe beside the
-  first and POSIX removed the first listener's socket file and bound its
-  own: either way the first listener's clients went to the second. On
-  POSIX a name's socket path turned everything but letters, digits, `-`
-  and `_` into `_` and was cut to 48 characters, so `a.b` and `a_b`, or
-  two long names alike for their first 48, were one channel; such a name
-  is now kept apart by a 64-bit hash of all of it, and a name that needed
-  neither keeps its path. A listener lets each client go and takes the
-  next with the name held throughout, where it closed and made its
-  endpoint again with the name anyone's in between. On Windows a client
-  that came and went before the listener next looked, as a
-  `SharedChannel` switching destinations did, left the pipe closing,
-  which was taken for nobody yet, and the listener took nobody again: it
-  is taken like any other, and what it wrote is delivered.
-- A `NodeChannel` whose peer drops it comes back whatever clock it is
-  polled with. `poll(now)` compared its caller's time with retries
-  scheduled on `haxe.Timer.stamp()`; polled with the runtime's uptime, as
-  `crossbyte.Timer.stamp()` gives it, it was always early on Linux native,
-  jvm and eval, where the two clocks are far apart, and a link that
-  dropped once never came back. It worked on Windows and Node only because
-  both clocks start near zero there. `poll` now reads the clock itself;
-  `now` is optional and not read.
-- `SnowflakeId.timestampOf` reads back when any identifier was minted. It
-  converted the forty one bits of milliseconds through an `Int`, which
-  holds thirty one, and threw `Overflow` for every identifier minted more
-  than 24.8 days after the epoch, after 2020-01-25 for the default one.
-- An RPC call that fails because its connection ended has the `Reason` it
-  ended with as its `cause`, `Timeout` for a heartbeat that gave up, so
-  a caller, a gateway above all, can tell a peer gone from a peer refusing,
-  whose failure has an `RPCError`. It had a message and nothing else.
-- A `LocalConnection` tells `onReady` at the next tick after `connect()`,
-  not from inside it. `new NetConnection("local://...")` connects as it is
-  made, so an `onReady` set once it had returned, as the RPC guide sets
-  one, never ran.
-- A `Future`'s `RESULT` or `ERROR` listener that throws is contained, as a
-  `then` callback that throws already was: logged, and nothing else
-  affected. It escaped into whatever completed the future. For an
-  `RPCResponse` that was the session reading its connection, which took
-  the throw for a frame it could not read, closed the connection and
-  failed every call still waiting, and failing those ran their
-  listeners too, so one that threw escaped out of the read altogether.
-- An RPC session on a listening `LocalConnection` answers every client it
-  takes, not just the first. The listener takes its next client on the
-  same object, and the session stayed ended once the first had gone: for
-  each client after it, every error answer and every answer given later
-  was dropped, a second worker's refused call never heard it was
-  refused, and the heartbeat stayed off. A session is now answered on
-  again when its connection becomes ready again, and a heartbeat started
-  with `start()` resumes. A call from the last client still waiting then
-  answers nobody: it is kept to the life of the connection it came in on,
-  so the next client, numbering its calls from 1 too, cannot be handed its
-  answer.
-- An RPC call that cannot go fails as it is made, and nothing is left
-  waiting on an answer that cannot come. A request made after its
-  connection had ended waited for good over local IPC, whose send reports
-  a closed connection to `onError` rather than throwing; over TCP the send
-  threw out of the call and left its response waiting. It now fails at
-  once, with the `Reason` the connection ended with as its `cause`; a
-  request whose send throws fails with what it threw; and a one-way call
-  on an ended connection is dropped. Commands with no session
-  dereferenced a null connection, a crash on hxcpp in release; a request
-  through them now fails with an `IllegalOperationError`, and a one-way
-  call throws one. A call whose arguments cannot be framed throws before
-  it waits, where it was left waiting under its id. An answer for a
-  connection its own handler has closed is dropped rather than reported
-  as the handler failing. And an application's own `INetConnection`,
-  wrapped as a `NetConnection` again after a session was made on it,
-  `(connection : NetConnection).onClose = ...`: set its callback over
-  the session's hold on it, so the session never heard it end and its
-  calls waited for good; while a session observes such a connection,
-  wrapping it again gives the same `NetConnection`.
-- An RPC call the other side cannot take no longer ends the connection or
-  leaves its caller waiting. A runtime call to a session with no runtime
-  handlers ended that session's connection, the reader for a compiled
-  handler took the frame for garbage, where the guide promised an error
-  answer; it is now answered as the runtime lane answers. A compiled
-  request to a session with no handler was dropped, and its caller waited
-  on a connection that stayed up; it is now answered
-  `RPCError.NO_HANDLER_MESSAGE`. A frame over the 8 MiB limit went out
-  without complaint and ended the connection on the other side, failing
-  every call waiting on it; a request over it now fails at once with an
-  `ArgumentError`, a one-way call throws one, and an answer over it is
-  not sent, its caller is answered `RPCError.INTERNAL_MESSAGE` and
-  `onHandlerError` is told. The limit is `RPCSession.maxFrameLength`,
-  which each session reads and sends by, where it was a constant. A
-  session now reads every frame in one place whatever it has bound; a
-  frame whose flags are neither a call nor an answer, which was taken for
-  a one-way call, now ends the connection as any unreadable frame does.
-- The RPC heartbeat keeps healthy connections and drops dead ones. Pings
-  were one-way and nobody answered them, so a client heartbeating a server
-  that only answers calls heard nothing between calls and closed a healthy
-  connection after 90 to 135 seconds. Every session now answers a ping with
-  a pong, a response under request id 0, which answers no call, so an
-  earlier version passes over it. A peer that never sent a byte was compared
-  against a deadline that moved with the clock and was never timed out;
-  what the heartbeat has heard is now counted from when it started. It ran
-  only on a session with commands, so a server never dropped a client that
-  had vanished; it now runs on any session. `start()` before the connection
-  was up never started it, and it now starts once the connection is ready.
-  `start()` twice ran two heartbeats, one of which outlived `stop()` and,
-  once the connection closed, threw out of the tick; it now carries on as
-  it was. A timeout reported the close twice, `Closed` and then `Timeout`;
-  the calls waiting now fail saying the connection timed out, and
-  `close()` alone reports the end. It also logged five lines at INFO for
-  every session on every beat, and logs nothing now.
-- An RPC method returning `Null<T>`, in a contract, with `@:rpc`, through
-  a typedef, or as `Future<Null<T>>`, answers what its caller reads. The
-  caller reads a byte saying whether the answer is there before the
-  answer, as for an optional argument, and the handler wrote the answer
-  bare: its first byte was taken for that flag, the rest misread, and the
-  connection closed on the first answer that was not null, failing every
-  other call waiting on it. A null `String` could not be written at all on
-  eval and JavaScript, and went as "" on cpp. Both sides now decide
-  whether a type may be absent from the type itself, not from how it is
-  written, so a typedef of `Null<T>` reads and writes the flag too.
-- One RPC handler can serve many sessions, and answers each call on the
-  connection it came in on. A handler held the session it was given last,
-  so a server that gave one handler to every client, as the guide's
-  `ChatHandler` and `MatchQueueHandler` invite, sent every answer to its
-  newest client. Since each client numbers its calls from 1, that client's
-  own call with the same number was completed with it: Bob, asking for a
-  `String`, was answered with Alice's `Int`, and Alice waited for good. A
-  session now binds its handler while it dispatches to it, a field
-  write per delivery, put back after, so a call one session sets off in
-  another over an in-memory connection leaves the handler as it found it,
-  and a method answering later, with a `Future`, is answered on the
-  session it was called from, which the handler keeps from the call. The
-  guide's four players queued on one handler were all answered by the
-  fourth's connection, three of them never. A response is now checked
-  against its call's op as well as its id: one for another op fails the
-  call, on both lanes, rather than completing it with a value of another
-  type. `RPCHandler.session` is the session whose call is running, `null`
-  between calls, so a handler can tell its callers apart, `session.data`,
-  `session.commands`. `session` joins `ping` and `dispatch` as a name a
-  contract cannot use. The guide now gives one `ChatHandler` to every
-  client, and says how one handler serves many.
-- A port in a URL that is too big for an `Int` is refused the same way on
-  every target, as any port past 65535 is. `parseURL` and a WebSocket URL
-  read it with `Std.parseInt`, which answers such a number differently on
-  each: on Linux native its low 32 bits, so `tcp://host:4294967296` was port
-  0; on Windows the largest `Int`; on eval nothing, so a WebSocket took its
-  default port; on the jvm a `NumberFormatException` instead of the parse
-  error the caller was told to expect.
-- A `ServerSocket` that cannot take a waiting connection, the process
-  out of descriptors, says so, once for a run of failures, as an
-  `ioError`, and goes on listening. Natively the failure was swallowed,
-  so a server out of descriptors looked idle; on the jvm it closed the
-  server.
-- Removing one `connect` listener from a `ServerSocket` no longer stops it
-  accepting while others are still listening.
-- A `DatagramSocket` reads everything waiting, up to 1,024 datagrams, each
-  time it is found readable. It read 64, and it is asked once a pass, so it
-  could take in 3,840 datagrams a second at 60 passes whatever was
-  arriving. Each datagram also cost a system call for the socket's own
-  address and a formatted copy of the sender's; both are now kept. Reading
-  2,000 waiting datagrams over loopback took 2.9 us each and 32 passes; it
-  takes 1.7 us and 2. On the jvm every read also allocated, and zeroed, a
-  64 KB buffer to receive into and copy out of; it now receives straight
-  into the socket's own, and a datagram takes 1.7 us to read there rather
-  than 3.7.
-- Writing to a `Socket` before its connect has finished is no longer an
-  error natively: the bytes wait and go once it has. The flush wrote to the
-  socket anyway, which Windows refuses, so it threw, and the tick reported
-  the same refusal as an `ioError` on every tick until the connect
-  finished.
-- A backlog drains in time proportional to its size. Every write the
-  socket took only part of copied everything still waiting into a new
-  buffer, the output side of the fix the input side already had, so
-  draining a backlog cost a copy of it per write, and a TLS socket makes
-  one every 16 KB record: through a socket taking 16 KB a write and 64 KB
-  a pass, flushing a 16 MB backlog spent 2,395 ms copying, 4 MB 144 ms.
-  What has gone is now stepped over, and the buffer compacted only when
-  that is at least what remains: 1.5 ms and 0.3 ms. A flush also writes
-  until the socket takes no more, where it wrote once, so a TLS socket
-  sent one record a pass whatever room the kernel had: the 16 MB went in
-  256 passes rather than 1,024. `Socket` and WebSocket sessions both, and
-  a WebSocket frame with nothing queued ahead of it goes to the socket
-  without first being copied into the queue.
-- On Node a WebSocket session counts what Node has queued for it. Its
-  `outputBufferLength` read 0 however much was waiting, so
-  `ServerWebSocket.drain()` waited on nothing, and `maxOutputBufferSize`
-  was checked after a return that path always took: a session to a peer
-  that had stopped reading grew without bound. It now closes with 1011 at
-  the limit, as it does natively.
-- `DatagramSocket.send()` is a fifth quicker natively: 5.3 us a datagram
-  where it took 6.9, to one destination over loopback. Every send asked
-  the system for the socket's local address, to learn whether it was bound
-  yet, and built a `Host` and an `Address` for its destination; it now asks
-  until the socket is bound, and keeps the last destination's address.
-- On Node an open connection is no longer visited every tick. Each Node
-  socket was ticked for as long as it was open, to flush whatever had been
-  written: 400 idle sockets cost a pump 3.4 us, and the cost grew with
-  every connection held. A write now asks for a flush at the end of the
-  pass, sooner than the next tick, and a socket is ticked only while a
-  streaming response is feeding it: the same pump costs 0.3 us, with no
-  tick listeners.
-- A connection's end is announced once, and the same way everywhere.
-  Natively a peer that connected and hung up within a tick, a load
-  balancer's health check, was announced closed twice, a tick after the
-  first time, so an `onDisconnect` ran twice and a live-connection count
-  drifted down by one per check. On Node a peer that left left its socket
-  connected and flushed from every tick for good: 200 tick listeners after
-  200 HTTP clients had come and gone. The socket is now released when Node
-  closes it, as a native one is. And Node sockets are half-open, so a
-  peer's FIN is decided by `peerShutdownPolicy` as it is natively: under
-  `HALF_OPEN` the socket stays writable and dispatches `PEER_CLOSE`, where
-  Node ended its own side at once and a peer that half-closed to finish its
-  request never got the answer. Under `CLOSE`, as before, it is closed.
-- On Node, a socket listener that throws costs its own connection, not the
-  process. A socket's events arrive from Node's event loop rather than from
-  anything of CrossByte's, so an exception from a listener, a data handler
-  meeting a message it could not parse, went to Node, which exited: every
-  other client went with the one that sent it. Now it is logged at ERROR
-  and that connection closed: a `Socket` closed, a WebSocket session closed
-  with 1011, a connection whose `connect` listener threw on a `ServerSocket`
-  closed. A `DatagramSocket` is left open, since one socket carries every
-  peer, and the next datagram is delivered as usual.
-- WebSocket sessions are read when there is something to read, not on every
-  tick. Each open session added a tick listener of its own and made a
-  receive every tick whether or not anything had arrived, on hxcpp one
-  that raised an exception to say nothing had, so ten thousand idle
-  sessions cost over a hundred thousand system calls a second. They now sit
-  in the runtime's socket registry, read when their socket is readable and
-  retried when a write is waiting, and an idle one costs nothing. A session
-  a server accepted reports its peer's address and port, and its own, where
-  it reported none; an upgrade the server cannot accept is answered with a
-  status rather than a dropped connection; and what a session has read past
-  is let go once there is enough of it, rather than kept until a read ends
-  exactly on a frame.
-- A reliable datagram peer that crashes and comes back on the same address
-  and port gets back in. Its old session on the server took every CONNECT
-  the new one sent, answered none, and was kept alive by them, so the peer
-  was locked out for as long as it kept trying: 29 attempts over 173
-  seconds, in the case that found it. A CONNECT now carries an id for its
-  attempt, in a field older builds never read; one with a new id, from the
-  address of a session already held, has the server ask the old peer
-  whether it is still there, and the next CONNECT to find no answer replaces
-  the session, about three seconds on. A peer still there answers, so a
-  CONNECT sent in its name cannot take its session. A HANDSHAKE echoes the
-  id it answers, so a new attempt ignores one meant for its predecessor.
-  `ReliableDatagramServerSocket.close()` sends each session's peer a FIN,
-  where it sent nothing and every client went on sending into a closed port;
-  and a server answers a peer that sends as though it had a session and has
-  none, the server restarted, or gave it up, with a FIN, ending that
-  session at once rather than at the peer's own timeout. On Node, closing a
-  `DatagramSocket` waits for its sends to finish, since Node sends a turn
-  later and closing cancelled them: the FIN a closing session sends last
-  never left.
-- In a browser, a `Socket` sends each write once. It sent its buffer and
-  never cleared it, and the tick flushes every pass, so one write went out
-  again on every tick for as long as the connection lasted: an 11-byte write
-  reached the server as 25 messages in two seconds. A write made while the
-  page's WebSocket is still connecting waits for it to open, where it threw
-  out of the tick. A connection the server closes is cleaned up, it stayed
-  connected and flushed from every tick, and announces CLOSE once, or an
-  ioError alone if it never opened. `outputBufferLength` counts what the
-  page's WebSocket has queued. The browser suite now runs a page's `Socket`
-  against an echo endpoint `ci/browser/run.js` serves beside it.
-- On Node, a socket written to faster than its peer reads sends what was
-  written. A flush handed Node a view over the socket's output buffer and
-  then cleared the buffer for reuse, so the next write landed on bytes Node
-  still had queued: ten 1 MB messages to a paused client arrived as the
-  first five and then 5 MB of the last, and a 12 MB file from `HTTPServer`
-  reached a slow download with 786,432 bytes wrong. Each flush now copies.
-  `outputBufferLength` and `bytesPending` count what Node has queued, which
-  is where the backlog is there, so `maxOutputBufferSize` is reached on Node,
-  it never was, and a peer closed for passing it has its queue dropped
-  rather than flushed. The HTTP server's streaming watermark, which reads
-  the same figure, now holds a download to a slow client on Node too.
-- A WebSocket session whose TLS handshake fails, or whose connect times
-  out, closes its socket. Only a session that had opened was closed, so a
-  server held the descriptor of every connection that failed its handshake,
-  and its peer waited on it, for as long as the process ran. A client
-  now reports why a connection failed, a refused certificate included, as
-  an `IOErrorEvent` with the reason in its text, where it dispatched a bare
-  event of that type with none; a connect that fails at once is reported
-  rather than waited out; and the answer to its upgrade is waited for no
-  longer than `timeout`, where a server that accepted and never answered
-  held it in CONNECTING for good. On jvm a WebSocket client could not be
-  made at all: it set a byte order on an output the socket does not have
-  until it connects. And a jvm TLS client made non-blocking no longer
-  completes its handshake inside `connect()`, which held the runtime's
-  thread and, against a server on the same runtime, waited twenty seconds
-  for an answer its own wait was preventing.
-- Counting a response in `HTTPServer`'s metrics no longer looks its status
-  class's counter up in the registry each time, a label map built, sorted
-  into a key, and the registry's lock taken on top of the counter's own. The
-  counter is looked up once and kept: 820 ns a response became 230 ns
-  natively, the rest being the counter's own lock, and about 195 ns became
-  2 on Node.
-- An HTTP/2 request that has fully arrived is no longer held to
-  `requestTimeout`. Every open stream counted as a request still arriving,
-  so a long poll answered after `requestTimeout` found its connection
-  closed with a GOAWAY, and every other stream on it gone too. As over
-  HTTP/1.1, the clock stops once the request is in, and a connection's idle
-  time counts from the last frame either way.
-- A response body too large for the connection's output buffer is sent
-  whole. It was written at once: what the peer had not taken by the first
-  flush stayed buffered, the socket closed at `maxOutputBufferSize`, and a
-  12 MB `respond()` went out as a `200` with its full `Content-Length` and
-  part of its body, logged and counted as a success. Such a body now goes
-  out as a large file does, in bursts on the socket's drain, and the
-  connection is kept alive after it.
-- A PHP script is given every request header as `HTTP_*`, and the client
-  every response header the script sets. The bridge passed on eight request
-  headers and brought back three, `Cache-Control`, `Location` and
-  `Set-Cookie`: so behind it a script never saw `Origin`,
-  `X-Requested-With`, a CSRF token, a conditional request, `Range` or what a
-  proxy forwarded, and a client never got `ETag`, `Content-Disposition`,
-  `WWW-Authenticate`, `Vary`, `Access-Control-*` or a script's own fields.
-  Left out on the way in: the connection's own fields, `Content-Type` and
-  `Content-Length` (CGI has variables for them), `Proxy` (httpoxy), and any
-  name with an underscore, which would pass for its hyphenated twin. On the
-  way out: the CGI status, the framing, and what the server always writes,
-  `access-control-*` too when the server's own CORS is on. A body that
-  arrives already encoded, a script's under `zlib.output_compression`, or
-  a route's that names its `Content-Encoding`, is no longer encoded again.
-- On a cleartext listener with `http2Enabled`, something thrown while
-  serving a connection's first HTTP/1.1 request is answered `500`, as on
-  any later request. The server reads those first bytes itself to tell the
-  versions apart, and the handler it passed them to parsed them outside its
-  usual catch, so the throw went up through the socket's dispatch into the
-  runtime's pump.
-- The server answers `500` for a file past 2 GB over HTTP/2 as well as
-  HTTP/1.1. `File.size` throws for such a file, since an Int cannot state
-  its length, and the static path did not catch it: HTTP/1.1 answered `500`
-  through its catch-all and HTTP/2 reset the stream. The server's own check,
-  an open, seek and read of every file it served, is gone with it.
-- On eval, the HTTP/1.1 client returns when a server closes without
-  answering, or ends a chunked body before its size line: an error, where
-  `load()` never returned. A socket's `readByte` answers 0 there at the end
-  of the stream instead of throwing, so the client read endless NUL bytes
-  into a line that never ended. A connection closing before the headers end
-  is now reported as that, rather than as a failure to read.
-- The HTTP/1.1 client's idle timeout is in milliseconds, as
-  `URLRequest.idleTimeout` says. The socket was handed the milliseconds as
-  seconds, so the default 30 second timeout waited 30,000 seconds, and a
-  server that never answered held the request for over eight hours. On the
-  jvm no socket read times out at all yet; that is `sys.net.Socket`'s.
-- `URLLoader.close()` with a request in flight no longer crashes a native
-  build with an access violation. The worker thread reported through the
-  loader's own worker field, which `close()` clears, so its next report,
-  the error from the read `close()` had just ended, was a call on null.
-  The URL tests now run in the native suite, where the loader's worker is a
-  thread; they had not run natively at all.
-- `RateLimiter` holds at most `maxKeys` keys, a new constructor argument,
-  100,000 by default, and forgets idle ones without a sweep. Keys are
-  whatever a client sends, account names, addresses, and every one was
-  kept, with a sweep of the lot run inside whichever `tryAcquire` found it
-  due: two million keys held 294 MB on Node, 270 MB on the jvm and 375 MB
-  natively, and that one call took 815 ms, 133 ms and 335 ms. Now buckets
-  live in two generations and an idle generation is dropped whole, in one
-  assignment: that same call takes 0.1 ms on Node, and the flood holds 8 to
-  13 MB. Past the cap, new keys share one bucket, so a flood of them is
-  limited as one client while the keys already held keep their own. A call
-  also costs less natively, 25 ns rather than 45, and `activeKeyCount()` no
-  longer walks the table.
-- `URLLoader` dispatches `HTTPStatusEvent.HTTP_RESPONSE_STATUS` on every
-  target, with the final response's `responseHeaders`, the `responseURL` it
-  came from and whether it was `redirected`; it never dispatched it, so
-  `Retry-After`, `ETag` and `Location` could not be read. And the transports
-  now report one exchange the same way. A 4xx or 5xx is an `IO_ERROR`
-  carrying its body over HTTP/2, on Node and in the browser, as it was on
-  native HTTP/1.1, where it had completed; Node follows redirects, with the
-  native client's rules for credentials and `https` to `http`, where it
-  completed with the 3xx; the browser's `idleTimeout` is time without
-  progress, as elsewhere, rather than a deadline on the whole exchange; and
-  an HTTP/2 response is content-decoded within the client's limits, where a
-  gzip body arrived compressed. HTTP/2 still does not follow redirects; the
-  3xx completes, and its `Location` is now readable.
-- `URLLoader` sends a `URLVariables` as a form on every target: in the query
-  of a GET or HEAD, and otherwise as an `application/x-www-form-urlencoded`
-  body. At run time one is the map beneath it, so the native client read the
-  map's own fields and sent an empty body, and Node and the browser sent a
-  debug dump of the map. On Node a body is also sent with its
-  `Content-Length` whatever the method: Node frames a body only for methods
-  it expects one on, so a body on a DELETE, GET or OPTIONS went out bare, the
-  server read it as the next request, and the next call on the pooled socket
-  got a `400`.
-- With `http2Enabled` on cleartext, a connection that has not yet sent a
-  request is counted, timed and drained. While the server waited to see
-  which protocol it spoke, it escaped all three: with `maxConnections` at 2
-  and `requestTimeout` at half a second, six silent sockets were all taken
-  and still open after `drain()`. They now count against the limit, close
-  at `requestTimeout`, and close when a drain starts. `drain()` also closes
-  at once an HTTP/1.1 connection that has never sent a byte, a browser's
-  preconnect held a drain for its whole timeout, and sends HTTP/2 clients a
-  GOAWAY when the drain starts rather than at its deadline: streams opened
-  after it are refused, those in flight finish, and each connection closes
-  with its last stream. An HTTP/2 response with no body, a 204, a 304, any
-  HEAD, no longer keeps its stream's concurrency slot, which after 128 of
-  them left a connection refusing every stream; and a stream refused for the
-  concurrency limit no longer skips its header block, which left the HPACK
-  table out of step with the client's for every block after.
-- HTTP/2 requests go through what HTTP/1.1 requests go through. Only the
-  HTTP/1.1 parser asked the rate limiter, so six requests over HTTP/2 were
-  all answered where HTTP/1.1 refused the fourth. DATA was appended with no
-  limit while window kept being granted, so one stream could make the server
-  hold as much as it sent: a 3 MB upload reached a route HTTP/1.1 refused.
-  Now a body past the limit is answered `413` at once, the stream is reset
-  without error so the client stops sending, its window is not topped up
-  again, and the connection carries on. HTTP/2 responses are counted and
-  timed in `metrics`, and HTTP/2 connections in the output-buffer gauges; a
-  gzip body is decoded before middleware sees it, as over HTTP/1.1; and
-  cookies a browser sends as separate fields are joined with `"; "`, as RFC
-  9113 8.2.3 has it, where a comma made `getCookie("sid")` answer
-  `abc123, theme=dark`.
-- A peer no longer decides how much memory the server or the `URLLoader`
-  client spends on a body. The server inflated a request body with no
-  ceiling, while its limit counted the compressed bytes on the wire, so a
-  32 KB gzip body became 32 MB at the route; it now stops decoding at the
-  same limit and answers `413`, and refuses more than two stacked content
-  codings with `415`, as the client already did for responses. The client
-  allocated a whole body from its `Content-Length` before a byte arrived, so
-  one header of 2000000000 cost two gigabytes; a declared length past the
-  new `Http.MAX_BODY_SIZE` (64 MB) is now refused before anything is
-  allocated, and a body framed by the connection closing is held to the same
-  bound. Such a body cut off by a reset was reported complete with part of
-  its content; only the connection's clean end completes it now.
-- CORS no longer grants every site a signed-in user's data. With
-  `corsAllowCredentials` on and `corsAllowedOrigins` left at its default of
-  `["*"]`, the server echoed whatever `Origin` arrived with
-  `Access-Control-Allow-Credentials: true`, so any page could read `/me` with
-  the user's cookies. `validate()` now refuses credentials with `"*"`; name
-  the origins instead. `"*"` is always answered as `*`, and
-  `Allow-Credentials` goes only beside an origin that was named. A preflight
-  is answered with `corsAllowedMethods` and `corsAllowedHeaders` rather than
-  by echoing what it asked for, which approved any method and header; a
-  page sending `Authorization` or a custom header now needs it listed.
-- A conditional request dated after January 2038 is answered `304` on
-  native builds. The server compared seconds with `Math.floor`, which
-  returns an `Int`, and seconds since 1970 no longer fit one then: on hxcpp
-  the cast wrapped, a `If-Modified-Since` in 2100 compared as long ago, and
-  the whole file went out again with a `200`.
-- `URLLoader` no longer hands a caller's credentials to whatever host a
-  redirect names. Every hop was written with every header the caller set,
-  so a `302` to another origin received `Authorization: Bearer ...`. Once a
-  redirect leaves the origin the request started at, `Authorization`,
-  `Proxy-Authorization` and a `Cookie` set in `requestHeaders` are dropped
-  for the rest of the exchange, as browsers, curl and Go drop them; cookies
-  the client manages already went only to the host that set them. A
+  `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES` are gone: set
+  `maxRedirects`, `maxBodySize`, `maxDecompressedSize` and
+  `maxResponseHeaderSize` on each `URLRequest` instead. A custom
+  `HTTPBackend` reads them, and `headTimeout`, from its
+  `HTTPRequestContext`.
+- `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
+  30 seconds.
+- A load fails once it has waited its `idleTimeout` for one of
+  `URLLoader.maxConcurrentLoads` (16) threads, and a response's head must
+  arrive within `URLRequest.headTimeout`, five minutes, of its request.
+  Raise `maxConcurrentLoads` or `idleTimeout` for many slow loads at once,
+  and `headTimeout` with `idleTimeout` for a long poll held longer than
+  five minutes.
+- A redirect to another origin drops `Authorization`,
+  `Proxy-Authorization` and a `Cookie` set in `requestHeaders`, and a
   redirect from `https` to `http` is refused unless
-  `URLRequest.followInsecureRedirects` is set, and one to any scheme but
-  those two is refused, where a malformed `Location` used to throw out of
-  the request. Ten redirects ending in a response are no longer reported
-  as too many. A caller's header line is written through the same
-  sanitiser as the server's, so a CR or LF in a value, one forwarded from
-  a client, say, can no longer add a header or a request of its own.
-- A middleware guard sees the path the server would serve. The request
-  path was only percent-decoded for middleware, while the static resolver
-  collapsed slashes and applied `.` and `..` on its own, so a guard refusing
-  `/private/` let `//private/report.txt` and `/./private/report.txt` through
-  and the file was served for both; on Windows and macOS `/PRIVATE/report.txt`
-  went the same way, and on Windows so did a trailing dot and an 8.3 short
-  name, `/ENV~1` served `.env`. `requestPath` is now settled once, before
-  middleware, over HTTP/1.1 and HTTP/2 alike: repeated slashes collapsed,
-  dot steps applied, a backslash read as `/`, and a path climbing above the
-  root answered `400`. On Windows and macOS a file is served only under the
-  spelling its directory lists, as on Linux. A `..` inside a name is part of
-  it: any `..` used to throw before the router ran, so
-  `/api/compare/v1.2..v1.3` answered 500. Files and rewrites are resolved only
-  once the middleware chain lets a request through, so a request a route
-  answers never touches the filesystem, where it paid three lookups and a
-  regular expression compile: natively on Windows, a routed request went from
-  79 to 31 microseconds end to end, and a static file from 265 to 200.
-- The HTTP server and clients read every other number a peer sends the same
-  way on every target, through `IntParse`: a byte range, a chunk size, the
-  port in a `Host` header or a URL, a cookie's `Max-Age`, a response's status
-  and, on Node, its length. `Std.parseInt` answers four ways past an `Int`, so
-  on Linux native `Range: bytes=4294967296-` was a range from byte 0, a
-  `Max-Age=4294967296` deleted a cookie meant to last a century, and an
-  HTTP/2 `:status` of 4294967496 was a 200; on the jvm the last two threw out
-  of the whole request. A status is now exactly three digits, a range number
-  past an `Int` reaches past any file, and a `Host` of `[::1]:8080` is no
-  longer named `[`. Ranges, chunk sizes, status lines, URL ports and
-  `If-Modified-Since` dates are read by hand rather than by a regular
-  expression compiled on every call.
-- A request can no longer be smuggled inside another through a
-  `Content-Length` too large for an `Int`. The server checked the field was
-  all digits and then trusted `Std.parseInt`, which on Linux and macOS
-  native is `strtol` cast to an `int`: 4294967296 read as 0 and 4294967396
-  as 100. At 0 the server read no body and parsed the body as the next
-  request, so a request carried inside another reached the application
-  unseen by a proxy or firewall that inspected the outer one. On the jvm the
-  same field threw, answered 500 and logged an ERROR per request. The server
-  and the `URLLoader` client now read it through `IntParse`, so a length no
-  `Int` holds is refused, `400` on the server, an error on the client,
-  which had read it as an empty body, and an HTTP/2 request whose
-  `content-length` differs from the DATA it carried is reset as malformed,
-  as RFC 9113 8.1.1 requires, rather than handed to the application with a
-  length its body does not have.
-- An HTTP/2 request cancelled before its response arrived no longer
-  completes. `cancel()` reset the stream and woke the request, but the
-  stream stayed in the connection's map, so a response arriving after the
-  cancel was still written into it, status, headers and body, and a
-  request that read its stream after that reported the response through
-  `onComplete`, with a full body or an empty one depending on how much had
-  landed. The suite saw it once, on jvm. Looped, the case failed about once
-  in a thousand runs there under load, and 12 times in 3000 on cpp, where
-  the suite had never caught it. Frames for a stream already closed on this
-  side are now discarded, as RFC 9113 5.1 requires, with HPACK and
-  flow-control state still advanced. The cancel handler is now registered
-  before the request lets go of the session's lock. Registered after it, a
-  cancel landing just as the request went out had nothing to run, and was
-  applied only once the response had completed the stream. A request
-  cancelled after its response headers but before the end of its body
-  reports "Request cancelled" rather than completing with the part that
-  had arrived. Resetting a stream that has already ended no longer sends
-  RST_STREAM on a closed stream.
-- An HTTP/2 response cut short after its headers is an error, not a
-  response. When the server reset the stream, or the connection closed,
-  between the headers and the end of the body, the request completed
-  through `onComplete` with whatever part of the body had arrived: the
-  errors for those cases were given only when the status had not arrived
-  either. A stream that never saw END_STREAM now never completes. A reset
-  reports "Stream reset by peer: CODE" as before, a connection lost before
-  the headers "Connection closed before the response headers arrived" as
-  before, and one lost after them "Connection closed before the response
-  body completed".
-- A pooled HTTP/2 client connection no longer keeps every stream it has
-  carried. `H2Connection` never took a stream out of its map, so a
-  connection in use grew by one stream and its response headers per
-  request for as long as it stayed open, and every SETTINGS from the
-  server walked all of them. A stream is now forgotten as it closes. A frame
-  arriving for it later is discarded as one for an unknown stream, with
-  its header block still decoded and its DATA still counted against the
-  connection's window. A GOAWAY that refuses several streams closes them
-  after walking the map, not during.
-- An HTTP/2 upload the server ends early no longer stalls and takes the
-  connection with it. RFC 9113 8.1 lets a server answer, or reset the
-  stream, before it has read the whole request body. A body larger than
-  the send window was then left waiting for a WINDOW_UPDATE that a closed
-  stream never gets. After thirty quiet seconds it failed the connection
-  with a FLOW_CONTROL_ERROR, and every other request on it with it, and
-  reported that instead of the server's answer. Had it got past that, the
-  stream was marked open again, and the caller would have waited out its
-  timeout. The upload now stops as soon as the stream ends. The request
-  returns the response when the server finished one, sending
-  RST_STREAM(CANCEL) so the server's half is released too, and "Stream
-  reset by peer: CODE" when it reset instead. The connection stays in the
-  pool for other requests.
-- An HTTP/2 request can be timed out and cancelled while its body is
-  still going out. Its timeout started only once the whole body had been
-  sent, and its cancel handler was registered only then. A body waiting on
-  a flow-control window counted any frame on the connection as progress.
-  So an upload the server had stopped taking waited as long as the
-  connection was busy, 36 s for a 1.5 s timeout in the test, and on a
-  quiet connection gave up after thirty seconds by failing the connection
-  and every request on it. A cancel did nothing until then. The timeout now
-  also bounds how long a body's window may stay shut, so an upload that is
-  slow but moving is not cut off. The cancel handler is registered before
-  the body is sent. Either one resets only that stream, and a cancel wakes
-  its body at once. Each body waiting on a window is now woken by every
-  frame, where one shared wake-up used to reach only one of them. A
-  timeout, during the body or while waiting for the response, is now an
-  error in that stream only: it reports "Request to ORIGIN timed out after
-  Ns" without the "HTTP/2 connection error: " prefix, and leaves the
-  connection pooled. It used to close the connection, failing every other
-  request on it; a peer that has gone silent is now found when the
-  connection itself fails, not by the first timeout.
-- On JavaScript, the runtime lane's RPC request ids overflowed as the
-  compiled lane's did before the `RPCCommands.__nextRequestId` fix below:
-  an `Int` there is a double, so after 2^31 - 1 runtime calls on one
-  session the next id was `2147483648` rather than 1. That is wider than
-  the 32 bits a varuint on the wire may hold, and the peer threw "varuint
-  overflow" reading the frame instead of answering the call.
-- An RPC call waiting on an answer fails when its connection closes, or a
-  transport error stops its reads. It waited for good: only `stop()`, a
-  heartbeat timeout or an unreadable frame failed it, since the session
-  could not use `onClose` to hear of the end, that is the application's
-  one callback, and set after the session it would have replaced the
-  session's. The transports now tell the session themselves, before the
-  application's callbacks and whenever those were set: TCP, WebSocket and
-  reliable UDP connections, and `LocalConnection`. A `NetConnection`
-  wrapping some other `INetConnection` wraps its `onClose`, keeping the
-  application's callback when that is set through the `NetConnection`. A
-  close costs one check; nothing on the way data goes changed.
-- A `LocalConnection` listened or connected again could run two reader
-  threads. `listen()` and `connect()` begin with `close()`, and the reader
-  thread of the session that ended sleeps between polls: it woke to find
-  the connection running again and carried on beside the new session's
-  reader, reading its pipe, splitting its bytes, tearing it down when the
-  read that lost found nothing, and closing its pipes on the way out.
-  Reusing one server and one client for twenty sessions, a later session
-  never connected in 3 runs of 3. A reader thread now acts only for its
-  own session: what it does to the connection it does under the handle
-  lock having checked the session is still its own, and what it hands on
-  is refused once `close()` has ended it. Each reader also frames into its
-  own buffer, which `close()` used to clear under a reader writing to it.
-- An RPC contract, or a parent handler or commands class, in another
-  module than the class that uses it could not name its types through an
-  import alias or a private `typedef`. Its types reached the other class by
-  name, `toComplexType()` keeps a typedef's, which only their own module
-  can resolve, and the build failed with "Type not found" or "Unsupported
-  RPC arg type" at the other module's position. They are now written out
-  in full, typedefs followed and `Null<T>` kept, so an optional argument
-  stays optional on the wire.
-- A listening `LocalConnection` could stop delivering for good: no
-  `onReady`, and nothing a client sent. Its reader thread attached the tick
-  listener that carries dispatches to the runtime's thread, and
-  `EventDispatcher` is not thread-safe, adding a listener reads the list,
-  copies it and stores the copy, so an attach that met a listener change
-  on the runtime's thread (timers and sockets make them all the time) was
-  lost while the connection took it as made. Seen as a 2-in-60 flake in the
-  native suite; with the runtime's listeners changing as fast as they can,
-  38 of 40 connections lost their dispatches. The listener is now attached
-  by `listen()` and `connect()` on the runtime's thread, and removed there
-  by `close()` or once a connection whose peer went away has delivered its
-  last dispatch, so the runtime still never holds a dead one; the reader
-  thread only queues. A flush that drained the queue also detached the
-  listener, so a dispatch queued in between could wait for the next one;
-  that went too. `SharedChannel` had the same arrangement and has the same
-  fix.
-- `Seq32` arithmetic wraps at 32 bits on JavaScript, as on every other
-  target. There `+` and `++` ran on past 2^31 - 1, so a sequence counted up
-  past it stopped equalling the same sequence read off the wire, which is
-  wrapped. Comparisons still held, which is how it went unseen. A reliable
-  datagram session on Node that reached the crossing stopped delivering:
-  with its sequence started forty below 2^31, forty messages of a hundred
-  arrived. Sessions start at a random point in the 32-bit range, so some
-  start close to it. `SnowflakeId` and `SequenceRing` count in `Seq32` too.
-  The arithmetic now goes through `haxe.Int32`, which wraps where the
-  target does not and costs nothing where it does.
-- An RPC handler that extends another no longer fails to build with an
-  error about a field that is there. To dispatch what the parent answered,
-  the child's build followed the parent's method types, which types a
-  method there and then, body and all when it declares no return type,
-  before the classes it uses have finished building. A parent method
-  `note(value:Int)` whose body read a static of its child failed the
-  child with "Class<NotingChildHandler> has no field noted". The parent's
-  build now records the signatures it dispatches, types written in full,
-  on its `dispatch()`, and the child reads them untyped; a commands class
-  reads its parent's response types the same way. A handler `@:rpc`
-  method that returns a value without declaring its return type is now an
-  error: its answer is encoded as that type, and left undeclared it was
-  taken for `Void` and never sent.
-- An RPC contract that extends another now carries the parent's methods.
-  Only its own were read, so its stubs covered part of it, and its handler,
-  which Haxe made implement the rest, dispatched none of the rest. A
-  call to one of those arrived as an unknown op and closed the connection.
-- Two RPC methods whose names hash to the same op no longer build into one
-  surface. An op is the FNV-1a hash of a method's name, `glbvs` and
-  `yacxa` share one, and on one connection the two would have been one
-  method, with nothing to say so. The build now fails and names both.
-- An RPC frame that names a count or a length larger than itself is refused
-  before anything is allocated for it. The runtime lane made an array of
-  whatever argument count a frame named, and both lanes made a `Bytes` of
-  whatever length, before reading a byte of either. So a frame of twenty
-  bytes could ask the receiving side for two gigabytes, in any build. Each
-  is now checked against what is left of its frame first, and a frame that
-  names more than it holds ends the connection.
-- An RPC frame too short for what it carries no longer takes the rest from
-  the frame after it. Each frame was read and then skipped to its end, but
-  nothing stopped its arguments, or a response's value, from running past
-  that end into the next frame's bytes. The handler ran on them, or the
-  caller was answered with them. Reading is now held to the frame on every
-  lane, compiled and runtime, calls and responses. A frame that runs past
-  its end ends the connection before anything acts on it.
-- An RPC handler method that throws no longer ends the connection. The
-  exception reached the session as if the peer had sent an unreadable
-  frame, so the connection closed, every call still waiting on it failed
-  with it, and the caller was never told what had happened. The frame had
-  been read whole, so the session now answers the call with an error and
-  goes on to the next frame. A one-way call, compiled or runtime, is
-  reported to `RPCSession.onHandlerError` in the same way; a runtime one
-  rethrew, and ended the connection too. A frame that cannot be read, too
-  long, for no known method, or with arguments that do not decode, still
-  ends it.
-- Two reliable datagram peers that dialled each other, as a hole-punched
-  pair does, answered every HANDSHAKE with one of their own, for as long as
-  they stayed connected. Each answer drew the next, so two peers with
-  nothing to say passed some forty thousand datagrams a second between them
-  over loopback. A HANDSHAKE now carries an acknowledgement once its sender
-  has the other side's sequence. One that does is answered with an ACK,
-  which draws nothing back.
-- A reliable datagram session connects when the last message of its
-  handshake is lost. The client's HANDSHAKE, answering the server's, is
-  that last message, and a server sends its own again only when asked. So
-  one lost datagram left the client connected and sending and the server
-  not, dropping everything it was sent until its session timed out: at 10%
-  loss, one connection in ten. Now:
-  - A session not yet connected answers any frame that only a connected
-    peer sends with its HANDSHAKE, once a pass.
-  - A client asked again, with nothing yet acknowledged, sends everything
-    unacknowledged again at once.
-  - A client that has sent nothing repeats its HANDSHAKE on the connection
-    attempt interval until the server shows it arrived. A server shows
-    that with an ACK.
-- A repeated HANDSHAKE no longer moves where a connected reliable datagram
-  session expects its next frame. The sequence of every HANDSHAKE was
-  taken, and a peer that had sent frames since named where it had got to,
-  so frames still on their way were skipped: never delivered, and all
-  acknowledged. Every HANDSHAKE now names the sequence its sender's frames
-  began at, and only the first is taken.
-- A reliable datagram session no longer measures the wait for a gap to
-  fill as a round trip. Every frame a cumulative acknowledgement released
-  was timed, including those that had arrived long before and sat behind
-  the missing one. Under 10% loss on loopback, the smoothed round trip rose
-  from 0.1 ms to half a second, and the retransmission timeout with it. A
-  frame the peer says it holds is timed when it says so, and each
-  acknowledgement gives one measurement, from the last frame sent of those
-  it shows delivered.
-- `HTTPServer` logs the port it bound when it starts, the one the system
-  chose, for a configured 0, where it logged `:0`, and no longer logs every
-  HTTP/1.1 response a second time as the raw text of its `HTTPStatusEvent`,
-  after the request handler has already logged it readably.
-- Native debug builds that include `hxcpp-debug-server`, every cpp debug
-  build Aedifex makes while the VS Code hxcpp debugger is installed, no
-  longer die before `main` when no debugger is attached. Not finding one,
-  the debug server waits for a late attach by polling on a `haxe.Timer`,
-  which it makes in a static initializer; CrossByte's `haxe.Timer` threw
-  there, "haxe.Timer requires a primordial CrossByte runtime", since no
-  runtime exists before `main`. A timer made before any runtime now waits
-  for one and starts on the primordial runtime's ticks when that is set up,
-  as the standard library's timer fires once its event loop runs, so a
-  debugger attaching late is noticed too. Stopping a timer after its
-  runtime has exited threw the same error, and no longer does.
-- The HTTP/2 client no longer closes a pooled connection under a request
-  that has just started on it. The pool judged a session idle from two
-  fields it read without the session's lock, streams in flight, and when
-  the last one ended, and a request starting on the session writes both,
-  bumping the first and zeroing the second. Read between the two, a session
-  had nothing in flight and had been idle since the clock began, so it was
-  closed as past its allowance. Two concurrent first requests to one origin
-  failed about once in two thousand: one with "Connection closed before the
-  response headers arrived", the other, finding no connection, dialling a
-  server that had stopped listening. The decision is now made by the session
-  under its own lock, only tried so the pool never waits behind a request,
-  and a session retired that way refuses new streams before anything is
-  sent. A request refused like that, or by a connection whose peer has
-  said GOAWAY, which the pool had no way to see, goes out once more on
-  another connection, which REFUSED_STREAM guarantees is safe; it failed
-  before.
-- HTTP/2 connections on cpp and Node are no longer closed a quarter second
-  after they open. The server's idle sweep measured a connection's silence as
-  `Sys.time()` minus a last-activity time from `haxe.Timer.stamp()`, which is
-  the same clock on hl, neko and jvm and a counter from an arbitrary start on
-  cpp and Node. There every connection read as idle since 1970, the http2
-  sample logged `HTTP/2 connection idle for 1790210331s`, and was closed at
-  the first sweep: keep-alive between requests lasted a quarter second instead
-  of `keepAliveTimeout`, and a connection with a request in flight was cut off
-  instead of being given `requestTimeout`. No test noticed, because every
-  HTTP/2 exchange in the suite finished before the first sweep ran; four cases
-  now outlast it. The sweep and the activity it measures are both on
-  `haxe.Timer.stamp()` now, with everything else that waits; see below.
-- `haxe.Timer.stamp()` is monotonic on every native target and on the jvm,
-  and everything in CrossByte that waits or measures reads it. On Linux and
-  macOS natively it was hxcpp's stamp, which is `gettimeofday` less its first
-  reading, and on the jvm `Sys.time()`: both move when the time of day is set.
-  Stepped back, every deadline measured against them waits out the step;
-  stepped forward, they all fall due at once. And some thirty deadlines and durations bypassed it for
-  `Sys.time()` on every target, connect and handshake timeouts, the HTTP
-  request, keep-alive and stall deadlines, WebSocket pings, drains, pool
-  waits, STUN queries, service attach, `Histogram.time`, so where the two
-  clocks differ, times from each could meet: `ReliableDatagramServerSocket`
-  drove an attached ICE agent from `Sys.time()` while `IceAgent`'s own example
-  starts one from `stamp()`, the same mix that closed HTTP/2 connections
-  above. `stamp()` is now QueryPerformanceCounter on Windows natively, as it
-  was, `CLOCK_MONOTONIC` on other native platforms, `System.nanoTime` on the
-  jvm, and `performance.now()` on JavaScript, as it was; hl, neko and eval
-  have only the time of day. Tests pin native POSIX to `CLOCK_MONOTONIC`
-  and the jvm away from the time of day, and read the framework's source for
-  `Sys.time()`, which is left in one place, the `Date` header, marked as the
-  time of day on purpose.
-- A reliable datagram message larger than one frame arrived as several.
-  `DATAGRAM` mode promises the peer one `DATA` event per `send`, and `send`'s
-  own documentation said larger payloads were "reassembled on the remote
-  side", but nothing marked where a message ended: a 3000-byte send arrived as
-  1200, 1200 and 600. Every fragment but the last now carries a flag saying
-  more follows, and the receiver joins them once, in order, however they
-  arrived. An older peer ignores the flag and delivers fragments as before.
-- Closing a reliable datagram session from inside its own `DATA` handler
-  reported an `ioError`, "Operation attempted on invalid socket", for the
-  close the caller had just made. The acknowledgement for the message being
-  handled went out after the handler returned, on the transport the close had
-  shut. Nothing is acknowledged once the session is closed.
-- `QuadTree.insert` could refuse a point inside its bounds. A child's far edge
-  is `(x + w/2) + w/2`, which can round an ulp short of the parent's `x + w`,
-  and a point in that sliver was in the parent and in neither child, so the
-  children, asked in turn, all refused it, one set of random bounds in
-  twenty has such a sliver at its first split alone. The child is now chosen
-  by which side of each midline the point falls on, which cannot refuse, and
-  which also spares up to four containment tests a level: rebuilding a tree
-  of 100,000 points is about a quarter faster.
-- `File` refused an absolute path whose only separator is the root,
-  `/root`, `/tmp`, `/` itself, on Linux and macOS, and `parent` of a root
-  threw. As root in a container `HOME` is `/root`, so the default document
-  root, `Store` and `getRootDirectories()` all failed there.
-- `PostgresConnection.ping()` reported every native connection dead without
-  asking the server, having checked a handle only the php target sets. A pool
-  validating with it would have discarded every connection it opened.
-- A PHP response lost all but its last cookie: repeated CGI headers
-  overwrote one another. They are joined as the rest of the HTTP stack joins
-  them, and `Set-Cookie` is split on an escaped newline, where a line break
-  typed into the source became `"\r\n"` in a CRLF checkout and glued two
-  cookies into one header.
-- `File.spaceAvailable` reported every disk full on Linux and macOS. The `df`
-  output was split with a pattern missing its global flag, so no row had the
-  fields a data row needs.
-- Native builds on Linux and macOS, which MSVC had been hiding: a second
-  `hxcpp.h` include that GCC resolved into the precompiled-header directory,
-  Windows-only calls in `SecureRandom` and `PHPBridge` compiled everywhere,
-  `libdl` handed to the linker as a file name, the DTLS bridge linked twice,
-  and BLAKE3's SSE4.1 and AVX2 files built without their flags, which hxcpp
-  drops from inside a `<file>` element. MSVC now builds the AVX2 backend with
-  `/arch:AVX2` too, and BLAKE3 has test vectors long enough to reach both.
-- A listening socket on the jvm target had a backlog of 50 whatever it asked
-  for, so a burst of 51 connections was refused before the server heard of
-  it. It now asks for the system's maximum.
-- `SlotMap` and `PackedSlotMap` leaked a slot on its 256th reuse. The
-  generation outgrew the eight bits a `SlotHandle` carries, handle and slot
-  never compared equal again, and the entry could not be removed.
-- SCTP receivers are bounded against a peer that sends and never finishes.
-  An association kept every chunk it received for as long as it was open,
-  leaking at the rate it was used; the fragments of a message never ended,
-  and ordered messages waiting on a sequence that never came, were held
-  without limit and are now capped at a megabyte per stream; and reassembly
-  re-sorted everything held on every arrival, so 4000 fragments took sixteen
-  seconds on eval. Fragments are now inserted in order, and a stream's held
-  messages are looked up by sequence rather than searched.
-- The DTLS `ClientHello` assembler did work in proportion to every fragment
-  so far on each arrival, and a peer chooses the fragments: 4000 pieces of an
-  unauthenticated handshake record took seven seconds on eval. It merges in
-  order now, with a cap on disjoint runs, and the same 4000 take 15 ms.
-- The WebRTC stack settles its futures when their owner closes.
-  `PeerConnection.ready`, `IceAgent.connected`, `DtlsTransport.established`,
-  `TurnClient.allocated`, the SCTP association's `established` and
-  `DataChannel.opened` settled only through the handshake, so closing before
-  it finished left a caller waiting forever. A deliberate close does not
-  raise the "failed and nothing was listening" warning.
-- `PeerConnection` survives the description a peer sends it. One unusable
-  candidate threw part-way through `connect` and left the agent unstarted,
-  bad credentials threw after the candidates were added, a candidate's
-  priority was taken on trust, and pairing cost grew with the cube of the
-  peer's candidate count, which is now capped at 64.
-- TURN permissions lapsed after five minutes. Refreshing an allocation does
-  not renew them and nothing else did, so the relay silently began dropping
-  the peer while the connection looked healthy. `TurnClient` renews them on
-  its tick.
-- A closed `DataChannel` kept its stream number for the life of the
-  association, so the peer could not reopen that stream, and after 32768
-  channels the number wrapped on the wire into a live one. Closed channels
-  are released, and running out of numbers throws.
-- A WebSocket frame header claiming a two-gigabyte payload was waited on, and
-  everything sent after it retained, though the size limit would refuse the
-  frame once it arrived, ten unauthenticated bytes to ask. A frame is now
-  refused on its header.
-- `ServerWebSocket.handshakeTimeout` closed nothing on any target. The reaper
-  took every stalled upgrade for a finished one and stopped tracking it with
-  its socket still open, and on Node upgrades were never tracked at all, so a
-  peer could connect, send nothing and keep its descriptor.
-- WebSocket close codes are validated by RFC 6455's ranges, so a peer closing
-  with 1016, 2000 or 5000 gets a protocol error rather than having the code
-  reported as its reason.
-- HTTP/1.1 header lines that are not headers are refused with 400: an
-  obs-fold continuation, whitespace before the colon, a line with no colon.
-  Trimming each line first let a folded `Transfer-Encoding` take effect here
-  and nowhere upstream, which is request smuggling.
-- A chunk size is bounded before it is parsed, on the server and the client.
-  `Std.parseInt` answers four different ways for a value past 32 bits, and on
-  Node the answer was 4294967295, which the server accepted and then waited
-  on forever. The client also requires the size line to be hex, treats a body
-  as chunked only when chunked is the final coding, and says why a body
-  failed instead of "Download failed".
-- Decompression is bounded while it decodes. A server chose how much memory
-  the HTTP client spent, a kilobyte of gzip is a megabyte of zeros, and
-  stacked codings multiply, which now stops at 64 MB and two codings.
-  `ByteArray.uncompress` takes a `maxOutputSize`, honoured inside the
-  deflate, gzip, Brotli and LZ4 decoders so the memory is never taken; the
-  default, 0, is no limit. The opt-in native Brotli and LZ4 backends are
-  still measured after they return.
-- The HTTP/2 server bounds the frames it is obliged to answer. SETTINGS and
-  PING are acknowledged on arrival and nothing counted them, so a peer
-  sending faster than the server drained grew its output without limit
-  (CVE-2019-9515, CVE-2019-9512). Past 100 in the Rapid Reset window the
-  connection gets GOAWAY with ENHANCE_YOUR_CALM.
-- A reliable datagram server believed any CONNECT. One spoofed datagram set a
-  handshake retransmitting about seven times at the address it named, and
-  half-open sessions were unbounded. Only the dialling side retransmits now,
-  and `ReliableDatagramServerSocket.maxPendingConnections` (256) caps
-  half-open sessions, dropping the excess rather than answering it.
-- Bounds checks that overflowed. `position + length > size` wraps negative
-  for a large length and passes; eight checks were written that way, in
-  `ByteArray`, `ByteArrayOutput`, `DatagramSocket.send`,
-  `ReliableDatagramSocket.send`, the Node process pipe, the native socket
-  address code and the Postgres parameter block, and `ByteArrayInput`'s own
-  let a varint length of 2^31 - 1 read past the buffer. The varint decoders
-  also keep their bounds in `-D final` builds, which had compiled out exactly
-  those three guards, and stop at five bytes: a sixth was shifted by 35,
-  which most targets mask to 3.
-- `ByteArrayOutput.writeIntAt` wrote past the end of a chunk when the integer
-  straddled two, an out-of-bounds heap write from a public method.
-- `ByteArrayOutput.reserve` reallocated on every call, its early return
-  having compared the size against itself doubled, so an RPC message of N
-  values allocated about 2N times.
-- A `Socket` constructed with port 65535 did nothing, though `connect` to the
-  same port worked.
-- `Error.getCallStack()` returned the stack of whichever exception was last
-  caught anywhere, rather than the error's own.
-- A `Future` resolved on one thread while another attached a handler could
-  lose the handler, or free the array it was in while the resolution walked
-  it. State changes under a lock now, on targets with threads.
-- `System.processorCount` returned 0 on macOS. Process affinity is not
-  implemented there, macOS having no process-level affinity, and reports an
-  empty mask.
-- A reliable socket counted its reorder cache by walking it, with an iterator
-  allocation, for every datagram that arrived out of order.
-- A WebSocket server on the jvm target stopped the runtime. `setBlocking` there
-  did nothing when it was called before `bind()`, there is no channel to
-  configure until then, and `bind()` opened one hardcoded to blocking, so the
-  request was discarded. `ServerWebSocket` calls `accept()` each tick and reads
-  "would block" as "nobody is waiting", which on a blocking listener is instead
-  a native `accept0()` that parks the caller. That caller is the runtime's own
-  thread, so an idle WSS listener froze the whole instance: every timer, every
-  other socket. `ServerSocket` escaped it only by chance, because it selects
-  before it accepts. The jvm socket now remembers what `setBlocking` asked for
-  and opens the listening channel that way.
-- TCP addresses on the jvm target were reported uncompressed, `::1` came back
-  as `0:0:0:0:0:0:0:1`. `IPv6.compress` exists for exactly this, and its
-  documentation names this exact difference, but it was applied in
-  `DatagramSocket` and `LocalAddress` and never in the TCP socket beside them:
-  the same address read one way over UDP and another over TCP on one target.
-  An application comparing what it bound against what it was told back is the
-  obvious thing to write and it silently failed, and an address in an HTTP
-  whitelist or blacklist written canonically matched nothing.
-- TLS on the jvm target stranded incoming data. The handshake completed, the
-  connection looked healthy, and a request sent over it was never answered,
-  an HTTPS server there accepted connections and replied to none of them. A TLS
-  read takes whole records off the channel, so the tail of a handshake
-  routinely arrives in the same read as the peer's first application record,
-  which is what a client that sends its request the moment it connects
-  produces: every HTTPS client. Those bytes then sat in the TLS layer while
-  `select` reported an idle socket, and nothing came back for them until the
-  peer gave up and closed, the close being the only thing that made the
-  channel readable again. `SocketRegistry` now asks each socket whether it is
-  holding readable bytes the kernel no longer has, before selecting rather than
-  after, since asking afterwards would spend the whole poll timeout waiting for
-  data already in hand. Buffered means decrypted and ready, not merely present:
-  a partial record answers no, or the registry would hold its select at a zero
-  timeout and spin.
-- HTTPS did not work on the jvm target at all. `HTTPServer` built a secure
-  listener from `tlsCertificatePath` and then skipped installing the
-  certificate behind a `#if (!java && !jvm)` gate left from before that target
-  had TLS, so the server had nothing to present. Nothing caught it because
-  nothing tested HTTPS through `HTTPServer` on any target: the socket layer had
-  TLS cases and the HTTP layer had request cases, and the seam between them was
-  joined by no test. It has one now, and it runs everywhere the server can
-  listen.
-- `ServerSocket.alpnSupported` and `FlexSocket.alpnSupported` reported `false`
-  on jvm after ALPN started working there. The flags were read, not merely
-  advertised: `HTTP2Backend` refuses HTTP/2 over TLS wherever `alpnSupported`
-  is false, so the target that could negotiate `h2` was the one being told it
-  could not.
-- A socket accepted by a TLS listener reported `secure == false`. The field was
-  set only by the browser constructor, so every server-side socket denied being
-  encrypted regardless of what it was carrying.
-- The jvm socket read path allocated and copied on every read. `readBytes`
-  allocated a `ByteBuffer` the size of the read and then copied every byte out
-  of it into the caller's buffer, sixty-four kilobytes of each per chunk on
-  the framework's own read path, while the write beside it had always wrapped
-  the caller's array and done neither. It wraps now too. Loopback throughput
-  went from about 1200-1500 MB/s to about 3000 MB/s on the machine that
-  measured it.
-- The jvm socket layer exhausted the machine's ephemeral ports under sustained
-  use. `sys.net.Socket.select` opened a fresh `java.nio.channels.Selector` on
-  every call, and on Windows a `Selector` builds its wakeup pipe from a loopback
-  socket pair, so each call cost two sockets and left them in TIME_WAIT for
-  the best part of a minute. The socket registry calls `select` once per tick,
-  so a runtime at sixty ticks a second put a hundred and twenty sockets a second
-  beyond reach and worked through the whole ephemeral range, about sixteen
-  thousand on Windows, in roughly two minutes. Everything socket-shaped then
-  failed at once: "Address already in use" out of a connect, and "Unable to
-  establish loopback connection" out of the JVM's own pipe setup. The selector
-  is now opened once per thread and kept. Measured over two thousand calls:
-  1796 sockets stranded before, none after, and the calls themselves 3.6 times
-  faster because opening the selector was most of what they did. `waitForRead`
-  had the same fault and the same fix.
-- A refused connection took the full connect timeout to report, twenty
-  seconds by default, measured at 20001ms, for a refusal the operating system
-  had reported in two. The tick that completes a connection asked `select` about
-  writability alone, and on Windows a failed connect is reported in the
-  exception set and never becomes writable, so nothing noticed it until the
-  deadline expired. The socket is now asked about on both sets and a refusal is
-  reported as soon as it arrives, in 2004ms on the machine that measured it,
-  which is the platform's own latency. It arrives as an `ioError`, not a
-  `close`: a connection that never came up is a different fact from one that
-  hung up, and a caller retries them differently. POSIX reports a failed connect
-  as writable rather than exceptional, so it was never affected and is
-  unchanged.
-- A failed `bind`, `connect`, `send` or listener `close` reported "Operation
-  attempted on invalid socket." on `ServerSocket`, `ServerWebSocket` and
-  `DatagramSocket`, whatever had actually gone wrong. The socket was usually
-  fine, an address that is not an interface on this machine, a port already
-  taken, a peer that is gone, and the caught error was discarded rather than
-  reported, so the one line of evidence a failure produced named a cause that
-  had not happened. Each now says which operation failed, against which address
-  and port, and carries the underlying error. `ServerSocket.bind` and
-  `ServerWebSocket.bind` additionally matched only two error strings with no
-  `default`, so anything else fell through the `switch` and `bind()` returned as
-  though it had succeeded, leaving the caller to listen on a socket that was
-  never bound; both now report every failure. The same fabrication in
-  `Socket.flush` is what made the connect-event race above unreadable for weeks.
-- A native client socket could report a healthy connection as failed,
-  intermittently and rarely. A non-blocking connect that completed immediately,
-  which a loopback connect does now and then on Windows, dispatched the
-  connect event synchronously from inside `connect()`, and a listener that wrote
-  on it reached a socket the operating system had reported connected but not
-  finished establishing; the write failed with an end-of-file the connect had
-  raced. Two further faults kept it unreadable. `flush()` reported every
-  non-blocking-related write failure as "Operation attempted on invalid socket.",
-  a fabricated message naming a cause, a null socket, that had nothing to do
-  with what happened, so the real end-of-file never once appeared in a red run.
-  And the completion tick dropped the connect event whenever the peer's data and
-  FIN landed in the same tick the connect completed, which turned a clean
-  one-shot exchange into a reported connection failure. The connect event is now
-  dispatched from the writability check the tick already makes rather than
-  synchronously, so a listener writes only once the socket is genuinely ready;
-  `flush()` surfaces the real error; and the tick announces the connect even when
-  the connection closes in the same pass. The eval interpreter, whose sockets are
-  blocking and have no writability tick to defer to, keeps its synchronous
-  dispatch; the browser and Node paths were asynchronous here already. All three
-  were unaffected.
-- Writing past the end of a `ByteArray` could expose bytes the caller never wrote. The zeroing of a skipped gap lived inside the reallocation branch and started from the old *capacity*, so a gap opened without a reallocation was never zeroed at all, and one opened with a reallocation was only zeroed above the capacity the old buffer had, while the copy into the new buffer carried every stale byte beneath it across. Shrinking a buffer to reuse it and then writing past the new end handed back the previous contents: ninety-six of ninety-six bytes, measured. The existing case covered only the reallocating path, which is why it had always passed. Zeroing now runs against the old logical length in both paths, and two cases cover the gap that needs no growth.
-- An empty data channel message sent to a browser vanished without a word. RFC 8831 gives zero-length messages payload protocol identifiers of their own and has them travel as one byte of zero, because SCTP cannot carry a message of no bytes; the receive side here honoured that convention and the send side never did, shipping an actually-empty chunk that a real browser's SCTP discards silently. Every internal test passed, both ends of a homogeneous pair agreeing on the broken shape, the browser interoperability run now exchanges binary and empty-binary messages with headless Chrome precisely so that class of agreement cannot survive review.
-- `StunClient.isSupported` lied on python and lua, and would have on HashLink, which did not compile at the time and does now. It derived from `DatagramSocket.isSupported` alone, and those targets have UDP but no CSPRNG, so the flag said `true` while the first line of `discover()` threw, which is the one thing a support flag exists to prevent and the same bug class the neko UDP flag had. It now also requires `SecureRandom.isSupported`, since the transaction id is what a reply is believed by and one drawn from a weak generator would let an off-path party hand this host an address of its choosing. `discover()` and `ReliableDatagramServerSocket.discoverPublicAddress` fail their future with the reason named rather than throwing, and CI now runs a probe on python, the one CSPRNG-less UDP target it can execute, because every suite runs where a CSPRNG exists and an in-suite assertion of this could never fail.
-- A browser offering a data channel to CrossByte could not complete a DTLS handshake. Chrome's ClientHello does not fit in one datagram and is sent in fragments; mbedtls reassembles fragmented handshake messages in general but not this one, because reassembly needs handshake state and the ClientHello is what creates it, its parser says so in as many words. `ClientHelloAssembly` puts the message back together before mbedtls sees it, rebuilt as though it had arrived in one piece, which RFC 6347 requires because the handshake hash is computed over that form. Only a DTLS server ever reads a ClientHello, which is the whole of why a browser answering CrossByte connected and a browser being offered to did not.
-- `PeerConnection` drove the ICE role and the DTLS role from one bit, and they are two. The peer that offers is ICE-controlling; which peer sends the DTLS ClientHello is negotiated separately in the description, an offer proposing `actpass` and the answer choosing. Everything above DTLS follows the *DTLS* role rather than the ICE one: RFC 8831 has the DTLS client open the SCTP association and RFC 8832 gives it the even data channel streams. For two CrossByte peers the two roles land on opposite sides and one bit appeared to serve; a browser makes the difference unavoidable, since it offers, taking the ICE role, and offers `actpass`, leaving the peer answering it ICE-controlled and the DTLS client at once. A connection built on one bit has to be wrong about one of them, and wrong quietly, because the ICE half still connects and only the handshake afterwards stalls. `controlling` is now `iceControlling` and `dtlsClient`, the constructor takes `isOfferer`, `description()` states the role this peer has settled on, and `connect()` resolves it from what the peer proposed. A role conflict during checking now changes the ICE role alone, where before it rewrote the DTLS role too, abandoning a handshake already agreed in the description over a detail settled afterwards. The interoperability run passed before this change because the answering peer happened to be both; a CrossByte peer *offering* to a browser could not have connected.
-- One failed `DatagramSocket.send()` permanently deafened the socket. The failure was routed into `__dispatchIoError`, which calls `stopReceiving`, so a single unroutable destination stopped every other peer being heard from, silently, and for the life of the socket. That is the same fault the read path was already fixed for, on the other side of the same class, and it is worse here: ICE finds a path by trying every candidate a peer offered and expecting most of them to fail, so an IPv6 candidate arriving at a socket bound to IPv4 was enough to end the connection before it began. It was found by the browser interoperability run and by nothing else, every existing test sent only to somewhere reachable, so the whole suite passed while no CrossByte peer could ever have completed a real WebRTC connection. Sends still throw and still dispatch the error event; what no longer happens is the socket going deaf over one datagram it could not deliver.
-- `DatagramSocket.isSupported` answered `true` on neko, where `sys.net.UdpSocket`'s constructor threw "Not available on this platform" (the throw was CrossByte's own replacement for that class, which had no neko branch; neko's standard library has UDP, and the replacement has a neko branch now), so a caller that checked the flag first, which is the entire reason the flag exists, had been told the one lie it is there to prevent and was left with no other path to take. Found while building `LocalAddress` on the same primitive, and neko is in no CI matrix, which is why nothing had caught it. The new `LocalAddressTest` does not assert which answer is right for any target; it asserts that the flag and the behaviour agree, so the next target this happens on fails a test rather than a deployment.
-- Two reliable datagram peers dialling each other at the same moment never connected. That is not an exotic case: it is how hole punching works, and the only way two peers behind NAT reach each other, because each side's outbound datagram is what opens its own mapping for the other, so both must dial and neither can wait. `__acceptFrame` answered an incoming `CONNECT` only when `__incoming` was set, which is true of an accepted session and false of a dialled one, so both peers sat retransmitting `CONNECT` at each other until the connection timeout fired. An unconnected session now answers with `HANDSHAKE` whichever side dialled it, the same frame an accepted session already replied with, so the ordinary client-and-server exchange is untouched. This is what joins the STUN work to something usable: each peer discovers where it is reachable, advertises it, the super node hands each the other's address, and the simultaneous dial that follows now completes instead of expiring.
+  `URLRequest.followInsecureRedirects` is set.
+- `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
+  and need a CrossByte runtime on the calling thread; their callbacks run
+  on that thread, after the call has returned, natively and on Node.
 
-- A `wss://` `ServerWebSocket` held a stalled handshake forever. `ServerSocket` bounds this by deferring TLS and sweeping deadlines from the tick, but `ServerWebSocket` overrides that tick and accepts through its own path, so it inherited `handshakeTimeout` as a setting and never as a sweep, a peer could complete the TCP connection, say nothing, and occupy a socket until the operating system ran out of them. It now tracks accepted sessions whose upgrade has not completed and reaps them, which covers both ways one can stall: a peer silent during TLS, and a peer that completes TLS and never sends the upgrade. Zero still means no deadline. Node keeps the exposure for now, because its server hands connections to a callback rather than accepting in the tick; the reaper is target neutral and needs only that hook.
+#### RPC
 
-- One datagram to a departed peer deafened a `DatagramSocket` permanently. A read that failed went to `__dispatchIoError`, which calls `stopReceiving()`, but on a connectionless socket a read error describes one datagram, not the socket. Send to a port nothing listens on and the peer stack answers ICMP port unreachable, which Windows reports back to the sender as an error on a later read; the datagram it complains about is already gone and the socket is fine. Measured before changing anything: a socket that had just completed a STUN exchange stopped receiving entirely after a single knock on a closed local port, reporting `Custom(Socket operation failed)`. For a peer-to-peer mesh that is not an edge case, dialling peers that have since left is ordinary, and one departed peer should not silence every other. A failed read now ends that tick and nothing more, with a run counter so a socket that really has stopped working is still reported rather than swallowed.
+- Both ends of a compiled RPC connection are built with 1.0: a compiled
+  call's op is the hash of its method's signature, where it was the hash of
+  its name, so a peer on 1.0.0-rc.1 finds none of a 1.0 peer's methods, nor
+  it the rc.1 peer's. A hand-written `dispatch` compares against
+  `Hash.fnv1a32` of each method's signature (the RPC guide's "What names a
+  call") where it compared against that of its name.
+- `RPCSession.start()` heartbeats on any session, and every 1.0 session
+  answers pings. A session on 1.0.0-rc.1 does not, so heartbeat an older
+  peer only from a side that also calls it often enough to be answered. A
+  heartbeat timeout closes the connection as `Reason.Timeout`, where
+  `onClose` heard `Reason.Closed`.
+- A null `String` or `Bytes` argument to a compiled RPC call, where the
+  argument is neither optional nor `Null<T>`, throws an `ArgumentError`
+  natively too, where a null `String` went as an empty one: pass `""`, or
+  declare the argument `?name` or `Null<String>` to send null.
+- A handler that throws anything but an `RPCError` answers its caller
+  `RPCError.INTERNAL_MESSAGE`, where it sent the error's text: throw an
+  `RPCError` with the message the caller should see.
+- An `INetConnection` of your own copies what its `send` is given before
+  keeping any of it (to queue it, say): an `RPCSession` writes its next
+  frame over the one it sent as soon as `send` returns. Every transport
+  CrossByte ships copies. `-D crossbyte_check_events` poisons each frame
+  once it is sent, so a connection that keeps one sends garbage its tests
+  will see; `-D crossbyte_fresh_events` frames each in a buffer of its own,
+  as before.
+- `RPCResponse.respond()` replaces the responder bound before, as it says,
+  where it added one: add with `then`.
+- An `@:rpc` method that returns a value declares its return type, or the
+  build fails; undeclared, it was taken for `Void` and never answered. A
+  contract can no longer name a method `beforeCall`, `afterCall`,
+  `dispatch` or `session`, which `RPCHandler` declares.
 
-- An async `SQLiteConnection` could lose every event it had queued, including the `CLOSE` it was closing for. `close()` sent its `CLOSE` progress message and then called `Worker.cancel()`, which detaches the runtime listener and frees the message queue immediately, on the worker thread, so anything the main thread had not yet drained was destroyed. Whether that happened turned on whether a runtime tick landed while the worker was still running, which is why it surfaced as an intermittent test failure rather than as a broken feature: roughly one run in four in the full suite, one in sixty in isolation. With no tick during the run at all it is not intermittent, all six events of an open-through-close sequence were lost, every time, which is how it was finally pinned down. `close()` now finishes through `sendComplete()`, whose `Complete` message travels the same queue in order: everything sent before it is dispatched first, and the listener is detached when that message is drained on the main thread with nothing outstanding. The work loop leaves on a flag set from inside itself, so the worker thread ends rather than blocking on a queue nothing will add to.
-- Every platform decision made while running now asks the machine rather than the compiler. `#if windows` says what a build was told, not where it runs: Haxe sets it on no target by itself, a native build gets it from its hxml, or from `HostPlatform` when CrossByte is a haxelib, and eval, the JVM and Node never have it (nor do hl and neko, which were not compiling at the time), so three targets running on Windows took the branch written for POSIX, and nothing said so. `System.PLATFORM` read `"undefined"` on all three. `System.appStorageDir`, which is where `Store` keeps its files, read `HOME` instead of `APPDATA`: with `HOME` set, as Git Bash sets it, that is the profile root, so a store written by a native build was invisible to a Node one on the same machine; with `HOME` unset, which is the normal state for a Windows service, it became the literal string `"undefined"` relative to the working directory. `File.separator` and `File.lineEnding` answered for the wrong platform, `File` joined every path it built on the wrong character, `getRootDirectories` returned `/`, the temporary directory resolved to `/tmp`, `%VAR%` expansion was compiled out, and `isHidden` applied the dotfile convention on Windows. `HTTPRequestHandler` skipped the case fold in its document-root containment check, which is fail-closed, a legitimate request refused rather than a forbidden one served, and is why it went unnoticed. The affected sites use `System.isWindows`; the conditionals that genuinely select types, native includes and macro-time behaviour are unchanged.
-- The test for the storage directory carried the same `#if windows` as the code, so on eval it expected the wrong value and got it. A test that reproduces the bug it checks for cannot see it.
-- `File.spaceAvailable` was wrong on every target that could answer it, and wrong by answering rather than failing, the worst shape for a caller asking "have I room to write this". On Windows it matched the `fsutil` line containing "Total bytes", which is the volume's capacity, so a 930 GB disk with 75 GB free reported 930 GB. On POSIX it required `df`'s first column to equal the path, but that column is the device, so the loop fell through and returned zero, indistinguishable from a full disk. On Node it compiled cleanly and threw `ReferenceError: sys is not defined` when called, because `sys.io.Process` type-checks there (hxnodejs allows the `sys` package) and generates nothing. It also asked the process for its exit code after closing it, which raises `process_exit` on eval. Node now reads `fs.statfsSync` directly, no shell, no output parsing, and the shelling targets parse the right line and return bytes on both. Nothing had ever called this method, which is why all of it survived.
-- `File` chose its platform behaviour with `#if windows`, which says which target the compiler was aimed at rather than which machine is running. eval does not set it, so on Windows `spaceAvailable` took the `df` branch, found no `df`, and reported a full disk as empty. The disk-space path uses `Sys.systemName()` now. The same conditional still governs `lineEnding`, `isHidden`, `getRootDirectories`, the temporary directory and Windows environment-variable expansion in this class, and is wrong there in the same way on eval, Node and the JVM; those are left for a change of their own rather than swept in behind a bug fix.
-- `Future.then` replaced the previous handler instead of adding to it, so a future observed in two places silently lost one of them, and since `then` returns the future, `f.then(a).then(b)` ran only `b`: the shape the API's own fluent return type advertises was the shape it punished. Handlers accumulate and run in registration order.
-- A handler that threw took three things down with it, all silently. It escaped into whoever resolved the future, for the PHP bridge that is the runtime tick, where an escape costs every other connection rather than the one, it stopped every handler registered after it, and it skipped the event dispatch, so anyone observing by `RESULT` instead of by callback simply never heard. Handlers are isolated and a throw is reported.
-- A `Future` that failed with nothing listening lost the failure completely: no log, no exception, no return value anyone checks, with the symptom being a thing that never happens. It is now reported a tick later, a tick, not immediately, because failing before the caller can attach is legitimate and happens here: `PHPBridge.execute` refuses a path traversal by returning an already-failed future, and the caller attaches on the next line.
-- `StoreTest` chains through `flatMap` instead of nesting. It was written before `Future` could compose, so each step sat inside the one before it, ten tabs deep at worst, with a failure handler repeated at every level: 68 copies of `failWith(async)` across the file, now 6. The repetition was the cost rather than the indentation, each copy is a place to forget one, and a forgotten one turns a failing store into a case that hangs until utest times it out and reports something unrelated to what broke. Two cases keep their nesting deliberately, because the failure is what they assert and `flatMap` exists to carry a failure past everything downstream. Identical assertion counts on all six targets before and after.
-- `crossbyte.Future` had no tests, which is not incidental to the four defects above; each is a one-line demonstration and none of them had one. It now has 29 assertions, running on every target including the browser.
-- A streamed response hung its connection forever on Node. `HTTPRequestHandler` primes its stream pump once and then waits for `Socket.__onWritableDrain` to ask for each next slice; that hook is only ever invoked from `registryOnWritable`, which the native poll registry calls when a descriptor reports writable. Node has no registry and no descriptor, so nothing called it at all, a response wrote its head and its first slice and then stopped, with the client waiting on a body that was never coming. Every identity response over the 256 KB streaming threshold did this. The pump is driven from the tick there instead, which is safe to do every tick because it already bounds itself by the watermark and by a burst budget, so it writes only what the peer has made room for however often it is asked.
-- `MetricsEndpoint` refused to build on Node. Its gate was `#if !js` under the comment "not built for the browser: it serves metrics over HTTP, which means listening", and Node listens. The same "JavaScript means browser" reading that kept the HTTP server's own tests off Node long after the server ran there. It is middleware over `HTTPRequestHandler` and now shares that class's gate.
-- Any byte above 0x7F in a request line or header threw `RangeError: Invalid code point -23` out of request parsing on Node, a UTF-8 filename in a `Content-Disposition`, an accented `Referer`, a non-ASCII `User-Agent`. `__readLine` built its string with `ByteArray.readByte`, which carries Flash's sign extension, so 0xE9 arrived as -23 and went to `addChar` as a negative code point: harmless where a String is bytes, fatal where it is code points. The comment above the loop claimed these bytes "read back exactly as they arrived", which was the intent and not the behaviour. Found by running the HTTP suite on Node for the first time; it is the one case of 69 that failed there.
-- Header injection and request smuggling were unchecked on both JavaScript targets. The rules were extracted out of `_internal.http.Http` into the portable `HttpSyntax` precisely so they could be tested everywhere, but `HTTPHardeningTest` went on calling them through `Http`, which drives a raw socket with its own TLS and exists on no JavaScript target, so the extraction bought no coverage at all. The cases now call `HttpSyntax`, and `exceedsChunkedBodyLimit`, the one decision helper left behind in `Http` when the others moved, went with them.
-- a failing PHP backend is named in the error rather than described as nothing. A socket error can arrive with no text at all, and the bridge reported it verbatim, "PHP backend failed: " with an empty reason, which tells an operator running more than one backend neither which one nor why. The address and port are included and an empty reason is replaced with a statement that there was none. Found by a Node test whose backend was closed rather than silent, which is a different failure than the one it was written for.
-- A PHP backend that accepted a connection and then never answered held the runtime forever. There was no timeout on the FastCGI socket and no deadline on the exchange, and `requestTimeout` deliberately stops covering that window once a request has been read, so one unresponsive php-fpm stopped the server for every client at once, with no recovery short of killing the process. `HTTPServerConfig.phpTimeout` bounds it, defaulting to 30 seconds, and an exchange that runs past it answers `504 Gateway Timeout` rather than `502` or nothing. `0` restores the old unbounded behaviour for a deployment that wants it.
-- deflate, gzip and LZ4 now compress. All three were stores: `Deflater.compress` wrote stored blocks and nothing else, a `0x01` header, the length, its complement, then the raw bytes, no Huffman coding and no LZ77, gzip wrapped the same, and `Lz4.compress` emitted one literal run without ever looking for a match. Every output was a valid stream that any decoder accepted, and every one was larger than what went in: 6000 bytes of a repeated twelve-byte string came back as 6005, 6028 and 6025, measured identically on cpp, Node and in a browser. `HTTPRequestHandler` serves `Content-Encoding: gzip` and `deflate` through these, so a server negotiating either sent more bytes than it would have uncompressed and made the client decompress them for nothing; only clients asking for `br` were getting real compression. Deflate now emits a single fixed-Huffman block (BTYPE=01, the RFC 1951 section 3.2.6 code lengths, so no table has to be described in the stream) over an LZ77 pass with hash chains, lazy matching and a bounded chain walk, and falls back to stored blocks when that would not be smaller, so incompressible data still costs five bytes per 64K rather than growing. LZ4 gained the match search its format was already written for. The same 6000 bytes now come back as 59, 77 and 45 against brotli's 23. The streams were checked against decoders that are not CrossByte's, which is the part a round-trip cannot answer: `zlib.inflateRawSync` and `zlib.gunzipSync` for deflate and gzip, and for LZ4 a decoder written from the block format, asserting the trailing-literals and last-match rules a lenient decoder would overlook. Thirty payloads pass through all of it, every length from 0 to 19, both codecs' match boundaries, all 256 literal values, long overlapping runs, matches at maximum length and at 30000 distance, and incompressible data on both sides of 64K, and cpp, Node and browser produce byte-identical output for all thirty.
-- gzip spent five bytes per response on a filename that did not exist. `ByteArray.compress(GZIP)` passed the literal `"data"` and `GZCompressor` set `FNAME` unconditionally, so every gzip HTTP body carried a name for a file there was none of. The member is written unnamed unless a name is actually supplied; the decompressor already handled `FNAME` being absent.
-- LZ4 decoding threw in a browser, `TypeError: Cannot read properties of undefined (reading 'hxBytes')`, on every call, since the `js && !nodejs` branch that caused it was written. It returned `Bytes.ofData(untyped oBuf.buffer)`, and `oBuf` is a `ByteArray` with no `buffer`, so `ofData` was handed `undefined`. Given one it would still have been wrong, returning the whole backing store where only the first `oPos` bytes were written. The generic path every other target already used is correct, and the browser now takes it too.
-- Including CrossByte in a browser bundle threw `SharedArrayBuffer is not defined` while the bundle loaded, before a line of application code ran. `Random`'s shared seed was a `haxe.atomic.AtomicInt`, which Haxe implements on js with a `SharedArrayBuffer`, available only to a cross-origin-isolated page, and it is a static initialiser. It is an `AtomicInt` only where there are threads to race now, and a plain `Int` elsewhere, for the same reason `NoMutex` exists. `Random.seed` was public and read by nothing outside the class; `reseed()` is the supported way to set it and does not vary by target. The interpreter has no atomics either, so this also un-gates `Random` there, the suite that runs everything could not previously name the class.
-- An `RPCHandler` with more than eight methods could not dispatch anything on either JavaScript target. Above that count the macro generates a perfect hash: it builds the tables at compile time on the eval interpreter and emits the same arithmetic to run on the target, so the two must agree about what an opcode hashes to. They multiply by constants chosen to overflow, eval wraps and js does not, and every index differed, so every call hit the `Unknown RPC op` guard. Eight or fewer used a direct switch and worked, which is why nothing noticed.
-- `Random` gave a different sequence for the same seed on JavaScript, breaking the one guarantee it documents: reproducible results when seeded. Its mixer multiplies by two constants chosen to overflow. A replay, a procedural world or a shared simulation crossing targets would have diverged in silence.
-- `crossbyte.utils.Hash` computed a different function on JavaScript. Every hash in it multiplies by a constant chosen to overflow, the overflow is the mixing step, and where an `Int` is 32 bits that wrap is free, while on js an `Int` is a double and the product simply grows past 2^53 and loses its low bits. `fnv1a32` of "sendData" was `-20905118279726560` there against `622618135` everywhere else, so two CrossByte programs hashing the same bytes disagreed if either was JavaScript. `fmix32` and `combineHash32` were wrong the same way. All three now go through a wrapping 32-bit multiply, and `UtilsTest` pins known answers rather than self-consistency, a test that hashed something and compared it to itself passed throughout.
-- `RPCCommands.__nextRequestId` could not detect its own overflow on JavaScript. The guard resets the seed when the increment wraps negative, which needs a 32-bit `Int`; on js `0x7FFFFFFF + 1` is `2147483648`, positive, past the guard, and past the width of the field the id is written to, after which the id and the pending-response key stop agreeing and the call waits for a reply it cannot match.
-- `ServerWebSocket.secure` reported `false` on a server that was terminating TLS, on every target. The constructor set a private `__isSecure` and then called `super()` with no argument, so the property it inherits from `ServerSocket` never saw the value, two fields for one fact, and the public one was the wrong one. It now passes the flag up and keeps no copy. One consequence is deliberate: a secure `ServerWebSocket` refuses on the jvm target at construction, where before it was accepted and then had no TLS to give. That refusal was always `ServerSocket`'s, and stepping past it was never intended.
-- `crossbyte.net.Socket.close()` did nothing on Node. It called `close()` on the underlying socket, which a `js.node.net.Socket` does not have, and the resulting TypeError was swallowed by the surrounding catch, so no FIN reached the peer, the descriptor stayed open, and the handle kept Node's event loop alive. `localAddress`, `localPort`, `remoteAddress`, `remotePort` and `shutdown()` were wrong on both JavaScript targets for the same reason, reaching for a sys socket's API. Node uses its own equivalents; a browser refuses and says why.
-- `haxe.Timer.stamp()` returned a constant `0` on Node, so nothing that measured an interval measured one. The vendored shim branched on `js && !nodejs` for the browser and then on the `sys` define, which hxnodejs does not set, despite providing `Sys`, so Node fell all the way through to the final `return 0`. Frame cost, and so `cpuLoad`, read as zero; both timer schedulers based themselves at zero; and `Random`'s default seed, which is a stamp, was the same number on every run of every program. Both JavaScript targets now read `performance.now()`, which is monotonic and sub-millisecond where `Date.now()` is neither.
-- `System.totalSystemMemory` and `freeSystemMemory` work on Node. They shell out through `sys.io.Process`, which hxnodejs has no runtime for, so on Node they compiled and then failed with `ReferenceError: sys is not defined`, worse than refusing, because the failure arrives at the call rather than at the build. Node reports both directly through `os.totalmem` and `os.freemem`, with no shell involved.
-- `ByteArray` no longer corrupts its own storage on JavaScript. `__setData` adopted `bytes.getData()`, which on js is the `ArrayBuffer` underneath the storage rather than the `Uint8Array` that *is* the storage, so the result had none of the typed-array methods every read and write goes through and the first `blit` died on `b.set is not a function`. Being inline, the one site produced four. This affects the browser exactly as much as Node; nothing had run `ByteArray` on either until now.
-- `PostgresConnection.escape` no longer doubles backslashes. It runs when there is no libpq connection to ask, and it escaped for a server with `standard_conforming_strings` off, a setting PostgreSQL has defaulted away from since 9.1. On any modern server a backslash carries no meaning inside an ordinary string literal, so doubling it stored two where the caller wrote one: `C:\Users` came back out as `C:\\Users`, silently corrupting paths, regular expressions and UNC names. Doubling the quote, which is the half that was always right, is unchanged.
-- **Breaking.** `PostgresConnection.setSavepoint()` returns the savepoint's name, and the connection tracks the savepoints it holds. It returned nothing while `releaseSavepoint` and `rollbackToSavepoint` both required a name, so a savepoint created without one could never be reached again by any means, and calling release with no name minted a fresh name and asked the server to release a savepoint that had never existed. Both now act on the innermost savepoint when the name is omitted, releasing discards anything nested inside, rolling back keeps the savepoint as PostgreSQL does, and ending the transaction clears them. `rollbackToSavepoint()` with no name previously rolled back the entire transaction, losing everything before the savepoint the caller meant to return to; it now does that only when no savepoint is open.
-- Generated Postgres savepoint names come from a counter rather than a truncated microsecond timestamp, the same defect fixed in `SQLiteConnection`: 2000 names generated back to back produced 47 duplicates, and the value overflows `Int` about 36 minutes into a process.
-- A malformed Postgres result block no longer segfaults the process. `PostgresWire`'s cursor bounds-checked every read with `position + count > length`, which overflows `Int` for a large count and wraps negative, and a negative is not greater than the length, so the check passed and the read ran off the end of the buffer. Measured: a 20-byte block claiming a field name of 2147483647 bytes crashed the process, which is precisely the failure that cursor exists to turn into an exception. The check now measures against the bytes remaining, which cannot overflow.
-- A Postgres result block can no longer claim more rows than it contains. A row of no columns reads nothing, so with a field count of zero the row loop was bounded by the claimed count alone rather than by the block holding anything: 20 bytes claiming twenty million rows allocated twenty million of them, and the count could have said two billion. Postgres does not return rows for a statement with no columns, so that combination is now refused, as are negative field and row counts, which previously decoded as an empty result rather than as the malformed block they are.
-- `SQLiteConnection`'s async job queue is synchronised on every threaded target, not only cpp. The queue is written by whichever thread calls the connection and read by the worker; cpp used a `Deque` behind a `Mutex`, while neko, hl, java and jvm got a plain `Array` pushed and popped with no lock at all, on targets with real threads, and with both of the right types already imported in that same file.
-- An idle async SQLite connection no longer spins. The non-cpp queue had no blocking read, so an empty queue fell through to `haxe.Timer.delay(fn, 0)`, which schedules rather than waits: on every target except hl and neko the worker burned a core doing nothing. The blocking `Deque` read removes the wait loop entirely.
-- `SQLiteConnection.cancel()` no longer parks its worker thread forever. It replaced the queue object while the worker was blocked reading the old one, so the worker waited on a queue nothing would ever add to again, and every job queued afterwards went somewhere with no consumer and silently never ran. The queue is drained in place now and the worker woken so it can observe the cancellation.
-- **Breaking.** `SQLiteConnection.setSavepoint()` returns the savepoint's name. It returned nothing, so a savepoint created without one could never be referred to again, and `releaseSavepoint()` with no name generated a *different* name and asked SQLite to release a savepoint that had never existed, which it refuses: `RELEASE sp_410; (Sqlite error : SQL logic error)`, measured against a real database. The no-argument savepoint API could not work at all.
-- `SQLiteConnection` tracks its open savepoints, so `releaseSavepoint()` and `rollbackToSavepoint()` without a name act on the innermost one instead of minting a fresh one. `rollbackToSavepoint()` previously rolled back the entire transaction whenever the name was omitted, losing everything before the savepoint the caller meant to return to; it now does that only when no savepoint is open. Releasing discards the savepoint and anything nested inside it, rolling back keeps it, and committing or rolling back the transaction clears them all, matching what SQLite itself does.
-- Generated savepoint names come from a counter rather than a truncated microsecond timestamp. The old scheme collided: 2000 names generated back to back produced 47 duplicates on cpp, and two savepoints sharing a name make `RELEASE` and `ROLLBACK TO` act on the wrong one. It also overflowed `Int` about 36 minutes into a process and wrapped every 72, so a long-lived connection reissued names it had already used.
-- `SchemaMigrator` rolls back when the commit is what fails. The commit sat outside the try that guards a migration, so a commit that threw, a filled disk, a serialisation conflict, a connection lost between the last statement and this one, left the transaction neither committed nor undone, and the connection went back to its caller, and through a pool to the next borrower, still inside it. It also escaped as the driver's own error rather than the `SQLError` every other migration failure raises.
-- `SchemaMigrator` releases its migration lock exactly once and no longer reports a successful run as a failure. The release sat inside the try, so a failure to release was caught by the handler that exists to release, unlocking a second time, and turning a run that had applied and recorded every migration into a thrown error. On a rolling deploy that is an instance refusing to start after successfully migrating, which is worse than the stuck lock it was reporting. The run's outcome is now reported as it happened and a failed release is logged.
-- CORS preflights keep the connection alive and are built by the same path as every other response. `OPTIONS` wrote its response by hand and closed the socket, which was a deliberate deferral while keep-alive landed and left preflights outside every guarantee the builder makes: no one-response-per-request suppression, so a middleware that had already answered could be followed by a second response on the same connection; no check the socket was still connected; no log line, so preflights were invisible to an operator; no configured custom headers; and an unconditional close, costing a fresh connection, and a full TLS handshake where enabled, immediately before the request it was clearing.
-- No `Content-Length` on a response that cannot carry a body. RFC 7230 3.3.2 forbids the header on a 1xx or 204 and 3.3.3 has the client end such a response at the blank line whatever the headers say, so it was both disallowed and redundant; 304 is treated the same, since `Content-Length: 0` there asserts a zero-length representation rather than describing the one the client already holds. Affects the preflight and the `If-Modified-Since` 304.
-- `ConnectionPool` no longer opens past `maxSize`. Ownership was inferred from a borrowed-count rather than known, so `discard()` could not tell a connection the pool issued from one it never had, nor a second discard of one already retired, and it adjusted the accounting for all of them. Each spurious call credited the pool with a slot it never gave up, and once the open-count drifted below reality the ceiling stopped holding and the pool opened without limit, which is the one thing a pool exists to prevent. `discard()` of an already-released connection also closed it while leaving it in the idle list, so the next caller was handed a dead connection. Separately, a connection being validated was discounted for the whole unlocked validation window, letting a caller arriving mid-check see room that did not exist. The pool now tracks the connections it has issued, so a foreign or repeated return is ignored the way a repeated `release()` already was, and a connection stays counted while it is validated
-- Named parameters are no longer substituted inside SQL comments or quoted identifiers. `ParamBinder` modelled single-quoted literals and nothing else, so a `:name` in a `--` line comment, a `/* */` block comment, a `"quoted identifier"` or a MySQL backtick identifier was replaced with an escaped value. The comment case is an injection regardless of how well the value is escaped, because quoting carries no meaning inside a comment: a value containing a newline ends it, and the remainder becomes statement text, `-- audit :note` with `x
-OR 1=1 --` produced a query the server ran differently. All four drivers reach this on the `:name` API; Postgres `executeParams` binds natively and was never affected. Block comments nest, as Postgres does. Backslash escapes in literals and Postgres dollar-quoting remain unmodelled and are now documented on the class, since closing them needs a per-dialect scan rather than a shared one
-- A file too large for `FileSystem.stat` to describe is refused rather than served wrong. `stat` reports an `Int`, which cannot express a size past 2 GB, and what it reports instead is target-specific: measured on Windows/cpp, files of 3 GB and 5 GB **both report 0**, indistinguishable from an empty file. The previous guard tested for a negative size, a wrap hxcpp does not produce, so on this target it never fired and every oversized file went past it. The reported length is now checked against the file itself, seek to it and read a byte, which a file of that length cannot supply, so it holds however a given target gets the size wrong, whether that is a wrap, a clamp, or a failed stat returning zero. Verified against real 3 GB and 5 GB files, which are now refused with a 500 naming the cause. Serving them properly needs 64-bit lengths Haxe does not have; this makes the limit visible instead of silent
-- PHP source is no longer served as a static file when no bridge is configured. `phpEnabled` defaults to false, and the static path tested for the bridge and the extension together, so with PHP off a `.php` file was not executable, fell through, and was sent verbatim: `GET /config.php` answered **200 with the file**, credentials and all. Reachable in two ways on stock settings, directly and through `directoryIndex`, which leads with `index.php` so a directory request resolved to one. Both now answer 404, chosen over 403 so the reply is indistinguishable from one for a path that does not exist; the operator is told through a logged warning instead. The guard reuses `__isPhp` rather than repeating the extension test, so what may be executed and what may be sent as bytes cannot drift apart, and since it lowercases, `GET /config.PHP`, which opens the same file on Windows, does not get a second answer
+#### Data
 
-- **a percent-encoded NUL in a request path could serve a blacklisted file.** Found while replacing the path decoder, and the more serious half of that change. Every filesystem call under `File` reaches a C API through the Haxe string's `char*` and therefore ends at the first NUL, while `blacklist` and `whitelist` compare whole strings, which do not, so `GET /secret.txt%00.html` was checked under the name `secret.txt\0.html`, matched no blacklist entry, and was then truncated by `exists()` and `load()` and served as `secret.txt`. The whitelist failed closed on the same request and the root containment check was never bypassed; it is the blacklist that failed open, which is the direction that matters. On cpp a *malformed* escape reached the same place without any `%00`: `urlDecode("/100%.html")` returned `/100`, a NUL, then `tml`, it consumed `.h` as the escape digits and emitted a zero byte, so a path did not even have to be trying. The decoder now refuses a decoded NUL with `400 Bad Request`, since no legitimate path carries one, rather than leaving every downstream use to defend itself. This is also why the same request now draws a `400` instead of a `404`
-- a literal `+` in a request path no longer becomes a space. Paths were decoded with `StringTools.urlDecode`, which is form decoding, under it `+` means space, a rule RFC 3986 confines to query strings; in a path `+` is an ordinary character. So `GET /a+b.html` looked up `a b.html`, a file whose name genuinely contains `+` was unreachable by any spelling, sending `%2B` decoded correctly in the handler and was then corrupted anyway, because the rewrite engine's `normalize()` ran `urlDecode` a second time on the already-decoded path. Both decodes are replaced: the handler now runs a dedicated decoder that handles `%XX` escapes and nothing else, adjacent escapes are decoded as one byte run and read back as UTF-8, so `%C3%A9` still arrives as one character, and `normalize()` stops decoding entirely, since its input is the handler's output and a second decode turns the `+` and `%` a correct single decode legitimately leaves behind into a different name (`/100%.html`, the single decode of `/100%25.html`, re-read as a truncated escape). A malformed escape, truncated, or with a non-hex digit, is now answered `400 Bad Request`, which it never was: the `try`/`catch` around the old decode was dead code, because `urlDecode` does not raise on bad input, it drops the `%` and keeps going. `/oops%zz.html` was served as `oopszz.html` and `/100%.html` as `100.html`, so two spellings of a path silently named one file and a request no standard considers valid was answered as though it were. Double-encoded traversal needs no second decode to stay caught: `%252e%252e` decodes once to the literal text `%2e%2e`, which no filesystem reads as dots, it now draws the 404 of a name that does not exist rather than a manufactured 403. Query strings are untouched and keep form semantics, raw through `queryString` with `URLVariables` still reading `+` as a space there, which is where that rule belongs
-- WebSockets could not work on the interpreter at all, and this removed one of the reasons. (Not the last: every session, a server's included, also drew a client key from `SecureRandom`, which the interpreter does not have, so a `ServerWebSocket` there accepted nothing, each upgrade threw in the accept tick and the peer was reset, as a raw handshake against eval, hl and neko showed.) The session drains its socket from a plain tick listener and never registers with the poll registry, so the very first read on an idle connection parked the interpreter, not on some unlucky payload size, but on every connection, immediately. `crossbyte.net.Socket` had the narrower form of the same fault: its read loop continues while a read exactly fills the 4096-byte buffer, so any message whose length was an exact multiple of 4096 blocked the runtime thread waiting for bytes that were not coming. Both loops are now gated on a zero-timeout `select` under `#if eval`. The root cause is that eval's `sys.net.Socket.setBlocking` is a no-op, it is a no-op in the Haxe standard library too, which is where this shim's copy came from, and it cannot be implemented on 4.3.7: eval exposes no per-socket blocking control and no bridge from a `NativeSocket` to the libuv handle that has one. That is now written down where the empty method body used to carry a `// TODO: Don't know how to implement this...`
-- data received before a peer's EOF is delivered before the close is announced. When a final burst and the peer's FIN arrived in the same tick, `Socket.this_onTick` cleaned the socket and dispatched `CLOSE` first, then dispatched the pending data, at which point the socket was already null, so any listener that did the obvious thing and called `readBytes` got `"Operation attempted on invalid socket."`, and that `IOError` escaped through the event dispatch into the socket registry and killed the runtime loop. One disconnecting peer could take down every other connection in the process. This is target-independent and predates the interpreter work above; the eval gate merely made it easy to reach, because a gated loop sees the FIN as readable and forces the EOF read inside the same tick
-- TLS on the interpreter is documented rather than fixed. The `select` gate is deliberately not applied to SSL-backed sockets: it sees the kernel socket, while mbedtls has already drained the TLS record and holds the decrypted plaintext in a buffer `select` cannot observe, so gating there would strand the tail of any record larger than the read buffer, permanently, since the descriptor never reads ready again. SSL sockets therefore keep read-until-short-read and its exact-multiple caveat. A `wss` handshake on interp can still park the runtime, and the obvious mitigation was measured and rejected: `setTimeout` does propagate and `SO_RCVTIMEO` expires on schedule, but eval raises the expiry as an OCaml `Unix_error` that no Haxe `catch` intercepts, not `haxe.Exception`, not `Dynamic`, so it would trade a stall for an uncatchable process death
-- the `sys.net.Socket` shim's fallback branch claimed support for "cpp, hxcpp, and eval" in all sixteen of its throw messages, while a fully implemented java/jvm branch sat directly above it
-- `next(405)` from middleware no longer emits `HTTP/1.1 405 OK`. `__statusMessage` had no entry for 405, and its default branch answers `OK`, so the one status a router or a metrics endpoint is most likely to raise by hand rendered a status line contradicting itself. `MetricsEndpoint` has been raising it since it landed. The remaining hole is unchanged and deliberate: any status not in the table still renders `OK`, so a thrown `418` reads as `HTTP/1.1 418 OK`, the table wants filling out, which is a larger change than this one
-- receiving HTTP headers is no longer quadratic in how many pieces they arrive in. The completeness scan restarted from byte zero on every data event, so a header block trickling in paid for its own length once per arrival, measured at 7.6x on a 2 KB block arriving in 64-byte chunks, and growing without bound as the chunks shrink, which is the shape both a slow honest link and a deliberate byte-at-a-time client produce. The scan now resumes where it stopped, carrying its last three bytes across events so a `CRLFCRLF` split across arrivals is still seen; finding the block resets the carry, and so does clearing the buffer, since a resume offset into bytes that no longer exist would skip that much of the next request. Header lines were also built one `+=` per byte, a fresh string per character, and now accumulate in a `StringBuf` via `addChar`, which keeps the byte-for-byte semantics: no UTF-8 decoding, each byte one code point, so a header value carrying bytes above 0x7F reads back exactly as it arrived, and a test pins that
+- Counts and ids are `Float`s, exact past 2^31: `lastInsertRowID`,
+  `totalChanges` and `DBStats`' page counts of `SQLiteConnection`;
+  `affectedRows` and `lastInsertRowID` of `MySQLConnection`,
+  `PostgresConnection` and `PostgresRawResult`; and
+  `MongoConnection.affectedRows`. `FKViolation.rowid` is a `Null<Float>`,
+  and `SQLiteConnection.cacheSize` an `Int`, negative for a size in KiB.
+  Code that keeps one in an `Int` needs `Std.int()`.
+- Natively, MySQL and SQLite column values come back exact: MySQL
+  `BIGINT` and `INT UNSIGNED`, and every SQLite `INTEGER`, are an `Int` when
+  the value fits in 32 bits and a `haxe.Int64` when it does not; `DECIMAL`
+  is a `String`; `DATE`, `DATETIME` and `TIMESTAMP` are read as UTC, and
+  the zero date as `null`; a NULL column is in the row holding `null`;
+  `TIME` and `YEAR` are `String`s; and `Bytes` is for binary columns only.
+  Take a large id as `var id:haxe.Int64 = row.id`, parse a `DECIMAL` with
+  `Std.parseFloat` where a `Float` is close enough, read dates with the UTC
+  getters (and set `MySQLConfig.timeZone` to `"+00:00"`), and test for NULL
+  with `== null` rather than `Reflect.hasField`.
+- A statement the server refuses throws an `SQLError` from every driver,
+  after dispatching the `SQLErrorEvent` it already did; so do `begin`,
+  `commit`, `rollback` and the savepoint methods of Postgres and MySQL, and
+  a COMMIT that failed. SQLite throws `SQLError` where it threw a `String`,
+  `PostgresConnection.request()` where it threw `IOError` or a `String`,
+  and MySQL throws `MySQLError` (an `SQLError`, with `code` and
+  `sqlState`), whose message no longer begins with the statement. Code that
+  listened for the event and counted on the call returning catches the
+  error too.
+- `parameters` of `SQLiteStatement`, `MySQLStatement` and
+  `PostgresStatement` is a `FieldStruct<SQLValue>`: a `Bool`, `Int`,
+  `Float`, `Int64`, `String`, `Bytes`, `Date` or null converts to it as it
+  is set. A value read back is a `SQLValue`; cast it to its type
+  (`var name:String = statement.parameters.name`). On SQLite, which took
+  `String`s only, a number now goes in as a number and `Bytes` as a blob.
+  MySQL writes a number unquoted and a `Date` as its UTC fields: set
+  numbers as numbers, and dates as `Date`s rather than formatted strings.
+- `PostgresConnection.request()` answers a `PostgresResultSet`, a
+  `sys.db.ResultSet`, where it answered `Dynamic`; the
+  `PostgresStatement.PostgresResultSet` typedef of `Dynamic` is gone.
+  `PostgresRawResult` is a class in `crossbyte.db.postgres`, and
+  `SQLiteConnection`'s `WalCheckpointResult`, `FKViolation` and `DBStats`
+  are classes: object literals with their fields still make them, but a
+  value built as another anonymous structure no longer passes for one.
+- `PostgresConnection.autocommit = false` takes effect, where it did
+  nothing: statements then wait for `commit()`. Remove it from code that
+  set it and relied on each statement committing. A negative Postgres
+  `connectTimeout` throws an `ArgumentError`.
+- `setSavepoint()` on SQLite, MySQL and Postgres returns the savepoint's
+  name, and `releaseSavepoint()` and `rollbackToSavepoint()` without a name
+  act on the innermost savepoint held. `rollbackToSavepoint()` with no name
+  rolled back the whole transaction: call `rollback()` for that.
+- `SQLiteConnection.open()` and `openAsync()` throw on a connection that
+  is open: `close()` it first, and after an asynchronous close wait for
+  `CLOSE`.
+- An SQLite connection opened with `SQLiteMode.READ` refuses to write:
+  open with `UPDATE` to write.
+- A `SQLiteConnection` waits up to 5 seconds for another connection's
+  write lock, `busyTimeout` as it opens, where it failed at once with
+  "database is locked". On a synchronous connection the wait is on the
+  calling thread: set `busyTimeout = 0` where failing at once is wanted,
+  or less where a runtime's thread calls it.
+- On an asynchronous `SQLiteConnection`, `request()` and the properties
+  that ask SQLite wait for the work queued before them (`queueTimeout`),
+  and the rows `request()` answers are read by name: its `getResult`,
+  `getIntResult` and `getFloatResult` throw. `connected` is true from the
+  `OPEN` event to `close()`.
+- A native MySQL connection uses TLS whenever the server offers it
+  (`MySQLConfig.sslMode`, `PREFERRED` by default), without checking the
+  certificate: set `VERIFY_IDENTITY` and `sslCa` to know which server you
+  reached, or `DISABLED` for the old behaviour.
+- `MongoConnection` speaks MongoDB's wire protocol, and PHP's `mongodb`
+  extension is no longer used. `MongoConnection.lastInsertRowID` is gone
+  (it read 0 whatever was inserted): read `lastInsertId`, the `_id` of the
+  last document inserted. `request()` takes Extended JSON and answers a
+  cursor over the result's documents, where it answered the command's reply
+  as one row, and `MongoStatement` binds its `:name` parameters as BSON
+  values.
+- `BCrypt.hash` makes `$2b$` hashes at cost 12 by default, where it made
+  `$2y$` hashes at cost 10, and `BCrypt.needsRehash(hash)` reports a hash of
+  any other revision or cost. Hashes stored before still verify: rehash on
+  a successful sign-in when `needsRehash` says so, and they are replaced as
+  users return.
+- A `JWT` verifying tokens that carry `aud` needs `expectedAudience` set to
+  the audience it is; with none, those tokens are refused.
+- `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
+- `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
+- `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
+  `Null<Float>`, where they were `Null<Int>`: convert with `Std.int` where
+  code keeps one in an `Int`. A claims literal whose times mix `Int` and
+  `Float` converts one of them (`exp: now + 3600.0`), and a time that is not
+  a number no longer compiles.
+- `JWTPayload.audience` is a `JWTAudience`: ask it with `contains(name)` or
+  read `toArray()`. `JWTPayload.seconds` is no longer public.
+- `Secret`, `JWTHeaderData` and `SigningKeyPair` are classes: a value typed
+  as an anonymous structure no longer passes for one, and `Json.stringify`
+  writes a `JWTHeaderData`'s unset members as `null`.
+- Off native cpp, `Ed25519.verifyDetached` throws an
+  `IllegalOperationError` where it answered `false`, and `keypair` and
+  `signDetached` throw one where they threw a String; `Blake3`,
+  `LocalConnection`, `SharedChannel` and `SharedObject` throw one where
+  they threw a String or an `ArgumentError`. Check `isAvailable()` or
+  `isSupported` first.
+- `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
+  random bytes, throws an `IllegalOperationError` on the interpreter, neko
+  and HashLink, where it threw a String.
 
-- URL rewrite backreference expansion no longer lets the request rewrite itself. `$1` through `$9` were substituted by one `String.replace` pass per group, and each pass reprocessed text the previous ones had already written: a path segment captured into `$1` whose own value contained the characters `$2` had that `$2` replaced by the next iteration, so a rule author writing `/user?name=$1&id=$2` against `/u/a$2b/ZZZ` got `/user?name=aZZZb&id=ZZZ`, part of the target chosen by the request rather than by the rule. Expansion is now a single left-to-right scan, which cannot revisit what it has emitted, and copies the runs between markers whole rather than a character at a time so a target carrying non-ASCII text is never taken apart. Traversal was never reachable this way, since `abs()` still confines every resolved path to the document root; what leaked was control over the rewritten target within it. mod_rewrite's numbering is deliberately kept: `$0` is not a group and `$10` reads as `$1` followed by a literal `0`, as does a group the pattern never captured, which stays as written
-- rewrite rules are compiled once instead of once per request. `reMatch` built a fresh `EReg` for every rule on every request, `backrefs` built a second one for the rule that matched, and each `Method` or `Header` condition built another, so a request against a seven-rule config paid at least seven regular-expression compilations before it could be routed. Patterns come from configuration and never change, so they are now held compiled: 20,000 requests through a seven-rule set went from 154ms to 75ms (2.1×), while the match-and-expand path for the one rule that hits improved 1.2×. The cache is per thread rather than shared, because an `EReg` carries the result of its last `match()` and two runtime threads reading captures from one instance would read each other's; it is held in `Tls` on every target with real threads (cpp, neko, hl, java, jvm) and a plain static on the rest, matching the guard `HTTPBackendRegistry` uses for the same reason. Two maps rather than one keyed by pattern-plus-flag, since building a composite key would allocate per rule per request and give back most of what the cache saves. `backrefs` also stops prefixing patterns with an inline `(?i)` and uses the `i` flag `reMatch` already used, so both now agree and share one compiled expression
-- `tryFiles` no longer re-runs filesystem probes whose answer is already known. `decide()` opens by testing the request path as a file and as a directory index and returns if either resolves, so by the time the `tryFiles` loop ran, its `$uri` and `$uri/` cases could not be true, they cost two `exists`/`isDirectory` pairs per request on every path that reaches a rewrite or a 404, and could never reach a different answer. They are skipped explicitly now, with literal entries still tried in order. Noted while doing this, not changed: because those two checks happen before the loop rather than within it, an entry's position in `tryFiles` does not affect when `$uri` is tried, so an nginx-style `["/override.html", "$uri"]` still serves `$uri` first. The default `["$uri", "$uri/", "/index.html"]` matches the hardcoded order, which is why this has never shown. Honouring the configured order is a routing-precedence change rather than a fix, and would alter behaviour for anyone whose config depends on the current one
-- a failed OAuth token exchange now reaches the caller. `getAccessToken` and `refreshAccessToken` take an optional `onError`, and `callback` fires only on success, previously a rejected grant was logged and nothing else happened, which from the caller's side is indistinguishable from a request still in flight. The optional parameter keeps every existing call site compiling, and without one the failure is still logged exactly as before. Two silent successes are closed with it: a provider answering a rejected grant with an error document and a non-failing status used to be delivered as success carrying a token whose `accessToken` was null, which then failed somewhere later with nothing connecting it to the real cause; and `expires_in` sent as a string, which some providers do, went straight into an `Int` field. The reported message carries the provider's own `error`/`error_description` rather than just naming the operation. Verified the tests can fail by removing the `access_token` guard, which reproduces the original behaviour, including the delayed null dereference that made it hard to place
-- `File.copyTo` no longer reports every failure as a missing file. It caught everything and rethrew `"File or directory does not exist."` (3003), so a permission denial, a full disk, or a file held open by another process all sent whoever read the error looking for the wrong thing. The source is now checked up front, so 3003 means what it says, and anything else is reported with the real cause and both paths. A failure inside a recursive call is passed through untouched rather than re-wrapped, since the inner one already names the path it happened on. Same class as the null-listing crash fixed earlier this release, where the reported cause was also not the real one
-- a compile-time guard, `SuiteCoverage`, that fails the build when a test exists which nothing will run. Wired into every test hxml via `--macro`, it rejects three things: a `utest.Test` subclass registered in no `TestSuites` group, a group no other group calls, and, the one that kept recurring, a case with cpp-only conditional code that is not reachable from `addNativeSmoke`, whose guarded body therefore compiles nowhere it is registered. A genuinely hand-run harness can opt out with `@:suiteExempt("why")`, which requires stating the reason. Six instances of this shipped before it existed; on its first run it found a seventh, `FileStreamTest`, whose two async cases are guarded to skip on everything but cpp and so had never executed on any target
-- **the jvm target had no CI at all.** Both entry points existed and neither was ever built or run: the workflow contained no reference to jvm or java. Three jvm defects were found and fixed by hand this release, a `PriorityQueue` `VerifyError`, a `SwitchTable` `ClassCastException`, and `Vector` `every`/`some`/`filter`, with nothing to stop them returning. A `Core | JVM Tests` job now builds and runs both suites on Java 8, the floor those `VerifyError` fixes were verified against. The full suite was red when the job was added, for the entry below; the smoke subset passing is exactly what let that stay unseen
-- IPv6 addresses are reported in RFC 5952 canonical form on every target. `sys.net.Host.toString()` renders the loopback address as `::1` on hxcpp and `0:0:0:0:0:0:0:1` on the jvm, so `DatagramSocket.localAddress`, `remoteAddress` and the source address on a `DATA` event disagreed across targets, an application comparing what it bound against what it was told back worked on one and failed on the other. `IPv6.compress` lowercases, strips leading zeros, and collapses the longest run of zero groups; anything that is not a plain eight-group literal, including hostnames and IPv4 tails, is returned untouched
-- `ByteArray.writeBytes` no longer zero-fills the region it is about to overwrite, measured at 14,342 → 19,908 MB/s on a 32 MB append (1.39×, from 48% to 62% of the memcpy floor; both binaries run back to back with their `blit` baselines within 6%). `__resize` takes an optional `overwriteFrom`, so an append, the whole of the bulk write path, skips the fill entirely, while a gap left by seeking past the end is still zeroed. The zeroing is **not** redundant in general, contrary to how this was first described: it is what stops a grown buffer exposing whatever the allocator last left in that memory, and removing it outright would have been a heap-disclosure bug
-- `ByteArray` growth no longer exposes uninitialised memory on the eval target. Every other target swaps the underlying buffer and carries the zeroed region across with it; the eval shim copies into a `Bytes` whose storage never grew, so it did not, measured at 65,474 of 65,532 bytes non-zero on eval against 0 on cpp. `__resize` now zeroes the grown span explicitly there, after the logical length is set and starting from the pre-growth length rather than the capacity `__setData` leaves in `__length`; getting either of those wrong is not academic, since the first attempt dropped the write entirely and the second left a stale byte at index 1. The growth tests no longer skip on eval
-- `File.deleteDirectory` on a path that no longer exists took the process down on native targets instead of throwing. hxcpp's `sys_read_dir` answers a directory it cannot open with `null` rather than raising, `sys.FileSystem.readDirectory` passes that straight through, and `for (item in ...)` then dereferenced it, a segfault, so past any `catch` the caller wrote. That is what disguised it as a `moveTo` bug: the crash landed on the `try source.deleteDirectory(true) catch (_) {}` teardown line, after `moveTo` had already copied, deleted and returned successfully. Every listing in `File`, `deleteDirectory`, `__deletePath`, `getDirectoryListing` and the async worker, now goes through one helper that turns the null into the same catchable `Error` on every target; `__canonicalize` had guarded for this all along, in exactly one place. This crash is what had kept `FileTest`, and with it the whole of `addIO`, from running on any native target
-- `CrossByte.pump()` on a runtime that had already exited claimed the calling thread and never gave it back. It published `this` into the thread-local current-runtime slot and rebound the thread's timer scheduler *before* reading the stop flag, and the hand-back inside `__finalizeExit` is guarded by `__didExit`, which had already been set, so from that call onward `CrossByte.current()` returned a runtime that could never tick again. Anything resolving the current runtime afterwards attached to the dead one: a `Worker`'s completion listener, a timer, a socket registration. None of them ran, and nothing was raised to say so. `pump()` now reads the stop flag before it claims anything, and hands the slot back if it already holds this stopped instance. Found through `NativeProcessTest`, which pumped 17,268 times across 30 seconds without one tick reaching it, and which had only started failing because utest's fixture order, which shifts when cases are added, put the case that deliberately pumps an exited runtime ahead of it. The defect was in the runtime the whole time, not in the test's timing budget. Noted while doing this, not fixed: `Worker` delivers exactly one queued message per tick, so a worker producing a burst of progress events drains at tick rate rather than as fast as the host pumps
-- no `trace()` calls remain in library code. `OAuth`'s two token-request failures went to unfilterable stdout and now log at `Logger.error`; the HTTP header dump stays behind `#if http_debug` but routes through `Logger` so that when enabled it honours the configured level and sink. The `trace` calls left in `File` and `URLVariables` are documentation examples inside doc comments and are meant to stay. Noted while doing this, not fixed: `OAuth`'s error handlers log and never invoke the caller's callback, so a failed token exchange is indistinguishable from one still in flight, surfacing it needs an error callback and so a signature change
-- "the socket would block" was recognised four different ways, and every call site covered a different subset. The condition arrives as `haxe.io.Error.Blocked`, wrapped in `Error.Custom` by the hxcpp debugger, or as the bare strings `"Blocking"` or `"Blocked"` from the TLS layer, which throws before anything maps it to a type, and the checks were written out by hand in `Socket`, `ServerSocket`, `ServerWebSocket`, `DatagramSocket` and the internal `WebSocket`, two of them verbatim duplicates. Missing a spelling is not cosmetic: a would-block read as fatal closes a healthy connection, and one read as success silently discards what was being written. Both have shipped here. `BlockedError.isBlocked` is now the single predicate, and the jvm-specific branch `ServerWebSocket` carried for it is gone, the enum match that mis-compiled inside a `catch` now lives in a plain static function where that does not apply
-- **a socket that blocked twice in a row stranded whatever it still held.** The socket registry drains its writable queue with `forEach` and then clears it, but a socket that is still blocked re-queues itself from inside that dispatch, so the clear discarded the re-queue and the socket was never retried again. Silent: no error, no close, indistinguishable to the peer from data that was never sent. Both registries now swap the queue before draining. A 4 MB write to a slowly-draining peer previously delivered 2.8 MB and timed out; it now completes in 3 ms
-- a blocked write retried through the global timer instead of the queue the registry already provides. A partial write called `__queueWrite()`, but a fully blocked one used `Timer.delay(__tryFlush, 0)`, two mechanisms for one job, and the timer was the one whose exception unwound through the tick dispatch and stopped the whole runtime loop rather than failing one connection. Both paths now use the queue. `registryOnWritable` also had to call `__tryFlush` rather than `flush`, since `flush` returns early while a blocked retry is outstanding and so could never have recovered a fully blocked socket
-- three more test groups had never run their native cases. `addDatabase`, `addIPC` and `addUtils` were registered only in `addAll`, which runs on the interpreter, so their `#if cpp` bodies compiled out where they were registered and were unregistered where they compiled, the same gap that hid the asymmetric JWT suite. Running them surfaced two stale assertions that had been wrong since the native Postgres bridge landed (`PostgresConnection.isSupported` is `true` on cpp, and both `PostgresConnectionTest` and `DBSupportTest` asserted `false`), and one that could never have held: `pragmaList()` was asserted to contain `page_size`, but `PRAGMA pragma_list` returns nothing on the SQLite hxcpp bundles (3.23.1), so the call yields an empty array on every native build
-- the asymmetric JWT tests had never run. `PkJwtTest`'s RS256/ES256 cases are guarded `#if (cpp && windows)` because they need the mbedTLS bridge, but they were registered only through `addAuth`, which the native smoke suite, the one place that combination is built, did not call. So they compiled out everywhere they were registered and were unregistered where they compiled. The native suite now includes `addAuth`; the cases pass, and were correct all along
-- **a WebSocket server could not receive messages from a client.** The handshake request was parsed out of the input buffer with `getString`, which does not advance the cursor, and the post-handshake cleanup only reset that cursor when the buffer looked empty, which it never did. The request bytes therefore stayed in the buffer, so the first frame the peer sent was parsed starting at the `G` of `GET`; `0x47` has RSV1 set, so the session was closed with 1002 as a protocol error. Every server-side session dropped the client's first message and the connection with it. The handshake bytes are now discarded once the upgrade completes, with any pipelined data preserved. Nothing caught this because the frame-level tests construct sessions directly and skip the handshake, and the one exercise that did cover the real path, the websocket echo sample, was compiled in CI and never run. Built against the pre-fix source that sample fails outright, so executing it would have caught this on the commit that introduced it; it now runs in CI
-- jvm: `PriorityQueue` produced invalid bytecode (`VerifyError` on Java 8), a bound method reference inside the `@:generic` specialization; replaced with a capture-free comparator lambda
-- jvm: `SwitchTable.make` dispatchers with mixed String/Int keys crashed with `ClassCastException`, a Dynamic-subject switch containing an Int case coerces the subject with `Jvm.toInt`; the macro now emits an if-chain through Dynamic-typed comparison/dispatch helpers
-- jvm: `Vector` `every`/`some`/`filter` always returned false/empty, `Reflect.callMethod` arity-mismatch behavior differs on jvm, breaking the callback-arity fallback; the closure's real arity is now resolved reflectively and called directly
-- with these fixes the jvm smoke suite passes fully on Java 8 (previously: 4 `VerifyError`s plus 2 failing tests)
-- `haxe.Timer` allocated its id from a static counter outside the lock guarding the timer map, so two threads creating timers concurrently could take the same id and the second registration evicted the first, a timer that silently never fired
-- `HTTPBackendRegistry` mutated a shared array without synchronization while `resolve()` read it from request threads; mutation now publishes a new array under a lock and lookups iterate a stable snapshot
-- `ProcessLifecycle` guards its callback list, so registering from a worker thread while the runtime thread dispatches can no longer drop or double-run a callback
-- a WebSocket TLS handshake that failed with a typed non-`Blocked` error was treated as a *successful* one and promoted to an open session; terminal failures now close immediately instead of idling until the deadline
-- `ServerWebSocket.bind()` did not resolve an ephemeral port: binding to 0 left `localPort` at 0, so callers could not discover the assigned port
-- the WebSocket read loop discarded the last message before a disconnect. Whether buffered bytes got delivered was decided inside the loop's `catch` branches, so a pass that read a complete frame and then left through `nBytes <= 0`, how a closed peer reads on some targets, dropped that frame entirely. Delivery and closing were also alternatives rather than sequential, so data followed by a disconnect lost the data, and data followed by a genuine error skipped the close and left a failed session open. Delivery is now keyed on how many bytes were actually read, and happens before the close is applied. The final message before a disconnect is the one most worth keeping, a goodbye, a last ack, and losing it is indistinguishable to the application from the peer never having sent it
-- a normal WebSocket disconnect no longer prints `Error Reason:,Eof` and `closed from remote host` through `trace`. A clean TCP FIN is ordinary, not a failure, and unfilterable trace output is noise in any real deployment; remote closes and heartbeat timeouts now go to `Logger.debug`, and only genuine read failures log at `warn`
-- a socket closed while a write was still blocked took down the whole runtime loop. A blocked write schedules its retry with `Timer.delay`, and if the socket closed before that fired, peer disconnect, application close, or the overflow policy, the retry called `flush()` on a released socket and raised. Because the retry runs inside the runtime's tick dispatch, the exception escaped `pump()` and stopped the loop serving *every other connection* rather than failing the one. The retry now finds nothing to do instead of raising
-- the WebSocket write path mishandled a full socket send buffer in both directions: `__writeBytes` caught the blocked write and only traced it, silently discarding the bytes, while `__sendFrame` treated the same transient condition as fatal and closed the session with 1006. A send buffer that is momentarily full is normal on a non-blocking socket and is neither a licence to drop data nor an error; both paths now retain the unwritten remainder, honour partial writes, and retry on the next tick, closing only on a genuine I/O failure
+#### Platform
+
+- `File.applicationStorageDirectory` is the application's own directory
+  inside the account's application data, so stores moved:
+  `%APPDATA%\stores\<name>` is now `%APPDATA%\<id>\stores\<name>`, and
+  `$HOME/stores/<name>` is now `~/.local/share/<id>/stores/<name>` on
+  Linux (`$XDG_DATA_HOME` where it is set) and `~/Library/Application
+  Support/<id>/stores/<name>` on macOS, with `<id>` the main class's full
+  name unless `-D crossbyte_app_id` names it. Nothing is moved for you (a
+  store in the old place could be any application's), so move an
+  application's own across once. Two applications with the same main
+  class, such as `Main`, share a directory until one sets the define.
+- `File.applicationDirectory` and `Resources` read from the program's own
+  directory instead of the working directory. The build copies `resources`
+  beside the program; a tool that moves the program afterwards must carry
+  `resources` with it.
+- `Resources` refuses a path with a `..` segment, a leading `/` or `\`, or
+  a `:`: `exists` answers `false`, `resourceSize` -1, and the loaders throw
+  `SecurityError`. Name resources relative to `resourcesDir`.
+- `File` no longer expands `%NAME%` in a path on Windows: build the path
+  from `Sys.getEnv("NAME")`, or start from `File.applicationStorageDirectory`
+  and the other static directories, which are usually what was meant.
+- `File.resolvePath` normalises the path: `..` never climbs past the file
+  system's root or the application storage directory, and an absolute path
+  is returned as that path, where it was appended. It is not a sandbox;
+  `dir.getRelativePath(file) == null` is the check.
+- `File.moveTo` with `overwrite` replaces an existing directory instead of
+  merging into it, as its documentation says; merge with `copyTo` and then
+  delete the source if that is what was meant.
+- `File.data` throws an `IllegalOperationError` until a load has
+  succeeded, where it answered `null`: check for a load first, or catch
+  it. `File.extension` and `type` are `null` for a name with no dot, where
+  they were `""`.
+- `File.size` throws an `IOError` for a file over 2 GB, where it answered a
+  wrong number, and `File`'s failures are `IOError`s with AIR's error
+  numbers, where some were the base `Error` or a string: catch `IOError`.
+- `FileStream` reads and writes in `ByteArray.defaultEndian`,
+  little-endian unless changed. Set `endian = Endian.BIG_ENDIAN` on a
+  stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
+  `writeObject` frames HXSF and JSON with a 32-bit length, so objects in
+  files written by rc.1 do not read back.
+- A synchronous `FileStream.readBytes` asking for more than the file holds
+  throws `EOFError` and reads nothing, where it padded with zeros: ask
+  `bytesAvailable` first to read "up to" a length.
+- `System.processAffinity`, `hasProcessAffinity` and `setProcessAffinity`
+  throw an `IllegalOperationError` off native and on macOS, where they
+  answered `[false]`, `[]` and `false`: check `System.PLATFORM` and the
+  target first. `System.getDeviceId()` answers `null`, not `""`, where
+  there is no identifier, and `totalSystemMemory()` and
+  `freeSystemMemory()` throw where nothing answers, where they answered 0.
+  `System.memoryUsage()` is a `Float`.
+- `SharedObject`'s constructor, `flush()`, `sync()` and `clear()` throw an
+  `IOError` when another participant holds the region's lock past
+  `lockTimeout` (five seconds), where they waited without end; set
+  `lockTimeout` to 0 to keep waiting. `sync()` throws an `IOError` for a
+  payload the build cannot read, where it set `data` to `{}`.
+- On Linux and macOS a `SharedObject` region is not shared between users:
+  one another user made under the name throws an `IOError`, where it was
+  shared when the first user's umask let others write it.
+- Two users can no longer meet over a `LocalConnection`, `SharedChannel` or
+  `local://` name: each user's names are their own. A name's socket is
+  `/tmp/crossbyte-<uid>/<name>` on Linux and macOS, where it was
+  `/tmp/crossbyte_local_connection_<name>`, and its pipe
+  `\\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
+  `\\.\pipe\<name>`: a program of your own that opened those directly
+  must follow.
 
 ## 1.0.0-rc.1 - 2026-04-28
 

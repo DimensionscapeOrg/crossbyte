@@ -17,8 +17,8 @@ import utest.Assert;
 
 /**
 	One message to many reliable UDP sessions: a `PreparedDatagram`, copied
-	once when it is made, that each session sends, and sends again until
-	its peer has it, from the same bytes, through `sendPrepared` or a
+	once when it is made, that each session sends (and sends again until
+	its peer has it) from the same bytes, through `sendPrepared` or a
 	server's `broadcast`. Each session still frames it with its own
 	sequence numbers, bundles it, and keeps a record of each frame, but no
 	copy.
@@ -204,7 +204,7 @@ class ReliableDatagramBroadcastTest extends utest.Test {
 	}
 
 	/**
-		A session that a broadcast closes, past its output limit, comes off
+		A session that a broadcast closes (past its output limit) comes off
 		the server's list as the broadcast walks it: the others are each sent
 		the message once, none twice and none passed over.
 	**/
@@ -214,8 +214,8 @@ class ReliableDatagramBroadcastTest extends utest.Test {
 		try {
 			// In the order the server walks them: the second's window is shut
 			// and its limit small, so the broadcast ends it, and its close
-			// listener ends the third, each coming off the server's list,
-			// the last taking its place.
+			// listener ends the third, each coming off the server's list, the
+			// last taking its place.
 			var order = pair.server.__sessionList.copy();
 			Assert.equals(4, order.length);
 			var doomed = order[1];

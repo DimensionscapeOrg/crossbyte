@@ -35,7 +35,7 @@ typedef SchemaMigratorOptions<T> = {
 	/**
 	 * Records one migration as applied. Written by the caller rather than
 	 * generated here so that the values go through the driver's own parameter
-	 * binding, building this INSERT from strings would put a migration name
+	 * binding; building this INSERT from strings would put a migration name
 	 * into SQL text.
 	 */
 	var recordApplied:T->AppliedMigration->Void;
@@ -56,7 +56,7 @@ typedef SchemaMigratorOptions<T> = {
 	/**
 	 * Wraps each migration, so a failure leaves the schema as it was rather
 	 * than half-changed. Strongly advised where the engine supports
-	 * transactional DDL, SQLite and PostgreSQL do, MySQL does not, and on
+	 * transactional DDL: SQLite and PostgreSQL do, MySQL does not, and on
 	 * MySQL a failed migration has to be repaired by hand whatever is passed
 	 * here.
 	 *
@@ -96,8 +96,8 @@ typedef SchemaMigratorOptions<T> = {
 }
 
 /**
- * What a `migrate()` call did. A class, where it was an anonymous structure;
- * an object literal with these fields still makes one.
+ * What a `migrate()` call did. An object literal with these fields makes
+ * one.
  */
 @:structInit
 final class MigrationReport {
@@ -118,8 +118,8 @@ final class MigrationReport {
  * what it did so the next run knows where it left off.
  *
  * Driver-agnostic: it never builds SQL for your data and never parses your
- * statements. It needs three things it cannot do itself, run a statement, read
- * the bookkeeping table, write a row to it, and everything else is ordering,
+ * statements. It needs three things it cannot do itself (run a statement,
+ * read the bookkeeping table, write a row to it), and everything else is ordering,
  * bookkeeping and refusing to do the unsafe thing.
  *
  * ```haxe
@@ -228,9 +228,9 @@ class SchemaMigrator<T> {
 		__migrations.push(migration);
 		// Compared, not subtracted. Two versions stamped with a date, as
 		// 2026093001 is, differ by more than neko's 31-bit Int holds, and
-		// neko's native sort takes any answer that large for "less": it ran
-		// a date-stamped history in whatever order the sort ended with. A
-		// subtraction also wraps where versions of opposite sign meet.
+		// neko's native sort takes any answer that large for "less", so a
+		// subtraction would run a date-stamped history in whatever order the
+		// sort ended with. It also wraps where versions of opposite sign meet.
 		__migrations.sort((a, b) -> a.version < b.version ? -1 : (a.version > b.version ? 1 : 0));
 		return this;
 	}
@@ -298,13 +298,13 @@ class SchemaMigrator<T> {
 		// failed migration would stop every other instance from ever
 		// migrating, turning one bad deploy into a fleet that cannot start.
 		//
-		// The release used to sit inside the try as well, so a failure to
-		// release was caught by the very handler that exists to release,
-		// unlocking a second time, and turning a run that had applied and
-		// recorded everything into a thrown error. An instance refusing to
-		// start after successfully migrating is a worse outcome than the stuck
-		// lock it was reporting, so the outcome of the run is reported as it
-		// happened and the stuck lock is logged instead.
+		// The release sits outside the try, so a failure to release is not
+		// caught by the handler that exists to release, unlocking a second
+		// time and turning a run that applied and recorded everything into
+		// a thrown error. An instance refusing to start after successfully
+		// migrating is a worse outcome than the stuck lock, so the outcome
+		// of the run is reported as it happened and the stuck lock is
+		// logged instead.
 		try {
 			__options.unlock(connection);
 		} catch (unlockError:Dynamic) {
@@ -353,12 +353,12 @@ class SchemaMigrator<T> {
 				checksum: migration.checksum
 			});
 
-			// Inside the try, because a commit fails too, a disk that filled,
+			// Inside the try, because a commit fails too (a disk that filled,
 			// a serialisation conflict, a connection lost between the last
-			// statement and this one. It sat outside, so that one path opened a
-			// transaction and neither closed nor undid it, and the connection
-			// went back to its caller, and through a pool to the next
-			// borrower, still inside it.
+			// statement and this one). Outside it, that one path would open a
+			// transaction and neither close nor undo it, and hand the connection
+			// back to its caller, and through a pool to the next borrower,
+			// still inside it.
 			if (__transactional) {
 				__options.commit(connection);
 			}

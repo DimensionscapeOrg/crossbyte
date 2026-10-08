@@ -3,10 +3,8 @@ package crossbyte.utils;
 /**
 	Enumerates the generic compression codecs supported by CrossByte core.
 
-	An `Int` underneath. It was a `Null<Int>`, so that `fromString` could
-	answer null for a name it did not know: a boxed value natively, compared
-	dynamically wherever one was compared. Code that keeps "no algorithm" in
-	a variable types it `Null<CompressionAlgorithm>`.
+	An `Int` underneath, so a value is never boxed. Code that keeps "no
+	algorithm" in a variable types it `Null<CompressionAlgorithm>`.
 **/
 enum abstract CompressionAlgorithm(Int) {
 	/**
@@ -35,7 +33,7 @@ enum abstract CompressionAlgorithm(Int) {
 		followed by an Adler-32 of the data.
 
 		This is what HTTP's `deflate` content coding is (RFC 9110 8.4.1.2), and
-		what most other "deflate" APIs read and write, zlib itself, Node's
+		what most other "deflate" APIs read and write: zlib itself, Node's
 		`zlib.deflateSync`, Java's `Deflater`. `DEFLATE` is the bare stream
 		inside it.
 	**/
@@ -71,8 +69,8 @@ enum abstract CompressionAlgorithm(Int) {
 
 	/**
 		A token as the algorithm it names, where a `CompressionAlgorithm` is
-		asked for. One it does not know is refused: it was null, which an
-		`Int` cannot hold, and would have read as `DEFLATE`.
+		asked for. One it does not know is refused, since null, which an
+		`Int` cannot hold, would read as `DEFLATE`.
 		@throws crossbyte.errors.ArgumentError For a token `fromString` does
 				not know.
 	**/

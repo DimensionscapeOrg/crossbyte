@@ -9,11 +9,11 @@ import utest.Async;
 /**
 	A WebSocket server's sessions need nothing a target may lack.
 
-	Every accepted session drew a client's handshake key from `SecureRandom`
-	before asking whether it was a client, and `SecureRandom` refuses on eval,
-	hl and neko: each upgrade threw in the accept tick and the peer was reset,
-	so a `ServerWebSocket` there accepted nothing at all. A server needs no
-	randomness, it answers a key, and sends its frames unmasked.
+	A server needs no randomness (it answers a key, and sends its frames
+	unmasked), so an accepted session must not draw a client's handshake
+	key from `SecureRandom`, which refuses on eval, hl and neko: each
+	upgrade would throw in the accept tick and the peer be reset, and a
+	`ServerWebSocket` there would accept nothing at all.
 **/
 class ServerWebSocketUpgradeTest extends utest.Test {
 	#if (cpp || java || jvm || eval || hl || neko)

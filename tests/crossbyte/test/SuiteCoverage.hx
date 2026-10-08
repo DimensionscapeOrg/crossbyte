@@ -8,25 +8,19 @@ import sys.io.File;
 /**
  * Fails the build when a test exists that nothing will run.
  *
- * Six separate times this class of gap shipped here: a case registered in
- * a group no entry point calls; a group unreachable from `addAll`; a case
- * whose body is `#if cpp` sitting only in a group the interpreter runs,
- * so it compiled out where it was registered and was unregistered where
- * it compiled. Every one looked like coverage in the source and executed
- * nothing, and each was found by accident rather than by the harness.
+ * The gaps this catches: a case registered in a group no entry point calls;
+ * a group unreachable from `addAll`; a case whose body is `#if cpp` sitting
+ * only in a group the interpreter runs, so it compiles out where it is
+ * registered and is unregistered where it compiles; and the same from the
+ * other side, a case whose body needs jvm in a class registered under
+ * `#if cpp`. Each looks like coverage in the source and executes nothing.
  *
- * The seventh came through the same door from the other side: a case whose
- * body needs jvm, in a class registered under `#if cpp`. Registration and
- * body were each conditional, each read as complete on its own, and nothing
- * asked whether one target satisfied both at once, so it compiled where it
- * was unregistered and was unregistered where it compiled.
- *
- * So registrations are no longer read as plain text. Each is kept with the
- * conditionals around it and replayed against every target the project builds,
- * cpp, eval, jvm, hl, neko, js and Node, and a case that no single target
- * both registers and compiles is an error like the rest. Guards naming a define
- * this cannot decide, `windows` or `subset_io`, are treated as satisfiable
- * everywhere and never fail a build.
+ * So registrations are not read as plain text. Each is kept with the
+ * conditionals around it and replayed against every target the project
+ * builds (cpp, eval, jvm, hl, neko, js and Node), and a case that no single
+ * target both registers and compiles is an error like the rest. Guards
+ * naming a define this cannot decide, `windows` or `subset_io`, are treated
+ * as satisfiable everywhere and never fail a build.
  *
  * A test that never runs is worse than a missing one, because it reads as
  * protection. This turns that into a compile error.
@@ -42,8 +36,8 @@ class SuiteCoverage {
 	private static inline var SERVER:String = "tests/crossbyte/test/ServerSuite.hx";
 	private static inline var ROOT:String = "tests";
 
-	// The identifiers this checker will decide. Anything outside it,
-	// `windows`, `final`, `subset_io`, is left undecided on purpose: an
+	// The identifiers this checker will decide. Anything outside it
+	// (`windows`, `final`, `subset_io`) is left undecided on purpose: an
 	// undecided guard counts as satisfiable everywhere, and so never fails a
 	// build. That costs gaps this cannot see; deciding a define it had
 	// misread would cost a build broken over nothing.
@@ -70,18 +64,17 @@ class SuiteCoverage {
 		// organisational one: a JavaScript build that names TestSuites compiles
 		// every group in it, thread locks and poll backends included. Folded in
 		// here under its group name so the checks below cannot tell the
-		// difference, otherwise moving cases out of TestSuites would be a way
+		// difference; otherwise moving cases out of TestSuites would be a way
 		// to make them invisible to the very check that exists to find cases
 		// nothing runs.
 		var source:String = File.getContent(SUITES) + (FileSystem.exists(SERVER) ? __asGroup(File.getContent(SERVER), "addHttpServer") : "");
 		source = StringTools.replace(source, "ServerSuite.add(runner)", "addHttpServer(runner)");
 		var groups:Map<String, GroupBody> = __parseGroups(source);
 
-		// Every `tests/*Main.hx`, and which groups each one calls. Without
-		// this the checker could only see two entry points and believed any
-		// group the others called was dead, while a group a main hand-listed
-		// around was invisible to it entirely. `JsTestMain` kept its own copy
-		// of the portable set for exactly that reason, and the two drifted.
+		// Every `tests/*Main.hx`, and which groups each one calls. Seeing only
+		// two entry points, the checker would believe any group the others
+		// called was dead, while a group a main hand-listed around would be
+		// invisible to it entirely.
 		var entries:Map<String, Array<Registration>> = __parseEntryPoints(groups);
 
 		var everywhere:Map<String, Bool> = __closure(groups, "addAll");
@@ -113,14 +106,14 @@ class SuiteCoverage {
 				+ '      Put the directive on a line of its own, so which targets register each case can be read off the file.');
 		}
 
-		// A group nothing calls is dead weight that still looks registered,
-		// but "nothing" now includes the entry points, not just other groups.
+		// A group nothing calls is dead weight that still looks registered;
+		// and "nothing" includes the entry points, not just other groups.
 		for (name in groups.keys()) {
 			if (name == "addAll" || name == "addNativeSmoke") {
 				continue;
 			}
 			if (!__isReferenced(groups, name) && !__isCalledByAnEntryPoint(entries, name)) {
-				problems.push('group $name is defined but nothing calls it, no other group, and no tests/*Main.hx, so nothing it registers ever runs');
+				problems.push('group $name is defined but nothing calls it (no other group, and no tests/*Main.hx), so nothing it registers ever runs');
 			}
 		}
 
@@ -161,9 +154,9 @@ class SuiteCoverage {
 			}
 		}
 
-		// The portable set is a second list by necessity, naming TestSuites
+		// The portable set is a second list by necessity (naming TestSuites
 		// from a JavaScript build compiles groups that reference a listening
-		// socket and a thread lock, so the one thing that keeps it honest is
+		// socket and a thread lock), so the one thing that keeps it honest is
 		// this: it may only name cases the full suite also runs.
 		for (test in __casesDeclaredIn(PORTABLE)) {
 			if (!everywhere.exists(test)) {
@@ -184,7 +177,7 @@ class SuiteCoverage {
 				continue;
 			}
 
-			// The recurring one. A case guarded to cpp that lives only in a
+			// The commonest gap. A case guarded to cpp that lives only in a
 			// group the interpreter runs compiles out where it is
 			// registered and is unregistered where it compiles.
 			if (test.cppOnly && !natively.exists(test.name)) {
@@ -204,15 +197,13 @@ class SuiteCoverage {
 				continue;
 			}
 
-			// The seventh, and the first none of the checks above could have
-			// found. Registration and body are each conditional, and each reads
-			// as complete on its own: the class is registered here, the case is
-			// written there. Nothing asked whether one target satisfies both at
-			// once, and ServerSocketTLSTest did not. Its `#else` branch held a
-			// case that compiles only on jvm, inside a class registered only
-			// under `#if cpp`, so it compiled where it was unregistered and was
-			// unregistered where it compiled. The cpp check just above cannot see
-			// that: it is this one inverted.
+			// Registration and body are each conditional, and each reads as
+			// complete on its own: the class is registered here, the case is
+			// written there. Nothing above asks whether one target satisfies both
+			// at once: a case that compiles only on jvm, in the `#else` branch of a
+			// class registered only under `#if cpp`, compiles where it is
+			// unregistered and is unregistered where it compiles. The cpp check
+			// just above cannot see that: it is this one inverted.
 			var dead:Dead = __unreachable(test, worlds, registered);
 
 			if (dead.registers.length == 0) {
@@ -241,12 +232,11 @@ class SuiteCoverage {
 	/**
 	 * Prints which entry points reach each case, under `-D suite_topology`.
 	 *
-	 * Three times in one week a green run turned out to be a suite that never
-	 * compiled the code under test: a case guarded to cpp read on the
-	 * interpreter, a case registered in addAll checked against the native
-	 * smoke suite, a class the interpreter cannot even reference. Each cost
-	 * an hour of reading TestSuites to answer a question the compiler already
-	 * knows the answer to. It can simply say.
+	 * A green run can be a suite that never compiled the code under test: a
+	 * case guarded to cpp read on the interpreter, a case registered in addAll
+	 * checked against the native smoke suite, a class the interpreter cannot
+	 * even reference. Reading TestSuites to tell which is slow, and the
+	 * compiler already knows the answer. It can simply say.
 	 */
 	private static function __report(groups:Map<String, GroupBody>, entries:Map<String, Array<Registration>>, worlds:Array<World>,
 			registered:Map<String, Map<String, Bool>>):Void {
@@ -269,7 +259,7 @@ class SuiteCoverage {
 		var names:Array<String> = [for (k in reach.keys()) k];
 		names.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
 
-		Sys.println("Test topology, which entry points run each case, and which targets register it:");
+		Sys.println("Test topology: which entry points run each case, and which targets register it:");
 
 		for (name in names) {
 			var mains:Array<String> = reach.get(name);
@@ -629,7 +619,7 @@ class SuiteCoverage {
 	 * __walk, minus the registrations this target's defines rule out.
 	 *
 	 * That subtraction is the whole difference between "appears in a group"
-	 * and "runs", and the space between the two is where cases have hidden.
+	 * and "runs", and the space between the two is where cases hide.
 	 */
 	private static function __walkIn(groups:Map<String, GroupBody>, name:String, defines:Map<String, Bool>, seen:Map<String, Bool>,
 			out:Map<String, Bool>):Void {
@@ -658,7 +648,7 @@ class SuiteCoverage {
 	 * Cases an entry point registers itself rather than through a group.
 	 *
 	 * `__casesDeclaredIn` answers nearly this question and is left alone: the
-	 * check it feeds, "this main keeps its own list", does not care which
+	 * check it feeds ("this main keeps its own list") does not care which
 	 * target the list is for. This walk does, so it needs the guards too.
 	 */
 	private static function __directCases():Array<Registration> {
@@ -988,7 +978,7 @@ class SuiteCoverage {
 			}
 
 			if (word == "") {
-				// Something not modelled here, a string literal, say. Emit it
+				// Something not modelled here (a string literal, say). Emit it
 				// anyway, so the parser meets a token it cannot name and answers
 				// "maybe".
 				out.push(c);
@@ -1049,7 +1039,7 @@ private typedef GuardedLine = {
 }
 
 /**
- * A file's lines with their guards, and whether its conditionals balanced,
+ * A file's lines with their guards, and whether its conditionals balanced;
  * if they did not, the guards are not to be trusted.
  */
 private typedef GuardedSource = {

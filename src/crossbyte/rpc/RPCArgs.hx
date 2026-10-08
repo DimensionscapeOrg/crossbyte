@@ -39,8 +39,8 @@ import haxe.io.Bytes;
 	**Valid only during the call.** It is the session's, handed to the next
 	call too, and reads the frame the call came in: read what the handler
 	needs before it returns (a handler answering later with a `Future`
-	reads its arguments first). Re-entered, a handler whose call delivers
-	another to this session at once, the inner call is handed one of its
+	reads its arguments first). Re-entered (a handler whose call delivers
+	another to this session at once), the inner call is handed one of its
 	own.
 **/
 @:access(crossbyte.io.ByteArrayData)

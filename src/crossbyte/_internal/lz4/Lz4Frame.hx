@@ -21,8 +21,8 @@ class Lz4Frame {
 	/*
 	 * What this writes: version 01, independent blocks, the content size and
 	 * a content checksum (0x6C), and blocks of up to 4 MB (0x70), the lz4
-	 * tool's own default. Independent blocks lose no matches here, the
-	 * block encoder reaches back 64 KB, and one-shot input rarely needs
+	 * tool's own default. Independent blocks lose no matches here (the
+	 * block encoder reaches back 64 KB), and one-shot input rarely needs
 	 * more than one.
 	 */
 	static inline var FLG:Int = 0x6C;

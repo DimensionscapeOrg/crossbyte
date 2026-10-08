@@ -3,10 +3,10 @@ package crossbyte.db.mysql;
 import crossbyte.errors.IOError;
 
 /**
- * `MySQLConnection.open()` failing: the `IOError` it always threw, with the
- * MySQL error number and SQLSTATE of why, 1045 for a refused login, 1049
- * for an unknown database, 2003 for a server that could not be reached,
- * 2013 for one that stopped answering, 2026 for a TLS failure.
+ * `MySQLConnection.open()` failing: an `IOError` with the MySQL error number
+ * and SQLSTATE of why: 1045 for a refused login, 1049 for an unknown
+ * database, 2003 for a server that could not be reached, 2013 for one that
+ * stopped answering, 2026 for a TLS failure.
  */
 class MySQLConnectionError extends IOError {
 	/** The MySQL error number, or `0` when the driver gave none. **/

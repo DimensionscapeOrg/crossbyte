@@ -16,7 +16,7 @@ import utest.Assert;
 /**
 	Messages over an open association, with a wire that can be told to misbehave.
 
-	The guarantees this layer makes, reliable, and ordered per stream, are
+	The guarantees this layer makes (reliable, and ordered per stream) are
 	only visible when something goes wrong, so the harness here can drop packets
 	and reorder them on demand. Over a wire that never loses anything, an
 	implementation that never retransmits and one that does look identical.
@@ -60,7 +60,7 @@ class SctpDataTransferTest extends utest.Test {
 		return total;
 	}
 
-	/** Every piece the receiver is holding, fragments and waiting messages, walked rather than trusted. **/
+	/** Every piece the receiver is holding (fragments and waiting messages), walked rather than trusted. **/
 	private function walkedPieces(transfer:SctpDataTransfer):Int {
 		var total:Int = 0;
 
@@ -154,8 +154,8 @@ class SctpDataTransferTest extends utest.Test {
 
 	/**
 		With a runtime, what a pass sends goes when the pass ends, together:
-		ten small messages in one packet, where each was a packet, and a
-		DTLS record and a `sendto`, of its own. Without one, as everywhere
+		ten small messages in one packet, rather than each a packet (and a
+		DTLS record and a `sendto`) of its own. Without one, as everywhere
 		else here, each goes as it is sent.
 	**/
 	public function testAPassesMessagesShareAPacket():Void {
@@ -308,7 +308,7 @@ class SctpDataTransferTest extends utest.Test {
 		Unordered messages do not wait.
 
 		The same reordering, and this time the receiver is expected to hand each
-		one over as it lands. Unordered is not unreliable, both still arrive,
+		one over as it lands. Unordered is not unreliable (both still arrive);
 		it just declines to hold one message for another.
 	**/
 	public function testUnorderedMessagesDoNotWait():Void {
@@ -363,10 +363,10 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		Data the peer never acknowledges ends the association, and says so.
 
-		After the last retransmission the fragment was dropped and the rest
-		carried on. On an ordered stream that is a hole nothing will ever fill:
-		everything behind it stalled for good, later fragments were resent up
-		to eleven times, and the association went on reporting itself open
+		After the last retransmission a fragment cannot simply be dropped with
+		the rest carrying on: on an ordered stream that is a hole nothing will
+		ever fill, everything behind it stalled for good, later fragments
+		resent up to eleven times, and the association reporting itself open
 		while its peer was, by RFC 4960's own definition, unreachable.
 	**/
 	public function testDataThePeerNeverAcknowledgesEndsTheAssociation():Void {
@@ -406,12 +406,12 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A peer cannot make the receiver track numbers without bound.
 
-		Any TSN up to 2^31 past the cumulative acknowledgement was taken, so a
-		peer that never sent the next number and sent the ones after it grew
-		the receiver's record of what had arrived for as long as it cared to:
-		400,000 entries and 24 MB in the audit, on unordered one-byte messages
-		that were delivered at once and so never touched the window. Anything
-		more than `MAX_TSN_AHEAD` past it is dropped unread now.
+		A TSN far past the cumulative acknowledgement is not taken: a peer
+		that never sent the next number and sent the ones after it could grow
+		the receiver's record of what had arrived for as long as it cared to
+		(400,000 entries and 24 MB, on unordered one-byte messages that were
+		delivered at once and so never touched the window). Anything more than
+		`MAX_TSN_AHEAD` past it is dropped unread.
 	**/
 	public function testAPeerCannotMakeTheReceiverTrackNumbersWithoutBound():Void {
 		if (unsupported()) return;
@@ -446,12 +446,12 @@ class SctpDataTransferTest extends utest.Test {
 		With its window shut, the receiver takes nothing past what has arrived,
 		and still takes what fills a hole.
 
-		RFC 4960 section 6.2. The window was published and nothing held a peer
-		to it: past it the receiver threw away unfinished messages to make
-		room. Now what lies beyond the highest number already received is
-		dropped, with a SACK saying the window is still shut, while a number
-		below it, the one a message is waiting on, is taken, since that is
-		what completes a message and opens the window again.
+		RFC 4960 section 6.2. The window is published, and a peer is held to
+		it rather than the receiver throwing away unfinished messages to make
+		room: what lies beyond the highest number already received is dropped,
+		with a SACK saying the window is still shut, while a number below it
+		(the one a message is waiting on) is taken, since that is what
+		completes a message and opens the window again.
 	**/
 	public function testAShutWindowTakesNothingPastWhatHasArrived():Void {
 		if (unsupported()) return;
@@ -564,7 +564,7 @@ class SctpDataTransferTest extends utest.Test {
 		Partial reliability, RFC 3758: what a game's state channel is. The one
 		lost is not sent again; a FORWARD TSN moves the peer past it, so its
 		acknowledgement does not stop at the hole and nothing piles up behind
-		it. Every message was reliable, whatever the channel asked for.
+		it.
 	**/
 	public function testAMessageThatMaySendOnceIsNotSentAgain():Void {
 		if (unsupported()) return;
@@ -708,11 +708,11 @@ class SctpDataTransferTest extends utest.Test {
 		skipped whole by the peer, even when all that went was acknowledged.
 
 		The rest, still queued, is dropped unsent. The peer holds what went,
-		and on an ordered stream waits for the message's sequence number. With
-		nothing of the message left outstanding there was nothing to abandon,
-		no FORWARD TSN named it, and the stream waited for good. Here the SACK
-		for what went arrives after the lifetime ran out with no poll between:
-		the same tick, which at a runtime's twelve a second is 83 ms wide.
+		and on an ordered stream waits for the message's sequence number, so a
+		FORWARD TSN has to name it even when nothing of the message is left
+		outstanding, or the stream would wait for good. Here the SACK for what
+		went arrives after the lifetime ran out with no poll between: the same
+		tick, which at a runtime's twelve a second is 83 ms wide.
 	**/
 	public function testAMessageCutShortAfterWhatWentWasAcknowledgedIsSkipped():Void {
 		if (unsupported()) return;
@@ -899,12 +899,12 @@ class SctpDataTransferTest extends utest.Test {
 		A FORWARD TSN naming a stream many times costs what its entries do,
 		whatever the stream holds.
 
-		Each entry moving the stream on by one walked everything the stream
-		held: 2,000 entries over 8,000 messages held far ahead cost 1.9
-		seconds on the interpreter and 73 ms on the jvm, from one 8 KB packet,
-		and the same packet cost more with each message the peer had sent
-		before it. A stream now costs the smaller of the range an entry names
-		and what it holds.
+		Each entry moving the stream on by one must not walk everything the
+		stream holds: 2,000 entries over 8,000 messages held far ahead would
+		cost 1.9 seconds on the interpreter and 73 ms on the jvm, from one 8 KB
+		packet, and the same packet would cost more with each message the peer
+		had sent before it. A stream costs the smaller of the range an entry
+		names and what it holds.
 
 		The first size runs twice and the first run is dropped, here and in
 		the cases like it: a target compiling as it goes is slowest the first
@@ -964,10 +964,10 @@ class SctpDataTransferTest extends utest.Test {
 		FORWARD TSN chunks over thousands of streams reassembling cost what
 		they drop, not a pass over every stream.
 
-		Each chunk asked every stream reassembling whether it held a
-		fragment the peer had given up on: 200 chunks over 8,000 streams
-		holding a fragment each, far ahead, cost 1.6 seconds on the
-		interpreter and 22 ms on the jvm, from one packet of 1,612 bytes.
+		Each chunk asking every stream reassembling whether it held a fragment
+		the peer had given up on, 200 chunks over 8,000 streams holding a
+		fragment each, far ahead, would cost 1.6 seconds on the interpreter and
+		22 ms on the jvm, from one packet of 1,612 bytes.
 	**/
 	public function testForwardTsnChunksOverManyStreamsCostWhatTheyDrop():Void {
 		if (unsupported()) return;
@@ -1006,8 +1006,8 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		And a FORWARD TSN drops exactly what it gives up on, on whichever
 		streams hold it: every fragment at or below its TSN, and any left after
-		them that no longer begins a message, found now by the TSN each
-		stream starts at rather than by asking every stream.
+		them that no longer begins a message, found by the TSN each stream
+		starts at rather than by asking every stream.
 	**/
 	public function testAForwardTsnDropsWhatItGivesUpOnAcrossStreams():Void {
 		if (unsupported()) return;
@@ -1027,8 +1027,8 @@ class SctpDataTransferTest extends utest.Test {
 		// Stream 2: a message wholly below the TSN given up through.
 		fragment(3, 2, B, 10);
 		fragment(4, 2, 0, 10);
-		// Stream 3: one straddling it, its tail past it goes too, since it
-		// no longer begins anything, and then a message wholly above.
+		// Stream 3: one straddling it (its tail past it goes too, since it
+		// no longer begins anything), and then a message wholly above.
 		fragment(8, 3, B, 10);
 		fragment(9, 3, 0, 10);
 		fragment(12, 3, 0, 10);
@@ -1063,9 +1063,10 @@ class SctpDataTransferTest extends utest.Test {
 		What the association holds is bounded in pieces as well as bytes.
 
 		The byte bounds do not count a piece of no bytes, and the peer picks
-		the size. Fragments flagged B and never E on many streams held 20,000
-		objects with `RECEIVE_WINDOW` untouched, and as many more as the peer
-		sent; so did ordered messages behind a sequence never sent.
+		the size. Without a bound on pieces, fragments flagged B and never E on
+		many streams would hold 20,000 objects with `RECEIVE_WINDOW`
+		untouched, and as many more as the peer sent; so would ordered
+		messages behind a sequence never sent.
 	**/
 	public function testWhatIsHeldIsBoundedInPiecesAcrossEveryStream():Void {
 		if (unsupported()) return;
@@ -1106,10 +1107,10 @@ class SctpDataTransferTest extends utest.Test {
 		A message missing a piece survives a later message on its stream
 		completing first.
 
-		Delivering a message took every fragment of the stream before it
-		too, so an earlier message still waiting on a retransmission lost
-		what it had, and, ordered, the later message then waited for good
-		on a sequence that could no longer complete.
+		Delivering a message takes only its own fragments, not every fragment
+		of the stream before it, or an earlier message still waiting on a
+		retransmission would lose what it had, and, ordered, the later message
+		would then wait for good on a sequence that could no longer complete.
 	**/
 	public function testAnEarlierMessageMissingAPieceSurvivesALaterOneCompleting():Void {
 		if (unsupported()) return;
@@ -1151,10 +1152,10 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A message larger than the peer takes is refused before anything goes.
 
-		RFC 8841: a sender must not exceed the peer's max-message-size. It was
-		never consulted, so the message went out, every fragment was
-		acknowledged, and the receiver dropped it whole, the sender saw it
-		delivered and the far application never saw it at all.
+		RFC 8841: a sender must not exceed the peer's max-message-size.
+		Unconsulted, the message would go out, every fragment be acknowledged,
+		and the receiver drop it whole: the sender would see it delivered and
+		the far application never see it at all.
 	**/
 	public function testAMessageLargerThanThePeerTakesIsRefused():Void {
 		if (unsupported()) return;
@@ -1184,10 +1185,9 @@ class SctpDataTransferTest extends utest.Test {
 		A peer that shuts down gracefully still gets what this end had
 		outstanding, before the answer goes.
 
-		RFC 4960 section 9.2: the shutdown waits on the data. The SHUTDOWN was
-		ignored altogether, so the peer retransmitted it until it gave up and
-		aborted, and whatever was still in flight to it went with the
-		association.
+		RFC 4960 section 9.2: the shutdown waits on the data. Ignored, the
+		SHUTDOWN would be retransmitted until the peer gave up and aborted, and
+		whatever was still in flight to it would go with the association.
 	**/
 	public function testAShutdownWaitsForWhatIsStillOutstanding():Void {
 		if (unsupported()) return;
@@ -1234,10 +1234,10 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		One send does not put the whole window on the wire at once.
 
-		A megabyte went out in one call as 1,024 packets, because the only limit
-		was the peer's window, which was two megabytes. Whatever path lay
-		between could take it or drop it. Now the congestion window bounds what
-		is in flight and no more than `MAX_BURST` packets leave together.
+		With the peer's window, two megabytes, as the only limit, a megabyte
+		would go out in one call as 1,024 packets, for whatever path lay
+		between to take or drop. The congestion window bounds what is in
+		flight, and no more than `MAX_BURST` packets leave together.
 	**/
 	public function testOneSendDoesNotBurstTheWholeWindow():Void {
 		if (unsupported()) return;
@@ -1260,9 +1260,9 @@ class SctpDataTransferTest extends utest.Test {
 		The bottleneck here drains two hundred packets a second and queues
 		sixteen; what arrives while the queue is full is lost, as it is at a
 		real one. A sender that put the peer's whole window on the wire at
-		once, and resent each fragment on a fixed timer, had most of every
-		burst dropped, resent it into the same queue, and gave fragments up
-		after ten tries, a megabyte never arrived.
+		once, and resent each fragment on a fixed timer, would have most of
+		every burst dropped, resend it into the same queue, and give fragments
+		up after ten tries: a megabyte would never arrive.
 	**/
 	public function testACongestedPathStillDeliversALargeMessage():Void {
 		if (unsupported()) return;
@@ -1290,8 +1290,8 @@ class SctpDataTransferTest extends utest.Test {
 
 		The fragments sent after the lost one arrive, and the SACKs they draw
 		each say the lost one is still missing. Three of those and it goes
-		again, a round trip or so after it was lost. It used to wait for its own
-		fixed half-second timer whatever the path was saying.
+		again, a round trip or so after it was lost, rather than waiting for
+		its own timer whatever the path was saying.
 	**/
 	public function testALossLaterPacketsRevealIsRepairedWithoutATimeout():Void {
 		if (unsupported()) return;
@@ -1330,11 +1330,11 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A slow path is not flooded with copies once its round trip is known.
 
-		The retransmission timer was a fixed half second, so on a path with a
-		round trip of a second and a half every fragment was sent three times
-		before its acknowledgement could possibly arrive, into whatever
-		congestion made the path slow. The timer is measured now, and once it
-		has been, nothing goes twice that the peer received.
+		A fixed half-second retransmission timer, on a path with a round trip
+		of a second and a half, would send every fragment three times before
+		its acknowledgement could possibly arrive, into whatever congestion
+		made the path slow. The timer is measured, and once it has been,
+		nothing goes twice that the peer received.
 	**/
 	public function testASlowPathIsNotFloodedWithCopies():Void {
 		if (unsupported()) return;
@@ -1393,8 +1393,9 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A timeout that runs out doubles, rather than coming round again as soon.
 
-		RFC 6298 section 5.5. The old schedule grew by half a second a time, so
-		a path that had gone was resent into at an interval that barely moved.
+		RFC 6298 section 5.5. A schedule that grew by half a second a time
+		would resend into a path that had gone at an interval that barely
+		moved.
 	**/
 	public function testATimeoutThatRunsOutDoubles():Void {
 		if (unsupported()) return;
@@ -1473,14 +1474,15 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A SACK with thousands of gap blocks costs one pass, not one per block.
 
-		`__onSack` walked every outstanding fragment once per gap block and
-		then took each acknowledged one out of the middle of an array: 4,000
-		blocks over 8,192 outstanding fragments measured 60 ms for a single
-		SACK, and the peer chooses both numbers. One pass costs a few
-		thousand steps, which is well under a millisecond compiled; one pass
-		per block costs tens of millions. Best of three fresh pairs, so a
-		collection landing in one measurement does not decide the result.
-		The first `MAX_SACK_BLOCKS_READ` blocks are the ones read.
+		`__onSack` walks the outstanding fragments once, not once per gap
+		block, and does not take each acknowledged one out of the middle of an
+		array: 4,000 blocks over 8,192 outstanding fragments measured 60 ms
+		for a single SACK that way, and the peer chooses both numbers. One
+		pass costs a few thousand steps, which is well under a millisecond
+		compiled; one pass per block costs tens of millions. Best of three
+		fresh pairs, so a collection landing in one measurement does not
+		decide the result. The first `MAX_SACK_BLOCKS_READ` blocks are the
+		ones read.
 	**/
 	public function testASackWithManyGapBlocksIsReadInOnePass():Void {
 		if (unsupported()) return;
@@ -1520,7 +1522,7 @@ class SctpDataTransferTest extends utest.Test {
 		pair.client.onSend = _ -> {};
 
 		// Shut, so the messages queue behind the first and go out bundled once
-		// it opens, a packet per message would put thousands of checksums in
+		// it opens: a packet per message would put thousands of checksums in
 		// the setup of a test about something else.
 		@:privateAccess pair.clientData.__cwnd = 0;
 
@@ -1562,10 +1564,10 @@ class SctpDataTransferTest extends utest.Test {
 		listing a few hundred: the first `MAX_SACK_BLOCKS_READ` are read.
 
 		The count is the peer's to write, and a 16 KB DTLS record carries
-		4,000 blocks. Listed highest first, each one read was moved past every
-		one before it to sort them: 84 ms for one SACK on the jvm, half a
-		second on the interpreter, the cost of each block doubling with each
-		doubling of the count. A packet's bytes are decoded and checked
+		4,000 blocks. Listed highest first, each one read and moved past every
+		one before it to sort them would cost 84 ms for one SACK on the jvm,
+		half a second on the interpreter, the cost of each block doubling with
+		each doubling of the count. A packet's bytes are decoded and checked
 		whatever they say, so the measure is the cost of a block, which stays
 		flat when nothing does more than read each one.
 	**/
@@ -1610,9 +1612,9 @@ class SctpDataTransferTest extends utest.Test {
 
 	/**
 		Only the first SACK in a packet is read. Each walks what is
-		outstanding, and a packet of a thousand of them was a thousand walks
-		over thousands of fragments; two in one packet were written at the
-		same moment and have nothing to add to each other.
+		outstanding, so a packet of a thousand of them would be a thousand
+		walks over thousands of fragments; two in one packet were written at
+		the same moment and have nothing to add to each other.
 	**/
 	public function testOnlyTheFirstSackInAPacketIsRead():Void {
 		if (unsupported()) return;
@@ -1652,11 +1654,11 @@ class SctpDataTransferTest extends utest.Test {
 
 		// Reading the packet's thousand chunks, and checking its CRC over
 		// 16 KB, is the packet's own cost, whatever the SACKs in it do: on a
-		// slow runner it alone came to 3 ms under Node (CI, 2026-10-08),
-		// where comparing the two packets' costs directly failed. What must
-		// not grow is the handling: a thousand SACKs cost what decoding them
-		// does, plus one SACK's handling. Each walked every outstanding
-		// chunk before, and a packet of them took half a second.
+		// slow runner it alone can come to 3 ms under Node, so the two
+		// packets' costs are not compared directly. What must not grow is the
+		// handling: a thousand SACKs cost what decoding them does, plus one
+		// SACK's handling, rather than a walk over every outstanding chunk
+		// each, which would take half a second for a packet of them.
 		var decodeMany:Float = cheapest(() -> {
 			many.position = 0;
 			SctpPacket.decode(many);
@@ -1699,16 +1701,16 @@ class SctpDataTransferTest extends utest.Test {
 		The receiver does not keep what it has already accepted.
 
 		`__received` is there to spot duplicates and to describe the holes in a
-		SACK. Both only ever look at TSNs *above* the cumulative, the gap walk
-		starts at `__cumulativeTsn + 1`, and a chunk at or below it is refused on
-		the isEarlier test whether or not the map still holds it. So an entry the
-		cumulative has passed can never be read again, and nothing removed it:
-		an association retained every chunk it had ever received, payload and
-		all, for as long as it stayed open. An ordinarily busy data channel was
-		enough; no misbehaving peer required.
+		SACK. Both only ever look at TSNs *above* the cumulative (the gap walk
+		starts at `__cumulativeTsn + 1`, and a chunk at or below it is refused
+		on the isEarlier test whether or not the map still holds it), so an
+		entry the cumulative has passed can never be read again, and has to be
+		removed: otherwise an association would retain every chunk it had ever
+		received, payload and all, for as long as it stayed open. An ordinarily
+		busy data channel would be enough; no misbehaving peer required.
 
-		Counting the map is the effect here and not a proxy for it, the map is
-		the memory that was being retained.
+		Counting the map is the effect here and not a proxy for it: the map is
+		the memory that would be retained.
 	**/
 	public function testAcceptedChunksAreNotRetainedForever():Void {
 		if (unsupported()) return;
@@ -1788,9 +1790,9 @@ class SctpDataTransferTest extends utest.Test {
 		megabyte of one-byte fragments, and each one costs a walk over what is
 		already held to find out whether the run it joined is unbroken, so
 		the cost of the next fragment grows with the count, and the count is
-		the sender's to pick. Measured before this was bounded, with a version
-		that also re-sorted on arrival: four thousand fragments, sixty-eight
-		kilobytes on the wire, took sixteen seconds.
+		the sender's to pick. Unbounded, with a version that also re-sorted on
+		arrival, four thousand fragments, sixty-eight kilobytes on the wire,
+		took sixteen seconds.
 
 		A fragment here carries one byte, so the byte bound is nowhere near
 		and the count is the only thing that can stop it.
@@ -1973,10 +1975,10 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		The window offered in a SACK is the window that is actually left.
 
-		It used to be the constant `RECEIVE_WINDOW`, written into every SACK
-		however much had piled up behind it, so the peer was told the whole
-		window was free right up to the point where none of it was. Flow
-		control that reports a fixed number is not flow control.
+		A constant `RECEIVE_WINDOW` written into every SACK however much had
+		piled up behind it would tell the peer the whole window was free right
+		up to the point where none of it was. Flow control that reports a
+		fixed number is not flow control.
 	**/
 	public function testTheWindowOfferedIsWhatIsActuallyLeft():Void {
 		if (unsupported()) return;
@@ -2045,16 +2047,16 @@ class SctpDataTransferTest extends utest.Test {
 		What a peer can make this end hold, added up over every stream.
 
 		The per-stream bounds are per stream, and we offer all 65535 of them
-		because browsers ask for the range. So they bounded nothing in
-		aggregate: a megabyte of reassembly and a megabyte held, on each of
+		because browsers ask for the range, so on their own they bound nothing
+		in aggregate: a megabyte of reassembly and a megabyte held, on each of
 		65536 streams, is a ceiling of 128 GB reached by a peer doing nothing
-		but sending. The association now gives some back rather than taking
-		more than it offered to hold, which is what the per-stream bounds
-		already do one stream at a time.
+		but sending. The association gives some back rather than taking more
+		than it offered to hold, which is what the per-stream bounds already
+		do one stream at a time.
 
-		Refusing the chunk instead would have been the deadlock: what is held
-		is unfinished, so the chunks turned away include the ones that would
-		finish a message and free it.
+		Refusing the chunk instead would be the deadlock: what is held is
+		unfinished, so the chunks turned away would include the ones that
+		would finish a message and free it.
 	**/
 	public function testWhatIsHeldIsBoundedAcrossEveryStream():Void {
 		if (unsupported()) return;
@@ -2093,10 +2095,11 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		The sender stops at the window the peer said it had.
 
-		`peerReceiveWindow` was read off the INIT and never consulted, and the
-		a_rwnd field of an arriving SACK was read past and dropped, so this end
+		`peerReceiveWindow`, read off the INIT, and the a_rwnd field of each
+		arriving SACK are what the sender is held to: otherwise this end would
 		put everything it was handed straight on the wire at whatever rate it
-		was handed it. The receiver's bound then had to absorb the difference.
+		was handed it, and the receiver's bound would have to absorb the
+		difference.
 	**/
 	public function testTheSenderStopsAtTheWindowThePeerAdvertised():Void {
 		if (unsupported()) return;
@@ -2208,16 +2211,16 @@ class SctpDataTransferTest extends utest.Test {
 
 		Messages that arrive early are held until the one before them does,
 		and a peer chooses how many that is by withholding one sequence and
-		sending the rest. They used to be a list searched from the front for
-		whichever came next and then taken out of the middle, so releasing
-		the stream cost a pass over everything queued for each message
-		released. Measured before this changed: 4000 held took 30ms on eval
-		to release, doubling per message as the count grew, and `MAX_HELD` at
-		one byte a message allows a million of them.
+		sending the rest. Held in a list searched from the front for whichever
+		came next and then taken out of the middle, releasing the stream would
+		cost a pass over everything queued for each message released: 4000
+		held took 30ms on eval to release that way, doubling per message as
+		the count grew, and `MAX_HELD` at one byte a message allows a million
+		of them.
 
-		Asked for by sequence now, which is also what stops the count from
-		running away, the field is sixteen bits, so a map keyed by it holds
-		65536 at the outside whatever the peer does.
+		They are asked for by sequence, which is also what stops the count
+		from running away: the field is sixteen bits, so a map keyed by it
+		holds 65536 at the outside whatever the peer does.
 	**/
 	public function testEverythingHeldGoesUpInOrderWhenTheBlockerArrives():Void {
 		if (unsupported()) return;
@@ -2267,11 +2270,11 @@ class SctpDataTransferTest extends utest.Test {
 		A stream cannot hold without bound for a sequence that never comes.
 
 		An ordered message arriving early is held until its turn rather than
-		dropped, which is right, the one before it is usually still in flight.
-		But nothing bounded the queue, so a peer that sends sequence 1 and never
+		dropped, which is right: the one before it is usually still in flight.
+		But the queue needs a bound, or a peer that sends sequence 1 and never
 		sequence 0 leaves everything behind it held for the life of the
-		association. These are whole reassembled messages, not fragments, so it
-		is the more expensive of the two hold queues in this class.
+		association. These are whole reassembled messages, not fragments, so
+		it is the more expensive of the two hold queues in this class.
 	**/
 	public function testAStreamWaitingOnASequenceThatNeverComesIsBounded():Void {
 		if (unsupported()) return;
@@ -2465,11 +2468,11 @@ class SctpDataTransferTest extends utest.Test {
 		A packet of hundreds of reset requests is answered with a packet's
 		worth, and the connection stays up.
 
-		Every request was answered, all in one packet: 800 of them built a
-		25,612-byte answer, past the largest datagram DTLS sends, which threw
-		on the way out and ended the connection. Past eight answers owed the
-		rest go as if lost, and the one request in sequence is still acted on
-		when the peer repeats it.
+		Answering every request, all in one packet, 800 of them would build a
+		25,612-byte answer, past the largest datagram DTLS sends, which would
+		throw on the way out and end the connection. Past eight answers owed
+		the rest go as if lost, and the one request in sequence is still acted
+		on when the peer repeats it.
 	**/
 	public function testAPacketOfManyResetRequestsIsAnsweredWithinADatagram():Void {
 		if (unsupported()) return;
@@ -2519,9 +2522,9 @@ class SctpDataTransferTest extends utest.Test {
 
 		Neither window counts what gap blocks acknowledged, and it is kept
 		until the cumulative acknowledgement passes it, so a peer that held
-		that back had this end keep every fragment the application sent,
-		5,000 fragments of a kilobyte, with `bufferedAmount` at 0 throughout,
-		so the application had nothing telling it to stop. Now no more than
+		that back could have this end keep every fragment the application sent
+		(5,000 fragments of a kilobyte, with `bufferedAmount` at 0 throughout,
+		so the application had nothing telling it to stop). No more than
 		`MAX_TSN_AHEAD` go past the peer's cumulative acknowledgement, and the
 		rest wait where `bufferedAmount` counts them.
 	**/
@@ -2590,9 +2593,9 @@ class SctpDataTransferTest extends utest.Test {
 
 		What a browser does: its stream sequence numbers start again when it
 		resets a stream, and a channel it opens on that number afterwards
-		begins at zero. With the reset unread, this end went on expecting the
-		old stream's next number and held the new channel's messages for one
-		that would never come.
+		begins at zero. With the reset unread, this end would go on expecting
+		the old stream's next number and hold the new channel's messages for
+		one that would never come.
 	**/
 	public function testAfterAPeersResetAStreamStartsAgainFromZero():Void {
 		if (unsupported()) return;
@@ -2679,7 +2682,7 @@ class SctpDataTransferTest extends utest.Test {
 	/**
 		A reset nobody answers is asked again on a backed-off timer until it
 		is, and each unanswered ask counts against the association like a data
-		timeout, a wait that ends.
+		timeout: a wait that ends.
 	**/
 	public function testAnUnansweredResetIsAskedAgain():Void {
 		if (unsupported()) return;
@@ -2749,8 +2752,8 @@ class SctpDataTransferTest extends utest.Test {
 		// And across the *signed* boundary, which is the pair a plain `a < b`
 		// gets wrong. The three above do not catch it: 0xFFFFFFFF is -1 as a
 		// thirty-two bit Int, so comparing it against 0 happens to give the
-		// right answer for the wrong reason. These two are adjacent, one step
-		// apart in the sequence, and sit at opposite ends of the signed range.
+		// right answer for the wrong reason. These two are adjacent (one step
+		// apart in the sequence) and sit at opposite ends of the signed range.
 		Assert.isTrue(SctpDataChunk.isEarlier(0x7FFFFFFF, 0x80000000),
 			"two adjacent values either side of the signed boundary compared as though the sequence ran in a straight line");
 		Assert.isFalse(SctpDataChunk.isEarlier(0x80000000, 0x7FFFFFFF));

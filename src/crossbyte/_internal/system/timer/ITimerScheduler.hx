@@ -29,8 +29,8 @@ interface ITimerScheduler {
 	/**
 		`setEnabled` with every argument given: what `crossbyte.Timer`'s
 		`pause` and `resume` call. On the jvm an argument with a default is an
-		object, so a pause boxed the time it passed on, and a resume the time
-		and the policy.
+		object, so the forms with defaults would box the time a pause passes
+		on, and the time and the policy of a resume.
 	**/
 	public function setEnabledBy(handle:TimerHandle, enabled:Bool, policy:ResumePolicy, time:Float):Bool;
 
@@ -47,7 +47,7 @@ interface ITimerScheduler {
 	/**
 		`advanceTime` with every argument given: what the runtime calls each
 		frame. On the jvm an argument with a default is an object, so the
-		frame boxed `maxFires` and `budget` every time it advanced the timers.
+		form with defaults would box `maxFires` and `budget` every frame.
 	**/
 	public function advanceBy(dt:Float, maxFires:Int, budget:Float):Int;
 

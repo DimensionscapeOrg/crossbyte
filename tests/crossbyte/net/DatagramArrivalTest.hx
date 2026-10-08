@@ -15,7 +15,7 @@ import utest.Async;
 /**
 	"Copy it to keep it" on a `DatagramSocket`, over real sockets: what a
 	`DATA` listener is handed is right while it is handled, what it sends
-	back is what arrived, and what it keeps, a clone, or the event itself,
+	back is what arrived, and what it keeps (a clone, or the event itself)
 	is what each mode says it is. And what a datagram too large to send
 	says, which on Node comes back from Node later, as an event.
 
@@ -212,7 +212,7 @@ class DatagramArrivalTest extends utest.Test {
 		});
 
 		// macOS sends no datagram larger than the socket's send buffer, 9,216
-		// bytes unless asked for more: the send failed (CI, 2026-10-05).
+		// bytes unless asked for more.
 		if (DatagramSocket.bufferSizeSupported) {
 			pair.client.sendBufferSize = 64 * 1024;
 		}
@@ -239,10 +239,9 @@ class DatagramArrivalTest extends utest.Test {
 	}
 
 	/**
-		A datagram too large to send says so, and why, where it said only
-		"Socket operation failed" (natively), which is all CI's macOS leg
-		reported for a 20,000-byte datagram, since macOS sends none larger
-		than the socket's send buffer, 9,216 bytes unless raised.
+		A datagram too large to send says so, and why, not only "Socket
+		operation failed": macOS sends none larger than the socket's send
+		buffer, 9,216 bytes unless raised.
 
 		65,520 bytes is past what UDP carries over IPv4 (65,507), and the
 		system's refusal is what says so: natively, on the jvm and on Node.
@@ -289,9 +288,9 @@ class DatagramArrivalTest extends utest.Test {
 				var buffer:Int = pair.client.sendBufferSize;
 				var why:Int->String = length -> 'a datagram of $length bytes is larger than this socket can send ('
 					+ (buffer > 0 ? 'sendBufferSize $buffer' : 'its send buffer size cannot be read here') + ')';
-				// Nothing else reported: on Node a send buffer asked for between
-				// bind() and Node binding was refused (ENOTSOCK), and the socket
-				// stopped receiving for it.
+				// Nothing else reported: on Node a send buffer asked for between bind()
+				// and Node binding must not be refused (ENOTSOCK) and the socket stop
+				// receiving for it.
 				Assert.equals(refusals, reported.length, "the ioError events: " + reported.join(" | "));
 				#if nodejs
 				Assert.equals(0, thrown.length, "Node threw where it reports a send's failure as an event: " + thrown.join(" | "));
@@ -403,11 +402,11 @@ class DatagramArrivalTest extends utest.Test {
 		comes next.
 
 		Windows reports a datagram's ICMP "port unreachable" as a failed read
-		on the socket that sent it, and the socket counted those as failed
-		reads: at the 64th in a row it stopped receiving for good. So a
-		reliable UDP server whose resets to strangers came back that way went
-		deaf to every session it had, 64 sockets each sending it a frame and
-		closing were enough (found by RUDP-1, 2026-10-06).
+		on the socket that sent it, and those must not count as failed reads
+		that end the socket: otherwise at the 64th in a row it would stop
+		receiving for good, and a reliable UDP server whose resets to strangers
+		came back that way would go deaf to every session it had (64 sockets
+		each sending it a frame and closing would be enough).
 	**/
 	@:timeout(20000)
 	public function testDatagramsToPortsNobodyHoldsLeaveTheSocketHearing(async:Async):Void {
@@ -457,7 +456,7 @@ class DatagramArrivalTest extends utest.Test {
 		});
 	}
 
-	// More than the 64 failed reads in a row a socket gave up at.
+	// More than 64 failed reads in a row.
 	private static inline var UNREACHED:Int = 100;
 
 	/** The first byte not as `numbered` made it, -1 for none, -2 for the wrong length. **/

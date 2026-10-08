@@ -10,8 +10,8 @@ import crossbyte.net.WebSocket;
 import haxe.Timer;
 
 /**
-	Scenario I: many WebSocket connections, open and quiet, a chat server
-	at three in the morning, or a game lobby between matches, with the
+	Scenario I: many WebSocket connections, open and quiet (a chat server
+	at three in the morning, or a game lobby between matches), with the
 	default heartbeat, a ping each way after thirty seconds of silence.
 
 	```
@@ -243,8 +243,8 @@ class IdleServer {
 
 /**
 	Idle WebSocket clients for scenario I: `--count` connections opened at
-	`--rate` a second, held without a word for `--seconds`, the heartbeat
-	aside, which the sessions answer themselves, then closed.
+	`--rate` a second, held without a word for `--seconds` (the heartbeat
+	aside, which the sessions answer themselves), then closed.
 **/
 class IdleBots {
 	var runtime:CrossByte;

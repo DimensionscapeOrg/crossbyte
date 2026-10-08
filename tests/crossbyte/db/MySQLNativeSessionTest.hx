@@ -9,10 +9,10 @@ import crossbyte.utils.Logger;
 import utest.Assert;
 
 /**
- * The session state the native MySQL client reads from the server's replies,
- * transactions, autocommit, the escaping mode, and what a
- * `ConnectionPool` does with it. Against `fakemysql/FakeMySQLServer`, whose
- * status flags follow the statements it is sent the way MySQL's do.
+ * The session state the native MySQL client reads from the server's replies
+ * (transactions, autocommit, the escaping mode) and what a `ConnectionPool`
+ * does with it. Against `fakemysql/FakeMySQLServer`, whose status flags
+ * follow the statements it is sent the way MySQL's do.
  */
 class MySQLNativeSessionTest extends utest.Test {
 	private var __server:FakeMySQLServer;
@@ -29,7 +29,7 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testATransactionBegunAsSqlIsSeen():Void {
-		// inTransaction changed only in begin(), commit() and rollback().
+		// inTransaction follows the server, not only begin(), commit() and rollback().
 		__server.start();
 		var connection:MySQLConnection = __open();
 
@@ -65,9 +65,9 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testThePoolRollsBackATransactionBegunAsSql():Void {
-		// Borrower two in the audit: START TRANSACTION sent as SQL, a write,
-		// release. The pool saw no transaction and rolled nothing back, and
-		// the next borrower's begin() committed the write implicitly.
+		// START TRANSACTION sent as SQL, a write, release: the pool must see the
+		// transaction and roll it back, or the next borrower's begin() would
+		// commit the write implicitly.
 		__server.start();
 		var pool:ConnectionPool<MySQLConnection> = __pool();
 
@@ -90,9 +90,8 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testThePoolRetiresASessionLeftWithAutocommitOff():Void {
-		// Borrower one in the audit: autocommit off, a write, release. It was
-		// neither rolled back nor reset, so the connection went round the pool
-		// with autocommit off for good.
+		// Autocommit off, a write, release: the connection is rolled back and
+		// reset, not sent round the pool with autocommit off for good.
 		__server.start();
 		var pool:ConnectionPool<MySQLConnection> = __pool();
 
@@ -114,10 +113,10 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testEscapingFollowsNoBackslashEscapes():Void {
-		// The client read the escaping mode from the greeting and never again.
-		// After the session switched it off, a quote was still escaped with a
-		// backslash, which that mode reads as a backslash and the end of the
-		// string, so this value closed its literal and the rest ran as SQL.
+		// The escaping mode is read from every reply, not only the greeting:
+		// after the session switches it off, a quote escaped with a backslash
+		// (which that mode reads as a backslash and the end of the string) would
+		// close its literal and let the rest run as SQL.
 		__server.start();
 		var connection:MySQLConnection = __open();
 		connection.request("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'");
@@ -138,8 +137,8 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testTimeZoneAndSqlModeAreSent():Void {
-		// Both were escaped into a buffer that was then dropped, and the
-		// server was sent "SET time_zone = :tz;", a syntax error, so any
+		// Both are escaped into the statement sent, not a buffer then dropped,
+		// which would send "SET time_zone = :tz;" (a syntax error) so that any
 		// config naming either failed to open, every time.
 		__server.start();
 		var config:MySQLConfig = __config();
@@ -157,8 +156,8 @@ class MySQLNativeSessionTest extends utest.Test {
 	}
 
 	public function testASessionThatFailsToSetUpIsClosed():Void {
-		// The connection was left open when a setting failed after connecting,
-		// so a pool factory retrying piled up server connections.
+		// A setting that fails after connecting closes the connection, so a
+		// pool factory retrying does not pile up server connections.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "SET time_zone")) {
 				session.error(1298, "HY000", "Unknown or incorrect time zone: 'Mars/Olympus'");

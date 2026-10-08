@@ -5,15 +5,14 @@ import crossbyte.net.Reason;
 import utest.Assert;
 
 /**
- * Focused coverage for `LocalConnection.send()` guard ordering, which was
- * restructured by the thread-safety hardening (the handle check-then-write is
- * now serialized under a mutex on threaded targets).
+ * Focused coverage for the order of `LocalConnection.send()`'s guards, which
+ * on threaded targets run with the handle's check-then-write serialized under
+ * a mutex.
  *
- * These assertions pin down the single-threaded / non-cpp observable behavior so
- * the synchronization refactor cannot silently change it: sending while
- * disconnected reports `Closed` before any payload-size validation, and an
- * invalid payload on an (otherwise) unconnected transport still surfaces an
- * error through `onError`.
+ * These assertions pin down the single-threaded / non-cpp observable behavior:
+ * sending while disconnected reports `Closed` before any payload-size
+ * validation, and an invalid payload on an (otherwise) unconnected transport
+ * still surfaces an error through `onError`.
  *
  * Runs under every target (including eval/interp). On non-cpp the transport is
  * never connected, so the deterministic "closed" branch is what executes; the
@@ -35,8 +34,7 @@ class LocalConnectionSendGuardTest extends utest.Test {
 
 	public function testClosedCheckPrecedesPayloadValidation():Void {
 		// A null payload is invalid, but the connection is also not connected.
-		// The original guard order reports Closed first; the refactor must keep
-		// that ordering.
+		// Closed is reported first.
 		var connection = new LocalConnection();
 		var reasons:Array<Reason> = [];
 		connection.onError = reason -> reasons.push(reason);

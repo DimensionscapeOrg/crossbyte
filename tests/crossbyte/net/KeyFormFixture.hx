@@ -2,16 +2,16 @@ package crossbyte.net;
 
 /**
 	One RSA key and two EC keys, each written in every form a private key file
-	comes in, PKCS#8, PKCS#8 encrypted, and the older PKCS#1 (RSA) and SEC1
-	(EC), plain and encrypted, with a self-signed certificate for the RSA
+	comes in (PKCS#8, PKCS#8 encrypted, and the older PKCS#1 (RSA) and SEC1
+	(EC), plain and encrypted), with a self-signed certificate for the RSA
 	one, so a server can present it.
 
 	Made at test time with the `openssl` CLI, as `TLSTestFixture` makes its
 	certificates, so no key is committed; and made in a directory of its own
 	that is deleted once the files are read, so none is left on disk either.
 	Returns `null` when there is no `openssl` to make them. A form this
-	`openssl` writes differently, an older one writes PKCS#1 without being
-	asked, LibreSSL knows no `-traditional`, is left out rather than
+	`openssl` writes differently (an older one writes PKCS#1 without being
+	asked, LibreSSL knows no `-traditional`) is left out rather than
 	mislabelled: each is checked by its armour.
 **/
 class KeyFormFixture {

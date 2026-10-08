@@ -4,15 +4,14 @@ package crossbyte._internal.system;
 	The sleep behind `crossbyte.sys.System.sleep`, alone in its module.
 
 	The library's own waits call this rather than `System`, whose module
-	reaches `java.*` on the jvm. Some of the library is typed in a jvm build's
-	macro context, `RPCCommands` has macro functions and imports the network
-	stack, and Haxe defines `jvm` there too, so a path from the runtime to
-	`System` failed the build with "You cannot access the java package while in
-	a macro".
+	reaches `java.*` on the jvm. Some of the library is typed in a jvm
+	build's macro context (`RPCCommands` has macro functions and imports
+	the network stack), and Haxe defines `jvm` there too, so a path from
+	the runtime to `System` would fail the build with "You cannot access the
+	java package while in a macro".
 
 	Not in a browser, as `System.sleep` is not: a page cannot block a thread,
-	and `Sys.sleep` does not exist there, which failed the browser build of
-	the whole library.
+	and `Sys.sleep` does not exist there.
 **/
 #if !(js && !nodejs)
 class Sleep {

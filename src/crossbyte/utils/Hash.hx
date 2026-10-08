@@ -14,19 +14,20 @@ class Hash {
 	/**
 	 * A 32-bit multiply that wraps, on every target.
 	 *
-	 * Every hash below multiplies by a constant chosen to overflow, that
+	 * Every hash below multiplies by a constant chosen to overflow: that
 	 * overflow is what mixes the bits, and none of these functions works
 	 * without it. On a target whose `Int` is 32 bits the wrap is free. On
 	 * JavaScript an `Int` is a double, so the product simply grows: it passes
 	 * 2^53, starts losing its low bits, and comes back as a number that is not
 	 * a 32-bit hash of anything.
 	 *
-	 * That is not a rounding difference, it is a different function.
-	 * `fnv1a32` of "sendData" is 622618135 everywhere else and was
-	 * -20905118279726560 here, so two CrossByte programs hashing the same
-	 * bytes disagreed if one of them was JavaScript, which matters the
-	 * moment a hash is written to a wire, a file, or an opcode table built at
-	 * compile time and read at run time.
+	 * That is not a rounding difference, it is a different function: plain
+	 * multiplication on JavaScript would make `fnv1a32` of "sendData"
+	 * -20905118279726560 where it is 622618135 everywhere else, so two
+	 * CrossByte programs hashing the same bytes would disagree if one of
+	 * them were JavaScript, which matters the moment a hash is written to a
+	 * wire, a file, or an opcode table built at compile time and read at run
+	 * time.
 	 *
 	 * `Math.imul` is exactly a wrapping 32-bit multiply and every browser and
 	 * Node has it.

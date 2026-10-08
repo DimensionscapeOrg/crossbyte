@@ -646,7 +646,7 @@ static function DecodeBlockTypeWithContext(s:BrotliState,
 
 /*
  * The slack after the ring buffer's end. A dictionary word is written whole
- * where the output stands, prefix, word and suffix, and whatever of it
+ * where the output stands (prefix, word and suffix), and whatever of it
  * lands past the end is copied to the start afterwards.
  */
 static inline var kRingBufferWriteAheadSlack:Int = 128;
@@ -658,12 +658,12 @@ static inline var kMinRingBufferSize:Int = 1024;
  * Makes the ring buffer big enough to take this meta-block without wrapping,
  * up to the window.
  *
- * The C this was ported from allocated the whole window the stream header
- * asked for, 1 << WBITS, at the first meta-block, 16 MB for an eighteen-byte
- * request body, unless the first meta-block happened to announce the total.
- * Here it starts at what the output so far and this meta-block need, and
- * doubles as they grow, so it is never much more than the output, which the
- * caller's limit has already bounded by the time this runs.
+ * It does not allocate the whole window the stream header asks for,
+ * 1 << WBITS, at the first meta-block, as the C reference decoder does
+ * (16 MB for an eighteen-byte request body). It starts at what the output
+ * so far and this meta-block need, and doubles as they grow, so it is never
+ * much more than the output, which the caller's limit has already bounded
+ * by the time this runs.
  *
  * It grows only while it is smaller than the window, and while it is smaller
  * than the window it has never wrapped: it is always larger than everything
@@ -705,11 +705,6 @@ static function BrotliEnsureRingBuffer(s:BrotliState, pos:Int):Void {
  * After JumpToByteBoundary the reader sits on a byte, so the block is the
  * next meta_block_remaining_len bytes of the stream, beginning with any
  * already loaded into val_; the reader is pointed past them afterwards.
- *
- * This replaced a copy through the streaming reader's buffer whose flush
- * added the ring buffer's size back to the bytes still to copy, so a block
- * that wrapped a small ring buffer, incompressible data under a small
- * window, read on past its end and failed.
  */
 static function CopyUncompressedBlockToOutput(output:BrotliOutput,
                                            pos:Int,
@@ -934,12 +929,11 @@ static function CopyUncompressedBlockToOutput(output:BrotliOutput,
 		  if(s.state== BROTLI_STATE_METADATA){
 			while (s.meta_block_remaining_len > 0) {
 			  if (!BrotliReadMoreInput(s.br)) {
-				// `break`, as in the C this was ported from. It was
-				// `continue`, which re-tested the same unchanged length and
-				// asked for input that was never coming again: four bytes
-				// declaring a metadata block and then ending held the thread
-				// in this loop for good, allocating nothing, so no output
-				// ceiling ever tripped.
+				// `break`, as in the C this was ported from. `continue` would
+				// re-test the same unchanged length and ask for input that is
+				// never coming: four bytes declaring a metadata block and then
+				// ending would hold the thread in this loop for good,
+				// allocating nothing, so no output ceiling would ever trip.
 				result = BROTLI_RESULT_NEEDS_MORE_INPUT;
 				break;
 			  }
@@ -1028,10 +1022,9 @@ static function CopyUncompressedBlockToOutput(output:BrotliOutput,
 									  num_literal_htrees, context_map, s);
 			s.num_literal_htrees = num_literal_htrees[0]; s.context_map = context_map[0];s.context_map_off = 0;
 
-			// Only a map that decoded may be scanned. The C this came from
-			// scanned first and checked after, which read a map that was
-			// never allocated whenever the input ran out before it: null,
-			// and natively a crash rather than an exception.
+			// Only a map that decoded may be scanned: when the input runs
+			// out before it, the map was never allocated, and reading it
+			// would be null, natively a crash rather than an exception.
 			if (result != BROTLI_RESULT_SUCCESS) continue;
 
 			s.trivial_literal_context = 1;
@@ -1133,9 +1126,8 @@ static function CopyUncompressedBlockToOutput(output:BrotliOutput,
 			BROTLI_LOG_UINT(s.distance_code);
 
 			// More literals than the meta-block has left is a stream that
-			// lied about its length. The C checked only once they had been
-			// written, which here would have been past the end the ring
-			// buffer was sized for.
+			// lied about its length. Checked before they are written, which
+			// would pass the end the ring buffer was sized for.
 			if (s.insert_length > s.meta_block_remaining_len) {
 			  result = BROTLI_FAILURE();
 			  continue;
@@ -1378,9 +1370,9 @@ static function CopyUncompressedBlockToOutput(output:BrotliOutput,
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_METABLOCK_DONE){
-			// A meta-block that produced more than it declared, an insert
-			// or a dictionary word running past its end, is invalid, as
-			// the C decoder later decided too.
+			// A meta-block that produced more than it declared (an insert
+			// or a dictionary word running past its end) is invalid, as the
+			// C decoder also decides.
 			if (s.meta_block_remaining_len < 0) {
 			  result = BROTLI_FAILURE();
 			  continue;
@@ -1406,7 +1398,7 @@ static function CopyUncompressedBlockToOutput(output:BrotliOutput,
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_DONE){
-			// Whatever the ring buffer holds past its last flush. It was never
+			// Whatever the ring buffer holds past its last flush. It is not
 			// allocated for a stream that produced nothing.
 			if (s.ringbuffer != null) {
 			  BrotliWrite(output, s.ringbuffer, 0, pos & s.ringbuffer_mask);

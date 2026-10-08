@@ -12,26 +12,26 @@ import utest.Async;
 /**
 	A process a server starts gets none of the server's sockets.
 
-	Natively a child process was handed copies of them: on Windows every
-	socket was inheritable and every process was started with every
-	inheritable handle, and on posix an accepted socket was not
-	close-on-exec. A server that started a command while a client was
-	connected gave the command that connection, so closing it ended nothing:
-	the client saw the end of the stream only when the command exited, which
-	for a long-running child is never. On Windows the listener went too, and
-	a server that closed kept answering on its port while the child ran.
+	Natively a child process must not be handed copies of them: on Windows
+	a socket must not be inheritable, since a process may be started with
+	every inheritable handle, and on posix an accepted socket must be
+	close-on-exec. Otherwise a server that started a command while a client
+	was connected would give the command that connection, so closing it
+	would end nothing: the client would see the end of the stream only when
+	the command exited, which for a long-running child is never. On Windows
+	the listener would go too, and a server that closed would keep
+	answering on its port while the child ran.
 
 	The child here outlives every wait by far, so a socket it holds is still
 	open when the wait gives up.
 
 	Natively, built for any OS, and on the jvm, whose sockets no child is
-	handed. This said native builds that named an OS only, as `NativeProcess`
-	was compiled out of the rest and had no implementation off cpp; it runs
-	on any cpp build, the jvm, hl and neko now. Not on neko, where it does
-	not hold and cannot be made to: its sockets are inheritable and its
-	processes are started inheriting, and Haxe can change neither, both
-	cases fail there, the listener and the connection held by the child. hl
-	makes its sockets and processes the same way, and is not run here.
+	handed. It runs on any cpp build, the jvm, hl and neko. Not on neko,
+	where it does not hold and cannot be made to: its sockets are
+	inheritable and its processes are started inheriting, and Haxe can
+	change neither, so both cases fail there, the listener and the
+	connection held by the child. hl makes its sockets and processes the
+	same way, and is not run here.
 **/
 class ChildProcessSocketTest extends utest.Test {
 	#if (cpp || java || jvm)
@@ -40,9 +40,9 @@ class ChildProcessSocketTest extends utest.Test {
 	private static inline var PROBES:Int = 20;
 
 	// A server accepts through CrossByte's own crossbyte_socket_accept
-	// (NativeSocketAddress.cpp), not hxcpp's accept. It set no close-on-exec
-	// on what it accepted, so on Linux and macOS the connection reached the
-	// child; this ran on Windows alone until it did.
+	// (NativeSocketAddress.cpp), not hxcpp's accept, so it is that function
+	// that has to set close-on-exec on what it accepts, keeping the
+	// connection from the child on Linux and macOS.
 	@:timeout(30000)
 	public function testClosingAConnectionEndsItWhileAChildRuns(async:Async):Void {
 		var server = new ServerSocket();

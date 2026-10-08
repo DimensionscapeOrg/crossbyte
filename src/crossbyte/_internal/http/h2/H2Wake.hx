@@ -5,14 +5,14 @@ package crossbyte._internal.http.h2;
 #if eval
 /**
 	What a thread of the HTTP/2 client waits on: a `sys.thread.Lock`, but on
-	eval, where a `Lock` waits by polling, half a core while it waits with
-	no timeout and a whole one with, measured on Linux (see the vendored
-	`sys.net.Socket`), and holds the interpreter from the very threads it
+	eval, where a `Lock` waits by polling (half a core while it waits with
+	no timeout and a whole one with, measured on Linux; see the vendored
+	`sys.net.Socket`) and holds the interpreter from the very threads it
 	waits for. A connection is a reader, a writer and its requests handing
-	work to one another, so there its requests timed out behind their own
-	connection's waits. This is a `Semaphore` there, whose wait blocks, and a
-	timed wait looks for a release once a millisecond between sleeps, since
-	the `Semaphore`'s own timed wait spins.
+	work to one another, so there its requests would time out behind their
+	own connection's waits. This is a `Semaphore` there, whose wait blocks,
+	and a timed wait looks for a release once a millisecond between sleeps,
+	since the `Semaphore`'s own timed wait spins.
 **/
 class H2Wake {
 	private final __semaphore:sys.thread.Semaphore = new sys.thread.Semaphore(0);

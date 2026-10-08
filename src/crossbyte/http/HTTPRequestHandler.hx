@@ -63,15 +63,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * The access log's own category, one line per response at `INFO`. An
 	 * operator quiets it with `Logger.setLevel("http.access", WARN)` and keeps
-	 * everything else at `INFO`, where it used to share the one global level.
+	 * everything else at `INFO`.
 	 * Its lines are written off the runtime: see `AccessLog`.
 	 */
 	@:noCompletion private static final ACCESS_LOG:LogCategory = crossbyte._internal.http.AccessLog.CATEGORY;
 
 	/**
 	 * Bytes a request's header block may take before it is answered `431`.
-	 * The body has its own limit, `HTTPServerConfig.maxRequestBodySize`; the
-	 * two used to share one megabyte, fixed.
+	 * The body has its own limit, `HTTPServerConfig.maxRequestBodySize`.
 	 */
 	@:noCompletion private static inline var MAX_HEADER_BYTES:Int = 64 * 1024;
 
@@ -148,8 +147,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyIsChunked:Bool = false;
 	@:noCompletion private var __chunkBytesRemaining:Int = -1;
 	@:noCompletion private var __requestBody:ByteArray = null;
-	// __dispatchParsedRequest as a value, made once: what a request's body
-	// read finishes into. A closure was made for it per request.
+	// __dispatchParsedRequest as a value, made once rather than per request:
+	// what a request's body read finishes into.
 	@:noCompletion private var __dispatchHook:Void->Void;
 	// The server's per-response hook (its metrics), told the status of each
 	// response as it goes out. It listened for HTTP_RESPONSE_STATUS, which
@@ -169,11 +168,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// Waiting between requests on a kept-alive connection. While set,
 	// __receiveDeadline means "how long may this connection sit idle".
 	@:noCompletion private var __idle:Bool = false;
-	// True once the current request's framing, headers AND body, has
-	// been fully read out of __incomingBuffer. The load-bearing safety
-	// bit: a response written before this is set left unread request
-	// bytes behind, and keeping the connection would parse them as the
-	// next request.
+	// True once the current request's framing (headers AND body) has been
+	// fully read out of __incomingBuffer. The load-bearing safety bit: a
+	// response written before this is set leaves unread request bytes
+	// behind, and keeping the connection would parse them as the next
+	// request.
 	@:noCompletion private var __requestConsumed:Bool = false;
 	// A response has been written for the current request slot; a second
 	// one would corrupt the stream. Cleared only where a new slot opens.
@@ -192,8 +191,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __reprocess:Bool = false;
 	// Which request slot the connection is on; bumped by every reset. A
 	// middleware continuation carries the value it was created under, so
-	// a stale next() from an already-answered request, even one that
-	// fires asynchronously, ticks after its slot was reset, cannot
+	// a stale next() from an already-answered request (even one that
+	// fires asynchronously, ticks after its slot was reset) cannot
 	// route its dispatch into a later request's state.
 	@:noCompletion private var __requestGeneration:Int = 0;
 	// When the current request's first byte arrived; the duration metric
@@ -206,8 +205,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// Pushed in by the server's drain(): the in-flight response goes out
 	// with Connection: close so shutdown does not sever it mid-work.
 	@:noCompletion private var __closeAfterResponse:Bool = false;
-	// Whether this connection has sent a single byte. One that has not, a
-	// browser's preconnect, has nothing in flight, and drain() closes it at
+	// Whether this connection has sent a single byte. One that has not (a
+	// browser's preconnect) has nothing in flight, and drain() closes it at
 	// once rather than waiting out its requestTimeout.
 	@:noCompletion private var __receivedAny:Bool = false;
 	@:noCompletion private var __streamSource:FileStream;
@@ -252,10 +251,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Largest socket output-buffer size observed while pumping a streamed
 	 * response; zero when nothing streamed. Exists for tests: the
-	 * bounded-memory guarantee, peak buffering near the watermark no
-	 * matter the file size, is otherwise unobservable from outside, and a
-	 * regression back to whole-file buffering would pass every
-	 * byte-equality assertion while defeating the point.
+	 * bounded-memory guarantee (peak buffering near the watermark no
+	 * matter the file size) is otherwise unobservable from outside, and
+	 * whole-file buffering would pass every byte-equality assertion while
+	 * defeating the point.
 	 */
 	@:noCompletion private var __streamPeakBuffered(default, null):Int = 0;
 	/** Uppercased request method, for example `GET` or `POST`. */
@@ -282,8 +281,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * The address the request came from, as the connection's socket reports
 	 * it: the client's, or a proxy's when one sits in front. What the rate
 	 * limiter keys on unless `HTTPServerConfig.rateLimitKey` says otherwise.
-	 * The socket was private, so a route limiting logins per client needed
-	 * `@:privateAccess` to learn who was logging in.
 	 */
 	public var remoteAddress(get, never):String;
 
@@ -312,8 +309,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// an HTTP/1.1 handler its writer too, to hear from its sweep.
 		//
 		// The read buffer and the header map are the parser's, so an HTTP/2
-		// handler, one a stream, its fields given to it as a map, makes
-		// neither. Both were made for every stream and never used.
+		// handler (one a stream, its fields given to it as a map) makes
+		// neither.
 		if (!__writer.ownsConnection) {
 			__incomingBuffer = new ByteArray();
 			__headers = new Map<String, String>();
@@ -398,8 +395,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	public function get_requestBody():ByteArray {
-		// Made when asked for, for a request that brought none: one was made
-		// for every request, and again for every stream under HTTP/2.
+		// Made when asked for, for a request that brought none, rather than
+		// for every request and every stream under HTTP/2.
 		if (__requestBody == null) {
 			__requestBody = new ByteArray();
 		}
@@ -495,13 +492,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
-			// A request read whole and still being answered, an
-			// asynchronous middleware holds it: what arrives behind it is
+			// A request read whole and still being answered (an
+			// asynchronous middleware holds it): what arrives behind it is
 			// the next request, held for when the answer has gone, as above.
-			// Held to what one request may be, and counted alone: with the
-			// request being answered counted in, three pipelined 600 KB
-			// uploads under the 1 MB limit had the first answered 413, over
-			// its own answer, which was then lost.
+			// Held to what one request may be, and counted alone: counted
+			// with the request being answered, pipelined uploads each under
+			// the limit would have the first answered 413 over its own answer.
 			if (__requestConsumed && !__responded && !__idle) {
 				if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
 					__dropSurplus();
@@ -534,12 +530,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// Parsed first, then held to what one request may be. What is
 			// left behind a request being answered, or a body going out, is
 			// the next request, given up past it (__dropSurplus); a request
-			// still arriving past it, a chunk-size or trailer line that
-			// never ends, say, is answered 413. The whole buffer was held
-			// to this before anything in it was parsed, so a read bringing
-			// the end of one request and the ones pipelined behind it, as
-			// Linux reads do, was answered 413 before the first was handed
-			// over.
+			// still arriving past it (a chunk-size or trailer line that never
+			// ends, say) is answered 413. Holding the whole buffer to this
+			// before parsing would answer 413 to a read that brings the end of
+			// one request and the ones pipelined behind it, as Linux reads do.
 			if (!__surplusDropped && !__closeWhenSent && __origin.connected) {
 				if (__streaming || __openStream != null || (__requestConsumed && !__responded)) {
 					if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
@@ -614,7 +608,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		do {
 			__reprocess = false;
 			if (__requestConsumed && !__responded) {
-				// A fully consumed request is mid-dispatch, an
+				// A fully consumed request is mid-dispatch: an
 				// asynchronous middleware still holds the continuation.
 				// Parsing now would overwrite the in-flight request's
 				// state with the next request's; the bytes stay buffered
@@ -626,10 +620,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// Behind a catch of its own, rather than only the read handler's:
 			// a pipelined request is also parsed from the end of the answer
 			// before it, which an asynchronous middleware gives from a later
-			// tick, with no read handler on the stack. What parsing it threw
-			// went to the runtime's timer, the request was never answered,
-			// and __processing stayed set, so the connection parsed nothing
-			// again.
+			// tick, with no read handler on the stack. Without it, what parsing
+			// threw would go to the runtime's timer, the request would never be
+			// answered, and __processing would stay set.
 			try {
 				__parseRequest();
 			} catch (error:Dynamic) {
@@ -660,11 +653,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __checkReceiveDeadline(now:Float):Void {
 		// A streamed body must not reach the 408 below: that path writes a
 		// whole response, and the status line for this one left with the
-		// head, a second one would land inside the body as though it were
+		// head, so a second one would land inside the body as though it were
 		// file content. Its deadline is the stall check, which the sweep
-		// calls through the writer (sweepWith) whatever the timeouts are;
-		// called from here, it went unchecked with both timeouts off, since
-		// then nothing ran this.
+		// calls through the writer (sweepWith) whatever the timeouts are,
+		// so it is checked even with both timeouts off.
 		//
 		// A response the application is writing as it goes has no deadline
 		// here: how long it takes is the producer's, and a client that stops
@@ -675,10 +667,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		// Nor is a connection idle while what it sent is still going out: its
-		// allowance counts from when that has gone (__checkHeldOutput). It was
-		// counted from when the response was written, and a response larger
-		// than the system takes at once, to a client slower to read it than
-		// keepAliveTimeout, was cut off as though the connection sat idle.
+		// allowance counts from when that has gone (__checkHeldOutput), so a
+		// response larger than the system takes at once, to a client slower
+		// to read it than keepAliveTimeout, is not cut off as though the
+		// connection sat idle.
 		if (__idle && __heldWatch) {
 			return;
 		}
@@ -708,9 +700,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * headers are each held to their own limit as they are read; this is the
 	 * backstop for bytes arriving faster than they can be.
 	 *
-	 * Held at `Int` max rather than wrapped past it. A body limit raised that
-	 * far made the sum negative, which HashLink compares with the buffer's
-	 * UInt length as a signed number: every request was refused there.
+	 * Held at `Int` max rather than wrapped past it: a body limit raised
+	 * that far would make the sum negative, which HashLink compares with the
+	 * buffer's UInt length as a signed number, refusing every request.
 	 */
 	@:noCompletion private inline function __bufferLimit():Int {
 		var body:Int = __config.maxRequestBodySize;
@@ -728,10 +720,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 		head has not gone yet. They go unanswered, which a client that
 		pipelines sends again on a new connection (RFC 9112 9.3.2); one that
 		did not answer would be held to a request it could not be told about.
-
-		The connection was answered `413` instead, on the request being
-		answered, whose own answer was then lost; and with a body streaming
-		out, the stream was cut off and the connection closed.
 	**/
 	@:noCompletion private function __dropSurplus():Void {
 		Logger.info('Requests pipelined behind ${__requestPath} outgrew ${__bufferLimit()} bytes; closing once it is answered.');
@@ -831,9 +819,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 
 			// The line's bounds found by index, and one string cut for the name
-			// and one for the value: it was trimmed whole, split, the name
-			// right-trimmed to compare and lowercased, and the value cut and
-			// trimmed, five or six strings a field.
+			// and one for the value, rather than trimming, splitting and
+			// lowercasing into five or six strings a field.
 			var lineEnd:Int = headerLine.length;
 			while (lineEnd > 0 && StringTools.isSpace(headerLine, lineEnd - 1)) {
 				lineEnd--;
@@ -936,17 +923,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// is the server's own and must not be billed to the client.
 		__receiveDeadline = 0;
 		// The one place consumption is recorded, because reaching here
-		// is the one guarantee the request's framing, headers and
-		// body both, has been read out of the buffer. Every response
+		// is the one guarantee the request's framing (headers and
+		// body both) has been read out of the buffer. Every response
 		// sent earlier (parse errors, the 429 sent before the body is
 		// read, a body cut short) must close, or the leftover bytes would
 		// be parsed as the next request.
 		__requestConsumed = true;
 
 		// Files and rewrites are resolved only once the chain lets the request
-		// through. They were resolved first, so a request a route answered
-		// paid for three filesystem lookups, on the runtime's own thread, and
-		// threw the answer away.
+		// through, so a request a route answers pays for no filesystem
+		// lookups on the runtime's own thread.
 		if (__config.middleware != null && __config.middleware.length > 0) {
 			__runMiddleware(0, __serveUnrouted);
 			return;
@@ -956,8 +942,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
-	 * The request path as middleware and the static resolver both read it,
-	 * percent-decoded, then settled by `HttpSyntax.normalizePath`, or null
+	 * The request path as middleware and the static resolver both read it
+	 * (percent-decoded, then settled by `HttpSyntax.normalizePath`), or null
 	 * when it is malformed or climbs above the root.
 	 */
 	@:noCompletion private static function __settlePath(raw:String):Null<String> {
@@ -1002,13 +988,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * HTTP/1.1 parser weighs one at the end of its header block: the path
 	 * settled (`400`), the rate limiter asked (`429`), the content codings
 	 * read (`415`), and, with a body still to come, its declared length held
-	 * to the limit (`413`) and an `Expect` answered, `onExpectContinue`
+	 * to the limit (`413`) and an `Expect` answered: `onExpectContinue`
 	 * asked, and `100 Continue` sent if it lets the body come.
 	 *
 	 * Called when the header section arrives, for a request with a body to
-	 * follow, and then `__continueDecodedRequest` when it has. HTTP/2 used to
-	 * see a request only once its body was in, so none of this could refuse
-	 * one before it was sent, and `onExpectContinue` was never asked at all.
+	 * follow, and then `__continueDecodedRequest` when it has, so any of
+	 * this can refuse a request before its body is sent.
 	 *
 	 * @return Whether the request may go on; false once it has been answered.
 	 */
@@ -1030,9 +1015,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__filePath = null;
 
 		// What the HTTP/1.1 parser applies as it reads a request, applied here
-		// to one that arrived as frames. HTTP/2 used to skip all of it: six
-		// requests on one connection were all answered 200 where HTTP/1.1
-		// refused the fourth, and a gzip body reached middleware compressed.
+		// to one that arrived as frames, so the rate limiter and the content
+		// codings hold for both versions alike.
 		if (__refusedByLimiter()) {
 			return false;
 		}
@@ -1091,8 +1075,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * `method` in capitals, as `method` promises and the HTTP/1.1 parser
 	 * reads one, and the same string when it already is, as nearly every one
-	 * is. HTTP/2 passed it on as it came, so `get` was refused `405` there and
-	 * served over HTTP/1.1.
+	 * is, so a method is answered alike over HTTP/2 and HTTP/1.1.
 	 */
 	@:noCompletion private static function __uppercaseMethod(method:String):String {
 		for (i in 0...method.length) {
@@ -1123,9 +1106,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		// Asked before the client is told to send: the point of the
-		// expectation is that a request refused on its headers, no
-		// credentials, say, never has its body sent at all. The server
-		// used to say go ahead before any middleware had seen the request.
+		// expectation is that a request refused on its headers (no
+		// credentials, say) never has its body sent at all.
 		if (__config.onExpectContinue != null) {
 			var proceed:Bool = false;
 			try {
@@ -1156,10 +1138,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
 		if (index >= __config.middleware.length) {
 			// Behind the catch a middleware is called behind. Reached from the
-			// last next(), which a middleware may call from a later tick, a
-			// timer, a lookup come back, and then no catch up the stack is
-			// this request's: what serving it threw went to the runtime's timer
-			// and the request was never answered.
+			// last next(), which a middleware may call from a later tick (a
+			// timer, a lookup come back), when no catch up the stack is this
+			// request's: what serving it threw would go to the runtime's timer
+			// and the request would never be answered.
 			try {
 				onComplete();
 			} catch (error:Dynamic) {
@@ -1201,10 +1183,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * an `Int` error names, or `500`.
 	 *
 	 * An error that is not an `Int` is logged first, at ERROR, with the method,
-	 * the path and the stack. It was not logged at all, so a route that threw
-	 * "database connection refused" left only an INFO line reading
-	 * `Status: 500`, and nothing said why. The client still hears only the
-	 * status: the error's text is the operator's, not the caller's.
+	 * the path and the stack, so the log says why a route answered `500`. The
+	 * client still hears only the status: the error's text is the operator's,
+	 * not the caller's.
 	 */
 	@:noCompletion private function __dispatchMiddlewareError(error:Any, ?stack:Array<haxe.CallStack.StackItem>):Void {
 		var status:Int = 500;
@@ -1292,9 +1273,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (decision.toPHP) {
 				__servePhp(target, __method == "HEAD", __method == "POST" ? requestBody : null, served);
 			} else if (__method == "POST") {
-				// Where the rules sent it. This was the path the request named,
-				// so a POST to a rewritten path was a 404 while its GET was
-				// served.
+				// Where the rules sent it, so a POST to a rewritten path goes
+				// where its GET does.
 				__handlePost(target);
 			} else if (decision.isStatic) {
 				__serveFile(target, __method == "HEAD", decision.facts);
@@ -1321,24 +1301,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Answers a CORS preflight.
 	 *
 	 * Only the preflight-specific headers are built here. Everything a
-	 * response has in common with every other response, date, server,
+	 * response has in common with every other response (date, server,
 	 * nosniff, the connection decision, the configured custom headers, the
-	 * origin and credentials headers, the log line and the status event,
-	 * comes from the shared builder, which is the point of routing through it.
-	 *
-	 * This wrote its own response and closed the connection by hand. That was
-	 * deliberate, to keep a wire-format change out of the commit that
-	 * introduced keep-alive, but it left preflights outside every guarantee
-	 * the builder makes: no `__responded` suppression, so a middleware that had
-	 * already answered could be followed by a second response on the same
-	 * connection; no check that the socket was still connected; no log line, so
-	 * preflights were invisible to an operator; no custom headers; and an
-	 * unconditional close, costing a fresh connection, and a full TLS
-	 * handshake where enabled, ahead of a great many ordinary requests.
+	 * origin and credentials headers, the log line and the status event)
+	 * comes from the shared builder, which is the point of routing through it:
+	 * `__responded` suppression, the check that the socket is still
+	 * connected, the log line, the custom headers, and keep-alive.
 	 *
 	 * `Vary` is contributed twice: `Origin` by the builder, the two
-	 * request-header tokens here. Repeated field-lines combine, so the result
-	 * is the single line this used to write by hand.
+	 * request-header tokens here. Repeated field-lines combine into a single
+	 * line.
 	 */
 	@:noCompletion private function __handleOptionsRequest():Void {
 		var headers:Array<URLRequestHeader> = [];
@@ -1364,10 +1336,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Whether `HTTPServerConfig.blacklist` or `whitelist` keeps back the file
-	 * at `nativePath`. Asked of the file each route ends at, one served, one
-	 * posted to, a script a rewrite sends to PHP, since the lists were asked
-	 * only where a file is served: a POST to a blacklisted script, or a PHP
-	 * rewrite onto one, ran it.
+	 * at `nativePath`. Asked of the file each route ends at (one served, one
+	 * posted to, a script a rewrite sends to PHP), so a POST to a blacklisted
+	 * script, or a PHP rewrite onto one, does not run it.
 	 */
 	@:noCompletion private function __keptBack(nativePath:String):Bool {
 		var blacklist:Array<String> = __config.blacklist;
@@ -1384,11 +1355,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Whether `file`, made from `path`, names something other than `path`.
 	 *
 	 * On Windows a `File` reads `%NAME%` in its path from the environment,
-	 * and every check a request's path has been through, its dotfiles, its
-	 * root, was made on the path as written. So `/%25X%25` was checked as
-	 * `/%X%` and served as whatever `X` held: a dotfile's name, or `..` steps
-	 * out of the root. A path the `File` rewrote is not the path that was
-	 * checked, and is answered as one that is not there.
+	 * and every check a request's path has been through (its dotfiles, its
+	 * root) was made on the path as written. So `/%25X%25` would be checked
+	 * as `/%X%` and served as whatever `X` held: a dotfile's name, or `..`
+	 * steps out of the root. A path the `File` rewrote is not the path that
+	 * was checked, and is answered as one that is not there.
 	 */
 	@:noCompletion private static inline function __rewrittenByFile(file:File, path:String):Bool {
 		return file.nativePath != path;
@@ -1396,10 +1367,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 		@param facts What is at `filePath`, found already (`FileFacts`), or
-		       null to ask here. Asked once, where it was asked seven times:
-		       the resolver's exists and isDirectory, then `File`'s exists,
-		       isDirectory (exists again, then the type), size and
-		       modification date.
+		       null to ask here. Asked once, rather than by the resolver and
+		       then again by `File` for each of exists, the type, the size
+		       and the modification date.
 	**/
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false, ?facts:FileFacts):Void {
 		var file:File = new File(filePath);
@@ -1413,8 +1383,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		// Null where only `File` can say, the targets without one call for
-		// it, or a file too large to describe, and asked of `File` below.
+		// Null where only `File` can say (the targets without one call for
+		// it, or a file too large to describe), and asked of `File` below.
 		var known:Null<FileFacts> = null;
 		if (FileFacts.FAST) {
 			known = facts != null ? facts : FileFacts.of(file.nativePath);
@@ -1424,8 +1394,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (known != null ? !known.exists : !file.exists) {
-			// Keeps the connection: a routine 404, a page fetching a
-			// missing favicon, must not cost the client a new handshake.
+			// Keeps the connection: a routine 404 (a page fetching a
+			// missing favicon) must not cost the client a new handshake.
 			__sendNotFound();
 			return;
 		}
@@ -1442,11 +1412,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// Tested with `__isPhp` alone rather than with the bridge, because
 			// the answer to "would this have been executed" and the answer to
 			// "may this be sent as bytes" have to come from the same question.
-			// They did not: a source file was executed when a bridge existed
-			// and fell through to the static path when one did not, so a
-			// server with PHP off, the default, answered GET /config.php
-			// with 200 and the file, credentials and all. Source disclosure
-			// on a default configuration.
+			// Asked apart, a source file would be executed when a bridge
+			// existed and fall through to the static path when one did not, so
+			// a server with PHP off (the default) would answer GET /config.php
+			// with the file, credentials and all.
 			//
 			// 404 rather than 403: this server cannot serve the file in any
 			// form, and saying so without confirming it is there keeps the
@@ -1467,12 +1436,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		// Past 2 GB `File.size`, an Int, cannot state the length, and throws
-		// an IOError rather than answer with a wrong one: `stat`'s own Int size
-		// wrapped on some targets and read as 0 on Windows native, where a
-		// 3 GB file and an empty one looked the same. The throw is this
-		// refusal. Uncaught, it was a 500 on HTTP/1.1 only by way of the
-		// catch-all, and on HTTP/2 a reset stream. It replaces this handler's
-		// own check, an open, seek and read of every file it served.
+		// an IOError rather than answer with a wrong one (`stat`'s own Int
+		// size wraps on some targets and reads as 0 on Windows native). The
+		// throw is this refusal.
 		var total:Int;
 		if (known != null) {
 			if (known.size > 2147483647.0) {
@@ -1509,8 +1475,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 				var since:Null<Float> = __parseHttpDate(ims);
 				// Math.ffloor, not Math.floor: floor returns an Int, and seconds
 				// since 1970 leave an Int in January 2038. On hxcpp the cast
-				// wrapped, so a validator dated after that compared as long ago
-				// and every such revalidation was answered with the whole file.
+				// wraps, so a validator dated after that would compare as long
+				// ago and every such revalidation would be answered with the
+				// whole file.
 				if (since != null && Math.ffloor(lastModifiedTime / 1000) <= Math.ffloor(since / 1000)) {
 					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
@@ -1536,8 +1503,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 				if (headOnly) {
 					// A ranged HEAD answers with the range's length and no
 					// body, so loading the file to cut a slice that is then
-					// discarded is pure cost, the same reason the 200 path
-					// has always short-circuited HEAD.
+					// discarded is pure cost, for the same reason the 200 path
+					// short-circuits HEAD.
 					__dispatchResponseBytes(206, "Partial Content", h, mimeType, null, true, len);
 				} else if (__canStreamFile(206, h, total)) {
 					// The stream owns the close; falling through to the
@@ -1582,9 +1549,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		body `HTTPServerConfig.compression` kept from an earlier request,
 		encoding and keeping one now if the file is small enough to hold.
 
-		A static file was compressed again on every request, on the runtime's
-		thread: a 150 KB script served 863 requests a second as it was and 64
-		as Brotli, natively.
+		Compressing a static file again on every request, on the runtime's
+		thread, would serve a 150 KB script 64 times a second as Brotli,
+		natively, against 863 as it is.
 	**/
 	@:noCompletion private function __serveEncodedFile(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, total:Int, modified:Float,
 			headOnly:Bool):Bool {
@@ -1649,12 +1616,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 		client prefers of those it takes and that have one there. Brotli wins
 		a tie, being the smaller, and is taken only when named, as everywhere
 		here.
-
-		Only the one coding the client was going to be given used to be
-		looked for, and every browser lists gzip and br alike, so Brotli was
-		that coding: a file with only a `.gz` beside it went out as br
-		encoded on the spot, and one too large to hold went out as it is on
-		disk, 307,200 bytes where its `.gz` held 49,755.
 	**/
 	@:noCompletion private function __servePrecompressed(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, modified:Float,
 			headOnly:Bool):Bool {
@@ -1728,9 +1689,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return null;
 		}
 
-		// One call, its size with it (see FileFacts): it was exists and
-		// isDirectory, then the File's modification date and size. A sibling
-		// too large to describe in one is as good as none.
+		// One call, its size with it (see FileFacts). A sibling too large to
+		// describe in one is as good as none.
 		__siblingSize = -1;
 		if (FileFacts.FAST) {
 			var facts:FileFacts = FileFacts.of(path, false);
@@ -1765,7 +1725,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * enough to stream is exactly one whose whole-buffer `compress()` would
 	 * cost the memory this path exists to bound, so a large file is served
 	 * identity even to a client that offered gzip. Trading a compressed
-	 * body for a bounded one is the deliberate choice, the alternative is
+	 * body for a bounded one is the deliberate choice: the alternative is
 	 * that any gzip-capable client, which is every browser, defeats
 	 * streaming entirely. Only an outright refusal of identity keeps the
 	 * buffered path, because that path owns the 406.
@@ -1797,10 +1757,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * The head goes through `__dispatchResponseBytes` with a null body and
 	 * an explicit `contentLength` rather than through an extracted
 	 * header-assembly helper: the header set stays identical to the
-	 * buffered path's by construction, at a fraction of the diff.
+	 * buffered path's by construction.
 	 *
 	 * Known limitation: a client that half-closes its write side after
-	 * sending the request, legal, and what some download tools do, is
+	 * sending the request (legal, and what some download tools do) is
 	 * indistinguishable from one that hung up, because the socket read loop
 	 * reports EOF as a close either way. Such a transfer is abandoned
 	 * partway. Fixing it needs a half-close signal on `Socket`, not a
@@ -1884,7 +1844,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// Resume on the socket's own drain rather than on a tick of our
 		// own. Every write queues the socket on the registry's writable
 		// queue, which the runtime drains each pass, so this fires whether
-		// the flush completed or blocked, the cadence follows the peer
+		// the flush completed or blocked: the cadence follows the peer
 		// instead of the clock, and costs nothing on connections that are
 		// not mid-transfer.
 		__writer.onDrain = __pumpStream;
@@ -1906,16 +1866,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Gives up on a response whose head has gone out, when the body cannot be
 	 * finished: the writer's `abort`, which under HTTP/1.1 closes the
-	 * connection, the only way left to say the body is short, and under
-	 * HTTP/2 resets the stream and leaves the connection's other streams be.
-	 * These paths closed the socket themselves, which under HTTP/2 is every
-	 * stream's: one file that shrank mid-transfer took down every request on
-	 * the connection.
+	 * connection (the only way left to say the body is short) and under
+	 * HTTP/2 resets the stream and leaves the connection's other streams be,
+	 * so one file that shrinks mid-transfer does not take down every request
+	 * on the connection.
 	 *
-	 * Whoever listens hears `Event.CLOSE` either way. Under HTTP/1.1 the
-	 * socket closing says so; under HTTP/2 nothing did, so a producer stopped
-	 * at the output cap was never told and, writing on a timer, wrote on for
-	 * good.
+	 * Whoever listens hears `Event.CLOSE` either way: under HTTP/1.1 the
+	 * socket closing says so, and under HTTP/2 this does, so a producer
+	 * stopped at the output cap is told rather than writing on for good.
 	 */
 	@:noCompletion private function __abandonResponse():Void {
 		__writer.abort();
@@ -1926,7 +1884,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __onStreamSocketGone(_:Event):Void {
 		// Peer closed or errored mid-transfer: stop reading, release the
-		// file, and never write again, the response is unfinishable.
+		// file, and never write again: the response is unfinishable.
 		__stopStream();
 		if (__origin.connected) {
 			__origin.close();
@@ -2049,8 +2007,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__streamRemaining == 0 && __streamLastBuffered == 0) {
 			// Every byte has left this process, so the response the head
 			// promised is complete and the connection can be settled on the
-			// decision that head recorded, kept for the next request, or
-			// closed. Deferring to here is the whole reason a streamed
+			// decision that head recorded (kept for the next request, or
+			// closed). Deferring to here is the whole reason a streamed
 			// response can be kept alive at all: the body is well framed by
 			// the Content-Length that went out with the head, so the only
 			// thing that ever made it unsafe was settling too early.
@@ -2072,7 +2030,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * A peer that stops reading without closing would otherwise hold the
 	 * file handle, the connection and its buffered bytes indefinitely: the
 	 * pump is drain-driven, and a peer that never drains produces no
-	 * drains. Closing is the whole response, no status can be sent,
+	 * drains. Closing is the whole response: no status can be sent,
 	 * because the status line left with the head.
 	 */
 	@:noCompletion private function __checkStreamStall(now:Float):Void {
@@ -2087,8 +2045,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Releases everything a streamed response holds. Idempotent because one
-	 * transfer can reach it twice, from the pump that finishes or aborts
-	 * it, and again through the socket's CLOSE dispatch, and the second
+	 * transfer can reach it twice (from the pump that finishes or aborts
+	 * it, and again through the socket's CLOSE dispatch), and the second
 	 * pass must not touch a stream that is already gone.
 	 */
 	@:noCompletion private function __stopStream():Void {
@@ -2147,12 +2105,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// reaches the wire belongs to the writer, and that split is what lets
 		// the same response go out as HTTP/1.1 or as HTTP/2.
 		//
-		// Handed to an HTTPStatusEvent's listener, the fields are made anew, as
-		// they always were, and are the listener's to keep. With no listener
-		// nothing outside sees them, the writer reads them and is done, so
-		// the array and the four fields every response carries are this
-		// connection's, kept from one response to the next: they were made
-		// for each, 248 bytes natively.
+		// Handed to an HTTPStatusEvent's listener, the fields are made anew
+		// and are the listener's to keep. With no listener nothing outside
+		// sees them (the writer reads them and is done), so the array and the
+		// four fields every response carries are this connection's, kept from
+		// one response to the next rather than made for each, 248 bytes
+		// natively.
 		var handedOut:Bool = hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS);
 		var fields:Array<URLRequestHeader>;
 		if (handedOut) {
@@ -2175,10 +2133,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var responseData:ByteArray = data;
 		// What a GET would send, which a HEAD is answered as: its body is not
-		// here, but its length is, and the two must be negotiated alike, a
-		// HEAD used to report the identity length while the GET beside it
-		// went out as br. Not a head whose body the pump streams after it,
-		// which goes as it is on disk.
+		// here, but its length is, and the two must be negotiated alike, or a
+		// HEAD would report the identity length while the GET beside it went
+		// out as br. Not a head whose body the pump streams after it, which
+		// goes as it is on disk.
 		var plainLength:Int = contentLength != null ? contentLength : (responseData != null ? responseData.length : 0);
 		var lengthUnknown:Bool = false;
 		if (mayEncode && !__streamPending && __mayCompress(statusCode, headers, contentType, plainLength, open)) {
@@ -2220,8 +2178,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (allowOrigin != null) {
 				fields.push(new URLRequestHeader("Access-Control-Allow-Origin", allowOrigin));
 			}
-			// Only beside an origin that was named. It went out to origins that
-			// were refused as well, which granted nothing but said otherwise.
+			// Only beside an origin that was named: beside a refused one it
+			// would grant nothing, but say otherwise.
 			if (__config.corsAllowCredentials && allowOrigin != null && allowOrigin != "*") {
 				fields.push(new URLRequestHeader("Access-Control-Allow-Credentials", "true"));
 			}
@@ -2253,19 +2211,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// the wire: a nested rebuild (a 406 negotiation failure, a
 		// compression failure) replaces this response entirely, and an
 		// event fired earlier would count and time a response that was
-		// never sent, under per-response metrics, twice for one request.
+		// never sent, twice for one request under per-response metrics.
 		// Guarded rather than handed straight to Logger.info, because the
 		// argument is built before the call regardless of whether the level
-		// admits it, five concatenations per request, on a server whose
+		// admits it: five concatenations per request, on a server whose
 		// operator has every reason to run above INFO.
 		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
 			crossbyte._internal.http.AccessLog.write('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		}
 		// What was answered, as HTTPStatusEvent says: the URL asked for and the
-		// fields the response carries. These were the client's address and
-		// only the fields a caller had added, for a static file, no
-		// Content-Type, Date or Server. The client's address is
-		// remoteAddress. Both cost nothing for a request with no query.
+		// fields the response carries (for a static file, Content-Type, Date
+		// and Server among them). The client's address is remoteAddress. Both
+		// cost nothing for a request with no query.
 		//
 		// The server's own hook first, as its listener was first; the event
 		// only for someone listening.
@@ -2275,23 +2232,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS)) {
 			var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 			statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
-			// A listener added since the fields were begun, by the hook above,
-			// say, is given new ones too: the kept ones are this connection's.
+			// A listener added since the fields were begun (by the hook above,
+			// say) is given new ones too: the kept ones are this connection's.
 			statusEvent.responseHeaders = handedOut ? fields : [for (field in fields) __handOutField(field)];
 			dispatchEvent(statusEvent);
 		}
 
 		// A body the output buffer cannot hold goes out as a file does, in
 		// bounded bursts on the socket's drain. Written whole, whatever the
-		// peer had not taken by the first flush stayed buffered, past the cap
-		// the socket closed, and a 12 MB response went out as a 200 with its
-		// full Content-Length, then 65,346 bytes, logged and counted as a
-		// success.
+		// peer had not taken by the first flush would stay buffered, past the
+		// cap the socket would close, and the response would be cut short
+		// after a 200 with its full Content-Length, logged as a success.
 		//
 		// Not under HTTP/2, whose connection holds a stream's body until its
 		// windows and the socket take it, a socket's worth at a time, and
-		// counts it against the connection's cap: pumped from here it was held
-		// all the same, by this handler, where nothing counted it.
+		// counts it against the connection's cap; pumped from here it would
+		// be held all the same, by this handler, where nothing counts it.
 		var bodyLength:Int = (!headOnly && responseData != null) ? responseData.length : 0;
 		var cap:Int = __writer.maxBufferedBytes;
 		var fromMemory:Bool = bodyLength > 0 && cap > 0 && !__writer.ownsConnection && __writer.bufferedBytes + bodyLength > cap;
@@ -2336,10 +2292,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 			// The caller's bytes are the caller's again once respondBytes
 			// returns, and these go out over drains to come: streamed from a
-			// copy of them, made only here. It streamed the caller's own
-			// ByteArray, and sent whatever its bytes had become, a body
-			// reused for the next response, or a payload valid only during
-			// the listener call that answered with it.
+			// copy of them, made only here, rather than from the caller's own
+			// ByteArray, whose bytes may by then be a body reused for the next
+			// response, or a payload valid only during the listener call that
+			// answered with it.
 			__streamBytes = (callersData && responseData == data) ? ByteArray.fromBytes((responseData : haxe.io.Bytes).sub(0, bodyLength)) : responseData;
 			__streamOffset = 0;
 			__beginStreamedBody(bodyLength);
@@ -2412,9 +2368,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Sends a response and ends the request.
 	 *
-	 * Intended for middleware that answers a request itself, a health
+	 * Intended for middleware that answers a request itself (a health
 	 * check, a metrics endpoint, an authentication failure, a small API
-	 * route, rather than letting it fall through to static-file routing.
+	 * route) rather than letting it fall through to static-file routing.
 	 *
 	 * A middleware that calls this must **not** also call `next()`: the
 	 * request is already complete, and continuing the chain would attempt
@@ -2434,8 +2390,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * `respond`, with a body of bytes: an image, an archive, anything that
-	 * is not text. Sent as given; `respond` could only send a String, as
-	 * UTF-8.
+	 * is not text, sent as given, where `respond` sends a String, as UTF-8.
 	 *
 	 * `body` is the caller's again once this returns, to change or reuse:
 	 * what is sent is its bytes as they were at the call, including a body
@@ -2448,9 +2403,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Whether the client can still be written to: false once it has gone,
-	 * or, over HTTP/2, once this request's stream has been reset, by the
-	 * client, or by the server for something the client sent on it. A route
-	 * holding a request open, a long poll, can read it, or listen for
+	 * or, over HTTP/2, once this request's stream has been reset (by the
+	 * client, or by the server for something the client sent on it). A route
+	 * holding a request open (a long poll) can read it, or listen for
 	 * `Event.CLOSE` instead, which a listener added after the client went
 	 * still hears, in a later turn.
 	 */
@@ -2461,14 +2416,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
-	 * Starts a response whose body is written as it is produced, server-
-	 * sent events, a download generated on the fly, rather than handed over
+	 * Starts a response whose body is written as it is produced (server-sent
+	 * events, a download generated on the fly) rather than handed over
 	 * whole. The status and headers go out now, and the returned stream
 	 * carries the body: `write` it, then `end` it. Until then nothing else
 	 * can answer the request.
 	 *
-	 * No `Content-Length` is sent. Under HTTP/1.1 the body is chunked,
-	 * ended by closing the connection for an HTTP/1.0 client, and under
+	 * No `Content-Length` is sent. Under HTTP/1.1 the body is chunked (ended
+	 * by closing the connection for an HTTP/1.0 client), and under
 	 * HTTP/2 it is DATA on a stream held open. It is compressed as it goes
 	 * where the compression policy covers its type and the client takes gzip
 	 * or deflate, each write flushed so the client can inflate it at once;
@@ -2476,9 +2431,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * `HEAD`, or a status that carries no body, the head is the response and
 	 * the stream drops what it is given.
 	 *
-	 * Listen here for `Event.CLOSE` to hear that the client went away, the
+	 * Listen here for `Event.CLOSE` to hear that the client went away (the
 	 * connection closed, or under HTTP/2 the stream was reset, by the client
-	 * or by the server, and stop producing; each listener hears it once,
+	 * or by the server) and stop producing; each listener hears it once,
 	 * one added after the client had already gone included, in a later turn,
 	 * and the stream refuses writes from then on. A client that takes none of
 	 * what was written for 30 seconds is given up on as for any response
@@ -2571,12 +2526,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		__writer.writeBody(data, offset, length);
 
-		// Written while a read is handled, a route streaming its answer,
-		// it waits for the end of that read and goes with the rest, until 64
-		// KB are waiting: every write was a system call of its own, and a
-		// 64 KB body in eight writes was served at a third the rate of the
-		// same body in one. Written at any other time it goes at once, as
-		// a producer feeding the stream later expects.
+		// Written while a read is handled (a route streaming its answer), it
+		// waits for the end of that read and goes with the rest, until 64 KB
+		// are waiting, rather than a system call per write: a 64 KB body in
+		// eight writes is served at a third the rate of the same body in one.
+		// Written at any other time it goes at once, as a producer feeding
+		// the stream later expects.
 		if (__reading && __writer.bufferedBytes < STREAM_FLUSH_BATCH) {
 			__streamFlushHeld = true;
 		} else {
@@ -2653,13 +2608,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Watches the connection for Event.CLOSE only once something listens for
 	 * it here, so a handler nobody asks costs no listener on its socket.
 	 *
-	 * A listener added once the client has gone, `connected` false, is
-	 * told too, once, in a later turn rather than before this returns. It
-	 * was registered on a connection already closed, or under HTTP/2 a
-	 * stream already reset, and heard nothing, or only the connection
-	 * closing whenever that came: a route that looked something up before
-	 * listening, and the producer the `HTTPResponseStream` example stops on
-	 * CLOSE, ran on for a client that had left.
+	 * A listener added once the client has gone (`connected` false) is told
+	 * too, once, in a later turn rather than before this returns, so a
+	 * route that looked something up before listening, or a producer that
+	 * stops on CLOSE, does not run on for a client that has left.
 	 */
 	override public function addEventListener<T>(type:crossbyte.events.EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
@@ -2765,18 +2717,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			content:String, headOnly:Bool = false):Void {
-		// Was a near-verbatim second copy of __dispatchResponseBytes, differing
-		// only in taking a String. Two copies of the header-assembly rules is
-		// one too many to keep in step, and the duplicate would have needed the
-		// same rewrite to reach a writer.
-		// The encoded text is the body, rather than copied into one: written
-		// into a new ByteArray it was allocated and copied twice more, 64 KB
-		// at a time for a page.
+		// One copy of the header-assembly rules, __dispatchResponseBytes's,
+		// for a String body too. The encoded text is the body, rather than
+		// copied into a new ByteArray.
 		var hasText:Bool = content != null && content.length > 0;
 		var bodyBytes:ByteArray = (!headOnly && hasText) ? ByteArray.fromBytes(crossbyte._internal.Utf8.bytesOf(content)) : new ByteArray();
 
 		// A HEAD says what the GET would: its length, not the empty body it
-		// sends, which went out as "Content-Length: 0" beside a GET of 20 KB.
+		// sends.
 		var headLength:Null<Int> = (headOnly && hasText) ? crossbyte._internal.Utf8.bytesOf(content).length : null;
 		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly, headLength);
 	}
@@ -2832,8 +2780,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// Nothing sent before the request was fully consumed may keep the
 		// connection: unread request bytes are still in the buffer and
 		// would be parsed as the next request. This one bit subsumes every
-		// early-error close, 400s, 505, the containment 403, 415, 417,
-		// 501, 408, the pre-request-line 429, without listing them.
+		// early-error close (400s, 505, the containment 403, 415, 417,
+		// 501, 408, the pre-request-line 429) without listing them.
 		if (!__requestConsumed) {
 			return false;
 		}
@@ -2853,9 +2801,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// Statuses after which handler or connection state is suspect.
 		// 404/405/304/406/415/417/429 are deliberately absent: reached
-		// after consumption they are well-framed, routine answers, the
+		// after consumption they are well-framed, routine answers (the
 		// browser fetching a missing favicon must not pay a handshake for
-		// it, and reached before consumption, the bit above closes.
+		// it), and reached before consumption, the bit above closes.
 		// The streaming follow-up must add "response length known" here.
 		if (statusCode == 400 || statusCode == 408 || statusCode == 413 || statusCode >= 500) {
 			return false;
@@ -2896,28 +2844,27 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Ends the connection, or readies it for the request after this one.
 	 *
 	 * Split out of `__finishResponse` because a streamed response reaches
-	 * this point long after its head was written, the head decides, the
-	 * pump settles, while every buffered response reaches it immediately.
+	 * this point long after its head was written (the head decides, the
+	 * pump settles), while every buffered response reaches it immediately.
 	 */
 	@:noCompletion private function __settleConnection():Void {
-		// The response is done, so a close from here on, this one's own,
-		// or a later request's, is not this response's client going away.
+		// The response is done, so a close from here on (this one's own, or
+		// a later request's) is not this response's client going away.
 		__unwatchClient();
 
 		// Closed too once pipelined requests were given up (__dropSurplus): a
 		// streamed answer's head may already have said the connection stays.
 		if ((!__responseKeepAlive || __surplusDropped) && !__writer.ownsConnection) {
-			// Surplus pipelined bytes are discarded with the close,
-			// identical to the old clear-and-close, whose clients re-send
-			// on a fresh connection. close() dispatches Event.CLOSE even
-			// when locally initiated, so the server's cleanupSocket
-			// accounting fires exactly as it always has.
+			// Surplus pipelined bytes are discarded with the close, and
+			// clients send them again on a fresh connection. close()
+			// dispatches Event.CLOSE even when locally initiated, so the
+			// server's cleanupSocket accounting fires as for any close.
 			if (__origin.connected) {
-				// Once what the response sent has gone. Closed here, the rest
-				// of it, whatever the system had not taken yet, was thrown
-				// away: a response larger than that, with Connection: close,
-				// was cut off at the client's end. The stall deadline bounds
-				// the wait.
+				// Once what the response sent has gone: closed now, the rest
+				// of it (whatever the system had not taken yet) would be
+				// thrown away, and a response larger than that, with
+				// Connection: close, cut off at the client's end. The stall
+				// deadline bounds the wait.
 				if (__writer.bufferedBytes > 0) {
 					__closeWhenSent = true;
 					if (__holdOutput()) {
@@ -2931,8 +2878,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// The header loop and the body readers leave position exactly one
 		// byte past the request's framing, so everything beyond it is the
-		// next pipelined request and must survive the reset, clearing
-		// it here is the hang this exists to avoid.
+		// next pipelined request and must survive the reset: clearing it
+		// here would leave the client waiting for an answer.
 		// None under HTTP/2, whose handler reads no socket of its own.
 		var surplus:Int = __incomingBuffer == null ? 0 : __incomingBuffer.length - __incomingBuffer.position;
 		if (surplus > 0) {
@@ -2967,8 +2914,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * What the client has taken of what was written to `socket`, since it
-	 * opened: on every target, what the system has accepted, on Node, what
-	 * Node has handed on, less what still waits in its queue. Only compared
+	 * opened: on every target, what the system has accepted (on Node, what
+	 * Node has handed on, less what still waits in its queue). Only compared
 	 * for a change, as a stall check's progress.
 	 */
 	@:noCompletion private static inline function __outputTaken(socket:Socket):Float {
@@ -2979,12 +2926,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Holds what this connection has sent and its client not yet taken to
 	 * the stall deadline, from the server's sweep, whatever the timeouts
 	 * are: a response its client takes none of for `STREAM_STALL_SECONDS`
-	 * is given up and the connection closed. A response written whole and
-	 * held, a body under the output cap, to a client that stopped reading,
-	 * waited in the socket's buffer with no deadline but the idle one,
-	 * and with `keepAliveTimeout` at `0`, for good. A body pumped out has a
-	 * deadline of its own (`__checkStreamStall`), which takes this one's
-	 * place while it runs.
+	 * is given up and the connection closed, so a response written whole
+	 * and held (a body under the output cap, to a client that stopped
+	 * reading) does not wait in the socket's buffer with no deadline but the
+	 * idle one, and with `keepAliveTimeout` at `0`, for good. A body pumped
+	 * out has a deadline of its own (`__checkStreamStall`), which takes this
+	 * one's place while it runs.
 	 *
 	 * @return Whether a sweep holds it: false with no server behind the
 	 *         writer.
@@ -3014,8 +2961,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * The sweep's visit while bytes wait on the client, at `now`
 	 * (`haxe.Timer.stamp()`). Once they have gone, an idle connection's
-	 * allowance starts, and one waiting to close, its response said so,
-	 * or the server is draining, closes. While they have not, any the
+	 * allowance starts, and one waiting to close (its response said so, or
+	 * the server is draining) closes. While they have not, any the
 	 * client takes moves the deadline on; at it, the connection is closed.
 	 */
 	@:noCompletion private function __checkHeldOutput(now:Float):Void {
@@ -3110,8 +3057,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Between requests, with nothing of the last response still waiting on
 	 * the client. What `HTTPServer.drain` closes at once; one whose response
-	 * is still going out closes when it has gone (`__checkHeldOutput`). It
-	 * was closed at once too, and what the client had not taken was lost.
+	 * is still going out closes when it has gone (`__checkHeldOutput`).
 	 */
 	@:noCompletion private inline function __isIdle():Bool {
 		return __idle && !__heldWatch;
@@ -3126,19 +3072,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * or no body at all for a HEAD, whose answer says only what its GET's
 	 * would.
 	 *
-	 * These went out with their text whatever the method, so a HEAD for a
-	 * missing file had "404 Not Found" after its head, which a client reads
-	 * as the start of the next response on the connection, and which
-	 * HTTP/2 makes a malformed response.
+	 * A HEAD gets no text, since a client reads text after a HEAD's head as
+	 * the start of the next response on the connection, and HTTP/2 makes it
+	 * a malformed response.
 	 */
 	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
 		if (__headOut && !__responded) {
 			// A head is out and the write after it threw: no status can follow
-			// it, and this one would have gone into the body it began. The
-			// response is given up instead, the connection closed under
-			// HTTP/1.1, the stream reset under HTTP/2, which the client can
-			// tell from the length the head promised. HTTP/1.1 wrote a second
-			// status line into the body, and HTTP/2 the second body's text.
+			// it, and this one would go into the body it began. The response
+			// is given up instead (the connection closed under HTTP/1.1, the
+			// stream reset under HTTP/2), which the client can tell from the
+			// length the head promised.
 			__abandonResponse();
 			return;
 		}
@@ -3181,8 +3125,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * Asks the rate limiter about this request, and answers `429` when it
 	 * says no, with a `Retry-After` giving the seconds until the key could
-	 * try again. The 429 used to say nothing about when, so a client could
-	 * only guess, and a polite one had nothing to be polite with.
+	 * try again, so a polite client knows how long to wait.
 	 */
 	@:noCompletion private function __refusedByLimiter():Bool {
 		var limiter:RateLimiter = __config.rateLimiter;
@@ -3257,14 +3200,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 		Whether a response is one `HTTPServerConfig.compression` compresses
 		for a client that asks: compression on, a status that is not an error
-		and has a body to speak of, a body of at least `minimumSize`, `length`,
-		what a GET would send, and a `contentType` the policy lists. Not a
+		and has a body to speak of, a body of at least `minimumSize` (`length`,
+		what a GET would send), and a `contentType` the policy lists. Not a
 		range, nor a body encoded already, nor one written as it goes.
 
-		Every non-empty body used to be compressed, a `429` and a `404`
-		included, so each refusal of a flood cost the setup of a Brotli encoder
-		when the client listed `br`, which every browser does: 18.8 ms a
-		refusal on Node rather than 0.57.
+		So a `429` or a `404` does not cost the setup of a Brotli encoder,
+		which would make each refusal of a flood take 18.8 ms on Node rather
+		than 0.57.
 	**/
 	/**
 		Whether a streamed body may be compressed: as `__mayCompress` judges a
@@ -3361,12 +3303,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 		The `ETag` fields in `fields` made weak, for an encoded variant.
 
-		A strong validator names one exact sequence of bytes, and the same tag
-		went out on the identity, gzip, br and deflate bodies of one route: a
-		cache or a range request could take one variant's bytes for another's.
-		Weak, as nginx sends it, a revalidation still matches by RFC 9110's
-		weak comparison, which `If-None-Match` uses, where a suffixed tag
-		would not.
+		A strong validator names one exact sequence of bytes, so the same tag
+		on the identity, gzip, br and deflate bodies of one route would let a
+		cache or a range request take one variant's bytes for another's. Weak,
+		as nginx sends it, a revalidation still matches by RFC 9110's weak
+		comparison (which `If-None-Match` uses), where a suffixed tag would
+		not.
 	**/
 	@:noCompletion private static function __weakenETags(fields:Array<URLRequestHeader>):Void {
 		for (i in 0...fields.length) {
@@ -3385,17 +3327,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 		@param kept Whether the encoded body is kept and served again, as a
 		       static file's is. A body encoded for one response is put to
-		       gzip before Brotli when the client takes both equally, every
-		       browser lists them so, unless Brotli is native: Brotli in
-		       Haxe took 1.3 ms for 64 KB of JSON where gzip from native zlib
-		       takes 0.2, and a server answering browsers was held to about
-		       800 compressed responses a second. A kept body is encoded once,
-		       so it goes as Brotli, the smallest.
+		       gzip before Brotli when the client takes both equally (every
+		       browser lists them so) unless Brotli is native: Brotli in
+		       Haxe takes 1.3 ms for 64 KB of JSON where gzip from native
+		       zlib takes 0.2, which would hold a server answering browsers
+		       to about 800 compressed responses a second. A kept body is
+		       encoded once, so it goes as Brotli, the smallest.
 	**/
 	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false,
 			kept:Bool = false):EncodingChoice {
-		// A body that is already encoded, a PHP script's under
-		// zlib.output_compression, a route's own gzip, is not encoded again.
+		// A body that is already encoded (a PHP script's under
+		// zlib.output_compression, a route's own gzip) is not encoded again.
 		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
 			return EncodingChoice.NONE;
 		}
@@ -3404,7 +3346,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// identity. Negotiating its body against the same Accept-Encoding
 		// that just failed would reject again and recurse
 		// builder -> 406 -> builder without bound: one request header
-		// ("Accept-Encoding: identity;q=0") was a stack overflow.
+		// ("Accept-Encoding: identity;q=0") would overflow the stack.
 		if (statusCode == 406) {
 			return EncodingChoice.NONE;
 		}
@@ -3416,8 +3358,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// For a streamed body, only the codings that can be flushed a chunk at
 		// a time. Otherwise first among equals wins: see `kept`. The lists are
-		// made once; four anonymous objects and their list were made here for
-		// every response, and the decision too.
+		// made once, rather than for every response.
 		var supported:Array<CodingOption> = streamable ? CodingOption.STREAMED : (kept || crossbyte._internal.brotli.Brotli.isNativeAvailable()) ? CodingOption.BROTLI_FIRST : CodingOption.GZIP_FIRST;
 
 		var best:Null<CodingOption> = null;
@@ -3451,10 +3392,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 		The request's `Accept-Encoding` as read, or null when it has none (or
 		an empty one). Read once for the value a connection last sent and kept
-		with it: a client sends the same one on every request, and it was split
-		and lowercased piece by piece, a map of it built, for every response
-		that might be compressed, and again for a static file's precompressed
-		sibling.
+		with it: a client sends the same one on every request, so it is not
+		parsed again for every response that might be compressed, or for a
+		static file's precompressed sibling.
 	**/
 	@:noCompletion private function __acceptedCodings():Null<AcceptedCodings> {
 		var header:Null<String> = getHeader("accept-encoding");
@@ -3485,8 +3425,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
-		// Compared without regard to case, rather than lowercased: every field's
-		// name was lowercased, five times a compressible response.
+		// Compared without regard to case, rather than lowercasing every
+		// field's name, five times a compressible response.
 		for (header in headers) {
 			if (header != null && header.name != null && HttpSyntax.equalsIgnoreCase(header.name, name)) {
 				return true;
@@ -3497,11 +3437,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __readLine(buffer:ByteArray):Null<String> {
-		// Read where the bytes lie, and the line cut out whole. It was read a
-		// byte at a time through `readUnsignedByte` into a StringBuf, two
-		// virtual calls and an append per byte: with the scan for the end of
-		// the block, which walked the same bytes the same way, a quarter of
-		// what an HTTP/1.1 request cost natively.
+		// Read where the bytes lie, and the line cut out whole, rather than a
+		// byte at a time through `readUnsignedByte` into a StringBuf: two
+		// virtual calls and an append per byte, which with the scan for the
+		// end of the block would be a quarter of what an HTTP/1.1 request
+		// costs natively.
 		var data:ByteArrayData = buffer;
 		var from:Int = data.position;
 		var end:Int = data.length;
@@ -3537,11 +3477,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Whether the buffer now holds a complete header block.
 	 *
 	 * The scan resumes where the previous call stopped, carrying its last
-	 * three bytes across data events. It used to restart from byte zero
-	 * every time more data arrived, which made header receipt quadratic in
-	 * the number of arrivals, the shape a slow client produces, whether an
+	 * three bytes across data events, so header receipt is not quadratic in
+	 * the number of arrivals: the shape a slow client produces, whether an
 	 * honest one on a bad link or a deliberate one feeding a byte at a
-	 * time. Measured at 7.6x on a 2 KB block arriving in 64-byte chunks.
+	 * time. Restarting from byte zero costs 7.6x on a 2 KB block arriving in
+	 * 64-byte chunks.
 	 */
 	@:noCompletion private function __hasCompleteHeaderBlock(buffer:ByteArray):Bool {
 		// The bytes read where they lie: see __readLine.
@@ -3636,7 +3576,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * through the string's `char*`, which ends at the first NUL, while the
 	 * blacklist and whitelist compare whole Haxe strings that do not. So
 	 * `/secret.txt%00.html` would be checked as one name and opened as
-	 * another, a blacklist matching `secret.txt` finds no match, then
+	 * another: a blacklist matching `secret.txt` finds no match, then
 	 * `exists()` and `load()` truncate and serve it. No legitimate path
 	 * carries a NUL, so it is refused here rather than defended against
 	 * at every use.
@@ -3715,8 +3655,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	// The root's normal form, kept with the root it was made from: one object,
-	// so a thread reading it sees a pair that belongs together. It was made
-	// again for every path, twice a request.
+	// so a thread reading it sees a pair that belongs together, made once
+	// rather than twice a request.
 	@:noCompletion private static var __containedRoot:Null<ContainedRoot> = null;
 
 	@:noCompletion private static function __isWithinRoot(rootPath:String, fullPath:String):Bool {
@@ -3743,11 +3683,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// Runtime, because this decides whether a request escapes the document
 		// root and `#if windows` says which target the compiler was aimed at
-		// rather than which machine is serving. eval, Node and the JVM all run
-		// on Windows without it, and all three skipped the case fold, so
-		// `C:\WWW\index.html` was judged not to be inside `C:\www`. That
-		// direction is fail-closed, a legitimate request refused rather than a
-		// forbidden one allowed, which is why nothing caught it.
+		// rather than which machine is serving: eval, Node and the JVM all run
+		// on Windows without it, and without the case fold `C:\WWW\index.html`
+		// would be judged not to be inside `C:\www`.
 		if (crossbyte.sys.System.isWindows) {
 			normalized = normalized.split("/").join("\\").toLowerCase();
 		} else {
@@ -3789,8 +3727,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * The `Date` header only carries whole seconds, so within one second
 	 * every response is asking for the same string. The tables live in
-	 * statics because this used to be `inline`, which re-created both
-	 * array literals at every call site, on every response.
+	 * statics rather than in an `inline` function, which would re-create
+	 * both array literals at every call site, on every response.
 	 *
 	 * Two runtime threads may race this cache. The string is written
 	 * before the stamp, so a reader that sees the new stamp finds the
@@ -3818,9 +3756,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Reads a single `bytes=first-last` range against a file of `total`
 	 * bytes, or answers null when it cannot be satisfied.
 	 *
-	 * By hand rather than through a regular expression, which was compiled
-	 * on every ranged request, and through `IntParse` rather than
-	 * `Std.parseInt`, which on Linux native read `bytes=4294967296-` as a
+	 * By hand rather than through a regular expression, which would be
+	 * compiled on every ranged request, and through `IntParse` rather than
+	 * `Std.parseInt`, which on Linux native reads `bytes=4294967296-` as a
 	 * range starting at 0. A number past an `Int` is still a number here:
 	 * as a start it lies beyond any file this serves, as an end or a suffix
 	 * it covers the whole file, which is what RFC 9110 14.1.2 makes of it.
@@ -3895,10 +3833,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * `t`, milliseconds since 1970, as an IMF-fixdate in UTC.
 	 *
-	 * Worked out by arithmetic, as `__parseHttpDate` reads one back. Through
-	 * `Date` it took the local offset at one instant and applied it at
-	 * another, so it was an hour out around a daylight-saving change, and a
-	 * `Date` on neko keeps its time in 32 bits.
+	 * Worked out by arithmetic, as `__parseHttpDate` reads one back, rather
+	 * than through `Date`, which would take the local offset at one instant
+	 * and apply it at another (an hour out around a daylight-saving change),
+	 * and which on neko keeps its time in 32 bits.
 	 */
 	@:noCompletion private static function __toHttpDate(t:Float):String {
 		var days:Float = Math.ffloor(t / 86400000);
@@ -3949,10 +3887,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Windows and macOS answer to many spellings of one name: any letter
 	 * case, and on Windows a trailing dot or space, an 8.3 short name, or
 	 * `name::$DATA`. A middleware guard compares the path as a string, so a
-	 * guard on `/private/` let `/PRIVATE/report.txt` through and the file
-	 * under `private/` was served. Serving a file only under its own spelling
+	 * guard on `/private/` would let `/PRIVATE/report.txt` through to the
+	 * file under `private/`. Serving a file only under its own spelling
 	 * makes those systems answer as Linux does, and a guard's comparison mean
-	 * what it says, for dotfiles too, which Windows also names by a short
+	 * what it says: for dotfiles too, which Windows also names by a short
 	 * name that has no dot.
 	 *
 	 * One directory listing per segment, paid only for a path the resolver
@@ -4067,10 +4005,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// A rewrite routed here with the PHP flag on a server that has no
 			// PHP bridge, which the shipped defaults do to every /api path
 			// while phpEnabled defaults to false. Reaching the bridge anyway
-			// dereferenced null and took the process down, a segfault on a
-			// default configuration, from a request path a great many services
-			// use. A 500 says the server is misconfigured; a crash says
-			// nothing and loses every other connection with it.
+			// would dereference null and take the process down, and every other
+			// connection with it; a 500 says the server is misconfigured.
 			Logger.error("Request rewritten to PHP but no PHP bridge is configured; set phpEnabled or remove the PHP rewrite.");
 			__sendErrorResponse(500, "Internal Server Error");
 			return;
@@ -4112,17 +4048,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 			body: body
 		};
 
-		// The tail of this method is now the callback, which is the whole of
-		// the handler-side change. execute() used to block here, inside a
-		// tick, so for the duration of a PHP script nothing else on this
-		// runtime ran: no other request read, no response written, no timer
-		// advanced, so one slow page stalled every other client on the runtime,
-		// none of which had anything to do with it.
+		// The tail of this method is the callback, so the runtime is not held
+		// for the duration of a PHP script: other requests are read,
+		// responses written and timers advanced while it runs, and one slow
+		// page does not stall every other client on the runtime.
 		var exchange = __php.execute(phpReq);
 
 		exchange.then(function(phpRes:PHPResponse):Void {
-			// The connection may have gone while PHP was thinking, a client
-			// that gave up, or a drain() closing us down. __dispatchResponse
+			// The connection may have gone while PHP was thinking (a client
+			// that gave up, or a drain() closing us down). __dispatchResponse
 			// guards against a second response on one request, but writing
 			// into a socket that has moved on to the next one would not be a
 			// second response, it would be a stray one.
@@ -4170,15 +4104,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// operator gets the detail; a client cannot be told which upstream
 			// is stuck.
 			//
-			// Decided from the failure itself, not from its wording. This read
-			// `message.indexOf("did not respond within") >= 0`, so rewording
-			// PHPTimeout would have turned every gateway timeout into a bad
-			// gateway with nothing to say it had.
+			// Decided from the failure itself, not from its wording, so
+			// rewording PHPTimeout cannot turn a gateway timeout into a bad
+			// gateway.
 			//
-			// With a body unless the request was a HEAD. Both went out as a
-			// HEAD's answer whatever the method, which once meant an empty
-			// body; since a HEAD's answer states the length the GET would
-			// have, they promised the text in Content-Length and never sent it.
+			// With a body unless the request was a HEAD, so the length an
+			// answer states is the text it sends.
 			var bodiless:Bool = __method == "HEAD" || headOnly;
 			if (Std.isOfType(exchange.cause, PHPTimeout)) {
 				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
@@ -4229,15 +4160,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * The request's fields for the bridge, which gives a script each as
-	 * `HTTP_<NAME>`. It was eight of them, host, user-agent, accept,
-	 * accept-language, accept-encoding, referer, cookie and authorization,
-	 * so a script never saw Origin, X-Requested-With, a CSRF token, a
-	 * conditional request, Range or what a proxy forwarded.
-	 *
-	 * All of them now, but those in `PHP_UNFORWARDED`, those `Connection`
-	 * names as its own, and any whose name is not letters, digits and hyphens:
-	 * `X_Forwarded_For` would reach a script as `HTTP_X_FORWARDED_FOR`, the
-	 * variable a proxy's `X-Forwarded-For` becomes.
+	 * `HTTP_<NAME>`: all of them but those in `PHP_UNFORWARDED`, those
+	 * `Connection` names as its own, and any whose name is not letters,
+	 * digits and hyphens (`X_Forwarded_For` would reach a script as
+	 * `HTTP_X_FORWARDED_FOR`, the variable a proxy's `X-Forwarded-For`
+	 * becomes).
 	 */
 	@:noCompletion private static function __forwardedToPhp(fields:Map<String, String>):Map<String, String> {
 		var hop:Array<String> = [];
@@ -4312,12 +4239,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 504: "Gateway Timeout";
 			case 505: "HTTP Version Not Supported";
 			// A status with no phrase of its own gets one for its class rather
-			// than "OK", which is what this used to answer for everything it
-			// did not know. A middleware raising 503 through next(503) put
-			// "HTTP/1.1 503 OK" on the wire, a status line that contradicts
-			// itself, and reads as success to anything matching on the phrase
-			// rather than the code. HTTP/1.1 allows the phrase to be anything,
-			// including empty; it does not allow it to be a lie.
+			// than "OK": a middleware raising 503 through next(503) would
+			// otherwise put "HTTP/1.1 503 OK" on the wire, a status line that
+			// contradicts itself and reads as success to anything matching on
+			// the phrase rather than the code. HTTP/1.1 allows the phrase to be
+			// anything, including empty; it does not allow it to be a lie.
 			default: __statusClass(code);
 		}
 	}
@@ -4369,7 +4295,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 					return true;
 				}
 				// Too big is not malformed: 413, and before a byte of the body
-				// is read. This was a 400.
+				// is read.
 				if (contentLength > __config.maxRequestBodySize) {
 					__sendErrorResponse(413, "Payload Too Large");
 					return true;
@@ -4377,7 +4303,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		// The interim 100 goes out whatever the length, as it always has here.
+		// The interim 100 goes out whatever the length.
 		if (!__admitExpectation(true)) {
 			return true;
 		}
@@ -4414,8 +4340,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var take:UInt = (avail < need) ? avail : need;
 		if (take > 0) {
 			// Grown as it arrives, by half again, but never past the length
-			// the request declared: grown by writing, a 4,096-byte body was
-			// held in 6,177. Room is made only for what has come, so a
+			// the request declared (grown by writing, a 4,096-byte body would
+			// be held in 6,177). Room is made only for what has come, so a
 			// declared length alone allocates nothing.
 			var body:ByteArrayData = __bodyBuf;
 			var needed:Int = body.length + (take : Int);
@@ -4452,13 +4378,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 				}
 
 				// Hex digits only, leading zeros allowed, and nothing past the
-				// bound, answered the same on every target. Std.parseInt had four
-				// answers past seven digits, -1 on eval and cpp, a throw on the
-				// jvm, and on Node a number too large for an Int, which was
-				// accepted, so 0xFFFFFFFF went on to expect a four gigabyte
-				// chunk, and this counted digits and ran a regular expression
-				// per chunk to stay clear of them. The bound is the one that
-				// guard enforced, far above any body this server holds.
+				// bound, answered the same on every target. Std.parseInt gives
+				// four answers past seven digits (-1 on eval and cpp, a throw on
+				// the jvm, and on Node a number too large for an Int, which would
+				// expect a four gigabyte chunk for 0xFFFFFFFF). The bound is far
+				// above any body this server holds.
 				var parsed:Int = IntParse.hex(StringTools.trim(sizeLine), MAX_CHUNK_SIZE);
 				if (parsed < 0) {
 					__sendErrorResponse(400, "Bad Request");
@@ -4571,8 +4495,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * A regex literal written inside a function is constructed every time
 	 * that function runs, and on cpp constructing one compiles the pattern:
 	 * about 126us a call, measured, against a request this server otherwise
-	 * answers in roughly 265us. This one ran on every request, so half the
-	 * time spent answering was spent rebuilding a seven character pattern.
+	 * answers in roughly 265us. Run on every request, that would spend half
+	 * the time answering on rebuilding a seven character pattern.
 	 *
 	 * Hand-written rather than hoisted to a static, because an EReg carries
 	 * the results of its last match and two runtimes share no more than
@@ -4616,15 +4540,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * RFC 9112 6.3 lets a recipient accept `5, 5` and requires it to refuse
 	 * `5, 6`.
 	 *
-	 * Through `IntParse` rather than `Std.parseInt`, which is what made this a
-	 * smuggling vector. The field was checked to be all digits and then handed
-	 * to `Std.parseInt`, which on Linux and macOS native is `strtol` cast to an
-	 * `int`: 4294967296 read as 0 and 4294967396 as 100. At 0 the server read
-	 * no body and parsed the body as the next request, so a request carried
-	 * inside another reached the application unseen by whatever inspected the
-	 * outer one, the reason a request with both framings is already refused.
-	 * On the jvm the same field threw, and every such request was a 500 and an
-	 * ERROR line. A value too large for an `Int` is now simply not a length.
+	 * Through `IntParse` rather than `Std.parseInt`, which would make this a
+	 * smuggling vector: on Linux and macOS native `Std.parseInt` is `strtol`
+	 * cast to an `int`, so 4294967296 reads as 0 and 4294967396 as 100. At
+	 * 0 the server would read no body and parse the body as the next
+	 * request, so a request carried inside another would reach the
+	 * application unseen by whatever inspected the outer one (the reason a
+	 * request with both framings is refused). On the jvm the same field
+	 * throws. A value too large for an `Int` is simply not a length.
 	 */
 	@:noCompletion private static function __parseContentLength(header:String):Int {
 		if (header == null) {
@@ -4683,12 +4606,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/**
 	 * The `Access-Control-Allow-Origin` to answer with, or null for none.
 	 *
-	 * `*` is answered as `*` and never by echoing the request's `Origin`.
-	 * With credentials allowed the echo was a grant to every site of what a
-	 * signed-in user can read, the auditor read `/me` from
-	 * `https://evil.example`. `validate` refuses that pairing; answering `*`
-	 * here keeps it harmless for a configuration changed after the server
-	 * started, since a browser will not pair `*` with credentials.
+	 * `*` is answered as `*` and never by echoing the request's `Origin`:
+	 * with credentials allowed the echo would grant every site what a
+	 * signed-in user can read. `validate` refuses that pairing; answering
+	 * `*` here keeps it harmless for a configuration changed after the
+	 * server started, since a browser will not pair `*` with credentials.
 	 */
 	@:noCompletion private inline function __computeAllowOrigin():Null<String> {
 		if (__config.corsAllowedOrigins.indexOf("*") != -1) {
@@ -4706,15 +4628,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Reads an IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`, as milliseconds
 	 * since 1970, or answers null.
 	 *
-	 * The format is fixed width, so it is read by position. A regular
-	 * expression did this, and a literal one is compiled each time the
-	 * function runs, on every conditional request, which is what a browser
+	 * The format is fixed width, so it is read by position rather than by a
+	 * regular expression, which as a literal would be compiled each time the
+	 * function runs: on every conditional request, which is what a browser
 	 * revalidating its cache sends for every asset.
 	 *
 	 * The time is worked out by arithmetic, in UTC as the date is written,
 	 * not through a local `Date`: neko keeps a `Date`'s time in 32 bits, so a
-	 * validator past January 2038 came back as a date long gone there, and
-	 * the revalidation it asked for was answered with the whole file.
+	 * validator past January 2038 would come back as a date long gone there,
+	 * and the revalidation it asks for would be answered with the whole file.
 	 */
 	@:noCompletion private static function __parseHttpDate(s:String):Null<Float> {
 		var t:String = StringTools.trim(s);
@@ -4824,9 +4746,8 @@ private final class ContainedRoot {
 
 /**
 	What a response may be encoded with: a coding, none, or none acceptable
-	(answered `406`). Made once each and shared: an anonymous object was made
-	for each decision. Was the public `ResponseEncodingDecision` typedef, which
-	nothing outside this file used.
+	(answered `406`). Made once each and shared, rather than an object per
+	decision.
 **/
 private final class EncodingChoice {
 	public static final NONE:EncodingChoice = new EncodingChoice(null, false);

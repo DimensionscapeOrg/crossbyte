@@ -13,10 +13,8 @@ import crossbyte.crypto._internal.HmacSha256;
  * Each secret's HMAC key blocks are hashed once, here, and kept
  * (`HmacSha256`), and a token is checked in place: the MAC is taken over
  * the token's own characters and compared, in constant time, with the 32
- * bytes its signature decodes to. A verification built the HMAC from the
- * secret each time through `haxe.crypto.Hmac`, copied the signing input
- * into new `Bytes`, and encoded the MAC as text to compare strings: about
- * half of what a verification cost.
+ * bytes its signature decodes to. Nothing is rebuilt, copied or encoded as
+ * text per token.
  *
  * Only the one canonical spelling of a signature decodes, so a token is
  * accepted in exactly the spelling a string comparison accepted.
@@ -33,7 +31,7 @@ class HS256Signer implements IJWTSigner {
 
 	/**
 	 * The sole secret's MAC, which a token naming no key is checked with;
-	 * null when there are several. Found once, here: it was found by
+	 * null when there are several. Found once, here, rather than by
 	 * iterating the key map for each such token, which natively copies
 	 * every key.
 	 */

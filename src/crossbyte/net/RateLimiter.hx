@@ -10,7 +10,7 @@ package crossbyte.net;
  * `maxRequests` with a sustained rate of `maxRequests` per `perSeconds`,
  * without the double-burst edge a fixed window allows at its boundary.
  *
- * Nothing in it is about HTTP, which is why it no longer lives there: a
+ * Nothing in it is about HTTP: a
  * server admitting connections, a datagram path shedding a flood, and an RPC
  * endpoint metering a caller all want the same bucket. `HTTPServerConfig`
  * fits one by default; anything else can share that instance or own one per
@@ -21,10 +21,10 @@ package crossbyte.net;
  * is carried into the newer. So what is dropped is only ever a bucket left
  * alone for a full period: one refilled to capacity, which a fresh bucket
  * cannot be told apart from. A generation nobody has used for a period goes
- * too, without waiting its turn. Retiring one is an assignment. It was a sweep
- * of every bucket, run inside whichever call found it due; keys are whatever
- * a client sends, and on Node two million of them held 294 MB and put an
- * 815 ms sweep inside one `tryAcquire`.
+ * too, without waiting its turn. Retiring one is an assignment rather than
+ * a sweep of every bucket inside whichever call found it due: keys are
+ * whatever a client sends, and on Node such a sweep over two million of
+ * them takes 815 ms inside one `tryAcquire`.
  *
  * `maxKeys` caps the keys held, across both generations. A key arriving
  * when the table is full shares one overflow bucket with every other such key,
@@ -165,9 +165,8 @@ class RateLimiter {
 	 * An IPv4 address is its own key. An IPv6 address is keyed by its first
 	 * `prefixBits` bits, a /64 unless told otherwise: that is the block one
 	 * subscriber is given, and every address in it is theirs to use, so keying
-	 * on the whole address let one client take a new bucket per request,
-	 * a thousand attempts from one /64 against a limit of five were refused
-	 * none of the time. An IPv4-mapped IPv6 address (`::ffff:192.0.2.1`, what
+	 * on the whole address would let one client take a new bucket per
+	 * request. An IPv4-mapped IPv6 address (`::ffff:192.0.2.1`, what
 	 * a dual-stack listener reports for an IPv4 client) is keyed as the IPv4
 	 * address it maps, so a client is one key whichever way it arrived. A
 	 * zone (`%eth0`) and brackets are ignored. Anything that is not an address
@@ -316,10 +315,10 @@ class RateLimiter {
 	/**
 	 * Forgets `key`, restoring its full burst capacity.
 	 *
-	 * `null` is the key `tryAcquire` spends a null key's tokens from, the
-	 * empty string; it was ignored here, so a null key could be limited and
-	 * never reset. A key sharing the overflow bucket, one that arrived with
-	 * the table full, see `maxKeys`, has no bucket of its own to forget,
+	 * A null key is reset as the empty string, which is the key
+	 * `tryAcquire` spends a null key's tokens from. A key sharing the
+	 * overflow bucket (one that arrived with the table full; see `maxKeys`)
+	 * has no bucket of its own to forget,
 	 * and the shared one is left as it is: refilling it would refill every
 	 * key sharing it.
 	 */

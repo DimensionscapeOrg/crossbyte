@@ -27,19 +27,17 @@ final class Random {
 	// there are not, the same reasoning as NoMutex. That is not a
 	// micro-optimisation: Haxe implements AtomicInt on js with a
 	// SharedArrayBuffer, which a page is only given when it is cross-origin
-	// isolated. This is a static initialiser, so an ordinary page did not get
-	// a degraded Random, it threw "SharedArrayBuffer is not defined" while
-	// loading the bundle, before a line of application code ran. The
-	// interpreter has no atomics either, which is why the one suite that runs
-	// everything could not so much as name this class.
+	// isolated, so in an ordinary page this static initialiser would throw
+	// "SharedArrayBuffer is not defined" while loading the bundle, before a
+	// line of application code ran. The interpreter has no atomics either.
 	//
-	// Private now. It was public and nothing outside this class ever read it;
-	// `reseed` is the supported way to set it, and it does not vary by target.
+	// `reseed` is the supported way to set it, and it does not vary by
+	// target.
 	//
 	// hl has atomics from 1.13 only, and Haxe's AtomicInt refuses to compile
 	// for an older one, which is the default, so naming it for every hl
-	// stopped this class compiling there at all. An hl without them, neko and
-	// eval have threads and no atomics, and take a lock instead.
+	// would stop this class compiling there at all. An hl without them, neko
+	// and eval have threads and no atomics, and take a lock instead.
 	#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 	@:noCompletion private static var __shared:AtomicInt = new AtomicInt(defaultSeed());
 	#else
@@ -182,7 +180,7 @@ final class Random {
 	/**
 	 * Generates a random alphanumeric string.
 	 *
-	 * **Security:** not cryptographically secure, do not use for tokens, ids, or
+	 * **Security:** not cryptographically secure; do not use for tokens, ids, or
 	 * secrets. Use `crossbyte.crypto.SecureRandom` for those.
 	 *
 	 * @param len The desired length of the string.
@@ -197,7 +195,7 @@ final class Random {
 	/**
 	 * Generates a random hexadecimal string.
 	 *
-	 * **Security:** not cryptographically secure, do not use for tokens, ids, or
+	 * **Security:** not cryptographically secure; do not use for tokens, ids, or
 	 * secrets. Use `crossbyte.crypto.SecureRandom` for those.
 	 *
 	 * @param lenBytes The number of random bytes to encode (2 hex digits per byte).
@@ -249,7 +247,7 @@ final class Random {
 	/**
 	 * Fills a portion of a `Bytes` buffer with random data.
 	 *
-	 * **Security:** not cryptographically secure, do not use to generate keys,
+	 * **Security:** not cryptographically secure; do not use to generate keys,
 	 * salts, or nonces. Use `crossbyte.crypto.SecureRandom` for those.
 	 *
 	 * @param buf The `Bytes` buffer to fill.
@@ -280,10 +278,9 @@ final class Random {
 		// Through mul32 rather than `*`, because these two constants are chosen
 		// to overflow and the overflow is the mixing. Where an Int is 32 bits
 		// that wrap is free; on JavaScript an Int is a double and there is no
-		// wrap, so the same seed produced a different sequence, which is the
-		// one promise this class makes, in its own words: "reproducible
-		// results when seeded". Measured at seed 12345, cpp and Node agreed on
-		// nothing.
+		// wrap, so the same seed would produce a different sequence, breaking
+		// the one promise this class makes, in its own words: "reproducible
+		// results when seeded".
 		z += 0x9E3779B9;
 		z ^= (z >>> 16);
 		z = Hash.mul32(z, 0x85EBCA6B);
@@ -297,10 +294,11 @@ final class Random {
 		The shared generator's seed when nobody gives one: the monotonic clock
 		in microseconds, and the time of day, each taken modulo 2^32.
 
-		It was `Std.int(stamp * 1e6)`, which past 2^31 microseconds, 36
-		minutes of uptime on the jvm, whose clock counts from boot, saturated
-		at 2147483647 there and came out INT_MIN on hl and neko: every run on
-		those targets started from the one seed and drew one sequence.
+		Taken modulo 2^32 rather than through `Std.int(stamp * 1e6)`, which
+		past 2^31 microseconds (36 minutes of uptime on the jvm, whose clock
+		counts from boot) saturates at 2147483647 there and comes out INT_MIN
+		on hl and neko, so every run on those targets would start from the
+		one seed and draw one sequence.
 	**/
 	@:noCompletion private static function defaultSeed():Int {
 		var micros:Float = haxe.Timer.stamp() * 1e6;
@@ -345,17 +343,17 @@ final class Random {
 		return v;
 	}
 
-	// How many values [min, max] holds is counted in Float. Counted in Int it
-	// overflowed from 2^31 values up: Random.int(0, 0x7FFFFFFF) came out 0
-	// every time on eval and the jvm, and half of Node's answers fell outside
-	// the range. Up to 2^31 - 1 values, every range that ever worked, the
-	// draw is the one it always was, so a seeded sequence reads the same.
+	// How many values [min, max] holds is counted in Float: counted in Int
+	// it overflows from 2^31 values up (Random.int(0, 0x7FFFFFFF) would come
+	// out 0 every time on eval and the jvm, and half of Node's answers fall
+	// outside the range). Up to 2^31 - 1 values the draw is the same either
+	// way, so a seeded sequence reads the same.
 	@:noCompletion private static inline function __int(next:() -> Int, min:Int, max:Int):Int {
 		var result:Int = min;
 		// `+ 0.0`, not a cast: eval keeps Int arithmetic for an Int typed as Float.
 		var span:Float = (max + 0.0) - (min + 0.0) + 1.0;
 		if (span <= 0) {
-			// An empty range, as it always answered.
+			// An empty range.
 		} else if (span <= 2147483647.0) {
 			var count:Int = Std.int(span);
 			var mask:Int = __nextPow2Minus1(count);

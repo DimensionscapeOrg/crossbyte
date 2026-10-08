@@ -33,10 +33,10 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testANonAsciiQueryArrivesWhole():Void {
-		// The client sent the query with its length in UTF-16 units rather
-		// than UTF-8 bytes, so each extra byte of a non-ASCII character cut a
-		// byte off the end. Measured against a logging server: this UPDATE
-		// arrived as "... WHERE id = 1", changing another row.
+		// The query's length is counted in UTF-8 bytes, not UTF-16 units, which
+		// would cut a byte off the end for each extra byte of a non-ASCII
+		// character: this UPDATE would arrive as "... WHERE id = 1", changing
+		// another row.
 		__server.start();
 		var connection:MySQLConnection = __open();
 
@@ -50,10 +50,10 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testANonAsciiValueIsEscapedWhole():Void {
-		// The escape buffer was sized the same way and escaped only the first
-		// value.length bytes, so an escaped value lost its tail too: 'Zoë
-		// \u{1F680}' went out followed by NUL bytes, with the quote and the
-		// rest of the statement gone.
+		// The escape buffer is sized the same way, and escapes the whole value,
+		// not only the first value.length bytes, which would cost an escaped
+		// value its tail too: 'Zoë \u{1F680}' going out followed by NUL bytes,
+		// with the quote and the rest of the statement gone.
 		__server.start();
 		var connection:MySQLConnection = __open();
 
@@ -72,7 +72,7 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testTypedParametersReachTheServerExactly():Void {
-		// Strings only, before: no NULL, numbers quoted, bytes cut at a NUL.
+		// Values as themselves: NULL, numbers unquoted, bytes not cut at a NUL.
 		__server.start();
 		var connection:MySQLConnection = __open();
 		var statement:MySQLStatement = new MySQLStatement();
@@ -96,8 +96,8 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAServerThatNeverGreetsTimesOut():Void {
-		// The handshake waited 50 seconds, and a TCP connect as long as the
-		// operating system cared to.
+		// The handshake is bounded by connectTimeout, not a fixed 50 seconds,
+		// and the TCP connect too, not as long as the operating system cares to.
 		__server.greetingDelay = 5;
 		__server.start();
 		var config:MySQLConfig = __config();
@@ -116,10 +116,11 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAGreetingSentAByteAtATimeIsBoundedByTheConnectTimeout():Void {
-		// Each read of the handshake waited the whole connect timeout again,
-		// so a server that sent its greeting a byte at a time, each inside
-		// it, held open() for as long as it went on: here 0.25 s a byte, some
-		// 80 bytes, under a 1 s connectTimeout, and then logged in.
+		// The handshake's reads share one connect timeout, rather than each
+		// waiting the whole of it again: a server sending its greeting a byte at
+		// a time, each inside it, would otherwise hold open() for as long as it
+		// went on (here 0.25 s a byte, some 80 bytes, under a 1 s connectTimeout)
+		// and then log in.
 		__server.greetingTrickle = 0.25;
 		__server.start();
 		var config:MySQLConfig = __config();
@@ -146,15 +147,15 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAConnectNobodyAnswersTimesOut():Void {
-		// connect() itself had no limit: to a host that drops the SYN it
-		// waited for as long as the system resent it, 21 seconds on Windows
-		// and over two minutes on Linux. Here, a listener that never accepts,
-		// its queue filled: the next SYN goes unanswered, on Linux and macOS
-		// for good, on Windows until it refuses the connection a couple of
+		// connect() itself is bounded: unbounded, to a host that drops the SYN
+		// it would wait for as long as the system resent it, 21 seconds on
+		// Windows and over two minutes on Linux. Here, a listener that never
+		// accepts, its queue filled: the next SYN goes unanswered, on Linux and
+		// macOS for good, on Windows until it refuses the connection a couple of
 		// seconds later. The queue is filled until a connect is not answered,
-		// not by a count assumed: one connection filled a listen(0) on Linux
-		// and Windows, and macOS made the next connection all the same, so
-		// the server's greeting timed out instead (2013).
+		// not by a count assumed: one connection fills a listen(0) on Linux and
+		// Windows, while macOS makes the next connection all the same, so that
+		// the server's greeting times out instead (2013).
 		var listener:sys.net.Socket = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
 		listener.listen(1);
@@ -211,8 +212,8 @@ class MySQLNativeWireTest extends utest.Test {
 	public function testAConnectionTheServerNeverGreetsIsNotACannotConnect():Void {
 		// The other side of connectTimeout's contract: a listener whose queue
 		// has room completes the connection before the server takes it, so a
-		// server too busy to accept is one that said nothing, 2013, and
-		// what ran out was the greeting, not one that could not be reached.
+		// server too busy to accept is one that said nothing (2013, and what ran
+		// out was the greeting), not one that could not be reached.
 		var listener:sys.net.Socket = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
 		listener.listen(16);
@@ -243,7 +244,7 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAReadTimeoutFailsTheStatementAndClosesTheConnection():Void {
-		// After connecting the client waited five hours for any answer.
+		// After connecting, an answer is waited for within the read timeout, not five hours.
 		__server.onQuery = function(session, sql) {
 			if (sql == "SELECT SLOW") {
 				// Answers late, so a client with no limit returns eventually.
@@ -289,8 +290,8 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAWriteTimeoutFailsTheStatementAndClosesTheConnection():Void {
-		// A server that stopped reading held a statement's send for as long
-		// as the socket waited, five hours: there was no write timeout.
+		// A server that stops reading must not hold a statement's send for as
+		// long as the socket waits, five hours: the write has a timeout too.
 		__server.stallOnPacketsOver = 1 << 20;
 		__server.start();
 		var config:MySQLConfig = __config();
@@ -299,9 +300,9 @@ class MySQLNativeWireTest extends utest.Test {
 		connection.open(config);
 
 		// More than one packet carries, so the statement goes as two. Windows
-		// takes a single send() whole, however little room its buffer has,
-		// an 8 MB statement to a server not reading went out at once, and
-		// only the send after it waits; Linux waits part way through.
+		// takes a single send() whole, however little room its buffer has (an
+		// 8 MB statement to a server not reading goes out at once), and only the
+		// send after it waits; Linux waits part way through.
 		var filler:Bytes = Bytes.alloc(17 << 20);
 		filler.fill(0, filler.length, "x".code);
 		var sql:String = "SELECT '" + filler.toString() + "'";
@@ -337,8 +338,8 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testKeepAliveIsSetOnTheSocket():Void {
-		// The client set no keepalive, so a connection to a host that had
-		// vanished was noticed only when a read ran out of time. Read back
+		// The client sets keepalive, so a connection to a host that has vanished
+		// is noticed without waiting for a read to run out of time. Read back
 		// from the socket, not from what was asked for.
 		__server.start();
 		var config:MySQLConfig = __config();
@@ -351,8 +352,8 @@ class MySQLNativeWireTest extends utest.Test {
 		var state:Array<Int> = connection.__native.keepAlive;
 		Assert.equals(1, state[0], "keepalive is off");
 
-		// Where the system reports them, Linux, and Windows 10 1709 on,
-		// they are the ones asked for; on Windows the count as well, which
+		// Where the system reports them (Linux, and Windows 10 1709 on) they are
+		// the ones asked for; on Windows the count as well, which
 		// SIO_KEEPALIVE_VALS cannot set.
 		if (Sys.systemName() == "Linux" || Sys.systemName() == "Windows") {
 			Assert.equals("45 7 4", state.slice(1).join(" "));
@@ -368,9 +369,10 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testAnErrorCarriesItsNumberAndStateButNotTheStatement():Void {
-		// A duplicate-key error arrived as the whole INSERT with its values,
-		// so the token in this row went to whatever logged the error; and
-		// there was no number or SQLSTATE to tell it from a deadlock.
+		// A duplicate-key error carries the server's message, not the whole
+		// INSERT with its values, which would send the token in this row to
+		// whatever logged the error; and a number and SQLSTATE to tell it from
+		// a deadlock.
 		__server.onQuery = function(session, sql) {
 			if (sql.indexOf("api_token") >= 0) {
 				session.error(1062, "23000", "Duplicate entry 'zoe@example.com' for key 'users.email'");
@@ -415,8 +417,8 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testCancelStopsTheRunningStatement():Void {
-		// There was no way to stop a statement: the thread that sent it waits
-		// for its answer, and nothing else could reach the server for it.
+		// The thread that sent a statement waits for its answer, so stopping
+		// it takes another thread reaching the server for it.
 		__server.start();
 		var connection:MySQLConnection = __open();
 		var outcome:Null<Int> = null;
@@ -457,8 +459,8 @@ class MySQLNativeWireTest extends utest.Test {
 	}
 
 	public function testCancelReachesAConnectionIdPastTwoToTheThirtyOne():Void {
-		// Connection ids are unsigned 32-bit. Written through Std.int, one
-		// past 2^31 became -2147483648 and the KILL named no connection.
+		// Connection ids are unsigned 32-bit. Written through Std.int, one past
+		// 2^31 would become -2147483648, and the KILL would name no connection.
 		__server.nextConnectionId = -2; // 4294967294 on the wire
 		__server.start();
 		var connection:MySQLConnection = __open();

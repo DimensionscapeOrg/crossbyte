@@ -15,21 +15,21 @@ import haxe.io.Input;
 	memory does, as `BoundedUnserializer` refuses HXSF.
 
 	It reads a value within a value by calling itself, as `haxe.Unserializer`
-	does, and natively a peer's object nested a few thousand deep overflowed
-	the stack and ended the process. Every value, an object's members
+	does, so natively a peer's object nested a few thousand deep would
+	overflow the stack and end the process. Every value, an object's members
 	included, is read through `readWithCode`, so counting there bounds them
 	all; a member's name is counted where it is read.
 
-	A long string's length is a 32-bit count ahead of it, and `format` made
-	a buffer that long before reading any of it: five bytes asked for 2 GB.
-	Text here is read as it arrives; see `AMFText`.
+	A long string's length is a 32-bit count ahead of it, and `format` makes
+	a buffer that long before reading any of it: five bytes could ask for
+	2 GB. Text here is read as it arrives; see `AMFText`.
 **/
 class BoundedAMFReader extends format.amf.Reader {
 	/**
 		Values within values, at most: half `BoundedUnserializer.LIMIT`,
-		because an AMF level takes more stack than an HXSF one, the
-		interpreter ran out at about 250 AMF0 levels, where HXSF lasts to
-		about 510.
+		because an AMF level takes more stack than an HXSF one (the
+		interpreter runs out at about 250 AMF0 levels, where HXSF lasts to
+		about 510).
 	**/
 	public static inline var LIMIT:Int = 128;
 
@@ -89,13 +89,13 @@ class BoundedAMFReader extends format.amf.Reader {
 
 /**
 	`format`'s AMF3 reader, bounded as `BoundedAMFReader` is: in depth, in
-	values, every value, each element of a vector, and each name and
-	string read for the first time, and in what it allocates ahead of
+	values (every value, each element of a vector, and each name and
+	string read for the first time), and in what it allocates ahead of
 	reading.
 
 	A string's, a byte array's or a vector's length is a 29-bit count ahead
-	of it, and `format` made a buffer or a vector that long before reading
-	any of it: five bytes asked for 256 MB, or a vector of 268 million
+	of it, and `format` makes a buffer or a vector that long before reading
+	any of it: five bytes could ask for 256 MB, or a vector of 268 million
 	slots. Here text and bytes are read as they arrive, and a vector's
 	elements are counted and gathered as they are read.
 **/

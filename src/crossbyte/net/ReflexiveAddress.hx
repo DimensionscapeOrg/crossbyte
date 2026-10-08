@@ -12,7 +12,7 @@ package crossbyte.net;
 	"Reflexive" is the ICE term for it: the address a peer learns by asking
 	something beyond its own NAT, as opposed to the host address it can read
 	locally. The two differ for any peer behind NAT, and the difference is the
-	whole reason to ask, a peer that advertises its host address advertises
+	whole reason to ask: a peer that advertises its host address advertises
 	somewhere no other peer can reach.
 **/
 class ReflexiveAddress {
@@ -33,7 +33,7 @@ class ReflexiveAddress {
 		what decides whether a peer can reach this address, and it does not
 		predict it either way: a NAT can keep the port toward the first
 		destination and give the next one another, and one that renumbers
-		every port can still keep a single mapping for every destination,
+		every port can still keep a single mapping for every destination, as
 		carrier-grade NATs commonly do. `StunClient.classifyMapping` finds the
 		behaviour itself.
 	**/
@@ -42,7 +42,7 @@ class ReflexiveAddress {
 	}
 
 	/**
-		`address:port`, with an IPv6 address in brackets, RFC 5952 section
+		`address:port`, with an IPv6 address in brackets: RFC 5952 section
 		6's form, since `2001:db8::7:3478` is itself a valid IPv6 address and
 		says nothing about which part is the port.
 	**/

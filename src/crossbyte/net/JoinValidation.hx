@@ -7,9 +7,9 @@ package crossbyte.net;
 
 	A session is opened, and held for its handshake, on the strength of a
 	source address that UDP lets a sender write for itself. A validated
-	join is answered first with a cookie, the server's keyed hash of the
+	join is answered first with a cookie (the server's keyed hash of the
 	address, the port, the CONNECT's connection id and the time, which it
-	keeps nothing for, and only a CONNECT that returns it opens a
+	keeps nothing for), and only a CONNECT that returns it opens a
 	session. A peer on 1.0 or later does that by itself; it costs one more
 	round trip.
 **/
@@ -27,8 +27,8 @@ enum abstract JoinValidation(Int) from Int to Int {
 	var ALWAYS = 1;
 
 	/**
-		No join: every CONNECT is taken at its word, as before 1.0, up to
-		`maxPendingConnections`: so CONNECTs from forged addresses can take
+		No join: every CONNECT is taken at its word, up to
+		`maxPendingConnections`, so CONNECTs from forged addresses can take
 		every slot.
 	**/
 	var NEVER = 2;

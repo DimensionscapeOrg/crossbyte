@@ -38,7 +38,7 @@ import haxe.io.Bytes;
  *
  * `http://` uses prior-knowledge h2c: the client opens with the connection
  * preface and assumes the server speaks HTTP/2. That is the only cleartext
- * mode left, RFC 9113 §3.1 retired the `Upgrade: h2c` handshake, and it
+ * mode left (RFC 9113 §3.1 retired the `Upgrade: h2c` handshake), and it
  * means a server that does *not* speak HTTP/2 fails rather than negotiating
  * down, which is why the version has to be asked for explicitly.
  *
@@ -71,7 +71,7 @@ import haxe.io.Bytes;
  * arriving for it. `0` or less is none, as it is there. Its `headTimeout`
  * is a deadline on each hop's response head, counted from the request
  * being sent, and its `maxBodySize` and `maxResponseHeaderSize` hold the
- * response as they hold it over HTTP/1.1, the header section counted as
+ * response as they hold it over HTTP/1.1: the header section counted as
  * HPACK counts it, and never past the 64 KB a connection tells the server
  * it takes, since the connection, and that setting, are shared.
  *
@@ -84,10 +84,7 @@ class HTTP2Backend implements HTTPBackend {
 	 * Whether this target can carry an HTTP/2 request at all: true on every
 	 * target this class is built for, which is every one but JavaScript.
 	 *
-	 * eval included, since its socket errors can be caught: they were raised
-	 * as native exceptions no Haxe `catch` could see, so a peer reset killed
-	 * the reader thread a pooled connection parks on, or on a send the
-	 * process, and this was false there.
+	 * eval included, since its socket errors can be caught.
 	 *
 	 * The framing and HPACK layers run everywhere, the browser included.
 	 * This is about driving a socket with them.
@@ -96,7 +93,7 @@ class HTTP2Backend implements HTTPBackend {
 
 	/**
 		Our SETTINGS, sent at the head of every connection. Push is refused
-		whatever these say, nothing here takes a pushed stream, and a
+		whatever these say (nothing here takes a pushed stream), and a
 		connection's HPACK encoder holds no more than the protocol's default
 		4 KB, whatever table the server offers.
 	**/
@@ -119,11 +116,9 @@ class HTTP2Backend implements HTTPBackend {
 		var contentType:Null<String> = context.contentType;
 		var cookies:Null<CookieJar> = context.manageCookies == true ? new CookieJar() : null;
 
-		// `requestData`, encoded as the HTTP/1.1 client encodes it, a
-		// URLVariables, or an object's fields, and ignored beside a body of
+		// `requestData`, encoded as the HTTP/1.1 client encodes it (a
+		// URLVariables, or an object's fields) and ignored beside a body of
 		// the caller's own: a GET's or HEAD's query, any other method's form.
-		// Nothing here read it, so a form went out as an empty POST with no
-		// Content-Type, and a GET without its query.
 		var query:Null<String> = null;
 		if (data == null && context.requestData != null && Reflect.isObject(context.requestData)) {
 			var form:String = Http.__buildQuery(context.requestData);
@@ -274,8 +269,8 @@ class HTTP2Backend implements HTTPBackend {
 			// was retired as idle a moment after being handed over, or its
 			// peer has said GOAWAY. REFUSED_STREAM promises the request was
 			// not processed (RFC 9113, 8.7), so sending it again is safe. The
-			// session is retired, not discarded: closing it failed every other
-			// request still in flight on it.
+			// session is retired, not discarded, so the other requests still
+			// in flight on it carry on.
 			var stream:H2Stream = null;
 			var refused:Int = 0;
 			while (stream == null) {
@@ -309,9 +304,8 @@ class HTTP2Backend implements HTTPBackend {
 			}
 			return new H2Exchange(stream, session.connection);
 		} catch (e:H2StreamError) {
-			// One stream failed, a timeout, and has been reset. The
-			// connection is left pooled for the requests still on it and the
-			// next: discarding it here failed all of them along with this one.
+			// One stream failed (a timeout) and has been reset. The connection
+			// is left pooled for the requests still on it and the next.
 			if (session != null && session.dead) {
 				H2ConnectionPool.discard(session);
 			}
@@ -340,8 +334,8 @@ class HTTP2Backend implements HTTPBackend {
 	 * A response's header fields by name, repeats joined as the HTTP/1 client
 	 * joins them, so a caller sees one shape whichever version served it.
 	 *
-	 * Collected, then joined once per name: each repeat was appended to the
-	 * whole value so far, which is quadratic in the repeats, and the server
+	 * Collected, then joined once per name: appending each repeat to the
+	 * whole value so far would be quadratic in the repeats, and the server
 	 * chooses how many there are.
 	 */
 	private static function __fields(stream:H2Stream):Map<String, String> {
@@ -375,10 +369,9 @@ class HTTP2Backend implements HTTPBackend {
 	 * Opens a connection for the pool.
 	 *
 	 * The connect and the TLS handshake are held to the request's timeout,
-	 * and its cancel token reaches the socket while they run. They had
-	 * neither: a server that accepted TCP and then said nothing held this
-	 * request, and every other request to its origin waiting on this connect,
-	 * for good, and a cancel did nothing.
+	 * and its cancel token reaches the socket while they run, so a server
+	 * that accepts TCP and then says nothing cannot hold this request, or
+	 * any other request to its origin waiting on this connect, for good.
 	 *
 	 * Once open, the socket has no read timeout. A pooled connection is idle
 	 * between requests by design, and a deadline on the reader would tear down
@@ -414,11 +407,10 @@ class HTTP2Backend implements HTTPBackend {
 		try {
 			// The name through the resolver's threads, waited for here, on the
 			// load's own thread: within the idle timeout and the resolver's own
-			// limit, and a cancel ends the wait. It was looked up inside the
-			// connect, on this thread, where a wedged resolver held the request,
-			// and every request to its origin waiting on this connect, for
-			// as long as it stayed wedged. The host keeps the name, so TLS asks
-			// for it and checks the certificate against it.
+			// limit, and a cancel ends the wait, so a wedged resolver cannot
+			// hold the request (or every request to its origin waiting on this
+			// connect). The host keeps the name, so TLS asks for it and checks
+			// the certificate against it.
 			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(host, timeout, token);
 			socket.connectHost(address, port);
 		} catch (e:Dynamic) {
@@ -545,9 +537,8 @@ class HTTP2Backend implements HTTPBackend {
 
 		context.onProgress(body.length, body.length);
 
-		// The HTTP/1.1 client's contract: a 4xx or 5xx is an error carrying
-		// its body. This completed, so a 404 was IO_ERROR over HTTP/1.1 and
-		// COMPLETE over HTTP/2.
+		// The HTTP/1.1 client's contract, kept over HTTP/2: a 4xx or 5xx is
+		// an error carrying its body.
 		if (stream.status >= 400) {
 			context.onError('HTTP error ' + stream.status, body);
 			return;
@@ -584,7 +575,7 @@ class HTTP2Backend implements HTTPBackend {
 	/**
 	 * Turns the caller's `"Name: value"` list into HPACK fields.
 	 *
-	 * Field names are lowercased because §8.2.1 requires it, an uppercase
+	 * Field names are lowercased because §8.2.1 requires it: an uppercase
 	 * name is malformed, not merely unusual. Connection-specific fields are
 	 * dropped for the same reason: HTTP/2 has its own framing and §8.2.2 makes
 	 * `Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade` and

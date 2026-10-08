@@ -52,10 +52,10 @@ class ResourcesTest extends utest.Test {
 	/**
 		A path that climbs out of the resources directory reads nothing.
 
-		Paths were joined to the directory as given, so a server loading a
-		map by the name a client sent, `getText("maps/" + name)`, read
-		whatever `"../../config.json"` named. A file is put just outside the
-		directory here, so the climb has something real to find.
+		A path joined to the directory as given would let a server loading a
+		map by the name a client sent (`getText("maps/" + name)`) read whatever
+		`"../../config.json"` named. A file is put just outside the directory
+		here, so the climb has something real to find.
 	**/
 	public function testAPathThatClimbsOutOfTheResourcesDirectoryIsRefused():Void {
 		var outside:String = Resources.resourcesDir + ".." + crossbyte.io.File.separator + "cb-resources-escape-probe.txt";
@@ -82,7 +82,7 @@ class ResourcesTest extends utest.Test {
 	/** Absolute paths, drive letters and stream names never name a resource. **/
 	public function testAbsolutePathsAndDriveLettersAreRefused():Void {
 		// The NUL is made at run time: HashLink reads a string constant only
-		// up to its first NUL, so on hl the ".png" after it was never there.
+		// up to its first NUL, so on hl the ".png" after it would not be there.
 		for (path in ["/etc/passwd", "\\Windows\\win.ini", "\\\\server\\share\\x", "C:/Windows/win.ini", "C:secret.txt",
 			"testsuite/sample.txt::$DATA", "file:testsuite/sample.txt", "testsuite/sample.txt" + String.fromCharCode(0) + ".png"]) {
 			Assert.isFalse(Resources.exists(path), path + " was found");

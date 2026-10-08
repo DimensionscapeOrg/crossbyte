@@ -3,8 +3,8 @@ package crossbyte.net;
 import crossbyte.errors.ArgumentError;
 
 /**
- * Caps how much work is in flight at once, logins, handshakes, database
- * calls, anything a server can start more of than it can finish, and
+ * Caps how much work is in flight at once (logins, handshakes, database
+ * calls, anything a server can start more of than it can finish) and
  * decides what happens to the rest: refused on the spot, or held in a
  * bounded queue for a bounded time.
  *
@@ -34,7 +34,7 @@ import crossbyte.errors.ArgumentError;
  *
  * **Waiting.** With `maxQueued` above zero, a request that finds no capacity
  * free waits in arrival order for up to `maxWait` seconds. Nothing jumps the
- * queue, not a smaller request behind a larger one, and not `tryAcquire()`,
+ * queue (not a smaller request behind a larger one, and not `tryAcquire()`)
  * so a large request is never starved by a stream of small ones. A waiter
  * is granted by whichever call frees enough capacity, or refused with
  * `TIMED_OUT` by the first `sweep()` at or after its deadline: there is no
@@ -43,8 +43,8 @@ import crossbyte.errors.ArgumentError;
  * to give up sooner releases its permit.
  *
  * **Callbacks** run inside the call that decided them. `onGranted` or
- * `onRejected` may run before `acquire()` returns, when capacity is free,
- * or there is no room to wait, and otherwise inside the `release()`,
+ * `onRejected` may run before `acquire()` returns (when capacity is free,
+ * or there is no room to wait), and otherwise inside the `release()`,
  * `sweep()`, `close()` or `limit` change that settled it. A callback may call
  * back into the limiter: whatever that decides is delivered after the
  * callback returns, in order, never nested inside it, so a thousand waiters
@@ -59,8 +59,8 @@ import crossbyte.errors.ArgumentError;
 final class ConcurrencyLimiter {
 	/**
 	 * Capacity, in the units callers pass as `cost`. Raising it admits
-	 * waiters that now fit. Lowering it revokes nothing already held,
-	 * `inFlight` can sit above it until enough is released, and leaves
+	 * waiters that now fit. Lowering it revokes nothing already held
+	 * (`inFlight` can sit above it until enough is released), and leaves
 	 * waiters queued, to be admitted if it rises again or refused when their
 	 * wait runs out. A request costing more than the current limit is
 	 * refused at once with `EXCEEDS_LIMIT` rather than queued.
@@ -155,7 +155,7 @@ final class ConcurrencyLimiter {
 	 * unit behind a waiting request belongs to that request once enough
 	 * else is returned.
 	 *
-	 * What it decides for waiters on the way, a refusal at its deadline,
+	 * What it decides for waiters on the way (a refusal at its deadline)
 	 * is delivered before any capacity is taken, so a callback that throws
 	 * there leaves nothing held by this call.
 	 *
@@ -169,10 +169,10 @@ final class ConcurrencyLimiter {
 			return null;
 		}
 
-		// What the sweep decides is delivered before anything is taken. It
-		// was delivered after: a callback that threw carried its exception
-		// out of here with the permit just made, which held its capacity
-		// and was never handed to anyone who could release it.
+		// What the sweep decides is delivered before anything is taken, so a
+		// callback that throws carries its exception out of here before a
+		// permit is made, rather than with one that holds its capacity and
+		// is never handed to anyone who could release it.
 		__settle(__clock());
 		__deliver();
 
@@ -193,7 +193,7 @@ final class ConcurrencyLimiter {
 	 * @param onRejected Called with the reason if the request is refused.
 	 * @param cost Capacity the request needs; one by default.
 	 * @return The request's permit, whatever happened to it. Keep it to
-	 *         withdraw the request, or free what it holds, with
+	 *         withdraw the request (or free what it holds) with
 	 *         `release()`.
 	 */
 	public function acquire(onGranted:ConcurrencyPermit->Void, ?onRejected:ConcurrencyRejection->Void, cost:Int = 1):ConcurrencyPermit {

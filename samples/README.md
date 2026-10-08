@@ -1,303 +1,47 @@
-# CrossByte Samples
+# CrossByte samples
 
-## WebSocket Echo
+Small programs, each in a folder of its own, that build natively. Several check what they did and exit 0 only when it
+worked; CI builds every sample and runs those.
 
-`websocket-echo` starts a localhost `ServerWebSocket`, connects a `WebSocket`
-client, sends a message, and echoes the payload back through the public
-socket-style API.
+| Sample | What it shows |
+| --- | --- |
+| [`simple-application`](simple-application/README.md) | the smallest application: `Application`, `init`, `TickEvent` and a clean shutdown |
+| [`socket-chat`](socket-chat/README.md) | a TCP chat server and console client on `ServerSocket` and `Socket` |
+| [`web-server`](web-server/README.md) | an `HTTPServer` serving a small document root, fetching itself with `URLLoader` |
+| [`http2`](http2/README.md) | one `HTTPServer` port serving HTTP/1.1 and HTTP/2, and two requests sharing one HTTP/2 connection |
+| [`multicore`](multicore/README.md) | an `HTTPServer` spread over four runtimes, and middleware that is safe on all of them |
+| `websocket-echo` | a `ServerWebSocket` and a `WebSocket` client echoing a message |
+| [`udp`](udp/README.md) | sending and receiving datagrams with `DatagramSocket` |
+| [`rudp`](rudp/README.md) | a reliable UDP session admitted on a ticket, and a message echoed over it |
+| [`rpc-greeter`](rpc-greeter/README.md) | a contract-driven RPC pair: one-way calls, typed responses, a structure with an enum and compact numbers |
+| [`arena`](arena/README.md) | an authoritative game server and sixteen bots built from the game-server primitives, checking every snapshot |
+| [`localconnection`](localconnection/README.md) | `LocalConnection`, the low-level local named-pipe transport |
+| [`sharedchannel`](sharedchannel/README.md) | `SharedChannel`, local message passing between processes |
+| [`sharedobject`](sharedobject/README.md) | `SharedObject`, shared memory between processes |
+| [`worker`](worker/README.md) | `crossbyte.sys.Worker` progress and completion events |
+| [`windows-service`](windows-service/README.md) | an `HTTPServer` that drains its requests when the Windows service manager stops it |
 
-From the repository root:
+`websocket-echo` needs a native target, since a `WebSocket` client needs a secure random source for its handshake
+keys.
 
-```sh
-aedifex task sample-websocket-echo-check <project-root>
-aedifex task sample-websocket-echo-cpp <project-root>
-```
+## Building a sample
 
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-The runtime sample needs a native target because `WebSocket` uses
-`SecureRandom` for client handshake keys.
-
-## Socket Chat
-
-`socket-chat` is a small TCP chat sample with a broadcast server and a console
-client built directly on `ServerSocket` and `Socket`.
-
-From the repository root:
+From the repository root, with the `aedifex` task runner:
 
 ```sh
-aedifex task sample-socket-chat-check <project-root>
-aedifex task sample-socket-chat-server-cpp <project-root>
-aedifex task sample-socket-chat-client-cpp <project-root>
+aedifex task sample-<name>-check .
+aedifex task sample-<name>-cpp .
 ```
 
-Raw HXML entrypoints:
+`-check` type-checks the sample and `-cpp` builds it. `socket-chat` has `sample-socket-chat-server-cpp` and
+`sample-socket-chat-client-cpp` in place of `-cpp`.
 
-```sh
-haxe check.hxml
-haxe server-cpp.hxml
-haxe client-cpp.hxml
-```
-
-## RPC Greeter
-
-`rpc-greeter` is a tiny contract-driven RPC sample that uses an in-memory
-loopback connection to show the `RPCCommands` / `RPCHandler` model clearly.
-
-From the repository root:
-
-```sh
-aedifex task sample-rpc-greeter-check <project-root>
-aedifex task sample-rpc-greeter-cpp <project-root>
-```
-
-Raw HXML entrypoints:
+Or from the sample's folder, with Haxe alone:
 
 ```sh
 haxe check.hxml
 haxe cpp.hxml
 ```
 
-## LocalConnection
-
-`localconnection` demonstrates CrossByte's low-level local named-pipe transport with
-`demo`, `listen`, and `send` modes.
-
-From the repository root:
-
-```sh
-aedifex task sample-localconnection-check <project-root>
-aedifex task sample-localconnection-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## SharedChannel
-
-`sharedchannel` demonstrates CrossByte's higher-level local message IPC API
-with `demo`, `listen`, and `send` modes.
-
-From the repository root:
-
-```sh
-aedifex task sample-sharedchannel-check <project-root>
-aedifex task sample-sharedchannel-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## SharedObject
-
-`sharedobject` demonstrates CrossByte's shared-memory IPC API with `demo`,
-`write`, and `read` modes.
-
-From the repository root:
-
-```sh
-aedifex task sample-sharedobject-check <project-root>
-aedifex task sample-sharedobject-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Simple Application
-
-`simple-application` demonstrates the smallest primordial CrossByte app shape
-with `Application`, `init`, `tick`, and clean shutdown.
-
-From the repository root:
-
-```sh
-aedifex task sample-simple-application-check <project-root>
-aedifex task sample-simple-application-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## UDP
-
-`udp` demonstrates localhost datagram send/receive with `DatagramSocket`.
-
-From the repository root:
-
-```sh
-aedifex task sample-udp-check <project-root>
-aedifex task sample-udp-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## RUDP
-
-`rudp` demonstrates localhost reliable datagram handshake and echo with
-`ReliableDatagramServerSocket` and `ReliableDatagramSocket`.
-
-From the repository root:
-
-```sh
-aedifex task sample-rudp-check <project-root>
-aedifex task sample-rudp-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Arena
-
-`arena` is an authoritative game server and sixteen bots in one process,
-built from the game-server primitives, `FixedStep`, `SpatialGrid`,
-`InterestSet`, `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`
-and `ServerSocket.admit`, that checks itself: a snapshot that decodes to
-anything but what the server built fails the run.
-
-From the repository root:
-
-```sh
-aedifex task sample-arena-check <project-root>
-aedifex task sample-arena-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Web Server
-
-`web-server` starts a localhost `HTTPServer`, serves a tiny doc root, and can
-either fetch itself in `demo` mode or stay up in `serve` mode.
-
-From the repository root:
-
-```sh
-aedifex task sample-web-server-check <project-root>
-aedifex task sample-web-server-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## HTTP/2
-
-`http2` starts a localhost `HTTPServer` with `http2Enabled`, then fetches from
-it twice concurrently over HTTP/2.
-
-One listener serves both versions: each connection is served as whichever one
-it is speaking, decided by ALPN over TLS and by the connection preface over
-cleartext. A browser pointed at the running sample gets HTTP/1.1 on the same
-port.
-
-From the repository root:
-
-```sh
-aedifex task sample-http2-check <project-root>
-aedifex task sample-http2-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Multicore
-
-`multicore` starts a localhost `HTTPServer` spread over four runtimes with
-`HTTPServerConfig.runtimeCount`, fetches from it sixteen times at once, and
-prints which runtime answered how many before draining the server.
-
-Each runtime is a thread of its own, and the server hands every connection
-to one of them, so the middleware runs on four threads at once: it shares
-what it only reads, and takes a lock for what it changes.
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Windows Service
-
-`windows-service` runs an `HTTPServer` that drains its in-flight requests when
-the Windows Service Control Manager stops it, and behaves the same way under
-`Ctrl+C` from a console. It is also the harness for verifying the service
-control path by hand, since nothing in CI installs a real service, see the
-sample's own README for the `sc create`/`sc stop` procedure and what to check.
-
-From the repository root:
-
-```sh
-aedifex task sample-windows-service-check <project-root>
-aedifex task sample-windows-service-cpp <project-root>
-```
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
-
-## Worker
-
-`worker` demonstrates `crossbyte.sys.Worker` progress and completion events in
-the smallest host-driven shape.
-
-From the repository root:
-
-```sh
-aedifex task sample-worker-check <project-root>
-aedifex task sample-worker-cpp <project-root>
-```
-
-In these examples, `<project-root>` is usually `.` when you are already in the
-repository root.
-
-Raw HXML entrypoints:
-
-```sh
-haxe check.hxml
-haxe cpp.hxml
-```
+The executable lands in `export/<name>/` under the repository root (`export/socket-chat-server/` and
+`export/socket-chat-client/` for the chat).

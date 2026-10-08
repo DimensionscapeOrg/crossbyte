@@ -17,7 +17,7 @@ import crossbyte.net.rtc._internal.NativeDtlsSession;
 	The encrypted channel a WebRTC data channel runs inside.
 
 	ICE finds a path; this is what makes it private. Every byte a peer connection
-	carries, and, once SCTP is here, every message on every data channel,
+	carries (and, once SCTP is here, every message on every data channel)
 	travels inside a DTLS session negotiated over the same socket the
 	connectivity checks used.
 
@@ -68,7 +68,7 @@ import crossbyte.net.rtc._internal.NativeDtlsSession;
 	over signalling. Skipping it would leave a session encrypted against an
 	attacker rather than against eavesdroppers, which is why the expected
 	fingerprint is a constructor argument rather than something to remember to
-	pass later, there is no way to build one of these that does not check.
+	pass later: there is no way to build one of these that does not check.
 
 	## Native only
 
@@ -125,11 +125,11 @@ class DtlsTransport {
 		the peer's close_notify, a fatal alert, or a record mbedTLS will not go
 		on past. Not called for `close()`, which the caller already knows about.
 
-		Without it a peer that closed its end was indistinguishable from one
-		that had gone quiet: the session stayed `connected`, `send` went on
-		encrypting into it, and the only thing that ever noticed was ICE
-		consent, thirty seconds later and with a reason that named the wrong
-		layer.
+		Without it a peer that closed its end would be indistinguishable from
+		one that had gone quiet: the session would stay `connected`, `send`
+		would go on encrypting into it, and the only thing to notice would be
+		ICE consent, thirty seconds later and with a reason that named the
+		wrong layer.
 	**/
 	public dynamic function onClose(reason:String):Void {}
 
@@ -208,10 +208,10 @@ class DtlsTransport {
 
 		Once the session is established this does nothing, because nothing in
 		it runs on a timer any more: a record is decrypted as `receive` hands it
-		over and encrypted as `send` does. It used to step the native session
-		every tick anyway, three native calls per idle peer per tick, each
-		finding nothing, which at ten thousand peers and twelve ticks a second
-		is a third of a million calls a second doing nothing.
+		over and encrypted as `send` does. Stepping the native session every
+		tick anyway would be three native calls per idle peer per tick, each
+		finding nothing: at ten thousand peers and twelve ticks a second, a
+		third of a million calls a second doing nothing.
 	**/
 	public function poll(now:Float):Void {
 		#if cpp
@@ -267,7 +267,7 @@ class DtlsTransport {
 	/**
 		Hands over a datagram that arrived from the peer. Read during the
 		call and kept by nothing, so a payload valid only during the caller's
-		own call, an event's, can be passed as it is.
+		own call (an event's) can be passed as it is.
 
 		@return Whether it looked like DTLS. A record layer type between 20 and
 		63 is DTLS by RFC 7983's demultiplexing rule, which is what lets STUN,
@@ -286,10 +286,10 @@ class DtlsTransport {
 
 		// The datagram's own storage, not a copy. A `ByteArray` is a
 		// `haxe.io.Bytes` underneath, `feed` copies into the native session's
-		// queue before returning, and the assembly blits what it keeps,
-		// nothing holds this reference past the call, so the byte-at-a-time
-		// copy that used to sit here bought nothing and cost a pass over every
-		// record the connection ever received.
+		// queue before returning, and the assembly blits what it keeps, so
+		// nothing holds this reference past the call and a byte-at-a-time copy
+		// here would buy nothing and cost a pass over every record the
+		// connection ever received.
 		var bytes:haxe.io.Bytes = payload;
 
 		// A server's first job is to read a ClientHello, and a browser's is
@@ -351,7 +351,7 @@ class DtlsTransport {
 		@param notifyPeer Whether to tell the peer first, with a close_notify
 		handed to `onSend` before this returns. On by default, because a peer
 		that is not told keeps its end open until something times out. Off for
-		a path that is already known to be dead, RFC 7675 asks a sender whose
+		a path that is already known to be dead: RFC 7675 asks a sender whose
 		consent has expired to stop transmitting, and a goodbye is a
 		transmission.
 	**/
@@ -431,10 +431,9 @@ class DtlsTransport {
 				return;
 			}
 
-			// Straight into the ByteArray the handler receives, its backing
-			// store is a `haxe.io.Bytes` the native session can fill, so the
-			// second full copy this used to make of every outbound record is
-			// gone.
+			// Straight into the ByteArray the handler receives: its backing
+			// store is a `haxe.io.Bytes` the native session can fill, so no
+			// second full copy is made of every outbound record.
 			var out = new ByteArray(size);
 			var written = NativeDtlsSession.take(__handle, __ptr(out), size);
 
@@ -519,7 +518,7 @@ class DtlsTransport {
 
 	// The same shape Blake3 uses to hand hxcpp a buffer: a pointer to the first
 	// element of the underlying storage, which is what the extern signatures
-	// take. Never called with an empty buffer, every caller checks first,
+	// take. Never called with an empty buffer: every caller checks first,
 	// because element zero of nothing does not exist.
 	@:noCompletion private static inline function __ptr(bytes:haxe.io.Bytes):RawPointer<UInt8> {
 		return cast Pointer.arrayElem(bytes.getData(), 0);
@@ -536,9 +535,9 @@ class DtlsTransport {
 
 		// Before close(), which settles `established` too but only knows that
 		// the session is closing. Future.__fail is idempotent, so whichever
-		// runs first wins, and this one knows what actually went wrong. Put
-		// the other way round, a refused certificate reported "closed before
-		// the handshake completed" and the reason was lost.
+		// runs first wins, and this one knows what actually went wrong; the
+		// other way round, a refused certificate would report "closed before
+		// the handshake completed" and the reason would be lost.
 		if (!connected) {
 			@:privateAccess established.__fail(reason, null);
 		}

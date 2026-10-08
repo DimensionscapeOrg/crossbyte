@@ -11,7 +11,7 @@ import haxe.io.Bytes;
  * 1. `onStatus`, once the response code is known.
  * 2. `onHeaders`, once the response header block is complete.
  * 3. `onProgress`, zero or more times as the body arrives.
- * 4. `onComplete` with the whole body, or `onError`, exactly one of the two,
+ * 4. `onComplete` with the whole body, or `onError`: exactly one of the two,
  *    exactly once.
  *
  * A `1xx` response is informational and is not reported: the status and header
@@ -20,10 +20,9 @@ import haxe.io.Bytes;
  * `onStatus` sees the redirect chain; only the final response reaches
  * `onComplete`.
  *
- * A class built from an object literal (`@:structInit`), as the anonymous
- * structure it was is built: the fields marked optional below may be left
- * out of one. Its fields are read directly natively, where a structure's
- * were looked up by name.
+ * A class built from an object literal (`@:structInit`): the fields marked
+ * optional below may be left out of one, and natively its fields are read
+ * directly rather than looked up by name.
  */
 @:structInit
 final class HTTPRequestContext {
@@ -56,9 +55,9 @@ final class HTTPRequestContext {
 	public var contentType:Null<String>;
 
 	/**
-	 * A request body to send as-is, text, sent as UTF-8, or bytes, or
+	 * A request body to send as-is (text, sent as UTF-8, or bytes) or
 	 * `null`. Takes precedence over `requestData`. Assigned from a `String`
-	 * or `haxe.io.Bytes` as before; see `HTTPRequestBody`.
+	 * or `haxe.io.Bytes`; see `HTTPRequestBody`.
 	 */
 	public var data:Null<HTTPRequestBody>;
 
@@ -122,16 +121,16 @@ final class HTTPRequestContext {
 	public var maxRedirects:Int = 10;
 
 	/**
-	 * The most bytes a response's header section may take, interim (1xx)
-	 * responses included, before the request fails; `<= 0` removes the
+	 * The most bytes a response's header section may take (interim 1xx
+	 * responses included) before the request fails; `<= 0` removes the
 	 * limit. Absent means 64 KB, the built-in client's default. See
 	 * `URLRequest.maxResponseHeaderSize`.
 	 */
 	public var maxResponseHeaderSize:Int = 64 * 1024;
 
 	/**
-	 * Milliseconds the response's head, its status and header fields, after
-	 * any 1xx, has to arrive once the request has been sent, on each hop,
+	 * Milliseconds the response's head (its status and header fields, after
+	 * any 1xx) has to arrive once the request has been sent, on each hop,
 	 * before the request fails; `0` or less is no deadline. Unlike `timeout`,
 	 * bytes arriving do not move it. Absent means five minutes, the built-in
 	 * client's default. See `URLRequest.headTimeout`.
@@ -160,7 +159,7 @@ final class HTTPRequestContext {
 	 * over HTTP/2 that means resetting the stream, which frees the slot it
 	 * holds against the peer's concurrent-stream limit and stops the response
 	 * body arriving. A backend that ignores the token is not wrong, only
-	 * wasteful, the request still ends through `onError`.
+	 * wasteful: the request still ends through `onError`.
 	 *
 	 * Cancellation arrives from another thread, since `load()` is blocking.
 	 */

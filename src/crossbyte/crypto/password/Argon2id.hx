@@ -169,9 +169,9 @@ class Argon2id {
 	 *
 	 * @return `true` only when the string parses and the password matches;
 	 *         `false` for malformed strings and mismatches.
-	 * @throws IllegalOperationError When no backend is available, as `hash` does. This used to
-	 *         return `false` there instead, which refused every password on those
-	 *         targets while looking like a working check.
+	 * @throws IllegalOperationError When no backend is available, as `hash`
+	 *         does, rather than answering `false`, which would refuse every
+	 *         password while looking like a working check.
 	 */
 	public static function verify(hashStr:String, password:String):Bool {
 		#if cpp
@@ -277,8 +277,8 @@ class Argon2id {
 	/**
 	 * `hash`, off the calling thread.
 	 *
-	 * On native targets it runs on a `TaskPool` worker, the pool given, or a
-	 * small one the password hashers share, and the future completes on the
+	 * On native targets it runs on a `TaskPool` worker (the pool given, or a
+	 * small one the password hashers share), and the future completes on the
 	 * calling runtime's thread at its next tick (on the worker when the caller runs
 	 * no runtime). On Node it runs on libuv's thread pool through
 	 * `crypto.argon2`, and `pool` is not used. Anywhere else the future fails as

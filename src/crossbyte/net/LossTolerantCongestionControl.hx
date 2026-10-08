@@ -25,11 +25,11 @@ import haxe.ds.Vector;
 	`ReliableDatagramSocket.framesDelivered`, what the peer has whether or
 	not a gap is below it, so that a gap filling is not read as a burst of
 	bandwidth. Westwood+ averages instead, and an average trails a growing
-	window, so every loss cut the window more: at a 20 ms round trip and 1%
-	loss it held near 46 frames and 1.7 MB/s. This grew to about 230 frames
-	and carried 7.0 MB/s, where the default carries 0.63; at 5% loss, 2.1
-	MB/s to the default's 0.28, and at 10%, 1.0 to 0.19, the medians of
-	six runs each.
+	window, so every loss cuts the window more: at a 20 ms round trip and 1%
+	loss an average held near 46 frames and 1.7 MB/s, where this grows to
+	about 230 frames and carries 7.0 MB/s, and the default 0.63. At 5% loss
+	this carries 2.1 MB/s to the default's 0.28, and at 10%, 1.0 to 0.19
+	(the medians of six runs each).
 
 	It still trims the window a little at each loss: frames lost on the way
 	were not delivered, so the rate falls short of what was sent by about
@@ -83,16 +83,16 @@ class LossTolerantCongestionControl extends CongestionControl {
 	}
 
 	/**
-		Grows the window as the default does, and once a round trip, at
-		least `MIN_SAMPLE_INTERVAL`, measures the rate the peer received
+		Grows the window as the default does, and once a round trip (at
+		least `MIN_SAMPLE_INTERVAL`) measures the rate the peer received
 		frames at over it.
 
 		Not from `frames`: that is what the cumulative acknowledgement passed,
 		which stands still while a lost frame is sent again and then passes a
 		round trip's worth at once. Where a round trip is longer than
-		`MIN_SAMPLE_INTERVAL`, a measurement that caught the jump read twice
-		the rate, the most delivered held it for ten, and a loss behind a
-		queue was taken for one with none.
+		`MIN_SAMPLE_INTERVAL`, a measurement that caught the jump would read
+		twice the rate, the most delivered would hold it for ten, and a loss
+		behind a queue would be taken for one with none.
 	**/
 	override public function onAcknowledged(session:ReliableDatagramSocket, frames:Int, now:Float):Void {
 		super.onAcknowledged(session, frames, now);
@@ -148,8 +148,8 @@ class LossTolerantCongestionControl extends CongestionControl {
 	}
 
 	/**
-		Halves the window, as the default does, a timeout says nothing
-		arrived at all, which is no time to trust an estimate, but sets
+		Halves the window, as the default does (a timeout says nothing
+		arrived at all, which is no time to trust an estimate), but sets
 		`slowStartThreshold` to what the path held without a queue, so growth
 		doubles back to it rather than creeping.
 	**/

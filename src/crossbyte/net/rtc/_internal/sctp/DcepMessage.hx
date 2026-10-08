@@ -116,7 +116,7 @@ class DcepMessage {
 
 	/**
 		An OPEN for a channel, ordered unless told otherwise, and reliable
-		unless given one of the two limits, RFC 8832's partially reliable
+		unless given one of the two limits: RFC 8832's partially reliable
 		types, which is what a channel for game state wants: a position that
 		arrives late is worth less than the next one.
 	**/

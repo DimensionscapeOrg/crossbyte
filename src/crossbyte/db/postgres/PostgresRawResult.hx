@@ -9,9 +9,8 @@ import haxe.io.Bytes;
 	Values are bytes, not strings: a `bytea` column and a `text` column
 	holding invalid UTF-8 both have to survive the trip.
 
-	A class, where it was an anonymous structure: its fields are read
-	directly rather than looked up by name, and an object literal with these
-	fields still makes one.
+	A class: its fields are read directly rather than looked up by name,
+	and an object literal with these fields makes one.
 **/
 @:structInit
 final class PostgresRawResult {
@@ -27,7 +26,7 @@ final class PostgresRawResult {
 	/** `PQoidValue`: an unsigned 32-bit OID, 0 on PostgreSQL 12 and later. **/
 	public final lastInsertRowID:Float;
 
-	/** The server's command tag, `INSERT 0 1`, `COMMIT`, `ROLLBACK`, or null when the bridge sent none. **/
+	/** The server's command tag (`INSERT 0 1`, `COMMIT`, `ROLLBACK`), or null when the bridge sent none. **/
 	public final command:Null<String>;
 
 	public function new(fields:Array<String>, rows:Array<Array<Null<Bytes>>>, affectedRows:Float, lastInsertRowID:Float, ?command:String) {

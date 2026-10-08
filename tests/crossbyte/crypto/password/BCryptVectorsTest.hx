@@ -8,15 +8,14 @@ import utest.Assert;
  * BCrypt against hashes other implementations published, through the public API
  * only, so it runs everywhere BCrypt compiles.
  *
- * CrossByte used to add the key's terminating NUL for `$2a$` alone. `$2y$`, its
- * default, and `$2b$` were computed without it, so PHP's own example hash did not
- * verify, every hash migrated from PHP, Node or Python failed, and a password
- * matched its repetitions: without the NUL a key is its bytes cycled to 72, and
- * "abc" cycled is "abcabc" cycled.
+ * Every revision adds the key's terminating NUL, as other implementations
+ * do. Without it PHP's own example hash would not verify, no hash migrated
+ * from PHP, Node or Python would, and a password would match its
+ * repetitions: without the NUL a key is its bytes cycled to 72, and "abc"
+ * cycled is "abcabc" cycled.
  *
- * The `$2a$` vectors passed before the fix and pin that nothing regressed; the
- * same salt and digest under `$2b$` and `$2y$` are the ones that failed, since for
- * ASCII passwords the three revisions are one algorithm.
+ * For ASCII passwords the three revisions are one algorithm, so the same
+ * salt and digest are checked under `$2a$`, `$2b$` and `$2y$`.
  */
 class BCryptVectorsTest extends utest.Test {
 	/**
@@ -25,8 +24,8 @@ class BCryptVectorsTest extends utest.Test {
 	static inline final PHP_MANUAL_HASH:String = "$2y$10$.vGA1O9wmRjrwAVXD98HNOgsNpDczlqm3Jq7KnEd1rVAGv3Fykk1a";
 
 	/**
-	 * A standard `$2b$` hash of "abc". Cross-checked against the pre-fix code, which
-	 * does compute `$2a$` correctly: this digest under `$2a$` verified there.
+	 * A standard `$2b$` hash of "abc". The same salt and digest under `$2a$`
+	 * verify too, since for ASCII the revisions agree.
 	 */
 	static inline final STANDARD_ABC:String = "$2b$04$abcdefghijklmnopqrstuuCi15uRb1eH7NAlJ/TgeJertyknQpYn2";
 
@@ -103,7 +102,7 @@ class BCryptVectorsTest extends utest.Test {
 	}
 
 	public function testHashesStoredByEarlierVersionsStillVerifyAndAreFlagged():Void {
-		// Made by the pre-fix BCrypt, with fixed salts: $2y$ with no NUL.
+		// Made by earlier CrossByte versions, with fixed salts: $2y$ with no NUL.
 		var legacy:Array<Array<String>> = [
 			["hunter2", "$2y$04$abcdefghijklmnopqrstuuiqVPeB7rAfCVQFsJUoJo2j6yvsFNMju"],
 			["abc", "$2y$05$CCCCCCCCCCCCCCCCCCCCC./N9VzPL1A6H8IWDNBlsxsyhL7PbpEui"],

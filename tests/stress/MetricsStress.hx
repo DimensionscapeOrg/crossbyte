@@ -9,10 +9,10 @@ import crossbyte.sys.TaskPool;
  * Invariants: no update is lost, and concurrent get-or-create converges on
  * one instance per name rather than racing into duplicate series.
  *
- * This case caught a real bug: metric-name validation used shared static
- * `EReg` instances, and because `EReg` carries mutable match state,
- * concurrent matches corrupted each other and spuriously rejected valid
- * names, silently dropping 1850 of 50000 updates.
+ * Metric-name validation must not share static `EReg` instances: `EReg`
+ * carries mutable match state, so concurrent matches would corrupt each
+ * other and spuriously reject valid names, silently dropping updates
+ * (1850 of 50000 in one run).
  */
 class MetricsStress implements StressCase {
 	private static inline final WORKERS:Int = 16;

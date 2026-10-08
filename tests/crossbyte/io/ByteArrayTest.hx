@@ -29,20 +29,19 @@ class ByteArrayTest extends utest.Test {
 	/**
 		Converting Bytes to a ByteArray allocates nothing the size of them.
 
-		fromBytes made a ByteArrayData of the bytes' length, allocated and
-		zero-filled, and then adopted the bytes' own buffer in its place, so
-		the first buffer was garbage the moment it was made. Every implicit
-		conversion paid for it, the socket read path among them: each read,
-		however small, went through a 64 KB scratch and so allocated and
-		cleared 64 KB. At 60,000 requests a second that was most of the
-		server's allocation.
+		fromBytes adopts the bytes' own buffer, rather than making a
+		ByteArrayData of the bytes' length (allocated and zero-filled) and then
+		putting the bytes' buffer in its place, which would make the first
+		buffer garbage the moment it was made. Every implicit conversion would
+		pay for it, the socket read path among them: each read, however small,
+		goes through a 64 KB scratch, and so would allocate and clear 64 KB.
 	**/
 	/**
 		On JavaScript, text is written through the platform's `TextEncoder`,
 		ten times as fast as Haxe's encoder for 64 KB, and an unpaired
 		surrogate goes out as U+FFFD, as it does from every browser and from
-		Node. Haxe's encoder took the character after a lone high surrogate
-		into it, "a", U+D800, "b" went out as "a" and U+10062, and wrote a
+		Node. Haxe's encoder takes the character after a lone high surrogate
+		into it ("a", U+D800, "b" goes out as "a" and U+10062) and writes a
 		lone low one as bytes UTF-8 does not allow.
 	**/
 	public function testALoneSurrogateIsWrittenAsTheReplacementCharacter():Void {
@@ -60,9 +59,9 @@ class ByteArrayTest extends utest.Test {
 
 	/**
 		Text read back holds every byte it was given, a NUL among them. On
-		JavaScript the decoder stopped at the first NUL, "a", NUL, "b" read
-		back as "a", where the other targets read all three; it is the
-		platform's TextDecoder there now, ten times as fast for a page. A
+		JavaScript Haxe's decoder stops at the first NUL ("a", NUL, "b" reads
+		back as "a") where the other targets read all three; the platform's
+		TextDecoder, used there instead, is ten times as fast for a page. A
 		leading byte order mark is still U+FEFF.
 	**/
 	public function testTextReadsPastANulAndKeepsAByteOrderMark():Void {
@@ -98,7 +97,7 @@ class ByteArrayTest extends utest.Test {
 		cpp.vm.Gc.enable(true);
 
 		Assert.isTrue(grown < 64 * 1024, "100 conversions of 64 KB allocated " + grown + " bytes of large objects");
-		// The ByteArray is a view of the same buffer, as it always was.
+		// The ByteArray is a view of the same buffer.
 		source.set(0, 7);
 		Assert.equals(7, kept[99][0]);
 		#else
@@ -227,8 +226,8 @@ class ByteArrayTest extends utest.Test {
 
 	/**
 		An algorithm is an Int underneath, so "none" is `Null<CompressionAlgorithm>`
-		and a token nobody knows is refused where it would be taken for one:
-		it was null, and stored as an Int that reads as DEFLATE.
+		and a token nobody knows is refused where it would be taken for one,
+		rather than given as null and stored as an Int that reads as DEFLATE.
 	**/
 	public function testAnUnknownAlgorithmNameIsRefused():Void {
 		Assert.isNull(CompressionAlgorithm.fromString("zstd"));
@@ -285,9 +284,9 @@ class ByteArrayTest extends utest.Test {
 	}
 
 	public function testReadUTFBytesRejectsALengthThatWouldOverflowTheBoundsCheck():Void {
-		// The guard was `position + length > this.length`. Int arithmetic, so a
-		// length near 2^31 wraps the sum negative, which is not greater than
-		// the length, so the check passed and the read ran off the buffer.
+		// A guard of `position + length > this.length` is Int arithmetic, so a
+		// length near 2^31 would wrap the sum negative, which is not greater
+		// than the length, so the check would pass and the read run off the buffer.
 		var bytes = ByteArray.fromBytes(Bytes.ofString("abcd"));
 		bytes.position = 1;
 
@@ -301,8 +300,8 @@ class ByteArrayTest extends utest.Test {
 	}
 
 	public function testReadBytesRejectsALengthThatWouldOverflowTheBoundsCheck():Void {
-		// Same sum, twice over: it decided whether the source read fit, and it
-		// was also the size handed to __resize for the destination.
+		// Same sum, twice over: it decides whether the source read fits, and it
+		// is also the size handed to __resize for the destination.
 		var source = ByteArray.fromBytes(Bytes.ofString("abcd"));
 		source.position = 1;
 		var destination = new ByteArray();

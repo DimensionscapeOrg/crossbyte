@@ -41,8 +41,8 @@ class IndexedDBStore implements IStoreBackend {
 		var factory = js.Browser.window.indexedDB;
 
 		if (factory == null) {
-			// A page can be denied IndexedDB outright, private browsing in
-			// some browsers, or a blocked third-party context. Said plainly
+			// A page can be denied IndexedDB outright (private browsing in
+			// some browsers, or a blocked third-party context). Said plainly
 			// rather than reported as an empty store, which would read as "you
 			// have saved nothing" and invite the caller to save it again.
 			done("This page has no IndexedDB; storage is unavailable here.");
@@ -105,11 +105,9 @@ class IndexedDBStore implements IStoreBackend {
 			var bytes:haxe.io.Bytes = value;
 			// Bounded to the logical length, not the backing buffer. A
 			// ByteArray grows geometrically, so 256 written bytes sit in a
-			// 385-byte store, and a Uint8Array over the whole buffer
-			// faithfully saves all 385, padding included. The browser suite
-			// caught it as "expected 256 but it is 385", which is the same
-			// mistake LZ4 was making in a page a few commits ago: handing back
-			// the container instead of the contents.
+			// 385-byte store, and a Uint8Array over the whole buffer would
+			// save all 385, padding included: the container instead of the
+			// contents.
 			request = __transaction(true).objectStore(OBJECT_STORE).put(new Uint8Array(bytes.getData(), 0, bytes.length), key);
 		} catch (e:Dynamic) {
 			done("Could not write '" + key + "': " + Std.string(e));

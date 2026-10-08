@@ -10,12 +10,12 @@ import sys.thread.Lock;
 #end
 
 /**
-	A listener whose accept fails, the process out of descriptors, is
+	A listener whose accept fails (the process out of descriptors) is
 	set aside for a short, growing while rather than polled on every pass.
 
 	It stays readable, since the connection it could not take is still
-	queued, and a POLL loop that polled it spun: 85,000 to 95,000 failed
-	accepts a second at a whole core, measured, and nothing else served. The
+	queued, and a POLL loop polling it would spin: tens of thousands of
+	failed accepts a second at a whole core, and nothing else served. The
 	failures are made here two ways: by a server whose accept is made to
 	fail, on every threaded target, and natively on Linux and macOS by the
 	real thing, the process's descriptor limit lowered until an accept
@@ -26,8 +26,8 @@ import sys.thread.Lock;
 class ServerSocketAcceptBackoffTest extends utest.Test {
 	#if (target.threaded && (cpp || java || jvm || eval || neko || hl))
 	/**
-		For a second of accepts that fail, the server asks a handful of times,
-		5 ms, then twice as long each time, and the loop sleeps between;
+		For a second of accepts that fail, the server asks a handful of times
+		(5 ms, then twice as long each time) and the loop sleeps between;
 		once the system hands connections over again, the waiting one is
 		taken within the longest wait. It is reported once, and counted
 		every time.
@@ -149,7 +149,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 
 		Assert.notNull(server, "the server never started");
 		// 5, 10, 20 ... 640 ms: about eight in the second. Polled on every
-		// pass, it was thousands.
+		// pass, it would be thousands.
 		Assert.isTrue(attempts >= 1 && attempts <= 20, "the server tried " + attempts + " accepts in a second of failing ones");
 		Assert.equals(total, failures, "acceptFailures did not count every failed accept");
 		Assert.equals(1, reported, "a run of failed accepts was reported " + reported + " times");
@@ -160,7 +160,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		Assert.isTrue(waited >= 0 && waited < 2.0, "the waiting connection was taken " + waited + " s after accepts worked again");
 		#if cpp
 		// Sys.cpuTime is the process's processor time natively, and the loop
-		// sleeps between tries: a spinning one spent the whole second.
+		// sleeps between tries: a spinning one would spend the whole second.
 		Assert.isTrue(cpu < 0.5, "the process spent " + cpu + " s of processor time in a second of failed accepts");
 		#end
 	}
@@ -175,10 +175,8 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		descriptors are let go of, a waiting connection is taken. macOS
 		instead drops each connection whose accept found no descriptor, so
 		its listener goes quiet after one failure a connection and nothing
-		waits (measured on CI's macOS runner: four failed accepts, then
-		nothing readable and nothing left to take). There the failures are
-		counted, nothing spins, and a client connecting once descriptors are
-		free is taken.
+		waits. There the failures are counted, nothing spins, and a client
+		connecting once descriptors are free is taken.
 	**/
 	@:timeout(30000)
 	public function testOutOfDescriptorsAServerWaitsThenServes():Void {
@@ -208,12 +206,12 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		var cpu:Float = 0;
 		var lowered:Bool = false;
 		if (started.wait(5.0)) {
-			// Two to let go of and four clients made first, each a
-			// descriptor, then the limit lowered to what is open, so connecting
-			// them takes nothing and the accept of each finds no descriptor. Made
-			// before the limit, so other threads opening or closing descriptors
-			// meanwhile, late in a full suite there are some, cannot leave the
-			// server room it should not have.
+			// Two to let go of and four clients made first (each a descriptor),
+			// then the limit lowered to what is open, so connecting them takes
+			// nothing and the accept of each finds no descriptor. Made before the
+			// limit, so other threads opening or closing descriptors meanwhile
+			// (late in a full suite there are some) cannot leave the server room
+			// it should not have.
 			for (_ in 0...2) {
 				ballast.push(new sys.net.Socket());
 			}
@@ -230,7 +228,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 				// Take every number left, so the condition is made, not assumed.
 				// Natively a socket made with none left throws: caught, since
 				// escaping here would leave the limit lowered for every later
-				// test (the Linux suite hung in SharedChannelTest).
+				// test, and could hang one.
 				try {
 					for (_ in 0...65536) {
 						var filler = new sys.net.Socket();
@@ -264,8 +262,8 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		crossbyte._internal.socket.NativeSocketOptions.setDescriptorLimit(original);
 		#if mac
 		if (lowered) {
-			// macOS dropped the connections it could not hand over: one made
-			// now shows the server serving again.
+			// macOS drops the connections it could not hand over: one made now
+			// shows the server serving again.
 			var late = new sys.net.Socket();
 			try {
 				late.connect(new sys.net.Host("127.0.0.1"), port);
@@ -296,8 +294,8 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 
 	/**
 		As the process starts its soft limit on descriptors is raised to the
-		hard one (on macOS no higher than `OPEN_MAX`), as Go and the JVM do. A
-		shell's soft limit of 1,024 stopped a server near a thousand
+		hard one (on macOS no higher than `OPEN_MAX`), as Go and the JVM do: a
+		shell's soft limit of 1,024 would stop a server near a thousand
 		connections.
 	**/
 	public function testTheDescriptorLimitIsRaisedAsTheProcessStarts():Void {

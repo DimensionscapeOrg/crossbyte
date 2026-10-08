@@ -23,10 +23,8 @@ import crossbyte.net.TurnTransport;
 
 	A relay that redirects with 300 Try Alternate is another server, reached
 	over a connection of its own: the client sends its retry to the
-	alternate's address, and the connection follows. It went on writing to
-	the connection opened once, so the retry reached the relay that had just
-	redirected it, which redirected it again, and the allocation failed as a
-	redirection back to a relay already asked.
+	alternate's address, and the connection follows, rather than the retry
+	going back to the relay that has just redirected it.
 **/
 class TurnStream {
 	public var client(default, null):TurnClient;
@@ -69,8 +67,7 @@ class TurnStream {
 		__socket = new Socket();
 
 		if (client.transport == TLS) {
-			// It refused a TLS relay, saying so, while a client Socket did not
-			// start TLS; it does now, natively, on the jvm and on Node.
+			// A client Socket starts TLS natively, on the jvm and on Node.
 			__socket.secure = true;
 			__socket.verifyCert = client.verifyCert;
 			#if !(macro || (js && !nodejs))
@@ -93,8 +90,8 @@ class TurnStream {
 
 	/**
 		The client moved to another server: the connection to the one that
-		redirected it is let go, quietly, since its end is not the end of an
-		allocation the alternate has yet to grant, and one to the alternate
+		redirected it is let go (quietly, since its end is not the end of an
+		allocation the alternate has yet to grant), and one to the alternate
 		opened. Anything still waiting for the old one to open was for that
 		server, and goes with it.
 	**/

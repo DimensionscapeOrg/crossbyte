@@ -13,7 +13,7 @@ import utest.Assert;
 class SystemTest extends utest.Test {
 	public function testTheApplicationIdIsTheMainClass():Void {
 		// No -D crossbyte_app_id in the suites, so the id is the entry
-		// point's class, TestMain, JvmTestMain, NativeSmokeMain, and that
+		// point's class (TestMain, JvmTestMain, NativeSmokeMain), and that
 		// class has the main the program started at.
 		var id:String = System.applicationId;
 		var main:Null<Class<Dynamic>> = Type.resolveClass(id);
@@ -24,9 +24,9 @@ class SystemTest extends utest.Test {
 		}
 		Assert.isNull(crossbyte.io._internal.ApplicationIdentity.defined);
 		// From the compiler, not from the program's file name, which only
-		// matches it on eval, TestMain.hx, and is the jar's name on the
-		// jvm. The main expression is a block there, the main call and the
-		// event loop's, and the main call was looked for only on its own.
+		// matches it on eval (TestMain.hx) and is the jar's name on the jvm.
+		// The main expression is a block there, the main call and the event
+		// loop's, so the main call is looked for inside it, not only on its own.
 		Assert.equals(id, crossbyte.io._internal.ApplicationIdentity.mainClass());
 	}
 
@@ -56,8 +56,8 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testTheStorageDirectoryIsTheApplicationsOwn():Void {
-		// It was the account's root, %APPDATA% or $HOME itself, shared by
-		// every CrossByte program, so their stores of one name were one store.
+		// Not the account's root (%APPDATA% or $HOME itself), which every
+		// CrossByte program would share, making their stores of one name one store.
 		var path:String = System.__storagePath();
 		var base:Null<String> = System.__storageBase(System.PLATFORM, Sys.getEnv);
 
@@ -68,9 +68,8 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testTheStorageDirectoryIsCreatedOnFirstAccess():Void {
-		// AIR's promise, which nothing kept: the account root it used to be
-		// existed anyway. Somewhere temporary, so the run leaves nothing in
-		// the account's application data.
+		// AIR's promise: the directory exists. Somewhere temporary, so the
+		// run leaves nothing in the account's application data.
 		var temp:File = File.createTempDirectory();
 		var where:String = haxe.io.Path.removeTrailingSlashes(temp.nativePath) + File.separator + "not-yet" + File.separator
 			+ System.applicationId;
@@ -118,8 +117,8 @@ class SystemTest extends utest.Test {
 	/**
 		What the build decides, checked by building: a small program from
 		tests/fixtures/appid, compiled and run three times. Once only, on the
-		interpreter, the choice is the compiler's, the same for every
-		target, and each target's reading of it is the case above.
+		interpreter: the choice is the compiler's, the same for every target,
+		and each target's reading of it is the case above.
 	**/
 	public function testTheIdIsChosenWhenTheApplicationIsBuilt():Void {
 		// tests/TestMain.hx, on the interpreter: the repository is above it.
@@ -134,9 +133,9 @@ class SystemTest extends utest.Test {
 			return {code: code, output: output};
 		}
 
-		// Aedifex starts every application at a ProgramMain of its own. Its
-		// main class was the id, so every application it built had one name
-		// and one storage directory; the class ProgramMain starts is meant.
+		// Aedifex starts every application at a ProgramMain of its own, so the
+		// id is the class ProgramMain starts, not ProgramMain, which would give
+		// every application it built one name and one storage directory.
 		var aedifex = build([]);
 		Assert.equals(0, aedifex.code, aedifex.output);
 		Assert.isTrue(aedifex.output.indexOf("applicationId=example.AppIdProbe") >= 0, aedifex.output);
@@ -153,12 +152,11 @@ class SystemTest extends utest.Test {
 	#end
 
 	public function testTheApplicationDirectoryIsTheProgramsOwn():Void {
-		// It was the working directory: a Windows service, started in
-		// System32, looked for its files there. The suites start their
-		// programs from the repository and keep them in export/, so the two
-		// differ here except natively, where the runner starts the program
-		// in its own directory, which is why the working directory is
-		// moved below as well.
+		// Not the working directory, which for a Windows service started in
+		// System32 would be System32. The suites start their programs from the
+		// repository and keep them in export/, so the two differ here except
+		// natively, where the runner starts the program in its own directory,
+		// which is why the working directory is moved below as well.
 		#if eval
 		// No program file on the interpreter: the directory the compiler ran in.
 		Assert.equals(haxe.io.Path.removeTrailingSlashes(Sys.getCwd()), System.appDir);
@@ -197,8 +195,8 @@ class SystemTest extends utest.Test {
 
 	public function testXdgUserDirsAreRead():Void {
 		// File.documentsDirectory says it observes xdg-user-dirs on Linux,
-		// which nothing read: ~/Documents, whatever the desktop's language or
-		// the user's choice.
+		// so it is read, not taken as ~/Documents whatever the desktop's
+		// language or the user's choice.
 		var file:String = '# written by xdg-user-dirs-update\nXDG_DESKTOP_DIR="$$HOME/Schreibtisch"\nXDG_DOCUMENTS_DIR="/data/docs/"\nXDG_MUSIC_DIR="$$HOME"\n';
 
 		Assert.equals("/home/u/Schreibtisch", System.__parseUserDirs(file, "XDG_DESKTOP_DIR", "/home/u"));
@@ -245,7 +243,7 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testTotalCpuUsageMeasuresTheProcess():Void {
-		// It returned 0, busy or idle.
+		// Not 0, busy or idle.
 		#if (js && !nodejs)
 		Assert.raises(() -> System.totalCpuUsage(), crossbyte.errors.IllegalOperationError);
 		#else
@@ -267,15 +265,15 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testAffinityIsNativeOnWindowsAndLinuxAndRefusedElsewhere():Void {
-		// Off native it answered [false], no processor usable, and false
-		// to every question; natively on macOS, [] and false.
+		// Not [false] (no processor usable) and false to every question off
+		// native, nor natively on macOS [] and false.
 		#if cpp
 		if (System.isWindows || System.PLATFORM == "linux") {
 			var mask:Array<Bool> = System.processAffinity;
 			Assert.equals(System.processorCount, mask.length);
 			Assert.equals(mask[0], System.hasProcessAffinity(0));
 			// The native calls shift a bit by the index: past the mask that
-			// was undefined behaviour.
+			// would be undefined behaviour.
 			Assert.raises(() -> System.hasProcessAffinity(-1), crossbyte.errors.RangeError);
 			Assert.raises(() -> System.hasProcessAffinity(System.processorCount), crossbyte.errors.RangeError);
 			Assert.raises(() -> System.setProcessAffinity(System.processorCount, true), crossbyte.errors.RangeError);
@@ -294,8 +292,7 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testTheDeviceIdIsTheMachines():Void {
-		// It was "" everywhere but native, and null natively on Linux and
-		// macOS.
+		// Not "" off native, nor null natively on Linux and macOS.
 		var id:Null<String> = System.getDeviceId();
 		Assert.equals(id, System.getDeviceId());
 		#if (js && !nodejs)
@@ -335,8 +332,8 @@ class SystemTest extends utest.Test {
 	}
 
 	public function testSystemMemoryIsAskedOfTheSystem():Void {
-		// Each figure started a process, wmic on Windows, natively and on
-		// the jvm too, grep on Linux, and macOS answered 0.
+		// No figure starts a process (wmic on Windows, grep on Linux), and
+		// macOS does not answer 0.
 		var started:Float = haxe.Timer.stamp();
 		var total:Float = System.totalSystemMemory();
 		var free:Float = System.freeSystemMemory();
@@ -344,9 +341,9 @@ class SystemTest extends utest.Test {
 		Assert.isTrue(total > 64 * 1024 * 1024, 'total $total');
 		Assert.isTrue(free > 0 && free <= total, 'free $free of $total');
 		#if (cpp || jvm || java || nodejs)
-		// Asked directly. Through wmic the two took 0.2 s and more on
-		// Windows; the jvm's first answer now takes 4 ms. Natively on macOS
-		// too, where sysctl and vm_stat took 0.11 s; the jvm still runs them.
+		// Asked directly: through wmic the two take 0.2 s and more on Windows,
+		// where the jvm's first direct answer takes 4 ms. Natively on macOS
+		// too, where sysctl and vm_stat take 0.11 s; the jvm still runs them.
 		var direct:Bool = #if (jvm || java) System.PLATFORM != "mac" #else true #end;
 		if (direct) {
 			Assert.isTrue(took < 0.1, 'the two figures took $took s');

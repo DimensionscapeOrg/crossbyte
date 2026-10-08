@@ -10,12 +10,12 @@
 		so on) are safe to compile everywhere: each guards its whole body
 		on HAVE_*INTRIN_H macros, which libsodium's own private/common.h
 		defines for MSVC by compiler and target detection. For gcc and
-		clang nothing defines them, crossbyte_sodium_config.h says why,
-		so there they reduce to empty translation units.
+		clang nothing defines them (crossbyte_sodium_config.h says why), so
+		there they reduce to empty translation units.
 
 		sodium/version.h is normally produced by configure; the generated
 		copy upstream ships for MSVC builds is vendored alongside the
-		sources. No autotools config.h is required, no libsodium source
+		sources. No autotools config.h is required: no libsodium source
 		includes one.
 
 		File list generated from the vendored tree; regenerate it after
@@ -178,7 +178,7 @@
 		sets (see crossbyte_sodium_config.h): libsodium's SIMD compression ran
 		at half the speed of its portable one on x86-64, AVX2 included. hxcpp
 		applies flags to a whole <files> group, so they are a group of their own;
-		MSVC builds them as it always did.
+		MSVC builds them with the rest.
 	-->
 	<files id="crossbyte-sodium-vendor-scalar">
 		<depend files="hxcpp-depends"/>

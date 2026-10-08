@@ -25,11 +25,9 @@ import utest.Assert;
 /**
 	The BSON codec against the bytes the specification says, on every target.
 
-	MongoDB was unreachable from every CrossByte target: its only backend was
-	PHP's extension, embedded in a Haxe string that stopped compiling. The
-	wire client stands on this codec, so it is held to exact bytes, the
+	The wire client stands on this codec, so it is held to exact bytes (the
 	examples from bsonspec.org, and Decimal128 values computed independently
-	with Python's decimal module, rather than only to its own round trips,
+	with Python's decimal module) rather than only to its own round trips,
 	which a symmetric mistake would pass.
 
 	Portable: it needs nothing but bytes, so it runs on Node and the browser
@@ -123,13 +121,13 @@ class BsonTest extends utest.Test {
 
 	public function testAnInt64BesideADoubleStaysExact():Void {
 		// On hxcpp an Array<Dynamic> widens its storage as values arrive, and
-		// an Int64 and a Float together turned every Int64 into a double:
-		// 9007199254740993 read back as ...992, in an array or in a document's
-		// fields, whichever came first.
+		// an Int64 and a Float together would turn every Int64 into a double:
+		// 9007199254740993 would read back as ...992, in an array or in a
+		// document's fields, whichever came first.
 		var wide:Int64 = Int64.parseString("9007199254740993");
 		// Built by pushing into an array that keeps its values' types: on
 		// hxcpp the literal [wide, 1.5] is itself such a widening array, and
-		// has made the Int64 a double before any codec sees it.
+		// makes the Int64 a double before any codec sees it.
 		var list:Array<Dynamic> = crossbyte.db.mongodb._internal.ValueArray.create();
 		list.push(wide);
 		list.push(1.5);
@@ -182,14 +180,14 @@ class BsonTest extends utest.Test {
 		var at:Float = 1790769600250.0;
 		var bytes:Bytes = Bson.encode({expiresAt: Date.fromTime(at)});
 
-		// Type 0x09, a UTC datetime, which is what a TTL index reads; the JSON
-		// path this replaces could only send the date as text.
+		// Type 0x09, a UTC datetime, which is what a TTL index reads, rather
+		// than the date as text.
 		Assert.equals(0x09, bytes.get(4));
 
 		var exact:BsonDateTime = Bson.decode(bytes, {exactDates: true}).expiresAt;
 		#if (hl || neko)
-		// Date there holds whole seconds: the value encoded lost its 250 ms
-		// before the codec saw it.
+		// Date there holds whole seconds: the value encoded loses its 250 ms
+		// before the codec sees it.
 		Assert.equals("1790769600000", Int64.toStr(exact.millis));
 		#else
 		Assert.equals("1790769600250", Int64.toStr(exact.millis));
@@ -261,7 +259,7 @@ class BsonTest extends utest.Test {
 	public function testNonAsciiTextRoundTripsAsUtf8():Void {
 		var text:String = "Zürich \u{1F680} 中";
 		var bytes:Bytes = Bson.encode({t: text});
-		// 1 + 1 + ... : the string's UTF-8 length, with its NUL, is written in
+		// 1 + 1 + ...: the string's UTF-8 length, with its NUL, is written in
 		// front of it.
 		var utf8:Bytes = Bytes.ofString(text);
 		Assert.equals(utf8.length + 1, bytes.getInt32(7));
@@ -308,7 +306,7 @@ class BsonTest extends utest.Test {
 		negative.setInt32(11, -5);
 		Assert.raises(() -> Bson.decode(negative), IOError);
 		// A field name run on, by its NUL overwritten, into bytes that are not
-		// UTF-8: on JavaScript, Haxe's own decoding threw a RangeError there.
+		// UTF-8: on JavaScript, Haxe's own decoding throws a RangeError there.
 		var badName:Bytes = good.sub(0, good.length);
 		badName.setInt32(10, -5);
 		Assert.raises(() -> Bson.decode(badName), IOError);

@@ -8,8 +8,8 @@ package crossbyte._internal.websocket;
 	targets an Int or Bool left so is null rather than 0 or false, so each
 	limit and flag the parser reads is set here as the initialisers would.
 	One place, so a field the session starts reading on a path these tests
-	reach is given its value once rather than in every test's own helper,
-	a field missed there was a release crash natively, with no output at all.
+	reach is given its value once rather than in every test's own helper:
+	a field missed there is a release crash natively, with no output at all.
 **/
 @:access(crossbyte._internal.websocket.WebSocket)
 class HandBuilt {

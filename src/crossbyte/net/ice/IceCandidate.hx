@@ -8,8 +8,8 @@ import crossbyte.net.ReflexiveAddress;
 
 	ICE does not pick an address; it collects every address a peer might work on
 	and then finds out which ones do. This is one entry in that collection. A
-	peer gathers its own, `LocalAddress` for the host kind,
-	`ReliableDatagramServerSocket.discoverPublicAddress` for the reflexive kind,
+	peer gathers its own (`LocalAddress` for the host kind,
+	`ReliableDatagramServerSocket.discoverPublicAddress` for the reflexive kind),
 	sends them to the other side by whatever means it already has, and
 	receives the other side's in return.
 
@@ -43,8 +43,8 @@ class IceCandidate {
 		The address this one was discovered through, when that is another.
 
 		A reflexive candidate is somewhere a NAT put this peer, learned by
-		asking. Nothing can send *from* it, the datagram leaves the socket the
-		question went out of, and the translation happens on the way, so the
+		asking. Nothing can send *from* it (the datagram leaves the socket the
+		question went out of, and the translation happens on the way), so the
 		address that does the sending is the base, and RFC 8445 uses it wherever
 		what matters is where a check comes from rather than where a peer should
 		aim.
@@ -220,7 +220,7 @@ class IceCandidate {
 		useless without its data even if its control channel connects.
 
 		The largest value this can produce is 2130706431, which is inside a
-		signed 32-bit integer, the RFC chose the exponents so it would be.
+		signed 32-bit integer: the RFC chose the exponents so it would be.
 	**/
 	public static function computePriority(type:IceCandidateType, localPreference:Int = DEFAULT_LOCAL_PREFERENCE,
 			component:Int = COMPONENT_RTP):Int {

@@ -7,7 +7,7 @@ import crossbyte.net.WebSocket;
 /**
 	What a `ServerWebSocket` spends keeping its list of open sessions: `n`
 	sessions arrive (the CONNECT a finished upgrade dispatches) and then leave
-	(their CLOSE) in a shuffled order, without a network, the list is the
+	(their CLOSE) in a shuffled order, without a network: the list is the
 	whole of what is measured. Wall time on a pinned thread per session,
 	arrival and departure together (the process CPU clock steps by 15.6 ms on
 	Windows), best and median of `samples` samples.

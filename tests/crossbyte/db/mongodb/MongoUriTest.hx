@@ -10,8 +10,8 @@ import utest.Assert;
 **/
 class MongoUriTest extends utest.Test {
 	public function testCredentialsAreDecodedAndAPlusStaysAPlus():Void {
-		// StringTools.urlDecode reads + as a space, as a form does; a password
-		// holding a plus would have become another password.
+		// StringTools.urlDecode reads + as a space, as a form does, so a password
+		// holding a plus would become another password.
 		var s = MongoUri.settings({uri: "mongodb://ad%40min:p%40ss%3Aw%2Frd+x@db.example.com:27018/app?authSource=admin"});
 		Assert.equals("ad@min", s.username);
 		Assert.equals("p@ss:w/rd+x", s.password);
@@ -103,9 +103,9 @@ class MongoUriTest extends utest.Test {
 	}
 
 	/**
-		Keepalive is on with MySQL's timings unless told otherwise; the
-		client had none, and with no socket timeout, the default, a read
-		waiting on a server gone silent waited for good.
+		Keepalive is on with MySQL's timings unless told otherwise: with no
+		socket timeout (the default), a read waiting on a server gone silent
+		would wait for good.
 	**/
 	public function testKeepAliveIsOnWithTimingsByDefault():Void {
 		var s = MongoUri.settings({});
@@ -122,7 +122,7 @@ class MongoUriTest extends utest.Test {
 
 	/**
 		A timeout of NaN is refused, as a negative one is: it compares false
-		with everything, so a NaN connect timeout was no limit at all.
+		with everything, so a NaN connect timeout would be no limit at all.
 	**/
 	public function testATimeoutOfNaNIsRefused():Void {
 		Assert.raises(() -> MongoUri.settings({connectTimeout: Math.NaN}), ArgumentError);

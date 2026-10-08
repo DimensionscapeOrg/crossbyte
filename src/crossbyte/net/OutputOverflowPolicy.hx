@@ -18,7 +18,7 @@ enum abstract OutputOverflowPolicy(Int) from Int to Int {
 	/**
 	 * Throw `IOError` from `flush()` and leave the connection open.
 	 *
-	 * For callers that can respond meaningfully, shedding optional
+	 * For callers that can respond meaningfully: shedding optional
 	 * traffic, or pausing a producer until the peer catches up.
 	 */
 	var THROW:Int = 1;

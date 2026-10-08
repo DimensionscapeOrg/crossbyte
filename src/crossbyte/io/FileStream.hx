@@ -1,6 +1,6 @@
 package crossbyte.io;
 
-// Not built for the browser. This is a synchronous, seekable handle on an open file, and a browser has no such thing, its storage APIs are asynchronous and are not addressed by byte offset. crossbyte.io.File keeps its type there and refuses the operation instead; see NoFileSystem.
+// Not built for the browser. This is a synchronous, seekable handle on an open file, and a browser has no such thing: its storage APIs are asynchronous and are not addressed by byte offset. crossbyte.io.File keeps its type there and refuses the operation instead; see NoFileSystem.
 #if !(js && !nodejs)
 
 import crossbyte.core.CrossByte;
@@ -84,11 +84,11 @@ import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 	`writeShort` and `writeByte` keep the low bits of what they are given, a read with too little
 	data throws `EOFError` and consumes nothing, and `writeBytes` clamps its range to the source.
 	`endian` and `objectEncoding` start as `ByteArray.defaultEndian` and
-	`ByteArray.defaultObjectEncoding`: little-endian and HXSF unless the application changed them,
+	`ByteArray.defaultObjectEncoding` (little-endian and HXSF unless the application changed them),
 	and can be set before or after a file is opened.
 
-	The events of an asynchronously opened file are the stream's own, `progress`,
-	`outputProgress`, `complete`, `ioError`, `close`, with the stream as their target. Where there
+	The events of an asynchronously opened file are the stream's own (`progress`,
+	`outputProgress`, `complete`, `ioError`, `close`), with the stream as their target. Where there
 	are no threads (Node), a file can be opened asynchronously only to read.
 **/
 @:access(crossbyte.io.ByteArray)
@@ -121,7 +121,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		The value is a constant from the ObjectEncoding class, and starts as
 		`ByteArray.defaultObjectEncoding`: `HXSF` unless the application changed it. `JSON` is always
 		available. `AMF0` and `AMF3` are read and written only when the optional `format` haxelib is on
-		the build, `-lib format`. Asking for one this build cannot do throws, rather than reading
+		the build (`-lib format`). Asking for one this build cannot do throws, rather than reading
 		`null` or writing nothing.
 
 		@default ByteArray.defaultObjectEncoding
@@ -350,9 +350,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 		#end
 
-		// It made the new worker first and then closed the open stream, which
-		// disposed of the new worker: a Null Access, whether what was open had
-		// been opened with open() or openAsync().
+		// The open stream is closed before the new worker is made, so that
+		// closing it cannot dispose of the new worker.
 		__closeQuietly();
 		__file = file;
 		__fileMode = fileMode;
@@ -363,8 +362,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			session.openHandles();
 		} catch (e:Dynamic) {
 			session.releaseHandles();
-			// An event, as documented, which it was not: this threw. Posted,
-			// so that a listener added after this returns hears it.
+			// An event, as documented, rather than a throw. Posted, so that a
+			// listener added after this returns hears it.
 			var text:String = 'Could not open "${file.nativePath}" to ${Std.string(fileMode)}: ${__describe(e)}';
 			if (!__postIoError(text, 3003)) {
 				throw new IOError(text);
@@ -610,8 +609,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			}
 		}
 
-		// Any nonzero byte, as documented and as ByteArray reads one. It was
-		// `== 1`, so a 2 read as false.
+		// Any nonzero byte, as documented and as ByteArray reads one, so a 2
+		// reads as true.
 		return __take(1).get(0) != 0;
 	}
 
@@ -644,7 +643,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			}
 		}
 
-		// Signed, as documented. It was the unsigned byte: 0xFF read as 255.
+		// Signed, as documented: 0xFF reads as -1.
 		var value:Int = __take(1).get(0);
 		return value >= 0x80 ? value - 0x100 : value;
 	}
@@ -694,8 +693,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			byteArrayData.__resize(offset + length);
 		}
 
-		// Read straight into the destination. This used to allocate a fresh
-		// `Bytes` per call and copy it across, which at a 64 KB slice is
+		// Read straight into the destination, rather than into a fresh
+		// `Bytes` per call copied across, which at a 64 KB slice would be
 		// roughly sixteen thousand transient allocations and a second copy
 		// of every byte for each gigabyte streamed.
 		var read:Int = __readFully(byteArrayData, offset, length);
@@ -703,12 +702,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__positionDirty = true;
 
 		if (read < length) {
-			// The contract above: not enough data is an EOFError. A short read
-			// used to be padded out with zeros and reported as success, so a
-			// chunked copy of a 1 MB file came out 65,436 bytes longer, the
-			// tail of it zeros, with nothing to say where the data ended.
-			// Nothing is consumed, so the caller can ask again for what is
-			// there.
+			// The contract above: not enough data is an EOFError, not a short
+			// read padded out with zeros and reported as success, which would
+			// leave a chunked copy longer than its file with nothing to say
+			// where the data ended. Nothing is consumed, so the caller can ask
+			// again for what is there.
 			if (read > 0) {
 				__input.seek(-read, FileSeek.SeekCur);
 			}
@@ -879,9 +877,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			#if format
 			case AMF0 | AMF3:
 				// Read through the file itself, which stops where the object
-				// does. Every byte from here to the end of the file was read
-				// into a buffer and the rest thrown away, so a second object
-				// was never there to read.
+				// does, so what follows it is left for the next read.
 				var start:Int = __input.tell();
 				try {
 					return objectEncoding == AMF0 ? ByteArrayData.unwrapAMFValue(new BoundedAMFReader(__input).read()) : ByteArrayData.unwrapAMF3Value(new BoundedAMF3Reader(__input).read());
@@ -952,10 +948,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 	}
 
-	// Bounded as ByteArray's readObject is: a file's object can be anyone's,
-	// and natively one nested a few thousand deep overflowed the stack
-	// reading it and ended the process. In nesting and in values, in either
-	// text encoding: a JSON one was bounded in nesting only.
+	// Bounded as ByteArray's readObject is, in nesting and in values, in
+	// either text encoding: a file's object can be anyone's, and natively
+	// one nested a few thousand deep would overflow the stack reading it
+	// and end the process.
 	@:noCompletion private function __parseObject(text:String):Dynamic {
 		if (objectEncoding == JSON) {
 			return BoundedJson.parse(text);
@@ -1193,8 +1189,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function truncate():Void {
 		__checkIfOpen();
 
-		// It checked only that the stream was open, so a stream opened to read
-		// cut the file it was reading.
+		// Refused for a stream opened to read, which must not cut the file
+		// it is reading.
 		if (__fileMode == READ) {
 			throw new IllegalOperationError("The file is open to read; truncate() needs it open to write.");
 		}
@@ -1292,9 +1288,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__checkIfWritable();
 
-		// Clamped, as documented and as ByteArray clamps. An offset or length
-		// past the source went straight to the file layer, which read past the
-		// source's end, on the interpreter that ended the process.
+		// Clamped, as documented and as ByteArray clamps: an offset or length
+		// past the source would reach the file layer, which reads past the
+		// source's end (on the interpreter, ending the process).
 		var available:Int = bytes == null ? 0 : bytes.length;
 		if (offset < 0) {
 			offset = 0;
@@ -1424,12 +1420,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 	/**
 	 * Writes an object to the file stream, byte stream, or byte array, in AMF, HXSF, or JSON serialized
-	 * format. The optional `format` haxelib, `-lib format`, is required for AMF.
+	 * format. The optional `format` haxelib (`-lib format`) is required for AMF.
 	 *
 	 * HXSF and JSON are written as a 32-bit length, in the stream's byte order, and then that many bytes
 	 * of UTF-8, as `ByteArray.writeObject` writes them, so either reads what the other wrote. There is
-	 * no limit below 2 GB on an object's size. (A 16-bit length was written before 1.0, which capped an
-	 * object at 65,535 bytes; files written that way do not read back.)
+	 * no limit below 2 GB on an object's size.
 	 *
 	 * @param		object The object to be serialized.
 	 * @event 		ioError  You cannot write to the file (for example, because the file is missing).
@@ -1457,9 +1452,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	/**
-		`object` as `writeObject` writes it. The asynchronous stream wrote
-		through its buffer's own `writeObject`, which ignored the stream's
-		`objectEncoding`: HXSF whatever it said, and its byte order.
+		`object` as `writeObject` writes it, in the stream's `objectEncoding`
+		and byte order, whether the stream was opened synchronously or not.
 	**/
 	@:noCompletion private function __encodeObject(object:Dynamic):Bytes {
 		switch (objectEncoding) {
@@ -1519,9 +1513,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return;
 		}
 
-		// The low sixteen bits, as documented. writeInt16 threw Overflow for
-		// anything outside -32768..32767, so 0xFFFF, which writeShort is
-		// for as much as -1 is, could not be written.
+		// The low sixteen bits, as documented, so 0xFFFF, which writeShort is
+		// for as much as -1 is, can be written: writeInt16 throws Overflow
+		// for anything outside -32768..32767.
 		__put16(value);
 		__writeScratch(2);
 	}
@@ -1549,7 +1543,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @event 		ioError  You cannot write to the file (for example, because the file is missing).
 	 * This event is dispatched only for files that have been opened for asynchronous operations (by
 	 * using the openAsync() method).
-	 * @throws 		RangeError, If the length of the string is larger than 65535.
+	 * @throws 		RangeError If the length of the string is larger than 65535.
 	 * @throws 		The file has not been opened; the file has been opened, but it was not opened
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
@@ -1571,9 +1565,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return;
 		}
 
-		// Unsigned: the prefix is a 16-bit length, and writeInt16 refused
+		// Unsigned: the prefix is a 16-bit length, and writeInt16 refuses
 		// anything from 32768 up with an Overflow the documentation does not
-		// mention, where ByteArray took the same string.
+		// mention, where ByteArray takes the same string.
 		__put16(bytes.length);
 		__writeScratch(2);
 		__output.writeFullBytes(bytes, 0, bytes.length);
@@ -1662,9 +1656,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 	/**
 		`count` bytes from the file into the scratch buffer, or an EOFError
-		with nothing consumed. haxe.io.Eof escaped every read before: the
-		documented error was never thrown, and what a short read had taken
-		stayed taken.
+		with nothing consumed, as documented, rather than a haxe.io.Eof.
 	**/
 	@:noCompletion private function __take(count:Int):Bytes {
 		var read:Int = __readFully(__scratch, 0, count);
@@ -1751,9 +1743,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	/**
 		The segment the next asynchronous write goes into, at the stream's
 		position, under the session's lock; `__endAsyncWrite` releases it.
-		Writes at consecutive positions share a segment. They were written
-		into one buffer that only grew, from wherever the writer had reached,
-		so a write after moving the position went nowhere.
+		Writes at consecutive positions share a segment, and a write after
+		moving the position lands at the position.
 	**/
 	@:noCompletion private function __beginAsyncWrite():ByteArray {
 		var session:AsyncFile = __async;
@@ -1833,7 +1824,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 					__output = HaxeFile.update(path, true);
 					__output.seek(0, FileSeek.SeekBegin);
 					// One that sees what __output writes: on macOS a plain read
-					// handle read back what had been overwritten (see FileOps).
+					// handle reads back what has been overwritten (see FileOps).
 					__input = FileOps.readSeeingWrites(path);
 			}
 		} catch (e:Dynamic) {
@@ -1871,9 +1862,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	@:noCompletion private function set_endian(value:Endian):Endian {
-		// A field: set before open() it was lost, open() setting big-endian on
-		// the handles regardless, and read before open() it was a null access
-		// on the handle it asked. The asynchronous buffer never saw it at all.
+		// A field, so it holds whether set before or after open(), and for
+		// the asynchronous buffer as for the handles.
 		return __endian = value;
 	}
 
@@ -1967,7 +1957,7 @@ private enum AsyncNotice {
 	Finished(loadedToEnd:Bool);
 }
 
-/** Bytes waiting to be written at `at`, `-1` at the end, or, with `truncate`, a cut there. **/
+/** Bytes waiting to be written at `at` (`-1` at the end) or, with `truncate`, a cut there. **/
 @:noCompletion
 private class AsyncWrite {
 	public final at:Int;
@@ -2051,8 +2041,8 @@ private class AsyncFile {
 				output.seek(0, FileSeek.SeekEnd);
 				cursor = output.tell();
 			case UPDATE:
-				// Read as READ reads, as documented: the writer alone was opened,
-				// so an UPDATE stream read nothing, and every read threw.
+				// Read as READ reads, as documented: the reader is opened as
+				// well as the writer.
 				output = HaxeFile.update(path, true);
 				input = HaxeFile.read(path, true);
 		}
@@ -2060,11 +2050,10 @@ private class AsyncFile {
 		if (input != null) {
 			buffer = new ByteArray();
 			buffer.endian = endian;
-			// Grows as data arrives. It was allocated at the file's full size
-			// up front, so bytesAvailable counted bytes nobody had read from
-			// disk yet, and reading "what is available" from a progress
-			// handler, as this class's own documentation says to,
-			// returned zeros: 6.4 MB of them from a 10 MB file.
+			// Grows as data arrives, so bytesAvailable counts only bytes read
+			// from disk, and reading "what is available" from a progress
+			// handler, as this class's own documentation says to, reads what
+			// the file holds, not zeros.
 			fileSize = file.size;
 		}
 	}
@@ -2183,7 +2172,7 @@ private class AsyncFile {
 
 	/**
 		The worker: writes what is pending, reads ahead of the reader, and
-		reports both, until the stream closes, or, for a file opened only to
+		reports both, until the stream closes or, for a file opened only to
 		read, until it reaches the end, after which a seek outside the buffer
 		starts it again.
 	**/
@@ -2382,8 +2371,8 @@ private class AsyncFile {
 
 	/**
 		Drops what the reader has consumed, when `readAhead` bounds the buffer.
-		By default it does not, the whole file is kept, as it always was, so a
-		stream can seek back without reading anything again. Held under the
+		By default it does not: the whole file is kept, so a stream can seek
+		back without reading anything again. Held under the
 		lock.
 	**/
 	private function __discardConsumed():Void {

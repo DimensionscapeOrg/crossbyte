@@ -20,10 +20,10 @@ import utest.Assert;
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class SQLiteDriverTest extends utest.Test {
 	public function testPagesComeBackInTheOrderTheyWereRead():Void {
-		// Off cpp the pages waited in an Array read with pop(), newest first,
-		// so a result paged ahead of getResult() came back last page first on
-		// the jvm and in the interpreter. And each page taken after the last
-		// had been read said it was complete.
+		// Off cpp the pages wait in order: read from an Array with pop(),
+		// newest first, a result paged ahead of getResult() would come back last
+		// page first on the jvm and in the interpreter. And only the last page
+		// says it is complete.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.results.set("SELECT id FROM items", [for (id in 1...6) {id: id}]);
 		var connection:SQLiteConnection = new SQLiteConnection();
@@ -41,10 +41,10 @@ class SQLiteDriverTest extends utest.Test {
 	}
 
 	public function testAStatementReportsItsResultAndThrowsWhatFailed():Void {
-		// As MySQL's and Postgres's statements do. A synchronous statement
-		// dispatched no RESULT at all, and a failed one let the driver's raw
-		// String escape with no SQLErrorEvent: code catching SQLError, as
-		// every other driver's failures are caught, caught nothing.
+		// As MySQL's and Postgres's statements do: a synchronous statement
+		// dispatches RESULT, and a failed one an SQLErrorEvent, rather than
+		// letting the driver's raw String escape, which code catching SQLError,
+		// as every other driver's failures are caught, would not catch.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("INSERT INTO nowhere VALUES (1)", "no such table: nowhere");
 		var connection:SQLiteConnection = new SQLiteConnection();
@@ -77,8 +77,8 @@ class SQLiteDriverTest extends utest.Test {
 	}
 
 	public function testAFailedOperationIsDispatchedAndThrownAsAnSQLError():Void {
-		// The connection's own operations, likewise: a BEGIN SQLite refused
-		// threw the driver's String and told no listener.
+		// The connection's own operations, likewise: a BEGIN SQLite refuses
+		// throws an SQLError and tells its listeners.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.failures.set("START TRANSACTION", "cannot start a transaction within a transaction");
 		var connection:SQLiteConnection = new SQLiteConnection();
@@ -111,8 +111,8 @@ class SQLiteDriverTest extends utest.Test {
 	}
 
 	public function testCountsAndRowIdsPastThirtyTwoBitsReadWhole():Void {
-		// Both were parsed into an Int, with Std.parseInt, which past 2^31
-		// answers differently on each target, none of them the number:
+		// Both are read whole, not parsed into an Int with Std.parseInt, which
+		// past 2^31 answers differently on each target, none of them the number:
 		// totalChanges and a foreign key violation's rowid.
 		var wire:ScriptedConnection = new ScriptedConnection();
 		wire.results.set("SELECT total_changes() AS total_changes;", [{total_changes: 3000000000.0}]);
@@ -129,7 +129,7 @@ class SQLiteDriverTest extends utest.Test {
 	}
 
 	public function testAStatementWithNoOpenConnectionIsRefused():Void {
-		// It dereferenced the connection it did not have.
+		// Refused, not a dereference of the connection it does not have.
 		var statement:SQLiteStatement = new SQLiteStatement();
 		statement.text = "SELECT 1";
 		Assert.raises(() -> statement.execute(), IllegalOperationError);

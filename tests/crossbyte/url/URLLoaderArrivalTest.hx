@@ -16,17 +16,17 @@ import utest.Async;
 /**
 	"Copy it to keep it", from the side that is handed the payload: a
 	datagram forwarded, from inside its `DATA` listener, as the body of an
-	HTTP request, a bridge from a game's UDP to a web backend.
+	HTTP request (a bridge from a game's UDP to a web backend).
 
 	`DatagramSocketDataEvent.data` says sending it on from the listener is
-	safe, every send copying what it is given before it returns. `URLLoader`
-	does not. Natively and on the jvm `load` keeps the `URLRequest`, and its
-	body is read on a pool thread later (`LoaderRun.execute`), after the
-	listener has returned and the socket has emptied the payload. On Node
-	the body goes to Node's request as a view of the payload's storage
-	(`JsHttpClient`: `Buffer.from(body.getData(), 0, length)`), which Node
-	writes once it has connected, after the next datagram has been read
-	into the same storage.
+	safe, every send copying what it is given before it returns, and
+	`URLLoader` has to keep that promise too. Natively and on the jvm `load`
+	keeps the `URLRequest`, and its body is read on a pool thread later
+	(`LoaderRun.execute`), after the listener has returned and the socket
+	has emptied the payload. On Node the body goes to Node's request
+	(`JsHttpClient`), which Node writes once it has connected: a view of the
+	payload's storage (`Buffer.from(body.getData(), 0, length)`) would by
+	then hold the next datagram.
 
 	Asynchronous, so Node runs it too.
 **/

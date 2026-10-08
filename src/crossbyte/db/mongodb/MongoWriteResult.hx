@@ -5,7 +5,7 @@ package crossbyte.db.mongodb;
 
 	The counts are `Float`s, exact to 2^53, as MySQL's and Postgres's are:
 	MongoDB counts in 64 bits, and an update or delete over a large
-	collection can pass 2^31. They were `Int`s, held at 2^31 - 1.
+	collection can pass 2^31.
 **/
 class MongoWriteResult {
 	/** False for a write sent with write concern `w: 0`, whose outcome the server does not report. **/
@@ -27,8 +27,8 @@ class MongoWriteResult {
 	public var upserted(default, null):Array<MongoUpserted>;
 
 	/**
-		The `_id` of each document an insert sent, in order, the ones it
-		had, and the `ObjectId`s made for those without. After a failed ordered
+		The `_id` of each document an insert sent, in order (the ones it
+		had, and the `ObjectId`s made for those without). After a failed ordered
 		insert, the first `inserted` of them were stored.
 	**/
 	public var insertedIds(default, null):Array<Dynamic>;

@@ -28,8 +28,8 @@ extern class NativeSharedObject {
 	public static inline var ERROR_FAILED:Int = 2;
 
 	/**
-		Linux and macOS: what is under the name, the region, or on macOS its
-		lock file, is not this user's own.
+		Linux and macOS: what is under the name (the region, or on macOS its
+		lock file) is not this user's own.
 	**/
 	public static inline var ERROR_NOT_OWNED:Int = 3;
 
@@ -48,7 +48,7 @@ extern class NativeSharedObject {
 	@:native('native_sharedObjectRemove') private static function __remove(name:String, lockTimeoutMs:Int):Int;
 
 	// Tests only: the region's lock, held on the calling thread until released
-	// on the same thread, a participant stopped while holding it.
+	// on the same thread: a participant stopped while holding it.
 	@:native('native_sharedObjectHoldLockForTest') private static function __holdLockForTest(handle:VoidPointer):Bool;
 	@:native('native_sharedObjectReleaseLockForTest') private static function __releaseLockForTest(handle:VoidPointer):Void;
 }

@@ -13,12 +13,12 @@ import utest.Assert;
 	One handler serving many sessions, as a server with one room, one queue
 	or one world gives the same handler to every client it accepts.
 
-	A handler held the one session it was given last. Given to a second
-	session, it answered every call on that session's connection: one
-	client's answer went to another, and since each client numbers its calls
-	from 1, it completed whichever call of theirs had the same number,
-	Bob, asking for a `String`, was answered with Alice's `Int`. Responses
-	were matched by id and never by op, so nothing on Bob's side noticed.
+	A handler that held only the one session it was given last would,
+	given to a second session, answer every call on that session's
+	connection: one client's answer would go to another, and since each
+	client numbers its calls from 1, it would complete whichever call of
+	theirs had the same number (Bob, asking for a `String`, answered with
+	Alice's `Int`). Responses are matched by op as well as by id.
 **/
 @:access(crossbyte.rpc.RPCSession)
 class RPCSharedHandlerTest extends utest.Test {
@@ -52,7 +52,7 @@ class RPCSharedHandlerTest extends utest.Test {
 	public function testAnAnswerLaterGoesToTheSessionThatAsked():Void {
 		// The guide's match queue: four players queue on one handler, and the
 		// fourth completes everyone's future at once, while its own call runs.
-		// Every answer went to whichever session the handler was given last.
+		// Each answer goes to its own session.
 		var queue = new SharedQueueHandler();
 		var players = [for (i in 0...4) Client.of(queue, 'player$i')];
 		var answers = [for (player in players) player.commands.queue(player.name)];
@@ -86,7 +86,7 @@ class RPCSharedHandlerTest extends utest.Test {
 
 	public function testAResponseForAnotherOpAnswersNoCall():Void {
 		// Bob is waiting on call 1, `secretName`, a String; an answer to call 1
-		// for `balance`, an Int, arrives. It completed Bob's call with the Int.
+		// for `balance`, an Int, arrives, and must not complete Bob's call.
 		var link = LinkedConnection.pair();
 		var commands = new LobbyCommands();
 		var session = new RPCSession<LobbyCommands>(link.client, commands);

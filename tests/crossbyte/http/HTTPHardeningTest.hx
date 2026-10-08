@@ -10,11 +10,10 @@ import utest.Assert;
  * unbounded chunked body accumulation.
  *
  * Against `HttpSyntax` rather than `Http`. These are the rules that hold on any
- * target, which is exactly why they were extracted out of the client, but the
- * cases went on calling them through `Http`, and `Http` drives a raw socket with
- * its own TLS and so exists on no JavaScript target. So the extraction bought
- * nothing until this import changed: header injection and request smuggling
- * were unchecked on both the targets a page or a Node server would run on.
+ * target, which is exactly why they live outside the client: `Http` drives a
+ * raw socket with its own TLS and so exists on no JavaScript target, and
+ * through it header injection and request smuggling would go unchecked on
+ * both the targets a page or a Node server would run on.
  */
 @:access(crossbyte.http.HTTPRequestHandler)
 class HTTPHardeningTest extends utest.Test {
@@ -22,9 +21,9 @@ class HTTPHardeningTest extends utest.Test {
 		The server's `Content-Length` reader gives the same answer on every
 		target, and never a small number for a large one.
 
-		4294967296 is 2^32: `Std.parseInt` read it as 0 on Linux and macOS
-		native, as 2147483647 on Windows native, threw on the jvm and gave
-		null on eval, and the checks around it were right on none of them.
+		4294967296 is 2^32: `Std.parseInt` reads it as 0 on Linux and macOS
+		native, as 2147483647 on Windows native, throws on the jvm and gives
+		null on eval, and checks around it would be right on none of them.
 	**/
 	public function testContentLengthPastAnIntIsNotALength():Void {
 		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("4294967296"));
@@ -50,8 +49,9 @@ class HTTPHardeningTest extends utest.Test {
 	}
 
 	/**
-		A byte range is read the same on every target. `bytes=4294967296-`
-		was a range from 0 on Linux native and threw on the jvm.
+		A byte range is read the same on every target, where through
+		`Std.parseInt` `bytes=4294967296-` would be a range from 0 on Linux
+		native and throw on the jvm.
 	**/
 	public function testRangePastAnIntIsReadAsAHugeNumber():Void {
 		// A start past every file is unsatisfiable...
@@ -97,10 +97,10 @@ class HTTPHardeningTest extends utest.Test {
 
 	/**
 		An HTTP date is read and written in UTC by arithmetic, the same on
-		every target and in every time zone, past 2038 included. Both went
-		through a local `Date`: neko keeps its time in 32 bits, so 2100 read
-		back as a date long gone there, and the local offset was taken at one
-		instant and applied at another, an hour out around a daylight-saving
+		every target and in every time zone, past 2038 included, not through a
+		local `Date`: neko keeps its time in 32 bits, so 2100 would read back as
+		a date long gone there, and a local offset taken at one instant and
+		applied at another would be an hour out around a daylight-saving
 		change.
 	**/
 	public function testHttpDatesRoundTripPast2038():Void {
@@ -150,9 +150,9 @@ class HTTPHardeningTest extends utest.Test {
 		// NUL and other C0 controls removed, horizontal tab preserved.
 		//
 		// The NUL is made at run time. HashLink reads a string constant up to
-		// its first NUL and no further, so on hl "a\x00b" was an "a" with two
-		// characters of whatever lay past HashLink's copy of it, NULs, here,
-		// and the case failed with the "b" never having been there.
+		// its first NUL and no further, so on hl "a\x00b" would be an "a" with
+		// two characters of whatever lay past HashLink's copy of it (NULs, here),
+		// and the "b" never there.
 		Assert.equals("ab", HttpSyntax.sanitizeHeaderValue("a" + String.fromCharCode(0) + "b"));
 		Assert.equals("a\tb", HttpSyntax.sanitizeHeaderValue("a\tb"));
 		Assert.equals("plain value", HttpSyntax.sanitizeHeaderValue("plain value"));
@@ -196,7 +196,7 @@ class HTTPHardeningTest extends utest.Test {
 	}
 
 	public function testConflictingFramingIsRejected():Void {
-		// Both Transfer-Encoding and Content-Length present -> smuggling vector.
+		// Both Transfer-Encoding and Content-Length present: a smuggling vector.
 		Assert.isTrue(HttpSyntax.hasConflictingFraming(true, true));
 	}
 

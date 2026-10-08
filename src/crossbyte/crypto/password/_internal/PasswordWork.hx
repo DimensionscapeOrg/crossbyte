@@ -22,8 +22,8 @@ class PasswordWork {
 	 * Workers in the shared pool.
 	 *
 	 * Two, so one slow hash does not queue every other sign-in behind it, and no
-	 * more, because each Argon2id hash holds its whole memory limit, 64 MiB at
-	 * the interactive setting, while it runs. A service that wants more passes
+	 * more, because each Argon2id hash holds its whole memory limit (64 MiB at
+	 * the interactive setting) while it runs. A service that wants more passes
 	 * its own pool.
 	 */
 	public static inline final SHARED_WORKERS:Int = 2;

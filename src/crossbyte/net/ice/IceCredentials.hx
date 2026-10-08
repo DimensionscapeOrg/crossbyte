@@ -11,7 +11,7 @@ import crossbyte.io.ByteArray;
 	Every connectivity check is signed, and this is what signs it. The two
 	halves do different jobs: the fragment says *who* a check is for, and the
 	password proves it was not written by somebody else. Both are exchanged the
-	same way the candidates are, over whatever channel already brought the two
+	same way the candidates are: over whatever channel already brought the two
 	peers together.
 
 	## Why a check has to be signed at all
@@ -26,8 +26,8 @@ import crossbyte.io.ByteArray;
 
 	The sender keys a check with the *receiver's* password, because it is
 	authenticating to them with the credential they published. A receiver
-	therefore verifies with its own. Responses are keyed the same way, the
-	responder's own password, so the two directions of one exchange use one
+	therefore verifies with its own. Responses are keyed the same way (the
+	responder's own password), so the two directions of one exchange use one
 	key and each side needs only the other's published half.
 **/
 class IceCredentials {
@@ -55,7 +55,7 @@ class IceCredentials {
 
 		Aliases `SecureRandom`, because that is the only thing `generate` needs
 		and the only reason it could fail. Credentials that an attacker can
-		guess are not credentials, so there is no lesser source to fall back to,
+		guess are not credentials, so there is no lesser source to fall back to:
 		a caller on a target without one has to be given them rather than
 		make them.
 	**/
@@ -70,7 +70,7 @@ class IceCredentials {
 	/**
 		@throws ArgumentError if either half is shorter than ICE permits. The
 		lengths are the RFC's minimum entropy restated in characters, so a
-		shorter one is not merely unusual, it is guessable.
+		shorter one is not merely unusual: it is guessable.
 	**/
 	public function new(usernameFragment:String, password:String) {
 		if (usernameFragment == null || usernameFragment.length < MIN_FRAGMENT_LENGTH) {

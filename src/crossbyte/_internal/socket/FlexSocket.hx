@@ -27,10 +27,10 @@ typedef HostInfo = {port:Int, host:Host};
 typedef Sockets = {write:Array<Socket>, read:Array<Socket>, others:Array<Socket>};
 
 @:forward
-// Over sys.net.Socket, which every TLS socket here extends, AlpnSocket,
-// hl's and the jvm's, rather than EitherType<Socket, SSLSocket>, which is
-// Dynamic underneath: every forwarded call converted it back to a Socket,
-// natively a type check per call.
+// Over sys.net.Socket, which every TLS socket here extends (AlpnSocket,
+// hl's and the jvm's), rather than EitherType<Socket, SSLSocket>, which is
+// Dynamic underneath: every forwarded call would convert it back to a
+// Socket, natively a type check per call.
 abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	public static var DEFAULT_CA(get, set):Null<Certificate>;
 
@@ -44,9 +44,9 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	 * stays `null`, which lets a caller offer `h2` unconditionally and fall
 	 * back to HTTP/1.1 on the targets that cannot reach it.
 	 */
-	// True on jvm because the JDK carries ALPN in SSLParameters, so unlike cpp,
-	// where it needs a native extension built against mbedTLS, and so has to
-	// be asked about at runtime, there is nothing that can be missing.
+	// True on jvm because the JDK carries ALPN in SSLParameters, so unlike cpp
+	// (where it needs a native extension built against mbedTLS, and so has to
+	// be asked about at runtime) there is nothing that can be missing.
 	public static var alpnSupported(default, null):Bool = #if cpp NativeAlpn.isAvailable() #elseif (java || jvm) true #else false #end;
 
 	private static inline function get_DEFAULT_CA():Null<Certificate> {
@@ -99,7 +99,7 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 			#elseif hl
 			// The standard library's TLS socket reads the network without
 			// telling HashLink's collector it is waiting, so a thread waiting
-			// on a slow server stopped every other thread at the next
+			// on a slow server would stop every other thread at the next
 			// collection; see HlTlsSocket.
 			this = new crossbyte._internal.socket.HlTlsSocket();
 			#else
@@ -198,7 +198,7 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	}
 
 	/**
-		Connects to `host`, looking it up first if it is a name, here, on the
+		Connects to `host`, looking it up first if it is a name: here, on the
 		calling thread, for as long as the resolver takes. A caller on a
 		runtime's thread looks the name up with `Resolver` and calls
 		`connectHost` with the answer instead.

@@ -14,8 +14,8 @@ import utest.Assert;
 /**
 	What each delivery mode promises, checked between two sockets whose frames
 	go through memory rather than a network: every frame one sends is recorded,
-	and handed to the other in whatever order a case chooses, reordered,
-	dropped or duplicated on purpose, which a network does only when it likes.
+	and handed to the other in whatever order a case chooses (reordered,
+	dropped or duplicated on purpose, which a network does only when it likes).
 
 	The sockets are real, so what is exercised is the code a session runs; only
 	the last step, the datagram leaving, is replaced.
@@ -169,10 +169,10 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 	/**
 		A limit lowered while a message is arriving holds for the rest of it.
 
-		The check compared the frame's UInt length with the limit less what
-		was already held, and a limit below what was held made that negative.
-		Every target but HashLink compares a UInt with an Int unsigned, so it
-		read as four billion, and nothing more of that message was refused.
+		The check must not compare the frame's UInt length with the limit less
+		what is already held, which a limit below what is held makes negative:
+		every target but HashLink compares a UInt with an Int unsigned, so it
+		would read as four billion, and nothing more of that message be refused.
 	**/
 	public function testALimitLoweredMidMessageStillHolds():Void {
 		var pair = Pair.make();
@@ -220,8 +220,7 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 
 	/**
 		A stream's multi-byte strings are UTF-8 whatever character set is
-		named, as the socket's documentation now says; it promised the named
-		set, as AIR's did, and never used it.
+		named, as the socket's documentation says.
 	**/
 	public function testAStreamsMultiByteStringsAreUtf8WhateverCharsetIsNamed():Void {
 		var pair = Pair.make();

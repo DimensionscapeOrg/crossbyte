@@ -10,12 +10,11 @@ import sys.thread.Thread;
  *
  * Invariant: allocation keeps making progress while workers are parked.
  *
- * This guards a bug that already shipped once and hung CI. `TaskPool`
- * parked idle workers on `sys.thread.Condition.wait()`, which on hxcpp
- * compiles to `SleepConditionVariableCS(INFINITE)` without an
- * `hx::EnterGCFreeZone()` wrapper, unlike `Deque`'s blocking pop, which
- * wraps correctly. A worker parked there never reaches a GC safepoint, so
- * the next thread to allocate blocks forever inside the collector. Any
+ * `TaskPool` must not park idle workers on `sys.thread.Condition.wait()`,
+ * which on hxcpp compiles to `SleepConditionVariableCS(INFINITE)` without
+ * an `hx::EnterGCFreeZone()` wrapper (unlike `Deque`'s blocking pop, which
+ * wraps correctly). A worker parked there never reaches a GC safepoint, so
+ * the next thread to allocate blocks forever inside the collector: any
  * application holding an idle pool could deadlock, not only the tests.
  *
  * The failure is invisible to unit tests: nothing throws and no assertion
@@ -42,8 +41,8 @@ class IdleTaskPoolGcStress implements StressCase {
 		var pools:Array<TaskPool> = [];
 
 		// Each pool runs one trivial job so its workers spin up, then goes
-		// idle and parks. Parked-but-alive is the state that used to wedge
-		// the collector.
+		// idle and parks. Parked-but-alive is the state that can wedge the
+		// collector.
 		for (i in 0...POOLS) {
 			var pool = new TaskPool(WORKERS_PER_POOL);
 			pool.submit(function() {});

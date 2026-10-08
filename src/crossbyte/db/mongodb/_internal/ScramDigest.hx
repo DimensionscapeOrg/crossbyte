@@ -8,7 +8,7 @@ import haxe.io.Bytes;
 
 	Written here rather than taken from `haxe.crypto`, whose hashes take a
 	whole message at once. PBKDF2 is thousands of HMACs of a short message
-	under one key, MongoDB asks for 15,000 with SHA-256, and an HMAC's key
+	under one key (MongoDB asks for 15,000 with SHA-256), and an HMAC's key
 	pads hash to the same two blocks every time. Kept as midstates, each
 	iteration is two compressions on words already in hand, with nothing
 	allocated; `haxe.crypto.Hmac` would hash four blocks and build a buffer
@@ -74,7 +74,7 @@ class ScramDigest {
 	}
 
 	/**
-		PBKDF2 with this digest's HMAC, for one block of output, the
+		PBKDF2 with this digest's HMAC, for one block of output: the
 		digest's own length, which is all SCRAM asks for.
 	**/
 	public function pbkdf2(password:Bytes, salt:Bytes, iterations:Int):Bytes {

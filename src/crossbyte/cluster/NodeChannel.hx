@@ -49,7 +49,7 @@ import crossbyte.net.Socket;
 
 	It does not retry a message. A link that came back is not a link that
 	kept its place in the conversation, and a cluster message replayed after
-	a gap is usually worse than one dropped, whether it should be resent,
+	a gap is usually worse than one dropped: whether it should be resent,
 	and against what state, is the caller's to decide, which is why `onUp`
 	exists.
 **/
@@ -100,8 +100,7 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 	private var __queueAt:Int = 0;
 	private var __queuedBytes:Int = 0;
 	// A message's length, big-endian, as `FrameCodec` frames it: written
-	// ahead of the message itself, which was copied into a frame of its own
-	// first.
+	// ahead of the message itself, with no frame of its own made first.
 	private var __header:ByteArray = null;
 	// Whether the runtime will flush this pass's messages when it ends, and
 	// the messages written in the pass until it has: if the link drops
@@ -159,7 +158,7 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 
 		The message is `payload`'s bytes from 0 to its `length`, its position
 		aside. They are copied before `send` returns, so `payload` is the
-		caller's again at once, to change or reuse, a listener can forward
+		caller's again at once, to change or reuse: a listener can forward
 		the payload it was handed for its call alone, such as a datagram's
 		`event.data`. What is held for the link, and what a pass wrote and
 		takes back when the link fails before the pass ends, are those
@@ -187,15 +186,11 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 		Gives the link a chance to repair itself.
 
 		Called from the tick. Nothing else here needs time, so a channel that
-		is never polled still carries messages, it just never comes back
+		is never polled still carries messages; it just never comes back
 		after the far end goes away.
 
 		It reads the time itself, from `haxe.Timer.stamp()`, the clock its
-		retries are scheduled by. It used to take the time from its caller,
-		and a caller passing another clock, `crossbyte.Timer.stamp()`, the
-		runtime's uptime, which on Linux native, jvm and eval is far behind,
-		was always before the retry: a link that dropped once never came
-		back.
+		retries are scheduled by.
 	**/
 	public function poll():Void {
 		if (__closed || __up || !__dials || __retryAt < 0 || haxe.Timer.stamp() < __retryAt) {
@@ -359,9 +354,9 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 
 			if (__holdForPass()) {
 				// The socket has copied it, but only the channel can take it
-				// back if the link fails before the pass ends; it used to
-				// hold the caller's payload for that, and took back whatever
-				// those bytes had become.
+				// back if the link fails before the pass ends, so it keeps a
+				// copy of its own rather than the caller's payload, whose bytes
+				// may have changed by then.
 				if (__passBytes == null) {
 					__passBytes = new ByteArray();
 				}
@@ -414,8 +409,8 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 	}
 
 	/**
-		What this pass wrote had not gone when the link failed: it waits for
-		the link, after whatever already waits, as a message that failed to
+		the link, after whatever already waits, as a message that fails to
+		go always does.
 		go always did.
 	**/
 	private function __requeuePass():Void {

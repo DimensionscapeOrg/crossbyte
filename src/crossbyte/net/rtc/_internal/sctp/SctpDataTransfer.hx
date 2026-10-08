@@ -26,7 +26,7 @@ import haxe.ds.IntMap;
 	sent before it.
 
 	Both are per stream, which is the whole reason SCTP has streams. A large
-	message on one channel blocks nothing on another, the head-of-line
+	message on one channel blocks nothing on another: the head-of-line
 	blocking that makes a data channel over TCP unattractive.
 
 	## Fragmentation
@@ -42,14 +42,14 @@ import haxe.ds.IntMap;
 	Two windows decide what may be in the network at once, and the smaller one
 	wins. The peer's says how much it can hold. The congestion window says how
 	much the path between can carry, and nothing else can tell: a sender that
-	knew only the peer's window put a megabyte on the wire in one call,
-	1,024 packets at once, into a path that dropped all but a handful, then
-	retransmitted each fragment on its own fixed timer.
+	knew only the peer's window would put a megabyte on the wire in one call
+	(1,024 packets at once) into a path that dropped all but a handful, then
+	retransmit each fragment on its own fixed timer.
 
 	The congestion window starts at ten packets and doubles each round trip
 	while everything arrives (slow start). Past the first loss it grows by one
-	packet a round trip instead. A loss found from what arrived after it, a
-	fragment three SACKs have reported missing, is sent again at once and
+	packet a round trip instead. A loss found from what arrived after it (a
+	fragment three SACKs have reported missing) is sent again at once and
 	halves the window (fast retransmit). A fragment nothing ever acknowledges
 	waits out the retransmission timeout, which then doubles, and the window
 	drops to one packet. The timeout is measured from real round trips (RFC
@@ -88,8 +88,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		few packets as the window lets them; with no runtime, or from another
 		thread, at once.
 
-		Each message was a packet of its own, a DTLS record and a `sendto`:
-		ten sent in a tick cost 14.8 µs of CPU each over loopback.
+		A packet per message, each a DTLS record and a `sendto`, would cost
+		14.8 µs of CPU a message over loopback at ten a tick.
 	**/
 	public var runtime:Null<CrossByte> = null;
 
@@ -102,7 +102,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		The most payload one DATA chunk carries.
 
 		Chosen so a packet fits inside a DTLS record inside a UDP datagram
-		without IP fragmentation, a fragmented datagram is lost entirely when
+		without IP fragmentation: a fragmented datagram is lost entirely when
 		any fragment is, which turns one dropped packet into a whole message
 		resent. Browsers settle on about this figure for the same reason.
 	**/
@@ -126,7 +126,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		Flow control means a message handed over is not necessarily a message
 		sent: it waits for room in the window the peer advertised. That queue
 		is the application's own doing rather than a peer's, so the bound here
-		is generous and is a backstop, not a working limit, `bufferedAmount`
+		is generous and is a backstop, not a working limit: `bufferedAmount`
 		is the figure to watch, and an application that watches it never
 		arrives here. Past it `send` throws, because the alternative is either
 		discarding something the caller was told nothing about or growing
@@ -226,11 +226,11 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		Bytes alone do not bound this. The sender picks the fragment size, so
 		a megabyte of budget is a megabyte of one-byte fragments, and what a
-		fragment costs on arrival grows with how many are already held,
-		confirming a run is unbroken means walking it. Measured against a
-		version that also re-sorted on each arrival: four thousand fragments,
-		sixty-eight kilobytes on the wire, took sixteen seconds, and the byte
-		bound above allows two hundred and fifty times that many.
+		fragment costs on arrival grows with how many are already held, since
+		confirming a run is unbroken means walking it: a version that also
+		re-sorts on each arrival takes sixteen seconds over four thousand
+		fragments (sixty-eight kilobytes on the wire), and the byte bound
+		above allows two hundred and fifty times that many.
 
 		Two thousand and forty eight splits the largest message this accepts
 		at 512 bytes, which is below any path that carries DTLS. A real one
@@ -261,7 +261,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		The other bounds count bytes, and bytes do not bound pieces: the peer
 		picks their size, and a piece of no bytes costs its objects all the
 		same. Fragments flagged B and never E across many streams, or ordered
-		messages behind a sequence never sent, held 20,000 objects with
+		messages behind a sequence never sent, could hold 20,000 objects with
 		`RECEIVE_WINDOW` untouched, and as many more as the peer cared to send.
 
 		Pinned from what an honest peer can make this end hold. Every piece
@@ -280,7 +280,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/**
 		The largest message the peer said it will take, in bytes, or 0 for any
 		size: its `a=max-message-size`, RFC 8841. `send` refuses anything
-		larger, as the RFC says a sender must, the peer would take every
+		larger, as the RFC says a sender must: the peer would take every
 		fragment, acknowledge it, and then drop the message whole, so this end
 		would see it delivered and the application at the other would never
 		see it at all.
@@ -331,9 +331,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		In order because they are sent in order and a retransmission keeps its
 		place, which is what lets a SACK be read in one pass: its cumulative
 		acknowledgement takes a run off the front, and its gap blocks, sorted
-		the same way, are matched against the rest walking forward once. It was
-		a list searched once per gap block and then removed from one element at
-		a time, so a SACK with 4,000 gap blocks over 8,192 fragments cost 60 ms.
+		the same way, are matched against the rest walking forward once. A
+		list searched once per gap block and then removed from one element at
+		a time would spend 60 ms on a SACK with 4,000 gap blocks over 8,192
+		fragments.
 
 		Fragments a gap block covered stay until the cumulative acknowledgement
 		passes them. A receiver may take back what it reported holding (RFC
@@ -347,10 +348,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/**
 		How much room the peer last said it had.
 
-		Seeded from the INIT and moved by every SACK. It was read off the INIT
-		into `SctpAssociation.peerReceiveWindow` and never looked at, and the
-		a_rwnd field of an arriving SACK was read past without being kept, so
-		this end sent whatever it was handed at whatever rate it was handed it.
+		Seeded from the INIT and moved by every SACK, so this end sends no
+		faster than the peer can take.
 	**/
 	@:noCompletion private var __peerWindow:Int;
 
@@ -459,7 +458,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	**/
 	@:noCompletion private var __resetAfter:Int = 0;
 
-	/** Chunks ever queued, and ever taken off the queue, numbered, or dropped as abandoned. **/
+	/** Chunks ever queued, and ever taken off the queue (numbered, or dropped as abandoned). **/
 	@:noCompletion private var __queued:Int = 0;
 
 	@:noCompletion private var __taken:Int = 0;
@@ -483,13 +482,12 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		Which numbers have arrived above the cumulative acknowledgement, kept
 		as runs.
 
-		Asked whether it holds one, `__onData` uses it to spot a duplicate,
+		Asked whether it holds one (`__onData` uses it to spot a duplicate)
 		and read out whole by `__buildSack`, whose gap blocks are exactly these
-		runs. It was a map of single numbers, which the SACK builder probed at
-		each of 511 offsets for every SACK sent, holes or none; and which took
-		any number up to 2^31 ahead, so a peer that never sent the next one
-		could make it hold as many as it liked, 400,000 entries, 24 MB, in
-		the auditor's run.
+		runs. A map of single numbers would be probed at each of 511 offsets
+		for every SACK sent, holes or none, and would take any number up to
+		2^31 ahead, so a peer that never sent the next one could make it hold
+		as many as it liked (400,000 entries, 24 MB, in one measurement).
 	**/
 	@:noCompletion private var __received:TsnRuns = new TsnRuns();
 
@@ -539,10 +537,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		A SACK is owed now rather than at the next poll: a gap, a duplicate, or
 		a second packet of DATA since the last one (RFC 4960 section 6.2).
 
-		SACKs used to go only from `poll`, once a tick. At the default twelve
-		ticks a second that held every acknowledgement up to 83 ms, and one
-		SACK then answered however many packets had come in, which leaves a
-		sender nothing to pace itself by.
+		Sent only from `poll`, once a tick, SACKs would be held up to 83 ms at
+		the default twelve ticks a second, and one SACK would then answer
+		however many packets had come in, which leaves a sender nothing to
+		pace itself by.
 	**/
 	@:noCompletion private var __sackNow:Bool = false;
 
@@ -875,8 +873,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			__emit();
 		}
 
-		// A SACK owed now that found no data to ride with, or data too large
-		// to share a packet with, goes on its own.
+		// A SACK owed now that found no data to ride with (or data too large
+		// to share a packet with) goes on its own.
 		if (__sackNeeded && (sackAlone || __sackNow)) {
 			__bundle.push(__buildSack());
 			__sackSent();
@@ -987,12 +985,12 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			// numbers at all: as far as a receiver here tracks. Neither window
 			// counts a fragment its gap blocks acknowledged, but it is kept
 			// until the cumulative acknowledgement passes it, since a receiver
-			// may take back what it reported (RFC 4960 section 6.2), so a
-			// peer that acknowledged everything but the first made
-			// this end keep everything sent after it, 5,000 fragments, a
-			// kilobyte each, with `bufferedAmount` reading 0 throughout. Past
-			// this what is sent waits in the queue, where `bufferedAmount`
-			// counts it and `MAX_BUFFERED` bounds it.
+			// may take back what it reported (RFC 4960 section 6.2), so a peer
+			// that acknowledged everything but the first could make this end
+			// keep everything sent after it (5,000 fragments, a kilobyte each,
+			// with `bufferedAmount` reading 0 throughout). Past this what is
+			// sent waits in the queue, where `bufferedAmount` counts it and
+			// `MAX_BUFFERED` bounds it.
 			if (__unacknowledged.length - __outstandingAt >= MAX_TSN_AHEAD) {
 				return;
 			}
@@ -1036,11 +1034,11 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		and a reason to name the message's stream and sequence.
 
 		The peer holds what went, and on an ordered stream waits for the
-		message's sequence number. Whenever all of it that went had already
-		been acknowledged there was nothing outstanding to abandon, so no
-		FORWARD TSN was sent, and the stream waited for good, every later
-		message on it held behind one that would never complete. usrsctp does
-		the same, with a chunk it marks to be skipped.
+		message's sequence number. When all of it that went has already been
+		acknowledged there is nothing outstanding to abandon, so without this
+		no FORWARD TSN would be sent, and the stream would wait for good,
+		every later message on it held behind one that would never complete.
+		usrsctp does the same, with a chunk it marks to be skipped.
 
 		Nothing can have been sent between this message's first fragment and
 		now, since the queue goes out in order: `__messageSequence` is still
@@ -1248,7 +1246,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		The retransmission timer ran out: RFC 4960 section 6.3.3.
 
 		Everything still in flight is taken to be lost, the timeout doubles,
-		and the congestion window drops to one packet, a timeout means
+		and the congestion window drops to one packet: a timeout means
 		nothing came back for a whole timeout, which is the path saying it
 		cannot carry what was sent. The oldest go again first.
 	**/
@@ -1333,10 +1331,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		// One a packet. A peer writes a SACK as it sends, so two in one packet
-		// were written at the same moment and say the same thing, while
-		// each costs a walk over everything outstanding, so a 16 KB packet of
-		// a thousand of them was a thousand walks. The first is read; this
-		// end's own packets carry one at most.
+		// were written at the same moment and say the same thing, while each
+		// costs a walk over everything outstanding (a 16 KB packet of a
+		// thousand of them would be a thousand walks). The first is read;
+		// this end's own packets carry one at most.
 		if (__sackRead) {
 			return;
 		}
@@ -1598,9 +1596,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		A peer should send them in order and not overlapping. One that did not
 		would have its blocks sorted here rather than trusted, since the walk
 		that uses them only goes forward. At most `MAX_SACK_BLOCKS_READ` of
-		them, which bounds the sort: it was bounded by the chunk alone, and
-		4,000 blocks listed highest first, which an insertion sort moves one
-		place at a time, cost 84 ms on the jvm from one packet.
+		them, which bounds the sort: bounded by the chunk alone, 4,000 blocks
+		listed highest first, which an insertion sort moves one place at a
+		time, would cost 84 ms on the jvm from one packet.
 	**/
 	@:noCompletion private function __readGapBlocks(value:ByteArray, gaps:Int):Int {
 		var count:Int = 0;
@@ -1656,11 +1654,11 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		Folds one round trip into the retransmission timeout: RFC 6298 section
 		2, which RFC 4960 section 6.3.1 adopts.
 
-		A fixed half second, which is what this was, was wrong both ways. A
-		path slower than that had every fragment sent again before its
-		acknowledgement could arrive, several times over, into the congestion
-		it was already causing; a faster one waited on a figure that had
-		nothing to do with it.
+		A fixed half second would be wrong both ways. A path slower than that
+		would have every fragment sent again before its acknowledgement could
+		arrive, several times over, into the congestion it was already
+		causing; a faster one would wait on a figure that had nothing to do
+		with it.
 	**/
 	@:noCompletion private function __sampleRoundTrip(sample:Float):Void {
 		// Two clocks mixed, or a clock that went backwards: a sample that says
@@ -1739,8 +1737,6 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	// once both have the channel is closed and the stream's sequence numbers
 	// start again from zero. A reset is performed only once everything sent
 	// on the association before it has arrived, so no message is lost to it.
-	// There was none of this: closing a channel told the peer nothing, and a
-	// browser's close was never heard.
 	// ------------------------------------------------------------------
 
 	/** RFC 6525 section 4.4's results. **/
@@ -1838,9 +1834,9 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	@:noCompletion private function __onPeerRequest(sequence:Int, streams:Null<Array<Int>>, lastTsn:Int, incoming:Bool, refused:Bool):Void {
 		// A packet's worth of answers, and the rest of its requests go as if
 		// lost: a peer asks again for what it is still owed an answer to.
-		// Every request was answered, all in one packet, so 800 of them built
-		// a 25,612-byte answer, past the largest datagram DTLS sends, which
-		// threw and ended the connection.
+		// Answering every request in one packet, 800 of them would build a
+		// 25,612-byte answer, past the largest datagram DTLS sends, which
+		// would throw and end the connection.
 		if (__answersOwed.length >= MAX_ANSWERS_OWED) {
 			return;
 		}
@@ -1872,7 +1868,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		if (incoming) {
 			// Asked to reset what this end sends: the channels on those streams
 			// close, which resets them, and the request that does is the answer
-			// (RFC 6525 section 5.2.3), it carries this sequence as the one it
+			// (RFC 6525 section 5.2.3): it carries this sequence as the one it
 			// answers. Nothing to reset is said so at once.
 			reset.result = RESULT_IN_PROGRESS;
 			var asked:Int = __resetsAsked;
@@ -2152,19 +2148,19 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		Giving some back cannot deadlock, because it always makes room. It is
 		also what `MAX_REASSEMBLY` and `MAX_HELD` already do a stream at a
-		time, an unfinished message is dropped and said so, and this is
+		time (an unfinished message is dropped and said so), and this is
 		that rule with the association's total in place of one stream's.
 
 		Down to half rather than just under, so that a peer sitting on the
 		limit pays for one pass and not one per chunk.
 
 		What this costs, stated plainly: an application with more than
-		`RECEIVE_WINDOW` of part-assembled messages in flight at once now
-		loses one of them and hears about it on `onFailure`, where before it
-		would have been held and completed. Reaching that takes several
-		very large messages on different streams at the same time, which is
-		not what a data channel is usually carrying, and it cannot happen to
-		a peer that reads the window, which this end's own sender now does.
+		`RECEIVE_WINDOW` of part-assembled messages in flight at once loses
+		one of them and hears about it on `onFailure`, where without this it
+		would be held and completed. Reaching that takes several very large
+		messages on different streams at the same time, which is not what a
+		data channel is usually carrying, and it cannot happen to a peer that
+		reads the window, as this end's own sender does.
 
 		The same for `MAX_HELD_PIECES`, which no honest peer reaches: down to
 		half of both.
@@ -2223,11 +2219,12 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		var fragments:Array<SctpDataChunk> = holding.fragments;
 
 		// Put in TSN order rather than appended and the whole array re-sorted,
-		// which cost a comparison against everything already held on every
-		// arrival, quadratic in a count the peer chooses. Fragments normally
-		// arrive in order, which lands at the end at once; out of order, the
-		// place is found by halving, where a walk back from the end cost a
-		// comparison per fragment held for every one arriving in reverse.
+		// which would cost a comparison against everything already held on
+		// every arrival, quadratic in a count the peer chooses. Fragments
+		// normally arrive in order, which lands at the end at once; out of
+		// order, the place is found by halving, where a walk back from the
+		// end would cost a comparison per fragment held for every one arriving
+		// in reverse.
 		// `__onData` has already refused a TSN seen before, so nothing lands
 		// on an equal one.
 		var at:Int = fragments.length;
@@ -2266,7 +2263,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		// Bounded here rather than as each fragment arrives: a fragment is only
 		// oversized in the context of the message it is joining. Dropping what
-		// has accumulated is the part that matters, onFailure is raised for
+		// has accumulated is the part that matters; onFailure is raised for
 		// symmetry with the send side, though nothing in src/ assigns it yet.
 		if (holding.bytes > MAX_REASSEMBLY) {
 			__forget(key);
@@ -2281,8 +2278,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		}
 
 		// Nothing held ends a message, so nothing held can complete one. This
-		// is the shape `MAX_REASSEMBLY` exists for, fragments flagged B and
-		// never one flagged E, and it used to have every arrival walk the
+		// is the shape `MAX_REASSEMBLY` exists for (fragments flagged B and
+		// never one flagged E), and without this every arrival would walk the
 		// whole of what the peer had already sent.
 		if (holding.endings == 0) {
 			return;
@@ -2292,7 +2289,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		// complete: anything else was already whole before it, and would have
 		// gone up then. So the ends are found from there rather than from the
 		// front of everything held, and either walk stops the moment the TSNs
-		// stop being consecutive, a gap means a fragment is still in flight,
+		// stop being consecutive: a gap means a fragment is still in flight,
 		// and delivering what is here would be delivering part of a message.
 		var start:Int = at;
 
@@ -2330,10 +2327,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 		var head = fragments[start];
 
-		// The message's own fragments, and nothing either side of them. Every
-		// fragment before it went too, so an earlier message on the stream
-		// still missing a piece was dropped when a later one completed,
-		// and, ordered, the later one then waited for good on a sequence that
+		// The message's own fragments, and nothing either side of them. Taking
+		// every fragment before it too would drop an earlier message on the
+		// stream still missing a piece when a later one completed, and,
+		// ordered, the later one would then wait for good on a sequence that
 		// could no longer arrive. Exactly one of the message's fragments ends
 		// it: the walks above stop at the first B and the first E.
 		fragments.splice(start, end - start + 1);
@@ -2361,18 +2358,19 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	/**
 		The peer abandoned everything up to a TSN: RFC 3758 section 3.6.
 
-		What partial reliability rests on. A peer that gives up on a message,
-		a channel opened with `maxRetransmits: 0`, or one whose lifetime ran out,
-		says so with this, and without it the hole that message left was
-		permanent: the cumulative acknowledgement stopped there, every later
-		number piled up behind it, and an ordered stream waited for good.
+		What partial reliability rests on. A peer that gives up on a message
+		(a channel opened with `maxRetransmits: 0`, or one whose lifetime ran
+		out) says so with this, and without it the hole that message left
+		would be permanent: the cumulative acknowledgement would stop there,
+		every later number pile up behind it, and an ordered stream wait for
+		good.
 
 		The acknowledgement moves to the new TSN, and on over anything already
 		held beyond it. Fragments at or below it belong to messages that will
 		never complete, and go. Each stream named with a sequence number
-		skips to the one after it, delivering what it was holding up to there,
-		messages that arrived complete and waited only on one that was
-		abandoned. Answered with a SACK at once, as a DATA chunk would be.
+		skips to the one after it, delivering what it was holding up to there
+		(messages that arrived complete and waited only on one that was
+		abandoned). Answered with a SACK at once, as a DATA chunk would be.
 	**/
 	@:noCompletion private function __onForwardTsn(chunk:SctpChunk):Void {
 		if (chunk.value.length < 4) {
@@ -2407,8 +2405,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	}
 
 	/**
-		Drops held fragments at or below `through`, parts of messages the
-		peer abandoned, and any left after them that no longer begin a
+		Drops held fragments at or below `through` (parts of messages the
+		peer abandoned) and any left after them that no longer begin a
 		message, which could now never complete either.
 
 		Only the streams whose first fragment is at or below it can hold any,
@@ -2470,8 +2468,8 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 
 	/**
 		An ordered stream moves past `sequence`, the last one the peer
-		abandoned on it. What it held up to there goes up in order, those
-		arrived whole and waited only on the abandoned one, and then whatever
+		abandoned on it. What it held up to there goes up in order (those
+		arrived whole and waited only on the abandoned one), and then whatever
 		follows on from it.
 	**/
 	@:noCompletion private function __skipThrough(streamId:Int, sequence:Int):Void {
@@ -2489,11 +2487,11 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			var span:Int = ((sequence - expected) & 0xFFFF) + 1;
 
 			if (span <= waiting.count) {
-				// Walked by the range when it is the shorter: one entry moving
-				// the stream on by one used to walk everything held, so a
-				// FORWARD TSN naming a stream 2,000 times, each a step, over
-				// 8,000 messages held far ahead cost 1.9 seconds on the
-				// interpreter and 73 ms on the jvm. In order, so nothing to sort.
+				// Walked by the range when it is the shorter: walking everything
+				// held to move the stream on by one would make a FORWARD TSN
+				// naming a stream 2,000 times, each a step, over 8,000 messages
+				// held far ahead cost 1.9 seconds on the interpreter and 73 ms on
+				// the jvm. In order, so nothing to sort.
 				var at:Int = expected;
 
 				for (_ in 0...span) {
@@ -2637,12 +2635,12 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 			return;
 		}
 
-		// Asked for by number rather than searched for. Held messages used to
-		// be a list scanned from the front for whichever one came next, and
-		// then taken out of the middle of it, so releasing a stream that had
-		// been waiting cost a pass over everything queued for each message
-		// released, quadratic in a count the peer chooses by withholding
-		// one sequence and sending the rest.
+		// Asked for by number rather than searched for. A list scanned from
+		// the front for whichever one came next, and then taken out of the
+		// middle of it, would make releasing a stream that had been waiting
+		// cost a pass over everything queued for each message released,
+		// quadratic in a count the peer chooses by withholding one sequence
+		// and sending the rest.
 		var expected:Int = __expectedSequence.get(streamId);
 
 		while (waiting.bySequence.exists(expected)) {
@@ -2685,7 +2683,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 	**/
 	@:noCompletion private function __buildSack():SctpChunk {
 		// The runs are the gap blocks, so there is nothing to search: an
-		// association with no holes, nearly every SACK ever sent, writes
+		// association with no holes (nearly every SACK ever sent) writes
 		// sixteen bytes and is done.
 		var blocks:Int = __received.runs < MAX_SACK_BLOCKS ? __received.runs : MAX_SACK_BLOCKS;
 
@@ -2715,10 +2713,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 /**
 	What one stream has of a message that is not finished.
 
-	The counts travel with the fragments because deriving them is what made
-	reassembly quadratic: both the byte total and whether anything here ends a
-	message were recomputed over the whole array on every arrival, and the
-	peer chooses how long that array is. `SctpWireFuzzTest` measures the real
+	The counts travel with the fragments because deriving them would make
+	reassembly quadratic: both the byte total and whether anything here ends
+	a message would be recomputed over the whole array on every arrival, and
+	the peer chooses how long that array is. `SctpWireFuzzTest` measures the real
 	fragments against `MAX_REASSEMBLY` rather than reading `bytes`, so a total
 	that drifted below the truth would show there.
 **/
@@ -2828,7 +2826,7 @@ private class FirstTsns {
 	consecutive numbers in order.
 
 	Numbers wrap, so every comparison is by distance from the cumulative
-	acknowledgement, which the caller passes, everything here is at most
+	acknowledgement, which the caller passes: everything here is at most
 	`SctpDataTransfer.MAX_TSN_AHEAD` past it, so a distance is always a small
 	positive number. Runs come off the front as the acknowledgement passes
 	them, through a cursor compacted once the passed part is the larger half.
@@ -2888,7 +2886,7 @@ private class TsnRuns {
 		var joinsAfter:Bool = at < ends.length && ((tsn + 1) | 0) == starts[at];
 
 		if (joinsBefore && joinsAfter) {
-			// It was the one number between two runs, which are now one.
+			// It is the one number between two runs, which are now one.
 			ends[at - 1] = ends[at];
 			starts.splice(at, 1);
 			ends.splice(at, 1);
@@ -3069,8 +3067,9 @@ private class Outstanding {
 	What one stream is holding until the sequence before it arrives.
 
 	The total travels with the queue for the same reason it does in
-	`Reassembly`: it was re-summed over the whole queue on every message that
-	arrived out of turn, and how many that is belongs to the peer.
+	`Reassembly`: re-summing it over the whole queue for every message that
+	arrives out of turn would cost a pass per message, and how many that is
+	belongs to the peer.
 **/
 private class Held {
 	/**

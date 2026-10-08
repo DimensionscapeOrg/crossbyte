@@ -55,8 +55,8 @@ class ReliableDatagramCoalescingTest extends utest.Test {
 	}
 
 	public function testFlushIsNoLongerOnlyForStreams():Void {
-		// It threw in DATAGRAM mode when it meant only "turn the stream into
-		// frames"; now it also means "send", which every mode has.
+		// "Turn the stream into frames" and "send", which every mode has: it
+		// does not throw in DATAGRAM mode.
 		var socket = WireSocket.make(true);
 		if (socket == null) return;
 
@@ -161,8 +161,8 @@ class ReliableDatagramCoalescingTest extends utest.Test {
 		socket.send(text("last words"));
 		socket.close();
 
-		// In the call, as it always went, and in the sequence behind the
-		// message, so the peer acts on it only once it has the message.
+		// In the call, and in the sequence behind the message, so the peer acts
+		// on it only once it has the message.
 		Assert.same(["PACKET last words", "FIN "], socket.described());
 		var frames = socket.frames();
 		if (frames.length == 2) {

@@ -18,11 +18,10 @@ import utest.Assert;
 
 	The end of every pass over a non-blocking socket is a would-block: the
 	read that finds it dry, the send a slow peer's window refuses. Reported
-	by exceptions, a native one, thrown again in Haxe, each cost 1.9 to
-	4.3 us natively and 2.4 to 4.8 us on the jvm, where the call itself is a
-	few hundred nanoseconds. These cases did not compile before: the
-	transfers did not exist. The standard surface is checked alongside, to
-	throw as it always did.
+	by exceptions (a native one, thrown again in Haxe) each would cost 1.9
+	to 4.3 us natively and 2.4 to 4.8 us on the jvm, where the call itself
+	is a few hundred nanoseconds. The standard surface is checked
+	alongside, to throw as it always did.
 
 	Not on eval, whose sockets cannot be made non-blocking: a read with
 	nothing waiting would wait for good.
@@ -163,16 +162,13 @@ class SysSocketTransferTest extends utest.Test {
 	/**
 		The transfers on a TLS session, through every outcome a read loop
 		meets: -1 while the handshake waits on the peer, however many passes
-		it takes; -1 for a record that carries nothing to read, the TLS 1.3
-		session ticket a server sends once the handshake is done, and for a
+		it takes; -1 for a record that carries nothing to read (the TLS 1.3
+		session ticket a server sends once the handshake is done) and for a
 		session read dry; the bytes as they arrive; -1 when a blocking
 		socket's read times out; and 0 at the end of the stream. A client
 		reads through its own session (`AlpnSocket`), a socket `accept` made
 		through its `input`, the exception taken inside; both are checked.
-
-		These are the conditions a client-certificate upgrade that failed on
-		Linux was suspected of meeting, after the transfers stopped throwing
-		for "would block". Each maps as it did through `input`.
+		Each maps as it does through `input`.
 	**/
 	public function testTlsTransfersAnswerMinusOneThroughTheHandshakeThenDataThenTheEnd():Void {
 		var fixture = TLSTestFixture.selfSigned();
@@ -225,8 +221,8 @@ class SysSocketTransferTest extends utest.Test {
 			Assert.isTrue(@:privateAccess client.handshakeDone && @:privateAccess accepted.handshakeDone, "the handshake did not finish");
 			Assert.isTrue(passes > 1, "the handshake finished in one pass, so no read met it waiting");
 
-			// What the server sent after its handshake, a TLS 1.3 session
-			// ticket, carries nothing for the client to read.
+			// What the server sent after its handshake (a TLS 1.3 session
+			// ticket) carries nothing for the client to read.
 			Socket.select([client], null, null, 0.5);
 			Assert.equals(-1, @:privateAccess client.__tryRead(buffer, 0, buffer.length), "a read of what follows the handshake was not -1");
 

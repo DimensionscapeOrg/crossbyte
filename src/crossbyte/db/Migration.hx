@@ -50,7 +50,7 @@ class Migration<T> {
 	/**
 	 * Fingerprint compared against the value recorded when this migration was
 	 * applied, so that editing an already-applied migration is reported rather
-	 * than silently ignored, the edit does not re-run, and every database that
+	 * than silently ignored: the edit does not re-run, and every database that
 	 * ran the old text stays on it.
 	 *
 	 * Derived from the statements automatically. `null` for a function-bodied

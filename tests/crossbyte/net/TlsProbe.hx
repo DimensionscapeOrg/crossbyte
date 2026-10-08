@@ -2,8 +2,8 @@ package crossbyte.net;
 
 /**
 	A TLS client a test points at a server, to learn what the server agreed
-	to: whether the handshake succeeded, which ALPN protocol it chose, and,
-	asked to upgrade, the status line it answered a WebSocket upgrade with.
+	to: whether the handshake succeeded, which ALPN protocol it chose, and
+	(asked to upgrade) the status line it answered a WebSocket upgrade with.
 
 	CrossByte's own `WebSocket` client cannot do what these tests need of a
 	peer. It names the host it dialled as SNI, offers no ALPN, and presents

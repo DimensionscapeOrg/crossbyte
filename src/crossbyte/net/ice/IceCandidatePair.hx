@@ -10,7 +10,7 @@ import haxe.Int64;
 	ICE does not negotiate an address, it races them. Each side pairs everything
 	it has against everything it was told about, sorts the pairs, and works down
 	the list sending checks until one answers. The point of the sort is that
-	both peers do it and both arrive at the same order, the checks are cheap,
+	both peers do it and both arrive at the same order: the checks are cheap,
 	but they are not free, and two peers working the list in different orders
 	would spend them on different pairs.
 
@@ -27,7 +27,7 @@ import haxe.Int64;
 	either can compute it. ICE settles that with the ICE-CONTROLLING and
 	ICE-CONTROLLED attributes and a tiebreaker; here it is a flag the caller
 	passes, because whatever decides it lives above this class. What matters is
-	that the two peers pass opposite values, if both claim to be controlling,
+	that the two peers pass opposite values: if both claim to be controlling,
 	both compute a valid ordering and they are different orderings.
 **/
 class IceCandidatePair {
@@ -49,7 +49,7 @@ class IceCandidatePair {
 	public var priority(default, null):Int64;
 
 	/**
-		@throws ArgumentError if the two candidates cannot be paired at all,
+		@throws ArgumentError if the two candidates cannot be paired at all:
 		different components, or different address families.
 	**/
 	public function new(local:IceCandidate, remote:IceCandidate, controlling:Bool) {
@@ -78,7 +78,7 @@ class IceCandidatePair {
 
 		Both peers compute this over the same two numbers and must agree, which
 		is what the shape buys. The smaller of the two dominates, so a pair is
-		worth no more than its weaker half, there is no use in one peer
+		worth no more than its weaker half: there is no use in one peer
 		offering a superb address if the other end of the pair is a relay. The
 		larger breaks ties among pairs whose weaker halves match. The final bit
 		exists only so that the two orderings a swapped G and D would produce
@@ -106,10 +106,10 @@ class IceCandidatePair {
 		negative when `a` goes first, positive when `b` does, and never more
 		than one either way.
 
-		`Int64.compare` answers with a difference, of two high words here,
-		which run to 2^31, and neko's `Array.sort` is a native merge sort that
-		takes any answer too large for neko's 31-bit Int as "less". Every sort
-		by priority there put a relay first and a host last.
+		`Int64.compare` answers with a difference (of two high words here,
+		which run to 2^31), and neko's `Array.sort` is a native merge sort that
+		takes any answer too large for neko's 31-bit Int as "less", which
+		would sort a relay first and a host last.
 	**/
 	@:noCompletion @:allow(crossbyte.net.ice.IceAgent) private static function __higherFirst(a:Int64, b:Int64):Int {
 		var order:Int = Int64.compare(b, a);
@@ -121,7 +121,7 @@ class IceCandidatePair {
 
 		Candidates that cannot reach each other are left out rather than
 		included and failed later, and a candidate repeated within either list
-		is counted once, the same address discovered as a host candidate and
+		is counted once: the same address discovered as a host candidate and
 		again through STUN is one place, and checking it twice would spend a
 		check to learn nothing.
 
@@ -145,7 +145,7 @@ class IceCandidatePair {
 		advertises. What it decides is only which checks this peer sends.
 
 		A relayed candidate is not collapsed. RFC 8445 section 5.1.1.2 makes it
-		its own base, because a relay lends an address that really does send,
+		its own base, because a relay lends an address that really does send:
 		it is a path in its own right rather than another view of one.
 
 		A reflexive candidate whose base was never recorded is left alone, since

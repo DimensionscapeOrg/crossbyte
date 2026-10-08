@@ -18,7 +18,7 @@ typedef socklen_t KeepAliveLen;
 
 /*
 	TCP keepalive for the database clients that drive a sys.net.Socket of
-	their own, MongoDB's, the way the hxcpp fork's MySQL client sets it
+	their own (MongoDB's), the way the hxcpp fork's MySQL client sets it
 	on its socket: so a connection to a server that has vanished, a partition
 	or a host that died without closing, is noticed rather than waited on.
 	The same calls and the same rules: `idle` seconds without traffic before

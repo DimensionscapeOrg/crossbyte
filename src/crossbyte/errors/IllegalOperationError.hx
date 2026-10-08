@@ -4,7 +4,7 @@ package crossbyte.errors;
 	The IllegalOperationError exception is thrown when a method is not
 	implemented or the implementation doesn't cover the current usage.
 
-	It marks a call that is legal in general but not here, wrong state,
+	It marks a call that is legal in general but not here: wrong state,
 	wrong thread, or a target that cannot do it. What CrossByte throws it for:
 
 	* A runtime reached from a thread it is not attached to, or

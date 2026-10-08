@@ -23,9 +23,9 @@ import crossbyte.errors.ArgumentError;
  * });
  * ```
  *
- * **Falling behind.** When more time arrives than `maxSteps` steps can use,
- * a stall, a breakpoint, a machine resuming from sleep, or steps that
- * take longer to run than they simulate, the excess is dropped rather
+ * **Falling behind.** When more time arrives than `maxSteps` steps can use
+ * (a stall, a breakpoint, a machine resuming from sleep, or steps that
+ * take longer to run than they simulate) the excess is dropped rather
  * than owed, and added to `dropped`. Owing it is the spiral this exists to
  * prevent: a simulation that falls behind runs extra steps to catch up,
  * falls further behind doing so, and never recovers. Dropping it lets
@@ -33,8 +33,8 @@ import crossbyte.errors.ArgumentError;
  * how that stays visible rather than silent.
  *
  * **Tick numbers.** `tick` numbers the steps taken, which is what snapshots
- * and inputs are stamped with. It wraps past `2^31 - 1`, over a year at
- * 60 steps a second, so compare two ticks by the sign of their
+ * and inputs are stamped with. It wraps past `2^31 - 1` (over a year at
+ * 60 steps a second), so compare two ticks by the sign of their
  * difference, as sequence numbers are compared, not with `<`.
  *
  * **Threading.** None. Drive it from the tick that owns the simulation.
@@ -102,7 +102,7 @@ final class FixedStep {
 	 * Zero and negative time add nothing, so a clock that stepped backwards
 	 * costs no steps rather than taking some away.
 	 *
-	 * @param elapsed Seconds since the last call, a tick's `delta`.
+	 * @param elapsed Seconds since the last call: a tick's `delta`.
 	 * @return Steps now owed, the same as `pending`.
 	 */
 	public function advance(elapsed:Float):Int {
@@ -117,8 +117,8 @@ final class FixedStep {
 
 		// A quotient a hair short of a whole number is that number. With a
 		// tenth-of-a-second step, 0.25 leaves a remainder that 0.05 more
-		// divides out to 0.9999999999999999, and flooring that takes the step
-		// a tick late, every time, for a runtime pumped with exact deltas.
+		// divides out to 0.9999999999999999, and flooring that would take the
+		// step a tick late, every time, for a runtime pumped with exact deltas.
 		// The remainder then sits a hair below zero, and is carried rather
 		// than rounded away, so time only ever moves between steps: none is
 		// gained or lost.
@@ -150,8 +150,8 @@ final class FixedStep {
 	/**
 	 * Takes one step, if one is owed.
 	 *
-	 * @return `true` when a step was taken, `tick` has moved on to number
-	 *         it, and `false` when the time is used up.
+	 * @return `true` when a step was taken (`tick` has moved on to number
+	 *         it), and `false` when the time is used up.
 	 */
 	public function step():Bool {
 		if (pending == 0) {

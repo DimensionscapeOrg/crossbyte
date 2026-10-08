@@ -31,10 +31,9 @@ class CookieJarTest extends utest.Test {
 	}
 
 	public function testHostsMatchWhateverTheirCase():Void {
-		// Host names are case-insensitive, and the jar compared them exactly:
-		// a redirect that changed only the host's case kept the caller's
-		// credentials, Http compares origins lowercased, and dropped the
-		// session cookie.
+		// Host names are case-insensitive: compared exactly, a redirect that
+		// changed only the host's case would keep the caller's credentials (Http
+		// compares origins lowercased) and drop the session cookie.
 		var jar = new CookieJar();
 		jar.store("session=abc123", "Example.COM");
 
@@ -43,8 +42,8 @@ class CookieJarTest extends utest.Test {
 	}
 
 	public function testOneNameFromTwoHostsIsKeptForEach():Void {
-		// Keyed by name alone, the second host's cookie replaced the first's,
-		// so going back to the first host sent nothing.
+		// Keyed by name alone, the second host's cookie would replace the
+		// first's, so going back to the first host would send nothing.
 		var jar = new CookieJar();
 		jar.store("session=from-a", "a.example");
 		jar.store("session=from-b", "b.example");
@@ -54,7 +53,7 @@ class CookieJarTest extends utest.Test {
 	}
 
 	public function testCookiesGoBackInTheOrderTheyWereSet():Void {
-		// They came back in a map's iteration order, which differs by target.
+		// In the order set, not a map's iteration order, which differs by target.
 		var jar = new CookieJar();
 		for (name in ["zeta", "alpha", "mid", "beta"]) {
 			jar.store(name + "=1", "example.com");
@@ -63,8 +62,8 @@ class CookieJarTest extends utest.Test {
 	}
 
 	public function testAHostKeepsABoundedNumberOfCookiesTheNewestFirst():Void {
-		// Nothing bounded the jar: a server could set as many cookies as it
-		// cared to send, and every request read through all of them.
+		// The jar is bounded, so a server cannot set as many cookies as it
+		// cares to send and have every request read through all of them.
 		var jar = new CookieJar();
 		for (i in 0...500) {
 			jar.store("c" + i + "=1", "example.com");
@@ -118,9 +117,9 @@ class CookieJarTest extends utest.Test {
 	}
 
 	public function testMaxAgeIsReadTheSameOnEveryTarget():Void {
-		// Std.parseInt made 4294967296 a zero on Linux native, deleting a
-		// cookie meant to last a century, and threw out of the request on
-		// the jvm. Digits past an Int are still a number; text is ignored.
+		// Std.parseInt makes 4294967296 a zero on Linux native, which would
+		// delete a cookie meant to last a century, and throws out of the request
+		// on the jvm. Digits past an Int are still a number; text is ignored.
 		var jar = new CookieJar();
 		jar.store("long=1; Max-Age=4294967296", "example.com");
 		jar.store("longer=1; Max-Age=99999999999999999999", "example.com");

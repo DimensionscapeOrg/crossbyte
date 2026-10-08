@@ -12,12 +12,13 @@ import utest.Async;
 /**
  * What the server compresses, and what a response says about it.
  *
- * Every non-empty body was compressed: errors and 429s too, so a flood of
- * refused requests cost a Brotli encoder each; a two-byte answer came out as
- * 22 bytes; PNGs grew; a static file was compressed again on every request.
- * No response said `Vary: Accept-Encoding`, a route's strong ETag went out on
- * every coding of its body, and a HEAD reported the identity length beside a
- * GET that went out as br. `HTTPServerConfig.compression` is the policy now.
+ * Not every non-empty body is compressed: errors and 429s are not, so a
+ * flood of refused requests does not cost a Brotli encoder each; a
+ * two-byte answer is not made 22 bytes; PNGs do not grow; a static file is
+ * not compressed again on every request. A response says `Vary:
+ * Accept-Encoding`, a route's strong ETag is not sent on every coding of
+ * its body, and a HEAD reports what the GET sends. `HTTPServerConfig.compression`
+ * is the policy.
  */
 @:timeout(20000)
 class HTTPCompressionTest extends utest.Test {
@@ -33,9 +34,9 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testAnErrorIsSentAsItIs(async:Async):Void {
-		// A 429 or a 404 cost a full Brotli setup whenever the client listed
-		// br, which every browser does: the rate limiter then did not bound
-		// what a flood of refused requests cost.
+		// A 429 or a 404 is not compressed: whenever the client lists br, which
+		// every browser does, a full Brotli setup each would leave the rate
+		// limiter not bounding what a flood of refused requests cost.
 		var server:HTTPServer = __serve(config -> {
 			config.middleware.push((handler, next) -> handler.respond(handler.requestPath == "/limited" ? 429 : 404, "text/plain", __text(4096)));
 		});
@@ -56,8 +57,8 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testASmallBodyOrAnUnlistedTypeIsSentAsItIs(async:Async):Void {
-		// A two-byte body came out as 22 bytes of gzip, and a PNG, compressed
-		// already, grew.
+		// A two-byte body would come out as 22 bytes of gzip, and a PNG,
+		// compressed already, would grow.
 		var server:HTTPServer = __serve(config -> {
 			config.middleware.push((handler, next) -> {
 				if (handler.requestPath == "/tiny") {
@@ -89,9 +90,9 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testANegotiatedResponseVariesOnAcceptEncoding(async:Async):Void {
-		// No response said Vary, so a cache keyed on the URL replayed a br
-		// body to clients that had not asked for br. Said on every answer that
-		// could have been encoded, including one that went out as it is.
+		// Without Vary, a cache keyed on the URL would replay a br body to
+		// clients that had not asked for br. Said on every answer that could
+		// have been encoded, including one that went out as it is.
 		var text:String = __text(4096);
 		var server:HTTPServer = __serve(config -> config.middleware.push((handler, next) -> handler.respond(200, "text/plain", text)));
 
@@ -113,8 +114,8 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testAnEncodedVariantsETagIsWeak(async:Async):Void {
-		// One strong tag went out on the identity, gzip, br and deflate bodies
-		// of a route, and a strong tag names one exact sequence of bytes.
+		// One strong tag must not go out on the identity, gzip, br and deflate
+		// bodies of a route: a strong tag names one exact sequence of bytes.
 		var server:HTTPServer = __serve(config -> {
 			config.middleware.push((handler, next) -> handler.respond(200, "text/plain", __text(4096), [new URLRequestHeader("ETag", "\"v1\"")]));
 		});
@@ -133,9 +134,9 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testAHeadIsNegotiatedAsItsGetIs(async:Async):Void {
-		// A HEAD skipped negotiation, so it said identity and its own length
-		// beside a GET that went out as br, and a route's HEAD said
-		// Content-Length: 0 whatever its GET carried.
+		// A HEAD negotiates as a GET does: it must not say identity and its own
+		// length beside a GET that goes out as br, and a route's HEAD must not
+		// say Content-Length: 0 whatever its GET carries.
 		var text:String = __text(4096);
 		var server:HTTPServer = __serve(config -> config.middleware.push((handler, next) -> handler.respond(200, "text/plain", text)));
 
@@ -190,13 +191,13 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	/**
-		A browser's list, gzip, deflate, br, zstd, all equal, gets gzip for
+		A browser's list (gzip, deflate, br, zstd, all equal) gets gzip for
 		a body encoded for one response, unless Brotli is native: Brotli in
-		Haxe took 1.3 ms for 64 KB of JSON where gzip from native zlib takes
-		0.2, and a server answering browsers was held to about 800 compressed
-		responses a second. A static file is encoded once and kept, so it
-		still goes as br, the smallest; and a client whose q-values prefer br
-		gets br.
+		Haxe takes 1.3 ms for 64 KB of JSON where gzip from native zlib takes
+		0.2, which would hold a server answering browsers to about 800
+		compressed responses a second. A static file is encoded once and kept,
+		so it still goes as br, the smallest; and a client whose q-values
+		prefer br gets br.
 	**/
 	public function testABrowserGetsGzipPerResponseAndBrForAKeptFile(async:Async):Void {
 		var text:String = __text(8192);
@@ -232,8 +233,8 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testAStaticFileIsCompressedOnceAndKept(async:Async):Void {
-		// Compressed again for every request: a 150 KB script served 863
-		// requests a second as it was, and 64 as Brotli, natively.
+		// Kept, not compressed again for every request: a 150 KB script serves
+		// 863 requests a second as it is, and 64 as Brotli, natively.
 		var text:String = __text(8192);
 		var compression:Null<HTTPCompression> = null;
 		var server:HTTPServer = __serve(config -> compression = config.compression, root -> __write(root, "app.js", text));
@@ -293,10 +294,10 @@ class HTTPCompressionTest extends utest.Test {
 	}
 
 	public function testAGzSiblingIsServedToAClientThatAlsoTakesBrotli(async:Async):Void {
-		// A browser lists gzip, deflate and br, and Brotli was chosen first and
-		// only its sibling looked for: a file with only a .gz beside it went out
-		// as br encoded on the spot, and one too large to hold went out as it is
-		// on disk, 307,200 bytes where its .gz was 49,755.
+		// A browser lists gzip, deflate and br, and every sibling is looked for,
+		// not only Brotli's: a file with only a .gz beside it goes out as that,
+		// not as br encoded on the spot, and one too large to hold goes out as
+		// its .gz, not as it is on disk (307,200 bytes where its .gz is 49,755).
 		var small:String = __text(8192);
 		var large:String = __text(300 * 1024);
 		var server:HTTPServer = __serve(null, root -> {

@@ -9,14 +9,12 @@ import utest.Assert;
 import utest.Async;
 
 /**
- * A response written as it is produced, `beginResponse` and the
- * `HTTPResponseStream` it returns, and the close event that tells a producer
- * its client left.
- *
- * `respond` took the whole body at once, as a String, with a Content-Length,
- * so there was no way to send server-sent events, a download produced as it
- * went, or bytes that were not text; the audit's SSE and download programs
- * needed `@:privateAccess`. The HTTP/2 half of this is in `HTTPServerH2Test`.
+ * A response written as it is produced (`beginResponse` and the
+ * `HTTPResponseStream` it returns) and the close event that tells a
+ * producer its client left: server-sent events, a download produced as it
+ * goes, and bytes that are not text, none of which `respond`, taking the
+ * whole body at once as a String with a Content-Length, can send. The
+ * HTTP/2 half of this is in `HTTPServerH2Test`.
  */
 @:timeout(20000)
 class HTTPResponseStreamTest extends utest.Test {
@@ -66,9 +64,8 @@ class HTTPResponseStreamTest extends utest.Test {
 		A streamed response is compressed as it goes for a client that
 		accepts gzip or deflate: each chunk carries compressed bytes of its
 		own, sent before the response ends, and the body inflates to all that
-		was written. It went out as it was, whatever the client accepted. br,
-		which cannot be streamed here, gets the body as it is, and both say
-		they vary on Accept-Encoding.
+		was written. br, which cannot be streamed here, gets the body as it
+		is, and both say they vary on Accept-Encoding.
 	**/
 	public function testAStreamedResponseIsCompressedAsItGoes(async:Async):Void {
 		var held:HTTPResponseStream = null;
@@ -162,8 +159,8 @@ class HTTPResponseStreamTest extends utest.Test {
 	}
 
 	public function testTheProducerHearsItsClientLeave(async:Async):Void {
-		// There was no close event: a producer writing to a client that had
-		// gone found out only by writing into a closed socket.
+		// The close event tells a producer its client has gone, rather than
+		// it finding out only by writing into a closed socket.
 		var held:HTTPRequestHandler = null;
 		var events:HTTPResponseStream = null;
 		var heardClose:Bool = false;
@@ -191,10 +188,10 @@ class HTTPResponseStreamTest extends utest.Test {
 	}
 
 	public function testAListenerAddedAfterItsClientLeftHearsIt(async:Async):Void {
-		// A CLOSE listener added once the client had already gone, by a
-		// route that looked something up first, say, was registered on a
-		// connection already closed, and heard nothing, ever. It is told,
-		// once, in a later turn rather than from inside addEventListener.
+		// A CLOSE listener added once the client has already gone (by a route
+		// that looked something up first, say) is told, once, in a later turn
+		// rather than from inside addEventListener, not left registered on a
+		// closed connection hearing nothing, ever.
 		var held:HTTPRequestHandler = null;
 		var server = __serve(handler -> held = handler);
 		var client = new RawClient(server);
@@ -403,8 +400,8 @@ class HTTPResponseStreamTest extends utest.Test {
 
 	/**
 		A response streamed while its request is handled goes out in one
-		write. Each write was flushed on its own, the head, every piece, the
-		last chunk, a system call apiece: a 64 KB body in eight writes was
+		write, rather than each write flushed on its own (the head, every piece,
+		the last chunk), a system call apiece: a 64 KB body in eight writes is
 		served at a third the rate of the same body in one.
 	**/
 	public function testAStreamWrittenAsItsRequestIsHandledGoesInOneWrite():Void {

@@ -9,7 +9,7 @@ import crossbyte.io._internal.store.StoreBackend;
  * Durable key/value storage, on every target CrossByte builds for.
  *
  * Keys are strings, values are bytes, and there are no queries. That is
- * deliberately the shape `localStorage` has, because the shape is right, it
+ * deliberately the shape `localStorage` has, because the shape is right: it
  * is why the Web API is still in use twenty years on. What is wrong with
  * `localStorage` is the implementation: synchronous, string-only, about five
  * megabytes, and blocking the page it runs in. This keeps the interface and
@@ -23,11 +23,8 @@ import crossbyte.io._internal.store.StoreBackend;
  * messages waiting for a reconnect. Nobody wants a join in a browser tab.
  *
  * Every operation is asynchronous on every target, including the ones that
- * could do it synchronously. Not because browsers force it, because a
- * synchronous signature decides which targets can implement the method, and
- * this framework has already paid for that lesson once: a PHP bridge whose
- * `execute()` returns a response is the only remaining reason PHP cannot run on
- * Node. Everything else about it ported.
+ * could do it synchronously. Not because browsers force it, but because a
+ * synchronous signature decides which targets can implement the method.
  *
  * ```haxe
  * Store.open("session").then(store -> {
@@ -42,8 +39,8 @@ import crossbyte.io._internal.store.StoreBackend;
  * a value across several keys behind a manifest, which is a second format with
  * its own half-written-set problem, in service of values this is not for. A
  * cached asset larger than memory belongs in a file, and `File` is right there
- * on every target that has one. Too large fails loudly either way, a quota
- * error in a page, an allocation failure elsewhere, and never silently
+ * on every target that has one. Too large fails loudly either way (a quota
+ * error in a page, an allocation failure elsewhere) and never silently
  * truncates.
  *
  * @see `crossbyte.db` for a server's data, which is a different problem.
@@ -63,14 +60,14 @@ class Store {
 	/**
 	 * Opens the store called `name`, creating it if it is not there.
 	 *
-	 * The name separates one store from another within an application, it is
+	 * The name separates one store from another within an application; it is
 	 * not a path, and it is not a namespace between applications. Two
 	 * CrossByte programs on one machine that both open "session" are opening
 	 * their own, because the file backend resolves it under the application
 	 * storage directory, `File.applicationStorageDirectory`, which is named
 	 * for `System.applicationId`: the `crossbyte_app_id` define, or else the
-	 * main class. Two programs with the same main class, `Main` is a common
-	 * one, have the same id and share their stores unless one of them sets
+	 * main class. Two programs with the same main class (`Main` is a common
+	 * one) have the same id and share their stores unless one of them sets
 	 * the define. In a browser the stores are the page's origin's.
 	 *
 	 * @param name Store name. Letters, digits, `-`, `_` and `.` only, so that
@@ -215,8 +212,8 @@ class Store {
 	 * Visits every entry, or every entry under `prefix`, one at a time.
 	 *
 	 * Return `false` from `visit` to stop. Nothing holds the whole store in
-	 * memory, IndexedDB is walked with a cursor and the file backend reads
-	 * one value at a time, which is the difference between this and
+	 * memory (IndexedDB is walked with a cursor and the file backend reads
+	 * one value at a time), which is the difference between this and
 	 * `keys()`, and the reason both exist. Reach for `keys()` when the list is
 	 * the answer; reach for this when the values are, or when there may be
 	 * more of them than you would like to allocate at once.
@@ -283,10 +280,9 @@ class Store {
 	 * somebody stored.
 	 */
 	public function getString(key:String):Future<Null<String>> {
-		// `map` rather than a hand-built future with both arms forwarded, which
-		// is what this was: the failure arm in particular was three lines of
-		// nothing but passing a message along, and forgetting it is how an
-		// adapter turns a failure into a result that never arrives.
+		// `map` rather than a hand-built future with both arms forwarded:
+		// forgetting the failure arm is how an adapter turns a failure into
+		// a result that never arrives.
 		return get(key).map(function(value:Null<ByteArray>):Null<String> {
 			if (value == null) {
 				return null;

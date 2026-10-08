@@ -13,13 +13,13 @@ import utest.Assert;
 /**
 	What a TCP connection holds once its traffic is over.
 
-	Each buffer kept the largest it had ever needed for as long as the
-	connection was open: after one 16 KB message each way an idle connection
-	held about 51 KB natively, where it held 1.5 KB before any. A connection
-	now keeps its storage while it is busy, so a message read or written
-	allocates nothing, and lets go of it once it has read and written
-	nothing for a sweep of its registry; a buffer past 64 KB lets go as soon
-	as it empties.
+	A connection keeps its storage while it is busy, so a message read or
+	written allocates nothing, and lets go of it once it has read and
+	written nothing for a sweep of its registry; a buffer past 64 KB lets
+	go as soon as it empties. Kept for as long as the connection was open,
+	each buffer would hold the largest it had ever needed: after one 16 KB
+	message each way, about 51 KB natively for an idle connection that
+	held 1.5 KB before any.
 
 	Natively, on the jvm, and on neko and HashLink; not on eval, whose
 	blocking sockets the echo below would stall.

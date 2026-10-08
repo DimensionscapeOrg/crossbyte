@@ -7,13 +7,11 @@ import haxe.io.Bytes;
 /**
 	Base64url (RFC 4648 section 5) as JOSE writes it: no padding.
 
-	A table each way, made once, and one loop over character codes. The JWT
-	helpers built standard base64 with `haxe.crypto.Base64`, which makes a
-	new `BaseCode` and its table for every call, and then swapped `+` and
-	`/` with two `split`/`join`s, padded, and stripped the padding again; a
-	token's verification did that three times. Decoding answers `null` for
-	text that is not base64url rather than throwing, so a hostile token
-	costs no exception.
+	A table each way, made once, and one loop over character codes, rather
+	than `haxe.crypto.Base64` (a new `BaseCode` and its table for every call)
+	with `+` and `/` swapped and padding added and stripped around it.
+	Decoding answers `null` for text that is not base64url rather than
+	throwing, so a hostile token costs no exception.
 
 	A segment is decoded from inside the token it is part of, by range, so
 	the token is not split into substrings first.
@@ -89,10 +87,9 @@ class Base64Url {
 		`text`'s characters from `start` up to `end`, decoded, or `null` when
 		they are not base64.
 
-		Lenient, as the JWT helpers have always been: standard base64's `+`
-		and `/` are taken for `-` and `_`, trailing `=` padding is allowed, and
-		the bits a last character carries beyond the last byte are not
-		checked.
+		Lenient: standard base64's `+` and `/` are taken for `-` and `_`,
+		trailing `=` padding is allowed, and the bits a last character
+		carries beyond the last byte are not checked.
 	**/
 	public static function decode(text:String, start:Int, end:Int):Null<Bytes> {
 		if (start < 0 || end > text.length || end < start) {

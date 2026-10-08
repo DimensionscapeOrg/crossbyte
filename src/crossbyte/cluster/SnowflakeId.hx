@@ -13,7 +13,7 @@ import haxe.Int64;
 	hot path, which is the thing horizontal scale was meant to avoid.
 
 	So the node's identity goes in the identifier. Sixty four bits: forty one
-	of milliseconds, ten of node, twelve of sequence, a thousand and
+	of milliseconds, ten of node, twelve of sequence: a thousand and
 	twenty four nodes, four thousand and ninety six identifiers per
 	millisecond each, and roughly sixty nine years from whatever epoch is
 	chosen. They sort by time, which makes them usable as a key in anything
@@ -34,8 +34,8 @@ import haxe.Int64;
 	nothing and duplicates nothing.
 
 	It can also stand still long enough for a millisecond's sequence to run
-	out, under a burst. Rather than block, a server's loop is the worst
-	place to sleep, the generator moves to the next millisecond and carries
+	out, under a burst. Rather than block (a server's loop is the worst
+	place to sleep), the generator moves to the next millisecond and carries
 	on, so identifiers may run briefly ahead of the wall clock under load.
 	They remain unique and ordered, which is what they are for; they are not
 	a timestamp, and `timestampOf` is for diagnostics rather than for telling
@@ -95,11 +95,10 @@ class SnowflakeId {
 	/** The next identifier. Never equal to one already returned. **/
 	public function next():Int64 {
 		// Whole milliseconds, before anything is compared. A clock may carry
-		// a fraction, the default one does natively, microseconds on Linux
-		// and macOS and an inexact thousandth on Windows, and a reading
-		// that differed only in its fraction was taken for a new millisecond:
-		// the sequence went back to zero, the fraction was dropped below, and
-		// identifiers already handed out were handed out again.
+		// a fraction (the default one does natively, microseconds on Linux
+		// and macOS and an inexact thousandth on Windows), and a reading
+		// that differed only in its fraction, taken for a new millisecond,
+		// would restart the sequence and hand out identifiers again.
 		var now:Float = Math.ffloor(__clock());
 
 		if (now > __lastMs) {
@@ -134,10 +133,9 @@ class SnowflakeId {
 		rather than when it was.
 	**/
 	public static function timestampOf(id:Int64, epochMs:Float = DEFAULT_EPOCH_MS):Float {
-		// Forty one bits of milliseconds, read as a Float from its two halves.
-		// It went through Int, which holds 31, and threw Overflow for every id
-		// minted more than 24.8 days after the epoch, after 2020-01-25 for
-		// the default one.
+		// Forty one bits of milliseconds, read as a Float from its two halves:
+		// an Int holds 31, which an id minted more than 24.8 days after the
+		// epoch exceeds.
 		final elapsed:Int64 = elapsedOf(id);
 		final low:Float = elapsed.low < 0 ? elapsed.low + 4294967296.0 : elapsed.low + 0.0;
 		return elapsed.high * 4294967296.0 + low + epochMs;

@@ -6,8 +6,8 @@ import utest.Assert;
 
 /**
  * Driven against an in-memory connection rather than a real database, so every
- * target runs it and the assertions are about the migrator's decisions,
- * ordering, idempotency, drift, refusal, rather than about SQL dialects.
+ * target runs it and the assertions are about the migrator's decisions
+ * (ordering, idempotency, drift, refusal) rather than about SQL dialects.
  */
 class SchemaMigratorTest extends utest.Test {
 	public function testAppliesInVersionOrderRegardlessOfRegistrationOrder():Void {
@@ -24,7 +24,7 @@ class SchemaMigratorTest extends utest.Test {
 
 		var report = migrator.migrate(connection);
 
-		// A class, where it was an anonymous structure.
+		// A class, not an anonymous structure.
 		Assert.isTrue(Std.isOfType(report, crossbyte.db.SchemaMigrator.MigrationReport));
 		Assert.same([1, 2, 3], report.applied);
 		Assert.equals(0, report.alreadyApplied);
@@ -40,9 +40,9 @@ class SchemaMigratorTest extends utest.Test {
 	/**
 		Versions stamped with a date keep their order.
 
-		The sort subtracted one version from another, and on neko a difference
-		past 2^30 is not an Int it can pass back to its native sort, which read
-		it as "less": a history numbered by date ran out of order there.
+		Versions are compared, not subtracted: on neko a difference past 2^30
+		is not an Int it can pass back to its native sort, which reads it as
+		"less", so a history numbered by date would run out of order there.
 	**/
 	public function testDateStampedVersionsApplyInOrder():Void {
 		var connection = new FakeConnection();
@@ -332,9 +332,9 @@ class SchemaMigratorTest extends utest.Test {
 	}
 
 	public function testCommitFailureRollsBackRatherThanLeavingTheTransactionOpen():Void {
-		// begin and the migration succeed; the commit is what fails. Nothing
-		// closed the transaction on that path, so the connection went back to
-		// its caller, and, through a pool, to the next borrower, still
+		// begin and the migration succeed; the commit is what fails. The
+		// transaction must be closed on that path, or the connection would go
+		// back to its caller (and, through a pool, to the next borrower) still
 		// inside one. On SQLite that is a held write lock; on Postgres every
 		// later statement on it fails until someone rolls back.
 		var connection = new FakeConnection();
@@ -357,11 +357,11 @@ class SchemaMigratorTest extends utest.Test {
 	}
 
 	public function testUnlockFailureNeitherRepeatsNorMasksASuccessfulRun():Void {
-		// unlock ran inside the try, so a failure there was caught by the same
-		// catch that exists to release the lock, unlocking a second time, and
-		// turning a run that had applied and recorded everything into a thrown
-		// error. On a rolling deploy that is an instance refusing to start
-		// after successfully migrating.
+		// unlock runs outside the try: a failure there, caught by the same catch
+		// that exists to release the lock, would unlock a second time and turn a
+		// run that had applied and recorded everything into a thrown error. On a
+		// rolling deploy that is an instance refusing to start after
+		// successfully migrating.
 		var connection = new FakeConnection();
 		var unlocks:Int = 0;
 

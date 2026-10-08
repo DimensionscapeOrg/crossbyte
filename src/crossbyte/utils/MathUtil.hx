@@ -67,11 +67,9 @@ class MathUtil {
 	 * bit pattern, `1 << 31`, which is 2^31 read as a `UInt`, on every
 	 * target. Zero and below answer 0, `INT32_MIN` too.
 	 *
-	 * Nothing here overflows an Int. It used to, at both ends, and wrapped
-	 * on every target only by luck on native ones: C++ leaves a signed
-	 * overflow undefined, and clang warned of it where `INT32_MIN` was
-	 * passed. So the edges are answered before the arithmetic, which runs
-	 * only where it fits.
+	 * Nothing here overflows an Int: C++ leaves a signed overflow
+	 * undefined, so the edges are answered before the arithmetic, which
+	 * runs only where it fits.
 	 *
 	 * @param n Input integer (must be > 0).
 	 * @return  The next power of two ≥ `n`.

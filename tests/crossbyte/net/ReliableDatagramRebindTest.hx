@@ -111,7 +111,7 @@ class ReliableDatagramRebindTest extends utest.Test {
 		pair.close();
 	}
 
-	/** With rebinding off, a new port is a stranger: reset, and the client closes, as it always did. **/
+	/** With rebinding off, a new port is a stranger: reset, and the client closes. **/
 	public function testWithoutRebindTheResetEndsTheSessionAsBefore():Void {
 		if (!ReliableDatagramSocket.isSupported) {
 			// The interpreter: no UDP, which the flag says.
@@ -402,7 +402,7 @@ class ReliableDatagramRebindTest extends utest.Test {
 	/**
 		Whether a rebind can be offered here: not without a secure random
 		source (neko, HashLink), where a server allowing rebinds gives no key
-		and the client is reset as before, which is checked instead.
+		and the client is reset, which is checked instead.
 	**/
 	private static function requireRebindSupport():Bool {
 		if (!ReliableDatagramSocket.isSupported) {

@@ -29,9 +29,9 @@ class NetPump {
 
 		// Each pump advances the runtime's timers by the time that really
 		// passed, not by a nominal frame. A fixed 1/60 per pump, with the
-		// pumps a millisecond apart, ran timers, utest's own timeout among
-		// them, about ten times faster than the clock, so a case that waited
-		// ten real seconds had long since been declared timed out.
+		// pumps a millisecond apart, would run timers (utest's own timeout among
+		// them) about ten times faster than the clock, so a case that waited
+		// ten real seconds would long since be declared timed out.
 		function step():Void {
 			var now:Float = haxe.Timer.stamp();
 			runtime.pump(now - last, 0);

@@ -41,7 +41,7 @@ class SctpPacketTest extends utest.Test {
 
 		The implementation reads eight bytes a word pair at a time and finishes
 		the tail a byte at a time, and the published vectors never exercise an
-		odd offset, their lengths land where they land. A slicing table built
+		odd offset: their lengths land where they land. A slicing table built
 		in the wrong order, a word read off by one, or a tail loop that starts a
 		byte early would all pass the aligned vectors and corrupt some real
 		packet later. So every offset up to eight and every length across two
@@ -185,7 +185,7 @@ class SctpPacketTest extends utest.Test {
 		verification tag onto a packet built before it had one, and the checksum
 		has to be recomputed over the altered bytes. That second pass is the only
 		time the field holds an old value, and it is the only time zeroing it
-		does anything, `encode` writes zero there itself, so a test that only
+		does anything: `encode` writes zero there itself, so a test that only
 		ever encodes cannot tell whether the zeroing is present.
 	**/
 	public function testRechecksummingAPacketThatAlreadyHasOne():Void {
@@ -292,7 +292,7 @@ class SctpPacketTest extends utest.Test {
 	/**
 		A chunk claiming more than the packet holds ends the walk.
 
-		Truncation is ordinary, a datagram is whatever arrived, and reading
+		Truncation is ordinary (a datagram is whatever arrived), and reading
 		past the end would take whatever the buffer happened to contain.
 	**/
 	public function testAChunkLongerThanThePacketIsNotReadPast():Void {

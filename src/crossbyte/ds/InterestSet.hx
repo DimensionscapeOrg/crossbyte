@@ -7,7 +7,7 @@ import haxe.ds.Vector;
 /**
  * What came into view and what left it, round to round.
  *
- * Each round, a tick, for one observer, add every id in view, however
+ * Each round (a tick, for one observer) add every id in view, however
  * that is decided: a `SpatialGrid` or `QuadTree` query, a line of sight.
  * `commit` then reports what was not in view last round and what no longer
  * is, and the round just gathered becomes the view. It is how a server
@@ -25,12 +25,12 @@ import haxe.ds.Vector;
  * Nothing here allocates once it has grown to its views, on any target: the
  * lists it keeps are unboxed and keep their storage from round to round,
  * and `found`, an `IdList`, is the same. Kept in `Array<Int>`s, 1,000 views
- * of 50 cost 2.2 MB a tick on the jvm and Node, every id above 127 boxed
- * on the jvm, and every emptied array's store handed back to V8. Callbacks
- * made once, as `spawn` and `despawn` are above, rather than closures made
- * at each commit, keep it that way.
+ * of 50 would cost 2.2 MB a tick on the jvm and Node: every id above 127
+ * boxed on the jvm, and every emptied array's store handed back to V8.
+ * Callbacks made once, as `spawn` and `despawn` are above, rather than
+ * closures made at each commit, keep it that way.
  *
- * **Ids** are small non-negative integers, entity slots, say, held as
+ * **Ids** are small non-negative integers (entity slots, say), held as
  * bits, so an observer costs two bits per possible id. What a round costs
  * is proportional to the views, not to the largest id.
  *

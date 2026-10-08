@@ -14,13 +14,13 @@ import utest.Async;
 @:timeout(60000)
 class HTTPStreamingTest extends utest.Test {
 	// Several times the streaming watermark, with a deliberately unaligned
-	// tail so the final slice is a partial one, an off-by-slice bug at the
+	// tail so the final slice is a partial one: an off-by-slice bug at the
 	// end of the transfer cannot hide behind a size that divides evenly.
 	private static inline var LARGE_SIZE:Int = 2 * 1024 * 1024 + 137;
 
 	// What the held-response cases below send: pipelined answers of
 	// HELD_PIECE bytes each, written whole, HELD_WAVE at a time until the
-	// server's socket parks, see __serveHeld, under an output cap raised
+	// server's socket parks (see __serveHeld) under an output cap raised
 	// past what a wave and the system can hold.
 	private static inline var HELD_PIECE:Int = 512 * 1024;
 	private static inline var HELD_WAVE:Int = 8;
@@ -105,12 +105,11 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	public function testStreamedResponseKeepsTheConnectionUsable(async:Async):Void {
-		// A streamed response used to force its connection closed, because
-		// the head is written long before the body finishes and settling at
-		// head time would either cut the body or let the next request's
-		// response interleave into it. Settling moved to the pump instead, so
-		// the body's own Content-Length frames it exactly as it does for a
-		// buffered response and the connection survives.
+		// A streamed response keeps its connection: the head is written long
+		// before the body finishes, and settling at head time would either cut
+		// the body or let the next request's response interleave into it, so
+		// settling is the pump's, and the body's own Content-Length frames it
+		// exactly as it does for a buffered response.
 		//
 		// Both bodies are checked byte-for-byte: a second response that began
 		// before the first had drained would corrupt the tail of the first,
@@ -195,11 +194,11 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	public function testABodyPastTheOutputBufferIsSentWhole(async:Async):Void {
-		// A body larger than maxOutputBufferSize was written whole: what the
-		// peer had not taken by the first flush stayed buffered, the socket
-		// closed at the cap, and the client got the full Content-Length and a
-		// fraction of the body, a 200, logged and counted as one. The size
-		// and the default cap are the audit's: 65,346 bytes of 12 MB arrived.
+		// A body larger than maxOutputBufferSize is fed in bursts, not written
+		// whole, where what the peer had not taken by the first flush would stay
+		// buffered, the socket close at the cap, and the client get the full
+		// Content-Length and a fraction of the body: a 200, logged and counted as
+		// one. At this size and the default cap, 65,346 bytes of 12 MB would arrive.
 		var size:Int = 12 * 1024 * 1024 + 7;
 		var text:StringBuf = new StringBuf();
 		for (i in 0...size) {
@@ -257,10 +256,10 @@ class HTTPStreamingTest extends utest.Test {
 
 	public function testABodyPastTheOutputBufferIsWhatRespondBytesWasHanded(async:Async):Void {
 		// respondBytes's body is the caller's again once it returns. Past the
-		// output cap the body goes out over later drains, and it went from
-		// the caller's own ByteArray: what was sent after the first burst was
-		// whatever its bytes had become, here, all '!'. A cap of 64 KB keeps
-		// it cheap: a burst of 64 KB goes in the call, the other 960 KB later.
+		// output cap the body goes out over later drains, so it must not go from
+		// the caller's own ByteArray, or what was sent after the first burst
+		// would be whatever its bytes had become (here, all '!'). A cap of 64 KB
+		// keeps it cheap: a burst of 64 KB goes in the call, the other 960 KB later.
 		var size:Int = 1024 * 1024 + 13;
 		var body = new ByteArray();
 		for (i in 0...size) {
@@ -319,10 +318,10 @@ class HTTPStreamingTest extends utest.Test {
 	public function testAStalledDownloadIsEndedWithBothTimeoutsOff(async:Async):Void {
 		// requestTimeout and keepAliveTimeout at 0 set no deadline for what
 		// they bound, and the stall deadline is not theirs: a download whose
-		// client stops reading is still ended. Its check was reached through
-		// the connection's receive deadline, from the sweep those two arm, so
-		// with both off nothing looked at it, and the file and the connection
-		// were held for good.
+		// client stops reading is still ended, not checked only through the
+		// connection's receive deadline, from the sweep those two arm, which with
+		// both off would look at nothing and hold the file and the connection for
+		// good.
 		//
 		// The client is a plain socket the runtime never reads, so the
 		// transfer stalls as one to a client that stopped reading does: the
@@ -391,21 +390,21 @@ class HTTPStreamingTest extends utest.Test {
 		});
 	}
 	public function testABufferedResponseItsClientTakesNoneOfIsGivenUp(async:Async):Void {
-		// A response written whole, respond() with a body under the output
-		// cap, whose client stopped reading waited in the socket's buffer
-		// for as long as the connection lasted: once written it was the idle
-		// deadline's to end, and with keepAliveTimeout at 0 there is none. It
-		// is given up at the stall deadline, as a file the client takes
-		// nothing of is: the connection closed, and its bytes let go.
+		// A response written whole (respond() with a body under the output cap)
+		// whose client stops reading must not wait in the socket's buffer for as
+		// long as the connection lasts, as it would with only the idle deadline
+		// to end it and keepAliveTimeout at 0. It is given up at the stall
+		// deadline, as a file the client takes nothing of is: the connection
+		// closed, and its bytes let go.
 		__serveHeld(config -> {
 			config.requestTimeout = 0;
 			config.keepAliveTimeout = 0;
 		}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			if (parked) {
-				// The sweep, once now, seeing where the parked responses stand,
-				// Linux's buffers go on taking a little after they are
-				// written, which moves the deadline on, as progress should,
-				// and then as it would run once the deadline has passed.
+				// The sweep, once now, seeing where the parked responses stand
+				// (Linux's buffers go on taking a little after they are written, which
+				// moves the deadline on, as progress should), and then as it would run
+				// once the deadline has passed.
 				server.__sweep(haxe.Timer.stamp());
 				server.__sweep(haxe.Timer.stamp() + 31);
 			}
@@ -421,12 +420,12 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	public function testAResponseStillGoingOutIsNotReapedAsIdle(async:Async):Void {
-		// The idle deadline was counted from when a response was written, not
-		// from when its client had it: responses more than the system takes at
-		// once, to a client slower to read them than keepAliveTimeout, were
-		// cut off at that deadline as though the connection sat idle, the
-		// client got Content-Lengths promised and part of the bodies. A
-		// connection is idle from when what it sent has gone.
+		// The idle deadline is counted from when the client has a response, not
+		// from when it was written: responses more than the system takes at
+		// once, to a client slower to read them than keepAliveTimeout, would be
+		// cut off at that deadline as though the connection sat idle, the client
+		// getting Content-Lengths promised and part of the bodies. A connection is
+		// idle from when what it sent has gone.
 		__serveHeld(config -> config.keepAliveTimeout = 0.5, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			// Twice the idle allowance, reading nothing.
 			var resumeAt:Float = haxe.Timer.stamp() + 1.0;
@@ -443,11 +442,11 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	public function testAResponseThatClosesItsConnectionIsSentWhole(async:Async):Void {
-		// A response with Connection: close, the client asked for it here,
-		// on the last of its requests, closed its connection as soon as it
-		// was written, and closing throws away whatever the system had not
-		// taken yet: the responses still waiting reached the client cut off.
-		// It closes once all of them have gone.
+		// A response with Connection: close (the client asked for it here, on
+		// the last of its requests) closes its connection once all of them have
+		// gone, not as soon as it is written, since closing throws away whatever
+		// the system has not taken yet and the responses still waiting would
+		// reach the client cut off.
 		__serveHeld(_ -> {}, "Connection: close\r\n", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			__readRaw(client, true, pieces, function(whole:Int, closed:Bool):Void {
 				try client.close() catch (_:Dynamic) {}
@@ -461,10 +460,9 @@ class HTTPStreamingTest extends utest.Test {
 	}
 
 	public function testAConnectionDrainClosesIsSentWhole(async:Async):Void {
-		// drain() closed a kept-alive connection between requests at once,
-		// with nothing in flight, except the responses still going out to a
-		// client reading them slowly, cut off by the close. It closes once
-		// they have gone.
+		// drain() closes a kept-alive connection between requests only once the
+		// responses still going out to a client reading them slowly have gone,
+		// not at once, which would cut them off.
 		__serveHeld(_ -> {}, "", function(server:HTTPServer, client:sys.net.Socket, parked:Bool, pieces:Int):Void {
 			var drained:Bool = false;
 			server.drain(10.0, () -> drained = true);
@@ -490,20 +488,17 @@ class HTTPStreamingTest extends utest.Test {
 		number of requests sent, `lastFields` on the last of them, once it
 		has parked, or once `HELD_MOST` have not made it park, saying so.
 
-		The stall is made, not assumed. It used to send 128 answers, 64 MB,
-		and take for granted that the system would stop taking them: late in
-		a full suite Windows' loopback buffers grew to take all of it, so
-		nothing was held and four cases failed "the responses never waited
-		on their client", 1 run in 6 alone (2026-10-04). Now:
+		The stall is made, not assumed: a fixed number of answers could all be
+		taken by a system whose loopback buffers grow (Windows' late in a full
+		suite), and nothing would be held. So:
 
 		- where the system can be asked (`Socket.bufferSizeSupported`,
 		  natively and on the jvm), the connection's kernel buffers are fixed
-		  small at both ends, the client's receive buffer before it
-		  connects, and the server's send buffer, so a wave or two parks
-		  it;
+		  small at both ends (the client's receive buffer before it connects,
+		  and the server's send buffer), so a wave or two parks it;
 		- and everywhere, answers go `HELD_WAVE` at a time until it has
-		  parked, so a system that takes more, neko and HashLink, which
-		  cannot be asked, is sent more.
+		  parked, so a system that takes more (neko and HashLink, which
+		  cannot be asked) is sent more.
 
 		Many answers, not one large one: Windows takes a single send whole,
 		however large, while what it holds is under its limit.
@@ -595,8 +590,8 @@ class HTTPStreamingTest extends utest.Test {
 
 	/**
 		Reads `client`, pumping between reads, until `pieces` responses of
-		`HELD_PIECE` bytes have all come, and with `untilClosed`, until the
-		server has closed the connection too, then continues with how many
+		`HELD_PIECE` bytes have all come (and with `untilClosed`, until the
+		server has closed the connection too), then continues with how many
 		came whole and whether the server closed it.
 	**/
 	private static function __readRaw(client:sys.net.Socket, untilClosed:Bool, pieces:Int, then:(Int, Bool) -> Void):Void {

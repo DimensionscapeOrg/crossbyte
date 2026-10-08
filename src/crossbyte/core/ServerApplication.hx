@@ -70,9 +70,8 @@ class ServerApplication extends Application {
 		#end
 
 		Application.__application = this;
-		// Built from what the constructor passed up, timer strategy included.
-		// This named POLL and nothing else, so `new ServerApplication(WHEEL)`
-		// ran on the heap.
+		// Built from what the constructor passed up, timer strategy included,
+		// so `new ServerApplication(WHEEL)` runs on the wheel.
 		__crossByte = __createRuntime();
 
 		// A service default rather than the runtime's general-purpose one;

@@ -31,10 +31,8 @@ env:
   # The branch this project is developed against, not the one the upstream PR
   # lives on. socket-fixes is kept clean and narrow so HaxeFoundation can take
   # it; production is that fix plus the Windows file_write correction and a
-  # catch-up with upstream, and is what a local build uses. CI following the PR
-  # branch meant CI and every developer were testing different hxcpp, benign
-  # while the suite passed on both, and widening with every upstream merge
-  # production took and socket-fixes did not.
+  # catch-up with upstream, and is what a local build uses, so CI and every
+  # developer test the same hxcpp.
   HXCPP_REF: "production"
 
 jobs:
@@ -58,19 +56,18 @@ jobs:
       - name: Install Haxe libraries
         uses: ./.github/actions/haxelibs
 
-      # haxe itself, not `haxelib run aedifex task interp-tests`. haxelib's
-      # aedifex is 0.0.2, which has no `task` command: it printed its banner
-      # and exited 0, so this step and the one below were green in a few
-      # seconds for as long as they had been written that way, and the
-      # interpreter suite never ran here. Each task in Aedifex.hx is one
-      # hxml, so this is the same command without the tool in between.
+      # haxe itself, not `haxelib run aedifex task interp-tests`: haxelib's
+      # aedifex is 0.0.2, which has no `task` command, prints its banner and
+      # exits 0, so a step written that way is green without running anything.
+      # Each task in Aedifex.hx is one hxml, so this is the same command without
+      # the tool in between.
       - name: Run interpreter test suite
         run: haxe ci/interp-tests.hxml
 
-      # `-D final`, Lime's -final defines it, inlines the loop's and the
-      # socket registry's hot functions, and no build defined it, so a
-      # return added mid-function stopped every final build compiling and
-      # nothing noticed. Type-checked here and in the native suite job.
+      # `-D final` (Lime's -final defines it) inlines the loop's and the socket
+      # registry's hot functions, and no test build defines it, so a return
+      # added mid-function could stop every final build compiling with nothing
+      # noticing. Type-checked here and in the native suite job.
       - name: Type-check a final build
         run: haxe ci/interp-tests.hxml -D final --no-output
 
@@ -109,8 +106,8 @@ jobs:
 
   # An event, and the bytes it carries, is valid only during the listener
   # call it is handed to: CrossByte fills the same objects for the next
-  # arrival. Code that keeps one past its call reads the next arrival's bytes,
-  # wrong bytes, not a crash, so every target family runs its suite once
+  # arrival. Code that keeps one past its call reads the next arrival's bytes
+  # (wrong bytes, not a crash), so every target family runs its suite once
   # more with -D crossbyte_check_events somewhere, which kills each payload
   # once its call returns, and a keeper reads 0xDB or nothing instead. A job
   # of its own so the interpreter's second pass adds nothing to the wall time;
@@ -138,15 +135,10 @@ jobs:
       - name: Run interpreter test suite with arrivals checked
         run: haxe ci/interp-tests.hxml -D crossbyte_check_events
 
-  # The jvm target had no CI at all: both entry points existed, neither was
-  # ever built or run here. Three jvm defects were found and fixed by hand
-  # this release (a PriorityQueue VerifyError, a SwitchTable
-  # ClassCastException, Vector every/some/filter), with nothing to stop
-  # them coming back, and the full suite was in fact red when this job was
-  # added, over IPv6 text the jvm renders differently.
-  #
-  # Java 8 deliberately: it is the floor those VerifyError fixes were
-  # verified against, and a newer JVM would not reproduce them.
+  # The jvm target, smoke and full suites, on Java 8 deliberately: it is the
+  # floor the jvm's bytecode quirks (VerifyErrors from some code shapes) are
+  # checked against, and a newer JVM would not reproduce them. The full suite
+  # also catches what the jvm renders differently, such as IPv6 text.
   jvm-tests:
     name: Core | JVM Tests
     runs-on: ubuntu-latest
@@ -182,7 +174,7 @@ jobs:
 
       # The smoke jar covers the non-networking core; the full jar adds
       # auth, db, http, net, ipc and system. Both run, because the smoke
-      # subset passing is exactly what let the full suite stay red unseen.
+      # subset passing says nothing about the rest.
       - name: Run jvm smoke suite
         run: java -jar export/jvm/CrossByteJvmSmoke.jar
 
@@ -225,12 +217,11 @@ jobs:
 
       # Before the XML is built, because these examples are what goes into it.
       # A reader who copies one out of the published docs expects it to
-      # compile, and for a long time the ones in File.hx could not: they were
-      # ActionScript, and underneath the syntax were a method that does not
-      # exist, an instance method called statically, and an unescaped Windows
-      # path. Nothing but a compiler was ever going to notice. The guides in
-      # docs/ are checked here too: their examples are whole programs, read
-      # in order.
+      # compile, and an example inherited from ActionScript can hide a method
+      # that does not exist, an instance method called statically, or an
+      # unescaped Windows path. Nothing but a compiler is going to notice. The
+      # guides in docs/ are checked here too: their examples are whole
+      # programs, read in order.
       - name: Typecheck documentation examples
         run: node ci/doc-examples.js
 
@@ -287,8 +278,8 @@ jobs:
           ref: ${{ env.HXCPP_REF }}
 
       # haxe directly, for the reason on the interpreter step above: through
-      # haxelib's aedifex 0.0.2 each of these printed a banner and passed,
-      # and none of the three audits had ever run here.
+      # haxelib's aedifex 0.0.2 each of these would print a banner and pass
+      # without running.
       - name: Type-check C++ API surface
         run: haxe ci/cpp-api-audit.hxml
 
@@ -296,10 +287,9 @@ jobs:
         run: haxe ci/cpp-timer-burst-audit.hxml
 
       # precision_tick swaps the frame wait for one that spins the tail
-      # rather than sleeping it. No test hxml defines it, so the branch
-      # compiled nowhere and could be broken by any edit to the loop
-      # without a single job noticing, which is exactly what nearly
-      # happened when the wait was rewritten to anchor its deadline.
+      # rather than sleeping it. No test hxml defines it, so without this the
+      # branch would compile nowhere and could be broken by any edit to the
+      # loop without a single job noticing.
       - name: Type-check precision tick frame wait
         run: haxe ci/cpp-precision-tick-audit.hxml
 
@@ -307,8 +297,8 @@ jobs:
     name: Core | Crypto, System (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     # Two native builds from cold: on the Intel macOS runner they take ten to
-    # thirteen minutes each, and at 25 the job was cancelled at the very end
-    # with both suites green (2026-10-01, 25:00 exactly).
+    # thirteen minutes each, which is close to 25 minutes before anything has
+    # run.
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -316,14 +306,12 @@ jobs:
         include:
           - os: ubuntu-latest
             label: Linux
-          # Intel, not macos-latest, which is Apple Silicon now. Haxe
-          # 4.3.7 publishes no macOS arm64 build, the release carries
-          # haxe-4.3.7-osx.tar.gz (x64) and haxe-4.3.7-linux-arm64.tar.gz
-          # and nothing else, so setup-haxe refuses an arm64 runner with
-          # "arm64 not supported" and the job dies before it installs
-          # anything. macos-13 was the usual answer and is retired; this is
-          # its replacement, and it is a standard runner rather than one of
-          # the paid -large ones.
+          # Intel, not macos-latest, which is Apple Silicon. Haxe 4.3.7 publishes
+          # no macOS arm64 build (the release carries haxe-4.3.7-osx.tar.gz, x64,
+          # and haxe-4.3.7-linux-arm64.tar.gz, and nothing else), so setup-haxe
+          # refuses an arm64 runner with "arm64 not supported" and the job dies
+          # before it installs anything. This is a standard Intel runner rather
+          # than one of the paid -large ones.
           - os: macos-15-intel
             label: macOS
     defaults:
@@ -336,9 +324,9 @@ jobs:
 
       - name: Setup Haxe
         # v2, here and not yet elsewhere: v1 installs Neko where the macOS
-        # haxelib binary cannot find it, and the job stopped at
-        # "dyld: Library not loaded: @rpath/libneko.2.dylib". setup-haxe fixed
-        # that in v2.0.0 (#47). The other jobs pass on v1 and are left alone.
+        # haxelib binary cannot find it ("dyld: Library not loaded:
+        # @rpath/libneko.2.dylib"), which setup-haxe fixed in v2.0.0 (#47). The
+        # other jobs pass on v1 and are left alone.
         uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
@@ -353,29 +341,29 @@ jobs:
           ref: ${{ env.HXCPP_REF }}
 
       # libsodium is compiled from vendored sources, so there is nothing
-      # to install; this job proves that build works off Windows.
-      # Two native builds from cold took 24 and 20+ minutes on the Intel
-      # macOS runner on 2026-10-02 and ran into the job's bound; the compiler
-      # cache the native suite's job keeps makes the second run of each warm.
+      # to install; this job proves that build works off Windows. Two native
+      # builds from cold on the Intel macOS runner come close to the job's
+      # bound, so the compiler cache the native suite's job keeps makes the
+      # second run of each warm.
       #
       # Each value is taken into a variable before it is written: a command
       # that fails inside "$(...)" in an echo's argument fails nothing, and
-      # the cache key would have been written without the commit.
+      # the cache key would be written without the commit.
       - name: Point hxcpp at a compiler cache
         run: |
           trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           HXCPP_DIR="$(haxelib libpath hxcpp)"
           # Keyed on the fork's commit, not its branch: a cache from another
-          # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
-          # since the precompiled header was built" (macOS, 2026-10-02).
+          # hxcpp holds a precompiled hxcpp.h that clang refuses ("modified
+          # since the precompiled header was built").
           HXCPP_SHA="$(git -C "$HXCPP_DIR" rev-parse --short HEAD)"
           echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
           echo "HXCPP_SHA=$HXCPP_SHA" >> "$GITHUB_ENV"
           # The commit is not enough: a fresh clone stamps every file with
           # the time of the clone, and clang checks those times too, so a
-          # cache from an earlier run on the same commit was refused the
-          # same way (macOS, 2026-10-03). Stamp the headers with the
-          # commit's own time, which every clone of it shares.
+          # cache from an earlier run on the same commit would be refused the
+          # same way. Stamp the headers with the commit's own time, which every
+          # clone of it shares.
           STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
           find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
@@ -393,10 +381,10 @@ jobs:
       - name: Run crypto suite
         run: ./export/ci-posix-crypto/PosixCryptoMain
 
-      # System reaches a different implementation per platform, and only the
-      # Windows one had a job compiling it, the group that covers it runs
-      # from the native smoke suite. Both POSIX implementations are built and
-      # run here for the same reason libsodium is above.
+      # System reaches a different implementation per platform, and the group
+      # that covers it runs from the native smoke suite, a Windows job. Both
+      # POSIX implementations are built and run here for the same reason
+      # libsodium is above.
       - name: Build system suite
         run: haxe ci/posix-system-tests.hxml
 
@@ -407,10 +395,10 @@ jobs:
     name: Core | Native Suite (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     # The whole native suite, which Native Smoke runs on Windows only. Every
-    # networking class in it, sockets, TLS, HTTP/1.1 and HTTP/2, WebSocket,
-    # reliable UDP, had never run on the systems servers mostly use: the
-    # first Linux run (WSL, 2026-10-01) found a refused connect announced as
-    # CONNECT and then CLOSE, where Windows said ioError. A cold build is
+    # networking class in it (sockets, TLS, HTTP/1.1 and HTTP/2, WebSocket,
+    # reliable UDP) runs here on the systems servers mostly use, where it
+    # can behave differently: a refused connect announced as CONNECT and
+    # then CLOSE on Linux, say, where Windows says ioError. A cold build is
     # about five minutes on four Linux cores; the Intel macOS runner is
     # slower, as the crypto job above shows.
     timeout-minutes: 60
@@ -456,16 +444,16 @@ jobs:
           trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
           HXCPP_DIR="$(haxelib libpath hxcpp)"
           # Keyed on the fork's commit, not its branch: a cache from another
-          # hxcpp holds a precompiled hxcpp.h that clang refuses, "modified
-          # since the precompiled header was built" (macOS, 2026-10-02).
+          # hxcpp holds a precompiled hxcpp.h that clang refuses ("modified
+          # since the precompiled header was built").
           HXCPP_SHA="$(git -C "$HXCPP_DIR" rev-parse --short HEAD)"
           echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
           echo "HXCPP_SHA=$HXCPP_SHA" >> "$GITHUB_ENV"
           # The commit is not enough: a fresh clone stamps every file with
           # the time of the clone, and clang checks those times too, so a
-          # cache from an earlier run on the same commit was refused the
-          # same way (macOS, 2026-10-03). Stamp the headers with the
-          # commit's own time, which every clone of it shares.
+          # cache from an earlier run on the same commit would be refused the
+          # same way. Stamp the headers with the commit's own time, which every
+          # clone of it shares.
           STAMP="$(TZ=UTC git -C "$HXCPP_DIR" log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
           find "$HXCPP_DIR/include" -type f -exec env TZ=UTC touch -t "$STAMP" {} +
 
@@ -482,10 +470,9 @@ jobs:
 
       - name: Build native suite
         # Traced: each case names itself as it starts, so a run that hangs
-        # says where. The first hang here (Linux, 2026-10-02) printed nothing
-        # for 44 minutes after its last server's log line. Not stripped, so a
-        # stack taken below names its functions: stripped, every frame read
-        # ___lldb_unnamed_symbol.
+        # says where, rather than printing nothing after its last server's log
+        # line. Not stripped, so a stack taken below names its functions:
+        # stripped, every frame reads ___lldb_unnamed_symbol.
         run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip ${{ matrix.defines }}
 
       # The relay tests bind 127.0.0.2 and 127.0.0.3, so that what a peer
@@ -498,9 +485,9 @@ jobs:
           sudo ifconfig lo0 alias 127.0.0.2 up
           sudo ifconfig lo0 alias 127.0.0.3 up
 
-      # macOS's openssl is LibreSSL, which did not make the client
-      # certificate chain two TLS cases need: they warned that they did not
-      # run, and a warning fails the run. Homebrew's OpenSSL 3 makes it.
+      # macOS's openssl is LibreSSL, which does not make the client
+      # certificate chain two TLS cases need: they would warn that they did
+      # not run, and a warning fails the run. Homebrew's OpenSSL 3 makes it.
       - name: Put OpenSSL 3 before macOS's LibreSSL
         if: runner.os == 'macOS'
         run: |
@@ -529,9 +516,9 @@ jobs:
             echo "The suite ended on signal $((rc - 128)); running it again under a debugger."
             if command -v lldb > /dev/null; then
               sudo DevToolsSecurity -enable > /dev/null 2>&1 || true
-              # The signals the suite raises on purpose, SIGHUP, SIGINT,
-              # SIGTERM, and SIGPIPE pass straight to it: lldb stops on any
-              # signal otherwise, and stopped on the hangup test's SIGHUP.
+              # The signals the suite raises on purpose (SIGHUP, SIGINT,
+              # SIGTERM) and SIGPIPE pass straight to it: lldb stops on any
+              # signal otherwise, the hangup test's SIGHUP among them.
               lldb --batch \
                 -o "process launch --stop-at-entry" \
                 -o "process handle SIGHUP SIGINT SIGTERM SIGPIPE SIGUSR1 SIGUSR2 SIGCHLD -s false -p true -n false" \
@@ -617,22 +604,20 @@ jobs:
   native-smoke:
     name: Core | Native Smoke
     runs-on: windows-latest
-    # The first run to get all the way through (35813704548) took 21 minutes,
-    # the samples aside, against a limit of 25, and the browser and TURN
-    # interop steps move with the network. 35 leaves room for a slow runner
-    # without letting a hang run on.
+    # A run takes about 21 minutes, the samples aside, and the browser and
+    # TURN interop steps move with the network. 35 leaves room for a slow
+    # runner without letting a hang run on.
     timeout-minutes: 35
     defaults:
       run:
         # A pwsh step does not stop at a native command that fails: it runs
-        # on, and the step reports only the last one's exit code. On
-        # 2026-10-04 a failed `haxelib install` passed its step that way, and
-        # the job failed a step later, at the first build that needed the
-        # library. So each step here runs one native command, and the
-        # installs run in bash, in .github/actions. A step that runs a test
-        # or a sample checks the exit code itself and prints it in full,
-        # because the step reports any non-zero code as 1: an access
-        # violation reads 0xC0000005 only in that line.
+        # on, and the step reports only the last one's exit code, so a failed
+        # `haxelib install` could pass its step and fail a later one. So each
+        # step here runs one native command, and the installs run in bash, in
+        # .github/actions. A step that runs a test or a sample checks the exit
+        # code itself and prints it in full, because the step reports any
+        # non-zero code as 1: an access violation reads 0xC0000005 only in that
+        # line.
         shell: pwsh
 
     steps:
@@ -654,9 +639,9 @@ jobs:
           repository: ${{ env.HXCPP_REPO }}
           ref: ${{ env.HXCPP_REF }}
 
-      # One compiler cache for the three native builds below, the benchmark,
+      # One compiler cache for the three native builds below (the benchmark,
       # the suite and the stress suite share the runtime and most of
-      # CrossByte, kept from run to run, so a run compiles what changed.
+      # CrossByte), kept from run to run, so a run compiles what changed.
       # hxcpp keys an object by its source and flags, so what an older commit
       # left is simply not used. The key is new every run, so each run saves
       # what it compiled; the restore takes the newest.
@@ -709,11 +694,11 @@ jobs:
       # other, and the only reason that would not break the browser test is
       # the order these steps run in.
       #
-      # Both pinned: unpinned, each run took whatever npm published last, so a
-      # new puppeteer, and the Chrome it downloads, could turn the browser
-      # and interop steps red with no change here. These are the versions the
-      # interop and browser suites are run against locally; raise them on
-      # purpose, in a commit of their own.
+      # Both pinned: unpinned, each run would take whatever npm published
+      # last, so a new puppeteer (and the Chrome it downloads) could turn the
+      # browser and interop steps red with no change here. These are the
+      # versions the interop and browser suites are run against locally;
+      # raise them on purpose, in a commit of their own.
       - name: Install puppeteer and node-turn
         run: npm install --no-save --no-audit --no-fund puppeteer@25.9.0 node-turn@0.0.6
 
@@ -722,9 +707,9 @@ jobs:
 
       # Node is not a browser. It has no window, no document, and none of a
       # page's restrictions, so a bundle it runs happily can still fail to load
-      # in one, Random's seed was an AtomicInt, which Haxe implements on js
-      # with a SharedArrayBuffer that an ordinary page is not given, and it
-      # threw while loading before any test ran. Every js build stayed green.
+      # in one: a static initialiser needing something a page is not given (a
+      # SharedArrayBuffer behind an AtomicInt, say) throws while loading before
+      # any test runs, with every js build green.
       - name: Run portable suite in a headless browser
         run: |
           node ci/browser/run.js
@@ -740,9 +725,9 @@ jobs:
       # perfectly self-consistent and understood by nothing else alive.
       #
       # It runs after the native smoke build because it needs the same
-      # toolchain, and it found a real bug the first time it ran, one failed
-      # send deafening a UDP socket, which every other test had missed because
-      # none of them sent to somewhere unreachable.
+      # toolchain. It catches what no other test can, such as one failed send
+      # deafening a UDP socket, which no other test would see without sending
+      # somewhere unreachable.
       #
       # Four cases, so it is not quick: both signalling directions, against a
       # browser publishing its addresses and one hiding them behind .local mDNS
@@ -758,9 +743,9 @@ jobs:
         run: haxe ci/python-support.hxml
 
       # The one target CI can execute that has UDP but no CSPRNG, which is the
-      # combination where a support flag can lie. StunClient.isSupported said
-      # true on it while the first line of discover() threw; every suite above
-      # runs where a CSPRNG exists, so only this step can catch a relapse.
+      # combination where a support flag can lie: StunClient.isSupported must
+      # not say true there while the first line of discover() throws. Every
+      # suite above runs where a CSPRNG exists, so only this step can catch it.
       - name: Check support flags on a CSPRNG-less target
         run: |
           python export/python-support/flagprobe.py
@@ -787,8 +772,8 @@ jobs:
       # different implementations: native (libsodium), the jvm (CrossByte's
       # own ChaCha20-Poly1305, since Java 8 has none) and Node (its crypto).
       # The suites check each target's sealed bytes against vectors; this
-      # checks whole sessions across processes, the handshake, the key
-      # schedule, every delivery mode and a close, each pair both ways,
+      # checks whole sessions across processes (the handshake, the key
+      # schedule, every delivery mode and a close), each pair both ways,
       # and that different keys are refused. Locally: three builds of about
       # 40 s together, and 3 s to run.
       - name: Build the reliable UDP interop native end
@@ -809,7 +794,7 @@ jobs:
         run: haxe ci/bench.hxml
 
       # Informational: the numbers from a shared runner measure the runner's
-      # mood and gate nothing. The step exists so the suite cannot rot, a
+      # mood and gate nothing. The step exists so the suite cannot rot: a
       # benchmark that stopped compiling is one nobody has run in a while.
       - name: Run the performance suite (informational)
         run: |
@@ -837,12 +822,10 @@ jobs:
           .\StressMain.exe
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::StressMain.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
-  # The samples were the tail of Native Smoke and never actually built there.
-  # haxelib's aedifex is 0.0.2, which has no `task` command, so each of the
-  # thirteen printed its banner and exited 0; the loop looked at no exit code,
-  # and the first sample run failed on an executable that did not exist.
-  # Thirteen cold native builds would not have fitted in that job either, so
-  # they are a job of their own and build alongside it.
+  # The samples, in a job of their own that builds alongside Native
+  # Smoke: fifteen cold native builds would not fit in that job. Each
+  # build and run is checked, since a pwsh step reports only its last
+  # native command.
   native-samples:
     name: Core | Native Samples
     runs-on: windows-latest
@@ -882,7 +865,7 @@ jobs:
 
       # haxe itself rather than `haxelib run aedifex task`: each sample task in
       # Aedifex.hx runs one hxml from the sample's own directory, which --cwd
-      # reproduces, every one of them begins with --cwd ../..
+      # reproduces (every one of them begins with --cwd ../..).
       #
       # One compiler cache for all fifteen. hxcpp keys a cached object by its
       # source and flags, and the samples share the runtime and much of
@@ -890,8 +873,8 @@ jobs:
       # then 5 to 12s each.
       #
       # A native command's exit code does not stop a pwsh script, and the
-      # step reports only the last one's, which is how thirteen builds that
-      # built nothing came out green. Each is checked.
+      # step reports only the last one's, so builds that built nothing could
+      # come out green. Each is checked.
       - name: Build native samples
         run: |
           $env:HXCPP_COMPILE_CACHE = Join-Path $env:RUNNER_TEMP "hxcpp-cache"
@@ -928,8 +911,8 @@ jobs:
 
       # Building a sample proves it typechecks and nothing more. This one
       # drives a real client through a real handshake and exits non-zero if
-      # the echo does not come back intact, the check that was absent while
-      # a server could not receive a single client message.
+      # the echo does not come back intact, which a server that could not
+      # receive a client's messages would fail.
       - name: Run websocket echo sample
         working-directory: export/websocket-echo
         run: |

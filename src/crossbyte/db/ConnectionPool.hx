@@ -40,8 +40,8 @@ typedef ConnectionPoolOptions<T> = {
 	 * retires the connection instead.
 	 *
 	 * An open transaction needs no reset. A connection that implements
-	 * `ITransactionalConnection`: `PostgresConnection`, `MySQLConnection`
-	 * and `SQLiteConnection` do, has any transaction it comes back with
+	 * `ITransactionalConnection` (`PostgresConnection`, `MySQLConnection`
+	 * and `SQLiteConnection` do) has any transaction it comes back with
 	 * rolled back by the pool itself, before this runs. A reset is for the
 	 * rest of a session's state: settings changed with `SET`, temporary
 	 * tables, a role assumed with `SET ROLE`. With `PostgresConnection`:
@@ -102,9 +102,9 @@ typedef ConnectionPoolOptions<T> = {
  *
  * **Transactions.** A connection that comes back with a transaction still
  * open is rolled back before the next caller can take it, when it
- * implements `ITransactionalConnection`, as every driver here does. The
- * next borrower was otherwise handed that transaction: its writes joined it,
- * and the locks it held stayed held, and `validate` could not tell, since an
+ * implements `ITransactionalConnection`, as every driver here does, so the
+ * next borrower is not handed that transaction: its writes would join it,
+ * the locks it held would stay held, and `validate` could not tell, since an
  * open transaction answers a ping like any other. A rollback that fails
  * retires the connection, and so does one after which the connection still
  * reports a transaction open: a MySQL session left with autocommit off,
@@ -122,8 +122,8 @@ class ConnectionPool<T> {
 	/**
 	 * Seconds `acquire()` waits by default before giving up: 10 unless the
 	 * options set it, and 0 for no limit, which waits until a connection
-	 * comes free or the pool closes. 0 used to fail at once, against the
-	 * rule everywhere else in CrossByte that 0 is no deadline.
+	 * comes free or the pool closes, as 0 is no deadline everywhere else in
+	 * CrossByte.
 	 *
 	 * What it bounds is the wait for a connection to come free. Opening a
 	 * new one (`factory`) and checking an idle one (`validate`) run once a
@@ -144,13 +144,13 @@ class ConnectionPool<T> {
 	@:noCompletion private var __reset:T->Void;
 	@:noCompletion private var __idle:Array<T>;
 	@:noCompletion private var __created:Int = 0;
-	// The connections actually checked out, rather than a count of them.
-	// release() and discard() have to answer "did this pool issue this?" and a
-	// counter cannot: it made a foreign connection, or a second return of one
-	// already back, indistinguishable from a real return. Both then adjusted
-	// the accounting, and once __created drifts below the number of open
-	// connections the ceiling stops holding. maxSize is small, so the linear
-	// scan costs nothing beside the query the connection is for.
+	// The connections actually checked out, rather than a count of them:
+	// release() and discard() have to answer "did this pool issue this?",
+	// and a counter cannot tell a foreign connection, or a second return of
+	// one already back, from a real return. The accounting would drift, and
+	// once __created fell below the number of open connections the ceiling
+	// would stop holding. maxSize is small, so the linear scan costs nothing
+	// beside the query the connection is for.
 	@:noCompletion private var __out:Array<T>;
 
 	// Slots reserved by a caller whose factory has not returned yet. Counted
@@ -210,7 +210,7 @@ class ConnectionPool<T> {
 	 * The three state gauges are bound to the pool's own accessors rather
 	 * than mirrored into separate counters, so they cannot drift from the
 	 * accounting they describe. Series are created up front, so a scrape
-	 * before the first acquire reports zero instead of omitting the series,
+	 * before the first acquire reports zero instead of omitting the series:
 	 * an absent series and an idle pool look identical to a collector
 	 * otherwise.
 	 */
@@ -281,7 +281,6 @@ class ConnectionPool<T> {
 	 * @param timeoutSeconds Overrides `acquireTimeout` for this call: 0 for
 	 *        no limit.
 	 * @throws ArgumentError For a `timeoutSeconds` that is NaN or negative.
-	 *         NaN waited for ever, and a negative one failed at once.
 	 * @throws IllegalOperationError When the pool is closed, or no
 	 *         connection becomes available before the timeout.
 	 */
@@ -319,11 +318,11 @@ class ConnectionPool<T> {
 
 			#if target.threaded
 			// Woken by the release, discard or close that frees a connection,
-			// where it slept a millisecond at a time and looked again: a
+			// rather than sleeping a millisecond at a time and looking again (a
 			// thousand wake-ups a second for each caller waiting, and up to a
-			// scheduler tick late after the release (15.6 ms on Windows).
-			// Whole milliseconds, and never long, so the deadline and a close
-			// are looked at again whatever happens.
+			// scheduler tick late after the release, 15.6 ms on Windows). Whole
+			// milliseconds, and never long, so the deadline and a close are
+			// looked at again whatever happens.
 			var left:Float = deadline - now;
 			var slice:Float = left > MAX_WAIT ? MAX_WAIT : left;
 			slice = Math.ffloor(slice * 1000) / 1000;
@@ -398,8 +397,8 @@ class ConnectionPool<T> {
 
 		if (index < 0) {
 			// Not checked out: either this pool never issued it, or it has
-			// already been returned. Adjusting the accounting for either is
-			// what lets __created drift away from reality.
+			// already been returned. Adjusting the accounting for either would
+			// let __created drift away from reality.
 			__releaseLock();
 			return;
 		}
@@ -511,8 +510,8 @@ class ConnectionPool<T> {
 	}
 
 	/**
-	 * Runs `body` with a pooled connection, always returning it afterwards,
-	 * including when `body` throws, in which case the exception
+	 * Runs `body` with a pooled connection, always returning it afterwards
+	 * afterwards, including when `body` throws, in which case the exception
 	 * propagates unchanged.
 	 *
 	 * @param timeoutSeconds As for `acquire`: `acquireTimeout` when left
@@ -595,8 +594,8 @@ class ConnectionPool<T> {
 
 			// Validation may talk to the server, so run it unlocked. The
 			// connection stays counted in __created throughout: it is still
-			// open, and discounting it for the duration let another caller see
-			// room and open one past the ceiling in that window.
+			// open, and discounting it for the duration would let another caller
+			// see room and open one past the ceiling in that window.
 			__releaseLock();
 
 			var healthy:Bool = false;
@@ -681,7 +680,7 @@ class ConnectionPool<T> {
 	 * what keeps the total honest.
 	 *
 	 * `reason` is labelled rather than split into separate metrics because
-	 * the set is fixed and small, five values, and the distinction
+	 * the set is fixed and small (five values), and the distinction
 	 * matters operationally: connections retiring through
 	 * `failed_validation` mean the database is dropping them underneath
 	 * the pool, which is a different problem from an application calling

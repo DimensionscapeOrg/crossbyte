@@ -17,11 +17,11 @@ import crossbyte.url.URLRequestHeader;
  * config.middleware.push(router.middleware());
  * ```
  *
- * Patterns compile at registration into segment lists, literals,
+ * Patterns compile at registration into segment lists: literals,
  * single-segment `:param` captures, and a trailing `*rest` that takes the
  * remainder. No regular expressions: a route table is small, fixed and
  * written by the application author, so matching is a segment walk down
- * the table, linear in routes and segments, with nothing to compile per
+ * the table (linear in routes and segments), with nothing to compile per
  * request, nothing to cache, and no pathological pattern to defend
  * against.
  *
@@ -34,18 +34,18 @@ import crossbyte.url.URLRequestHeader;
  * Matching is exact on segment count. `/users/:id` matches `/users/42` and
  * not `/users/42/`: the trailing slash is one more, empty, segment, and
  * folding the two spellings together would canonicalize URLs by accident.
- * For the same reason `*rest` stands for at least one segment,
+ * For the same reason `*rest` stands for at least one segment:
  * `/files/*rest` does not match `/files`, while `/files/` matches with an
  * empty capture, the slash being a segment of its own. Params hold
  * whatever their segments hold: the request path is percent-decoded and
- * settled before middleware runs, repeated slashes collapsed, `.` and
- * `..` steps applied, and the router does not decode again. A `+` is a
+ * settled before middleware runs (repeated slashes collapsed, `.` and
+ * `..` steps applied), and the router does not decode again. A `+` is a
  * literal `+`, and a `..` inside a segment, as in `v1.2..v1.3`, is part
  * of it.
  *
  * Matching also sees the pre-rewrite path. Files and rewrites are
  * resolved only for requests the router releases with `next()`, so a
- * matched route, its `405` included, preempts any rewrite configured
+ * matched route (its `405` included) preempts any rewrite configured
  * for the same path, and never costs a filesystem lookup. A deployment
  * that wants both keeps routes and rewrites on disjoint paths.
  *
@@ -61,12 +61,12 @@ import crossbyte.url.URLRequestHeader;
  *   filesystem probe, answered by the dispatch gate's own `405` listing
  *   the static methods instead of the route's.
  * - **The method is `OPTIONS` and no `options()` or `any()` route claims
- *   it**, a path miss, not a `405`. A `405` carries no
+ *   it**: a path miss, not a `405`. A `405` carries no
  *   `Access-Control-Allow-Methods`, which fails a browser's CORS preflight
  *   outright, so registering a `POST` route would silently remove working
  *   cross-origin access to its path. Falling through lets the server's own
  *   preflight handling answer as if the router were absent.
- * - **A handler throws**: the middleware chain's own catch answers: a
+ * - **A handler throws**: the middleware chain's own catch answers, and a
  *   thrown `Int` becomes the response status, an intentional escape hatch,
  *   and anything else becomes `500`. The router adds no error vocabulary
  *   of its own.
@@ -74,13 +74,13 @@ import crossbyte.url.URLRequestHeader;
  * A matched handler owns the response: answer with `ctx.handler.respond()`.
  * The router calls neither `respond()` nor `next()` on its behalf, so a
  * handler that answers nothing leaves the connection waiting. What happens
- * to the connection after `respond()`, closing it, keeping it alive, is
+ * to the connection after `respond()` (closing it, keeping it alive) is
  * the handler's concern, not the router's.
  *
  * `HEAD` is never derived from `get()`: a `HEAD` the author did not write
  * is a response the author did not frame. Register `head()` where `HEAD`
- * should answer. `PUT` and `DELETE` routes work, the server's own method
- * gate applies only to requests no middleware claims, and their bodies
+ * should answer. `PUT` and `DELETE` routes work (the server's own method
+ * gate applies only to requests no middleware claims), and their bodies
  * are already read when a route runs, body framing being header-driven
  * rather than method-driven.
  */
@@ -121,9 +121,7 @@ class Router {
 	 * Answer it with the body the matching `GET` would send: `respond()`
 	 * answers a `HEAD` with that body's `Content-Length` and none of the body,
 	 * and `respondBytes()` likewise. Do not pass `Content-Length` through the
-	 * `headers` argument, it would duplicate the one `respond()` writes.
-	 * (This said `respond()` framed a `HEAD` as zero-length, which it did
-	 * once.)
+	 * `headers` argument: it would duplicate the one `respond()` writes.
 	 */
 	public function head(pattern:String, handler:RouteContext->Void):Router {
 		return __add("HEAD", pattern, handler);
@@ -196,8 +194,8 @@ class Router {
 	}
 
 	/**
-	 * Compiles a pattern into segments, refusing malformed ones here, at
-	 * the line that wrote the route, rather than matching nothing at
+	 * Compiles a pattern into segments, refusing malformed ones here (at
+	 * the line that wrote the route) rather than matching nothing at
 	 * request time. Always yields at least one segment, since a valid
 	 * pattern begins with `/`.
 	 */
@@ -335,8 +333,8 @@ class Router {
  * What a matched route handler receives: the request, and what matching
  * learned from the path.
  *
- * A class built from an object literal (`@:structInit`): an anonymous
- * structure's fields were looked up by name natively, at every use.
+ * A class built from an object literal (`@:structInit`), so natively its
+ * fields are read directly rather than looked up by name at every use.
  */
 @:structInit
 final class RouteContext {

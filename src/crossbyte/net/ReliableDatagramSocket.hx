@@ -55,20 +55,20 @@ import crossbyte._internal.net.IPv6;
 	receive `ProgressEvent.SOCKET_DATA` notifications instead.
 	Socket mode must be selected before connecting or before a server accepts the session.
 
-	What a session sends, messages, acknowledgements, retransmissions, is
+	What a session sends (messages, acknowledgements, retransmissions) is
 	gathered and sent together when the runtime's loop finishes its pass,
 	several frames to a datagram where the peer takes them, so a burst of
 	small messages costs a few system calls rather than one each. `flush()`
 	sends what is gathered at once.
 
 	The acknowledgement of what arrives in order waits for something of this
-	side's to ride on, for up to `ackDelay`, 25 ms unless changed, or
+	side's to ride on, for up to `ackDelay` (25 ms unless changed) or
 	until a second frame arrives, and then goes alone if nothing has taken it.
 	One that tells of a gap goes at once. The peer's round trip is measured
 	without the wait, which each acknowledgement states.
 
 	What the congestion window has not let out waits, up to
-	`maxOutputBufferSize`: 256 KB unless changed. A session that would hold
+	`maxOutputBufferSize` (256 KB unless changed). A session that would hold
 	more is ended at once with an `ioError` saying why, as a peer that has
 	stopped taking what it is sent would otherwise have this side hold all of
 	it; one `send` larger than the window waits whole, so a larger one needs
@@ -78,8 +78,8 @@ import crossbyte._internal.net.IPv6;
 	receiver's acknowledgement names the frames it holds past a gap, and a
 	frame sent before one that arrived is sent again once it has had that
 	one's round trip, and a little more, to arrive in. A frame sent again
-	whose first copy had in fact arrived, only its acknowledgement was
-	held or lost, arrives as a duplicate, which the peer reports, and what
+	whose first copy had in fact arrived (only its acknowledgement was
+	held or lost) arrives as a duplicate, which the peer reports, and what
 	was sent before that copy and is still missing goes then. When nothing
 	comes back at all, the last frame goes again as a probe, and only then
 	does a frame wait out its retransmission timeout.
@@ -115,8 +115,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		A slot for whatever the application wants this connection to carry.
 
 		Untouched by the framework, and it goes when the connection does.
-		Without one, an application holding per-connection state, a session,
-		a player, a room membership, keeps a `Map` beside the connection and
+		Without one, an application holding per-connection state (a session,
+		a player, a room membership) keeps a `Map` beside the connection and
 		has to remember to remove the entry on close. Forgetting is not
 		noisy: the connection is gone, the traffic stops, and the entry stays
 		until the process does.
@@ -165,12 +165,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		The byte order of the messages this socket dispatches, and of its
 		stream-mode reads and writes.
 
-		`ByteArray.defaultEndian` when the socket is made, little-endian
-		unless the application changed it, as a ByteArray it makes is, so a
+		`ByteArray.defaultEndian` when the socket is made (little-endian
+		unless the application changed it, as a ByteArray it makes is), so a
 		number written into a new ByteArray reads back as itself from the
 		message that carried it. Set `Endian.BIG_ENDIAN` for a protocol in
-		network byte order. Messages came big-endian whatever the rest of the
-		application did.
+		network byte order.
 	**/
 	public var endian(get, set):Endian;
 
@@ -236,10 +235,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		watches that never reaches this. Under the default `CLOSE` policy a
 		session past it is ended at once, with an `ioError` saying why, as a
 		TCP connection to a peer that has stopped reading would be ended: a
-		peer that cannot take what it is sent, gone quiet, or on a path that
-		cannot carry it, otherwise made this side hold everything sent to
-		it, without end. A server holding a thousand such sessions held 1.2
-		GB.
+		peer that cannot take what it is sent (gone quiet, or on a path that
+		cannot carry it) would otherwise make this side hold everything sent
+		to it, without end: a server holding a thousand such sessions would
+		hold 1.2 GB.
 
 		A healthy session holds next to nothing here: a game server sending
 		1,000 clients a snapshot every tick at 60 Hz, every fourth one
@@ -247,8 +246,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		and at most 18 KB in one when it was starved of processor time, so far
 		behind that inputs took half a second to be acknowledged. One `send`
 		larger than the window lets out at once waits here whole, so an
-		application that sends more than 256 KB in a burst, a level, a file,
-		one large reliable message, raises this, sets it to zero, or watches
+		application that sends more than 256 KB in a burst (a level, a file,
+		one large reliable message) raises this, sets it to zero, or watches
 		`bufferedAmount` and waits.
 	**/
 	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER_SIZE;
@@ -292,8 +291,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		What the peer sent with its CONNECT, or `null` if no CONNECT has come
 		from it.
 
-		Every session a server accepts has one, empty when the peer's
-		`connect` passed nothing, and it is the payload
+		Every session a server accepts has one (empty when the peer's
+		`connect` passed nothing), and it is the payload
 		`ReliableDatagramServerSocket.admit` was shown, from its start, so the
 		handler that takes the session can tell who it is by the same token
 		the hook let it in on. A dialled session has one only when its peer
@@ -316,8 +315,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		The 32-byte key this session's datagrams are sealed with, or null,
-		the default, for a session in the clear. Write-only; set it before
+		The 32-byte key this session's datagrams are sealed with, or null
+		(the default) for a session in the clear. Write-only; set it before
 		`connect()`.
 
 		CrossByte does no key exchange here: the application gives each end
@@ -331,9 +330,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		the server and the client, with `HKDF`; the README's "Reliable UDP:
 		encrypted sessions" sums it up.
 
-		With a key, every datagram the session sends after its CONNECT,
+		With a key, every datagram the session sends after its CONNECT (
 		messages of every delivery mode, acknowledgements, bundles,
-		keepalives, the FIN, is sealed with ChaCha20-Poly1305 (RFC 8439)
+		keepalives, the FIN) is sealed with ChaCha20-Poly1305 (RFC 8439)
 		under a key of its own for each direction, derived with HKDF from
 		this key and a random of each end's, so the same key given to two
 		sessions never seals two datagrams alike. A datagram that does not
@@ -344,14 +343,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		`ENCRYPTION_OVERHEAD` (21) bytes larger than it would have been.
 
 		It fails closed. A session that asked for encryption never falls back
-		to the clear: a peer that answers without encryption, one from
-		before encryption was added, or a server that gave this session no
-		key, and a peer whose key is not this one end the attempt, with an
+		to the clear: a peer that answers without encryption (one too old to
+		have it, or a server that gave this session no key) and a peer whose
+		key is not this one end the attempt, with an
 		`ioError` saying which, and then `close`; so does a server's refusal
 		(`ReliableDatagramServerSocket.encryptionKeyFor`).
 
-		What is not protected: the CONNECT itself, whose payload, the
-		connect token, crosses in the clear, as `connect` says, so the
+		What is not protected: the CONNECT itself, whose payload (the
+		connect token) crosses in the clear, as `connect` says, so the
 		token must be one the server can check and that is worthless to a
 		listener without the key (single-use, short-lived, or bound to the
 		address); who talks to whom, when, how often and how much (the
@@ -425,7 +424,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The largest payload one frame of this session carries: 1,200 bytes,
-		or `MAX_ENCRYPTED_PAYLOAD_SIZE`, 1,179, once it has a key, the most
+		or `MAX_ENCRYPTED_PAYLOAD_SIZE`, 1,179, once it has a key: the most
 		an unreliable or sequenced message may be, and the size a reliable
 		message is split into frames of.
 	**/
@@ -495,7 +494,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// session; whether the peer has shown it holds the keys, by sending
 	// something that opened (until then this side sends hellos, which carry
 	// its random); and the buffers a datagram is sealed into and opened into,
-	// the second taken afresh while it is out, a session's own only where
+	// the second taken afresh while it is out; a session's own only where
 	// it has no server: a server's sessions share the server's (see
 	// `__sealBuffer`).
 	@:noCompletion private var __encryptionKey:Null<haxe.io.Bytes> = null;
@@ -528,8 +527,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		The round trip to the peer in seconds, smoothed, as the session
 		measures it to time its own retransmissions: RFC 6298's SRTT. Taken
-		from the acknowledgement of each reliable frame sent only once, one
-		sent again cannot say which copy was answered, so it is -1 until the
+		from the acknowledgement of each reliable frame sent only once (one
+		sent again cannot say which copy was answered), so it is -1 until the
 		first reliable message has been acknowledged, and it follows only as
 		often as reliable messages are sent. A peer on 1.0 or later says how
 		long it held each acknowledgement it sent alone (see `ackDelay`), and
@@ -571,20 +570,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		How long, in seconds, this session may hold the acknowledgement of a
 		reliable message, waiting for something of its own to send that can
-		carry it, 25 milliseconds unless changed, as QUIC's
-		`max_ack_delay` is. Zero acknowledges every pass in which a reliable
-		frame arrived, as every session did before 1.0. At most
-		`MAX_ACK_DELAY`.
+		carry it: 25 milliseconds unless changed, as QUIC's `max_ack_delay`
+		is. Zero acknowledges every pass in which a reliable frame arrived.
+		At most `MAX_ACK_DELAY`.
 
-		A session acknowledged each reliable message in a datagram of its own
-		unless it happened to send something in the same pass, so a game's
-		session receiving an input a tick and sending a state a tick sent
-		half its datagrams for acknowledgements alone. Held, the
-		acknowledgement rides on the state when the tick sends it: at 500
-		sessions and 30 Hz a server sent and read half the datagrams, and
-		spent a third less CPU.
+		Acknowledged at once, each reliable message takes a datagram of its
+		own unless something else goes in the same pass, so a game's session
+		receiving an input a tick and sending a state a tick would send half
+		its datagrams for acknowledgements alone. Held, the acknowledgement
+		rides on the state when the tick sends it: at 500 sessions and 30 Hz
+		a server sends and reads half the datagrams, and spends a third less
+		CPU.
 
-		It is not held, it goes when the pass ends, as it always did, when
+		It is not held (it goes when the pass ends) when
 		a frame arrives out of order or fills a gap, which the peer must hear
 		of at once to recover what was lost; when a second reliable frame
 		arrives before the first is acknowledged, so a bulk transfer keeps its
@@ -634,8 +632,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private var __peerAckDelay:Float = -1;
 
-	// An acknowledgement owed and allowed to wait, for a frame of this
-	// side's to carry it, or for `__ackTimer`, and, for the one owed, how
+	// An acknowledgement owed and allowed to wait (for a frame of this
+	// side's to carry it, or for `__ackTimer`) and, for the one owed, how
 	// many reliable frames it covers that no acknowledgement has, and when
 	// the newest of them arrived.
 	@:noCompletion private var __ackHeld:Bool = false;
@@ -711,10 +709,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			throw new ArgumentError("A reliable datagram session needs a congestion control.");
 		}
 		__congestion = value;
-		// What waits for the window goes first under the new one. Left in
-		// the queue, it waited for an acknowledgement to drain it, none,
-		// with nothing in flight, while the next message, finding room,
-		// went out ahead of it.
+		// What waits for the window goes first under the new one: left in
+		// the queue, it would wait for an acknowledgement to drain it (none,
+		// with nothing in flight) while the next message, finding room, went
+		// out ahead of it.
 		if (!__closed && __queueAt < __outgoingQueue.length) {
 			__drainQueue();
 		}
@@ -732,7 +730,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		What a session asks the operating system for, in bytes, to hold
 		datagrams in each direction when it makes its socket: its largest
-		window, 500 frames of up to 1211 bytes, rounded up to a megabyte.
+		window (500 frames of up to 1211 bytes), rounded up to a megabyte.
 
 		A window is sent in one pass of the loop, so it lands on the receiving
 		socket all at once, and what the socket cannot hold is dropped, each
@@ -805,9 +803,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		One direction of `__reserveWindow`. Asked for unless the buffer reads
 		past twice the window: Linux reads back twice what was asked, counting
-		its own bookkeeping, so a buffer that read a window's size by default,
-		the GitHub runner's, had half what asking grants, and was left
-		so, since it read as enough.
+		its own bookkeeping, so a buffer that reads a window's size by
+		default (the GitHub runner's) has half what asking grants, and would
+		be left so, since it reads as enough.
 	**/
 	@:noCompletion private static function __reserve(socket:DatagramSocket, receive:Bool):Void {
 		var before:Int = receive ? socket.receiveBufferSize : socket.sendBufferSize;
@@ -863,7 +861,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		anything before it sends a keepalive. Zero sends none.
 
 		A keepalive is what keeps a quiet session up: without one a session
-		with nothing to say heard nothing either, and was closed as dead
+		with nothing to say hears nothing either, and would be closed as dead
 		however healthy both ends were. It also keeps a NAT's mapping for the
 		session open, which most drop after thirty seconds or so of silence,
 		hence fifteen by default. It is the session's opening HANDSHAKE sent
@@ -923,10 +921,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __silentFor:Float = 0;
 
 	// This side's connection id, carried in the sequence field of every
-	// CONNECT it sends, a field no receiver read before, so that a server
-	// holding a session for this address and port can tell this attempt
-	// from an earlier one: the same peer, restarted. Never 0, which is what a
-	// CONNECT from an older build carries and means "no id".
+	// CONNECT it sends, so that a server holding a session for this address
+	// and port can tell this attempt from an earlier one: the same peer,
+	// restarted. Never 0, which is what a CONNECT from an older build
+	// carries and means "no id".
 	@:noCompletion private var __connectionId:Int = 0;
 
 	// The peer's, from the CONNECT it sent, or 0 when it sent none. Echoed in
@@ -947,12 +945,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		How often the socket looks for frames whose time is up.
 
-		One timer for the session rather than one per frame. The old shape
-		armed a repeating `CBTimer` for every packet put on the wire, so a
-		sender with the window full held hundreds of live timers, and a server
-		held that many times its connection count. This is the granularity of
-		the retransmission clock, not the wait itself, what a frame waits is
-		its own deadline, from `__rto`.
+		One timer for the session rather than one per frame, which would
+		hold hundreds of live timers for a sender with the window full, and
+		a server that many times its connection count. This is the
+		granularity of the retransmission clock, not the wait itself: what a
+		frame waits is its own deadline, from `__rto`.
 	**/
 	@:noCompletion private static inline var RETRANSMIT_TICK:Float = 0.05;
 
@@ -1001,8 +998,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __joinCookieHigh:Int = 0;
 	@:noCompletion private var __joinCookieLow:Int = 0;
 
-	// Where a CONNECT's payload is put together, the extension, then
-	// `__connectOut`: while the handshake lasts.
+	// Where a CONNECT's payload is put together (the extension, then
+	// `__connectOut`) while the handshake lasts.
 	@:noCompletion private var __connectScratch:ByteArray = null;
 
 	// A rebind (see `ReliableDatagramServerSocket.allowRebind`). The
@@ -1065,15 +1062,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// part of it as its bytes. Filed by sequence in a ring, not a map: the
 	// window holds them within DELIVERY_WINDOW of the next expected, fewer
 	// than the ring's IN_FRAME_SLOTS, and an ACK's map of them is read from
-	// it a byte at a time. It was built by walking a map's keys, which
-	// natively copies them all first, for every ACK, and one goes at once
-	// for each frame past a gap, so a burst of loss cost the square of the
+	// it a byte at a time, not by walking a map's keys, which natively
+	// copies them all first: for every ACK, and one goes at once for each
+	// frame past a gap, that would cost a burst of loss the square of the
 	// frames held.
 	//
 	// Null until a frame first arrives past a gap, made then with
 	// IN_FRAME_INITIAL slots and grown as far as the frames held reach, and
 	// let go again at a keepalive check that finds it empty: a full ring of
-	// 512 was two arrays, 6 KB natively, in every session, most of which
+	// 512 is two arrays, 6 KB natively, in every session, most of which
 	// never lose a frame.
 	@:noCompletion private var __inFrameCache:SequenceRing<ReliableDatagramFrame> = null;
 
@@ -1090,9 +1087,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// Arrivals): the DATA event; a stream's SOCKET_DATA event; the buffer
 	// a fragmented message is put back together in, kept between messages
 	// up to Arrivals.KEEP; and the payload a bundle's frame is copied out
-	// into. Each is taken afresh while it is out, a listener that pumps
-	// the runtime can be handed the next message inside its own call,
-	// and none is kept under either define.
+	// into. Each is taken afresh while it is out (a listener that pumps
+	// the runtime can be handed the next message inside its own call), and
+	// none is kept under either define.
 	@:noCompletion private var __arrivalEvent:DatagramSocketDataEvent = null;
 	@:noCompletion private var __arrivalOut:Bool = false;
 	@:noCompletion private var __streamEvent:ProgressEvent = null;
@@ -1103,19 +1100,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __entryOut:Bool = false;
 
 	// The newest counter delivered on each sequenced channel, -1 for none,
-	// and the next to send. Made on first use: most sessions never sequence
-	// anything, and 256 entries each is not worth carrying for them.
+	// and the next to send. Made on first use, as long as the highest channel
+	// used, eight at a time: most sessions never sequence anything, and one
+	// that does uses a channel or two, where all 256 would hold 2 KB natively.
 	@:noCompletion private var __sequencedIn:Vector<Int>;
 	@:noCompletion private var __sequencedOut:Vector<Int>;
 
 	// Every frame this socket sends is written here and sent from here. A
 	// send has finished with its bytes before it returns, so one buffer
-	// serves every frame, where encoding each into one of its own was an
-	// allocation per packet and per acknowledgement. Made with the first
-	// frame, and grown to the largest bundle sent: a session that sends
-	// only small frames, keepalives, acknowledgements, a game's inputs,
-	// holds a small one, where every session held room for the largest
-	// frame there is, 1.2 KB.
+	// serves every frame, rather than an allocation per packet and per
+	// acknowledgement. Made with the first frame, and grown to the largest
+	// bundle sent: a session that sends only small frames (keepalives,
+	// acknowledgements, a game's inputs) holds a small one.
 	@:noCompletion private var __scratch:ByteArray = null;
 	@:noCompletion private var __inFrameCacheSize:Int = 0;
 	@:noCompletion private var __inSequence:Seq32 = 0;
@@ -1142,11 +1138,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		What decides how many frames may be in flight at once; see
 		`congestionControl`.
 
-		The send window was a constant 500 that took no notice of whether any
-		of it was arriving. A reliable transport that retransmits on a fixed
-		schedule into a path that is already dropping packets makes the drops
-		worse, and with a window that never yields it keeps doing so, which
-		is how one slow client costs a server the bandwidth of many.
+		A fixed send window would take no notice of whether any of it was
+		arriving. A reliable transport that retransmits on a fixed schedule
+		into a path that is already dropping packets makes the drops worse,
+		and with a window that never yields it keeps doing so, which is how
+		one slow client costs a server the bandwidth of many.
 	**/
 	@:noCompletion private var __congestion:CongestionControl = new CongestionControl();
 
@@ -1171,7 +1167,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private static inline var DUP_THRESHOLD:Int = 3;
 
 	// Loss recovery: whether this session is in it, and the sequence that
-	// ends it, the next to be sent when it began, so that every loss from
+	// ends it (the next to be sent when it began), so that every loss from
 	// one burst halves the window once, not once each.
 	@:noCompletion private var __inRecovery:Bool = false;
 	@:noCompletion private var __recoveryPoint:Seq32 = 0;
@@ -1280,14 +1276,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __timerHome:Null<CrossByte> = null;
 
 	/**
-		The scheduler this session's timers run on, its handshake, its
-		keepalive, its retransmissions and its close, whichever thread arms
-		or clears one: its runtime's, taken off the transport the first time.
-		They were the calling thread's, `crossbyte.Timer`'s, so `close()`
-		from another thread threw arming its deadline, and on Node, where a
-		socket's callbacks run as the application's, a child runtime's
-		session armed timers on the application's runtime and cleared them on
-		its own.
+		The scheduler this session's timers run on (its handshake, its
+		keepalive, its retransmissions and its close), whichever thread arms
+		or clears one: its runtime's, taken off the transport the first time,
+		not the calling thread's, so `close()` from another thread can arm
+		its deadline, and on Node a child runtime's session arms and clears
+		its timers on its own runtime.
 	**/
 	@:noCompletion private function __timers():TimerScheduler {
 		var home:Null<CrossByte> = __timerHome;
@@ -1304,8 +1298,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	#if !nodejs
 	// The peer's address as the transport sends to it, kept: the transport
 	// keeps only the last one it was asked for, so a server sending a
-	// datagram to each of its sessions in turn built a Host and an Address
-	// for every datagram. Refreshed when the peer or the transport changes.
+	// datagram to each of its sessions in turn would build a Host and an
+	// Address for every datagram. Refreshed when the peer or the transport
+	// changes.
 	@:noCompletion private var __target:sys.net.Address = null;
 	@:noCompletion private var __targetAddress:String = null;
 	@:noCompletion private var __targetPort:Int = 0;
@@ -1331,9 +1326,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// The stream's buffers are made when the mode becomes STREAM: a
 		// DATAGRAM session, which is most, never reads or writes either.
 		// A session a server makes takes the server's socket, and makes no
-		// socket of its own: each made one, a system socket, its buffers
-		// asked for, its read buffer, that the server closed at once, about
-		// 27 of the 45 microseconds a join cost the server (jvm).
+		// socket of its own (a system socket, its buffers asked for, its read
+		// buffer) for the server to close at once: about 27 of the 45
+		// microseconds a join costs the server (jvm).
 		if (!__takeAdopting()) {
 			__transport = new DatagramSocket();
 			__reserveWindow(__transport);
@@ -1366,10 +1361,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Closes the reliable session gracefully: everything sent before this
 		call reaches the peer, in order, before the peer's `close`.
 
-		What is waiting goes first, frames gathered this pass, frames the
+		What is waiting goes first: frames gathered this pass, frames the
 		congestion window is holding back (`bufferedAmount`), and in `STREAM`
-		mode bytes written and not yet flushed, and whatever the peer has
-		not acknowledged is sent again as it needs to be. A FIN follows, in
+		mode bytes written and not yet flushed. Whatever the peer has not
+		acknowledged is sent again as it needs to be. A FIN follows, in
 		the same sequence, so the peer acts on it only once everything before
 		it has arrived, whatever the network lost or reordered on the way.
 		This side's `close` is dispatched when the peer has acknowledged all
@@ -1390,8 +1385,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		It may be called from any thread, as `abort()` may: from one that is
 		not the session's runtime's, it is handed to the runtime, as
 		`CrossByte.post` hands work over, and begins there after this
-		returns. It threw there, arming its deadline on the calling thread's
-		timers, with the FIN queued and never sent.
+		returns, so its deadline is armed on the runtime's timers and its FIN
+		is sent.
 	**/
 	public function close():Void {
 		if (__closed || __closing) {
@@ -1436,8 +1431,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		What this session has gathered in the pass goes, and then a FIN that
 		ends the peer's session the moment it arrives, holding nothing back
 		for what is still on its way: whatever the peer has not received by
-		then, frames the congestion window held, frames lost and not yet
-		sent again, stream bytes not flushed, is dropped, on both sides.
+		then (frames the congestion window held, frames lost and not yet
+		sent again, stream bytes not flushed) is dropped, on both sides.
 		`close` is dispatched before this returns, for a session that had a
 		peer, and the peer dispatches its own when the FIN arrives.
 
@@ -1468,8 +1463,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Queues the graceful FIN behind everything this session has to send.
-		It takes its sequence when it goes, as a PACKET does, the place
-		after the last frame, and is sent again until acknowledged, as a
+		It takes its sequence when it goes, as a PACKET does (the place
+		after the last frame), and is sent again until acknowledged, as a
 		PACKET is.
 	**/
 	@:noCompletion private function __queueFin():Void {
@@ -1558,7 +1553,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		you have not called `bind()` already.
 
 		`payload` rides in every CONNECT the handshake sends, for the server's
-		`admit` to decide on before it allocates anything, a join token, a
+		`admit` to decide on before it allocates anything: a join token, a
 		protocol version, a ticket. It must fit one frame. It is sent in the
 		clear and repeated until the server answers, and nothing proves the
 		sender's address until the handshake completes, so what it can carry
@@ -1620,7 +1615,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		#if nodejs
 		// No resolution step. hxnodejs resolves a name synchronously through
-		// `deasync`, a native npm addon that has to be installed and built,
+		// `deasync`, a native npm addon that has to be installed and built;
 		// requiring it is enough to stop the program loading, whether or not a
 		// name is ever passed. A numeric address needs no lookup, and a name
 		// is refused for the same reason a connected DatagramSocket refuses
@@ -1665,10 +1660,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		`connect()` to a name: looked up off the runtime's thread (see
 		`Resolver`), and the handshake begun when the answer comes.
 
-		It used to be looked up in the call, on the runtime's thread, so every
-		socket and timer there waited on the resolver, a second, for a name
-		that does not exist, and a client reconnecting in a loop did it again
-		exactly while the resolver was failing. The attempt's deadline runs
+		So no socket or timer on the runtime's thread waits on the resolver
+		(a second, for a name that does not exist), even for a client
+		reconnecting in a loop while the resolver is failing. The attempt's
+		deadline runs
 		from the call and is not restarted by the answer, so a resolver that
 		never answers times the attempt out as a silent peer would; a name
 		that does not resolve is reported as `ioError`, and the session
@@ -1750,7 +1745,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		retransmissions. Reliable frames the congestion window has not let out
 		yet still wait for it; `bufferedAmount` counts those.
 
-		Nothing needs it for correctness, everything goes at the end of the
+		Nothing needs it for correctness: everything goes at the end of the
 		pass anyway. It is for what should not wait for the rest of the pass,
 		such as an input sent from deep inside a long tick handler.
 
@@ -1762,7 +1757,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__requireOpenConnection();
 			// Taken before it is queued: past the output limit under
 			// `THROW`, queueing throws once the bytes are queued, and they
-			// were then still here to be queued again by the next flush.
+			// would then still be here to be queued again by the next flush.
 			var written:ByteArray = __output;
 			__output = __createBuffer();
 			__queueBytes(written, 0, written.length);
@@ -1858,9 +1853,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__requireStreamMode();
 		__requireOpenConnection();
 
-		// As a ByteArray reads one, in every encoding a ByteArray can, JSON
-		// always, AMF with -lib format, and one this build cannot do throws.
-		// Only HXSF was read: anything else read null, and said nothing.
+		// As a ByteArray reads one, in every encoding a ByteArray can (JSON
+		// always, AMF with -lib format), and one this build cannot do throws.
 		__input.objectEncoding = objectEncoding;
 		return __input.readObject();
 	}
@@ -1933,7 +1927,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		The peer receives it as one `DatagramSocketDataEvent.DATA` holding
 		exactly these bytes. A `RELIABLE` message larger than a frame is split
 		into frames and put back together before it is delivered, up to the
-		peer's `maxMessageSize`, eight megabytes unless the peer changed it.
+		peer's `maxMessageSize`: eight megabytes unless the peer changed it.
 		Past that the peer ends the session, as `abort()` ends one: an
 		`ioError` on its side, and `close` on both. An unreliable or sequenced
 		message must fit one frame.
@@ -1955,7 +1949,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@throws IllegalOperationError If the socket is not in `DATAGRAM` mode.
 		@throws IOError If the reliable session is not connected; or, under
 		        the `THROW` `outputOverflowPolicy`, once more than
-		        `maxOutputBufferSize` waits for the window, the message is
+		        `maxOutputBufferSize` waits for the window; the message is
 		        queued whole all the same.
 		@throws RangeError If `offset` or `length` are out of bounds, or an
 		        unreliable or sequenced message is larger than
@@ -1972,8 +1966,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Sends a message made ready for many sessions, see
-		`PreparedDatagram`: as `send` sends one, in `delivery`'s mode. This
+		Sends a message made ready for many sessions (see
+		`PreparedDatagram`) as `send` sends one, in `delivery`'s mode. This
 		session frames it with its own sequence numbers and
 		acknowledgements, paces it by its own window and bundles it with
 		whatever else it sends in the pass, but keeps no copy of it: it sends
@@ -1989,7 +1983,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@throws IllegalOperationError If the socket is not in `DATAGRAM` mode.
 		@throws IOError If the reliable session is not connected; or, under
 		        the `THROW` `outputOverflowPolicy`, once more than
-		        `maxOutputBufferSize` waits for the window, the message is
+		        `maxOutputBufferSize` waits for the window; the message is
 		        queued whole all the same.
 		@throws RangeError If an unreliable or sequenced message is larger
 		        than `maxPayloadSize`: 1,200 bytes, 1,179 for an encrypted
@@ -2242,7 +2236,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__relay = relay;
 		// A copy: `payload` is the CONNECT's, the datagram's own bytes, valid
 		// only during the call that handed it over. Kept as it was, a pending
-		// session's connectPayload read as whatever arrived next.
+		// session's connectPayload would read as whatever arrived next.
 		socket.connectPayload = Arrivals.copyOf(payload);
 		if (socket.connectPayload != null) {
 			socket.connectPayload.position = 0;
@@ -2268,7 +2262,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 *
 	 * The mirror of `__createAccepted`, and it exists because dialling out from
 	 * a socket that is already bound and listening is not a thing a caller can
-	 * assemble from the public API, `connect()` always makes its own
+	 * assemble from the public API: `connect()` always makes its own
 	 * transport. A peer-to-peer mesh needs exactly that, because hole punching
 	 * only works when the port a peer dials out from is the port it is
 	 * reachable on, and that is one socket.
@@ -2277,8 +2271,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 * The server's data pump routes frames to the session registered for their
 	 * source endpoint, so a dialled session that is registered gets its replies
 	 * through one listener and one owner. Attaching a second listener to the
-	 * shared transport instead, which is what assembling this from outside
-	 * forces, leaves both the server and the session reading the same socket,
+	 * shared transport instead (which is what assembling this from outside
+	 * forces) leaves both the server and the session reading the same socket,
 	 * and leaves the server free to accept a duplicate session for an endpoint
 	 * the dialled one already holds.
 	 *
@@ -2300,7 +2294,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		// Set before the handshake begins, or the first retransmission window
 		// is measured against the default rather than what the caller asked
-		// for. 0 is no deadline here too, where it was taken for the default.
+		// for. 0 is no deadline here too.
 		socket.timeout = timeoutMs;
 
 		socket.__ownsTransport = false;
@@ -2364,8 +2358,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		// Meant for an earlier attempt from this address and port, a
-		// session that went on answering a peer since restarted, and taking
+		// Meant for an earlier attempt from this address and port (a
+		// session that went on answering a peer since restarted), and taking
 		// it would start this one from that session's sequence.
 		if (frame.type == HANDSHAKE && __answersAnotherAttempt(frame)) {
 			return;
@@ -2381,7 +2375,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		// Only what a connected peer sends is the old peer answering a
 		// challenge. A HANDSHAKE with no acknowledgement comes from a peer that
-		// is not connected, a restarted one, drawn out by something the old
+		// is not connected: a restarted one, drawn out by something the old
 		// session sent it.
 		if (__challengedAt >= 0 && (frame.hasAck || (frame.type != HANDSHAKE && frame.type != CONNECT))) {
 			__heardSinceChallenge = true;
@@ -2397,8 +2391,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		switch (frame.type) {
-			// A FIN that ends the session at once can come from anyone, a
-			// server telling a peer it holds no session for it, where a
+			// A FIN that ends the session at once can come from anyone (a
+			// server telling a peer it holds no session for it), where a
 			// graceful one, holding a place in the sequence, only ever comes
 			// from a connected peer.
 			case CONNECT, HANDSHAKE:
@@ -2408,7 +2402,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					// Only a connected peer sends this, so the peer took this
 					// side's HANDSHAKE and the one it sent back was lost. This
 					// side cannot place the frame without that one, and the
-					// peer will not send it again unasked, nothing would,
+					// peer will not send it again unasked (nothing would),
 					// and the session would sit there until it timed out.
 					// Asked once a pass, however many frames arrive: one
 					// datagram answered with one, as a CONNECT is.
@@ -2421,22 +2415,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		switch (frame.type) {
 			case CONNECT:
 				// Answered whichever side dialled, which is what makes hole
-				// punching possible. The guard here was `__incoming`, on the
-				// reading that only an accepted session answers a CONNECT,
-				// true of a client and a server, and false of two peers behind
-				// NAT. Those must dial each other at the same moment, because
-				// each side's outbound datagram is what opens its own mapping
-				// for the other; so both are outgoing, both sent CONNECT, and
-				// neither would answer. Both sessions then sat retransmitting
-				// until they timed out, which is a peer-to-peer connection
-				// failing for no reason the peers could see.
+				// punching possible. Answered only by an accepted session, it
+				// would work for a client and a server, and not for two peers
+				// behind NAT. Those must dial each other at the same moment,
+				// because each side's outbound datagram is what opens its own
+				// mapping for the other; so both are outgoing, both send
+				// CONNECT, and neither would answer. Both sessions would then
+				// sit retransmitting until they timed out, which is a
+				// peer-to-peer connection failing for no reason the peers could
+				// see.
 				//
 				// HANDSHAKE is the same frame an accepted session replies with,
-				// so the client-and-server case is unchanged: it took this
-				// branch before and takes it now.
+				// so the client-and-server case is the same either way.
 				//
-				// An encrypted session takes the peer's random from it, a peer
-				// dialling this side as this side dials it, and refuses one
+				// An encrypted session takes the peer's random from it (a peer
+				// dialling this side as this side dials it) and refuses one
 				// that asked for no encryption.
 				if (__cipher != null && !__takeConnectRandom(frame)) {
 					return;
@@ -2457,7 +2450,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				// an accepted session's. Held only at a size the protocol can
 				// send, as the server holds it; and copied, since the frame's
 				// payload is the datagram's, which is valid only during this
-				// call, kept as it was, it read as the next datagram.
+				// call: kept as it was, it would read as the next datagram.
 				if (connectPayload == null && frame.payload.length <= ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
 					connectPayload = Arrivals.copyOf(frame.payload);
 					connectPayload.position = 0;
@@ -2468,7 +2461,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				}
 				__readAnnouncedDelay(frame.payload);
 				// A rebind key, from the HANDSHAKE that connects a session
-				// this side dialled, and from no other, or, encrypted, the
+				// this side dialled, and from no other; or, encrypted, the
 				// one derived with the session's keys, which no HANDSHAKE
 				// carries.
 				if (!__connected && !__incoming && !__offersRebind) {
@@ -2504,8 +2497,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		A PATH frame from the peer. A join cookie (`PATH_COOKIE`) is taken
-		only by a session dialling, for the attempt it is in, its sequence
-		field echoes that attempt's connection id, and the CONNECT that
+		only by a session dialling, for the attempt it is in (its sequence
+		field echoes that attempt's connection id), and the CONNECT that
 		returns it goes at once rather than at the next attempt three seconds
 		on: the cookie is the one round trip more a validated join costs.
 		Once for each new cookie, so a server answering every CONNECT with
@@ -2556,8 +2549,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Ends an attempt, or, for a reason found only once connected, the
-		session, with an `ioError` saying why, and then `close`, as a
+		Ends an attempt (or, for a reason found only once connected, the
+		session) with an `ioError` saying why, and then `close`, as a
 		connect that fails does.
 	**/
 	@:noCompletion private function __failAttempt(reason:String):Void {
@@ -2647,7 +2640,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		The server holds no session for where this side's frames now come
 		from, and has said so with a challenge for that address: a NAT gave
 		this side a new port, or the device moved to another network. The
-		answer is a REBIND, the challenge, and the proof, from the new
+		answer is a REBIND (the challenge, and the proof) from the new
 		address, sent at once for a new challenge and every `REBIND_RETRY`
 		until the server's REBOUND comes. Within `timeout` of the first
 		challenge, or the session ends saying so.
@@ -2737,8 +2730,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Sends `length` bytes of `__pathOut` to the peer, as a datagram of its
-		own, never in a bundle, which a server takes only from an address
-		that holds a session, and at once. A failure is not the session's
+		own (never in a bundle, which a server takes only from an address
+		that holds a session) and at once. A failure is not the session's
 		end: an address changing is when sends fail for a moment, and the
 		REBIND is sent again, under its deadline.
 	**/
@@ -2760,13 +2753,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		After a rebind, on either side: what went out while the peer could
 		not be reached is sent again, now, as after any loss. Every frame in
-		flight that the peer has not said it holds goes again, in order,
-		those sent since the address changed went where the peer no longer
-		is, and the rest are at most the window, each waited for by the
+		flight that the peer has not said it holds goes again, in order
+		(those sent since the address changed went where the peer no longer
+		is, and the rest are at most the window), each waited for by the
 		round trip measured rather than by the timeout backed off while
 		nothing came back. Sending only the oldest, and letting its answer
-		show the rest lost, left them to the next frame sent: a tick of a
-		game's loop, 16 ms at 60 Hz, where this is a round trip.
+		show the rest lost, would leave them to the next frame sent: a tick
+		of a game's loop, 16 ms at 60 Hz, where this is a round trip.
 	**/
 	@:noCompletion private function __afterRebind():Void {
 		if (__closed) {
@@ -2827,12 +2820,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (__sequencedIn == null) {
-			__sequencedIn = __filled(DeliveryMode.CHANNELS, -1);
-		}
-
 		var channel:Int = ReliableDatagramProtocol.channelOf(field);
 		var counter:Int = ReliableDatagramProtocol.counterOf(field);
+		if (__sequencedIn == null || channel >= __sequencedIn.length) {
+			__sequencedIn = __channelCounters(__sequencedIn, channel, -1);
+		}
 		var newest:Int = __sequencedIn[channel];
 		if (newest != -1 && !ReliableDatagramProtocol.counterIsNewer(counter, newest)) {
 			return;
@@ -2846,12 +2838,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		One in-order reliable frame. In a stream it is bytes; in datagram mode
 		it is a message, or part of one when `more` says another follows.
 
-		A message of one frame, nearly every message, is delivered as it
+		A message of one frame (nearly every message) is delivered as it
 		came, with no copy. A fragment is copied into the message being put
 		back together as it arrives, which is delivered whole once the last
 		is in: what carried each fragment is valid only during the call that
-		handed it over, and the fragments were held as they came, the
-		datagrams' own bytes, until the last arrived.
+		handed it over.
 	**/
 	@:noCompletion private function __deliverReliable(payload:ByteArray, more:Bool):Void {
 		if (__mode == STREAM) {
@@ -2947,12 +2938,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private static function __filled(size:Int, value:Int):Vector<Int> {
-		var vector = new Vector<Int>(size);
+	/**
+		`counters` grown to hold `channel`, eight channels at a time, what
+		they held kept and the new ones `value`.
+	**/
+	@:noCompletion private static function __channelCounters(counters:Null<Vector<Int>>, channel:Int, value:Int):Vector<Int> {
+		var size:Int = (channel + 8) & ~7;
+		var kept:Int = counters == null ? 0 : counters.length;
+		var grown = new Vector<Int>(size);
 		for (i in 0...size) {
-			vector[i] = value;
+			grown[i] = i < kept ? counters[i] : value;
 		}
-		return vector;
+		return grown;
 	}
 
 	/** A cumulative acknowledgement carried on another frame. **/
@@ -2996,8 +2993,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				if (frame.sacked) {
 					// Delivered when the peer first said it held it, and
 					// measured then: timed now, it would count the wait for
-					// the gap below it as a round trip. It did, and a session
-					// losing one frame in ten took its round trip on loopback
+					// the gap below it as a round trip, and a session losing
+					// one frame in ten would take its round trip on loopback
 					// to half a second.
 					__sackedCount--;
 				} else {
@@ -3046,9 +3043,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		A standalone acknowledgement: the cumulative value, then whatever its
 		selective map says the peer holds, then whatever that shows was lost,
-		sent again now rather than when its timeout runs out. That wait was
-		the whole cost of a loss, at least 200 ms, and one frame per check,
-		and over a window of losses it was the ceiling on everything else.
+		sent again now rather than when its timeout runs out, a wait that
+		would be the whole cost of a loss (at least 200 ms, and one frame per
+		check) and over a window of losses the ceiling on everything else.
 
 		From a peer that sends no selective acknowledgements, the third in a
 		row that moves nothing marks the frame it is waiting for as lost.
@@ -3063,7 +3060,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		var held:Float = heldFor > 0 ? heldFor : 0;
 		var progressed:Bool = __release(ackValue, now, held);
 		// After the release, which can find the first copy of what was sent
-		// again arriving, the copy this says arrived is the one after it.
+		// again arriving; the copy this says arrived is the one after it.
 		var credited:Bool = duplicate && __creditDuplicate();
 
 		if (sack != null && sack.length > 0) {
@@ -3185,7 +3182,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		The peer says a frame it already had arrived again, the copy sent
+		The peer says a frame it already had arrived again: the copy sent
 		after the first one arrived and only its acknowledgement was late or
 		lost (`__noteDelivered` keeps when that copy went). Delivered, then,
 		and sent later than anything known delivered: loss is judged from
@@ -3198,7 +3195,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		overtook from being sent again for nothing, and that still holds
 		here: what is credited is the duplicate's own arrival, which the
 		peer reported after everything sent before it had had a round trip
-		to arrive in, RFC 2883's D-SACK, as TCP uses it; QUIC gets the same
+		to arrive in (RFC 2883's D-SACK, as TCP uses it); QUIC gets the same
 		from never reusing a packet number. Says whether there was one to
 		credit.
 	**/
@@ -3317,7 +3314,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		Loss is found by what arrives after it, and at the end of a burst, or
 		with a window full of frames sent again and lost again, nothing does.
-		What was left then was the timeout, at least 200 ms, doubling, and
+		What is left then is the timeout, at least 200 ms, doubling, and
 		the window halved with it. The probe's acknowledgement says what the
 		peer holds, and the frames before it that it lacks are then found
 		lost the ordinary way. One per silence: if that is lost too, the
@@ -3328,8 +3325,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		// Twice the round trip answers have taken, holds included, as it was
-		// before the peer held any.
+		// Twice the round trip answers have taken, holds included, as for a
+		// peer that holds none.
 		var wait:Float = 2 * __answerRtt;
 		if (wait < MIN_PROBE_TIMEOUT) {
 			wait = MIN_PROBE_TIMEOUT;
@@ -3370,11 +3367,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		Folds one round trip measurement into the retransmission timeout.
 
-		RFC 6298 section 2, and the reason a fixed three seconds was wrong in
-		both directions: on a local path it made a lost frame wait three
-		seconds for no reason, and on a path slower than that it declared loss
-		that had not happened and sent the frame again, which is how a
-		congested link is made worse.
+		RFC 6298 section 2, and the reason a fixed three seconds would be
+		wrong in both directions: on a local path it would make a lost frame
+		wait three seconds for no reason, and on a path slower than that it
+		would declare loss that had not happened and send the frame again,
+		which is how a congested link is made worse.
 
 		`heldFor` is how long the peer says it held the acknowledgement, and
 		comes off the sample for `roundTripTime`, as RFC 9002 takes ACK Delay
@@ -3445,7 +3442,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		The timeout a round trip measurement gives: the round trip answers
 		take and four times its variation, and however long the peer may hold
-		an acknowledgement, a frame is not late for the time it was waited
+		an acknowledgement: a frame is not late for the time it was waited
 		on by design.
 	**/
 	@:noCompletion private inline function __baseRto():Float {
@@ -3460,7 +3457,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// Whether this arrival may have its acknowledgement held: the next
 		// in order, with nothing held past a gap before it. One out of order
 		// or a duplicate, or one that fills a gap, is acknowledged when the
-		// pass ends, as every arrival was: the peer is waiting to hear of it.
+		// pass ends: the peer is waiting to hear of it.
 		var inOrder:Bool = false;
 		if (sequence == __inSequence) {
 			inOrder = __inFrameCacheSize == 0;
@@ -3548,10 +3545,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		place is the next one due, and otherwise the FIN waits, as a frame
 		past a gap does, for what is missing before it.
 
-		The FIN carried no sequence, and the session ended the moment one
-		arrived. One that overtook a lost frame, or arrived while frames past
-		a gap were held, ended it with those never delivered, and the
-		closing side, disposed at once, never sent them again.
+		With a place in the sequence, a FIN that overtakes a lost frame, or
+		arrives while frames past a gap are held, does not end the session
+		with those never delivered.
 	**/
 	@:noCompletion private function __acceptFin(sequence:Seq32):Void {
 		if (sequence == __inSequence) {
@@ -3573,8 +3569,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The peer has closed, and everything it sent before its FIN has been
-		delivered. The FIN is acknowledged at once, the peer's close is
-		waiting on it, and this session sends nothing after it, and the
+		delivered. The FIN is acknowledged at once (the peer's close is
+		waiting on it, and this session sends nothing after it), and the
 		session ends.
 	**/
 	@:noCompletion private function __finishByPeer():Void {
@@ -3626,8 +3622,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		Holds a frame that arrived past a gap until the gap fills, with a
 		copy of its payload: the frame's own is the datagram's, valid only
-		during the call that handed it over, and the frame was held with it,
-		so it was delivered as whatever arrived on the socket last.
+		during the call that handed it over, and held with the frame it
+		would read as whatever arrived on the socket last.
 	**/
 	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
 		__holdFrame(sequence, new ReliableDatagramFrame(PACKET, sequence, Arrivals.copyOf(payload), false, null, more));
@@ -3635,9 +3631,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	// Every insert into the out-of-order cache runs through here, and every
 	// removal decrements alongside the `remove`, so `__inFrameCacheSize` tracks
-	// the cache exactly. The count used to be recovered by walking `keys()`,
-	// which cost an O(n) iteration plus an iterator allocation for every
-	// buffered datagram.
+	// the cache exactly, rather than counting by walking `keys()`, an O(n)
+	// iteration plus an iterator allocation for every buffered datagram.
 	@:noCompletion private function __holdFrame(sequence:Seq32, frame:ReliableDatagramFrame):Void {
 		var cache:SequenceRing<ReliableDatagramFrame> = __inFrameCache;
 		if (cache == null) {
@@ -3652,8 +3647,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		var added:Bool = !cache.has(sequence);
 		if (added && __inFrameCacheSize == 0) {
 			// Nothing held: the ring's window starts again here. It moves only
-			// as frames are put, and one put 2^31 frames ago, a long, clean
-			// stretch, would make this one read as older than the window.
+			// as frames are put, and one put 2^31 frames ago (a long, clean
+			// stretch) would make this one read as older than the window.
 			cache.clear();
 		}
 		if (cache.put(sequence, frame) && added) {
@@ -3700,7 +3695,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		// Only a session that dialled repeats itself. An accepted one is
 		// answering a CONNECT it never asked for, from an address UDP let
-		// the sender simply claim, so retransmitting turned one spoofed
+		// the sender simply claim, so retransmitting would turn one spoofed
 		// datagram into a handful aimed at whoever owns that address, this
 		// socket paying the postage. Answering once costs the same as the
 		// packet that arrived.
@@ -3718,8 +3713,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The attempt's deadline, `timeout` from now; none for a timeout of
-		zero, which was armed as a timer of zero and gave the attempt up at
-		the first pass.
+		zero.
 	**/
 	@:noCompletion private function __armConnectionTimeout():Void {
 		if (__timeout > 0) {
@@ -3744,10 +3738,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		`Socket` appends: the read part goes only once it is at least as long
 		as what is left, so no byte is moved more often than bytes are read.
 
-		Every frame copied everything still unread into a new buffer, so a
-		reader that waited for a whole message before reading paid for each
-		frame the whole of it so far: a 4 MB message took 2.4 s of CPU to
-		arrive, and takes 31-47 ms now.
+		Copying everything still unread into a new buffer for every frame
+		would make a reader that waits for a whole message pay, for each
+		frame, the whole of it so far: a 4 MB message takes 2.4 s of CPU to
+		arrive that way, and 31-47 ms this way.
 	**/
 	@:noCompletion private function __appendStreamPayload(payload:ByteArray):Void {
 		if (__input == null) {
@@ -4074,15 +4068,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		it arrived.
 
 		Only the first is taken. A repeat names the same sequence, from a peer
-		whose answer went missing, and the sequence was once taken from a
-		repeat too: a peer that had sent frames since named where they had got
-		to, and this side then skipped any still on their way, delivering
-		nothing for them and acknowledging them all.
+		whose answer went missing; taken from a repeat, the sequence of a
+		peer that had sent frames since would name where they had got to, and
+		this side would skip any still on their way, delivering nothing for
+		them and acknowledging them all.
 
-		Two peers that dialled each other used to answer every HANDSHAKE with
-		one, each answer drawing the next, for as long as they were connected.
-		An answer now carries an acknowledgement, and one that does is answered
-		with an ACK, which draws nothing.
+		An answer carries an acknowledgement, and one that does is answered
+		with an ACK, which draws nothing, so two peers that dialled each
+		other do not answer every HANDSHAKE with one, each answer drawing
+		the next, for as long as they are connected.
 	**/
 	@:noCompletion private function __onHandshake(sequence:Seq32, peerHasOurs:Bool):Void {
 		var first:Bool = !__connected;
@@ -4103,8 +4097,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			// Asked again after connecting, by a peer that has acknowledged
 			// nothing: it never took the one this side sent back, and a
 			// session not yet connected drops every frame it is sent. So
-			// all of them go again now, rather than a timeout from now, the
-			// first of which, with no round trip measured yet, is a second.
+			// all of them go again now, rather than a timeout from now (the
+			// first of which, with no round trip measured yet, is a second).
 			if (!first && __windowBase == __firstSequence) {
 				__resendUnacknowledged();
 			}
@@ -4162,11 +4156,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The peer's silence measured, and this side's broken.
-
-		This used to be all of it: a check every 75 seconds that closed the
-		session if nothing had arrived since the last, and nothing sent to
-		make anything arrive. A session with nothing to say was closed as dead
-		somewhere between 75 and 150 seconds in, with both ends running.
 	**/
 	@:noCompletion private function __onKeepAlive():Void {
 		if (__closed || !__connected) {
@@ -4301,9 +4290,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		copied into a frame from the pool (see `FramePool`), so the caller
 		may reuse its bytes once this returns, and queued or sent. The
 		output limit is applied once the whole message is queued: applied
-		after each frame, as it was, `THROW` left a message larger than a
-		frame half queued, its frames saying more followed, and the next
-		message sent was put together onto it at the peer.
+		after each frame, `THROW` would leave a message larger than a frame
+		half queued (its frames saying more followed), and the next message
+		sent would be put together onto it at the peer.
 	**/
 	@:noCompletion private function __queueBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		var totalLength:Int = bytes.length;
@@ -4359,7 +4348,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		An unreliable or sequenced message: one frame, straight onto the wire
-		from the caller's own bytes, nothing is kept, so nothing is copied.
+		from the caller's own bytes: nothing is kept, so nothing is copied.
 	**/
 	@:noCompletion private function __sendUnreliable(bytes:ByteArray, offset:Int, length:Int, delivery:DeliveryMode):Void {
 		var totalLength:Int = bytes.length;
@@ -4382,10 +4371,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		if (__sequencedOut == null) {
-			__sequencedOut = __filled(DeliveryMode.CHANNELS, 0);
-		}
 		var channel:Int = delivery.channel;
+		if (__sequencedOut == null || channel >= __sequencedOut.length) {
+			__sequencedOut = __channelCounters(__sequencedOut, channel, 0);
+		}
 		var counter:Int = __sequencedOut[channel];
 		__sequencedOut[channel] = (counter + 1) & ReliableDatagramProtocol.SEQUENCED_COUNTER_MASK;
 		__sendFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, offset, length, false, 0, false, false);
@@ -4395,10 +4384,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Applies `maxOutputBufferSize` to what is waiting for the window.
 
 		Flow control means a write is not necessarily a send: it waits for
-		room, and what waits is held. Before the window was allowed to close
-		this queue could not grow, because the window never closed; now that
-		it does, an application producing faster than the path will carry has
-		to be told rather than have the queue grow until the process dies.
+		room, and what waits is held. With a window that closes, an
+		application producing faster than the path will carry has to be told
+		rather than have the queue grow until the process dies.
 		Same bound and same two policies as `Socket`, for the same reason.
 
 		@param throwing Whether `THROW` throws: not for a server's
@@ -4548,7 +4536,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		This side's HANDSHAKE: where its frames start, an acknowledgement once
-		connected, and, once the peer has sent a CONNECT with an id, that
+		connected, and (once the peer has sent a CONNECT with an id) that
 		id, so the peer can tell it answers this attempt and not an earlier
 		one. An older peer reads none of the payload.
 	**/
@@ -4586,9 +4574,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Where a HANDSHAKE's payload is written, which the frame copies out of
-		at once: its server's, shared by every session of the server, one
-		runtime, one frame at a time, or the session's own. One for each
-		session a server held was 130 bytes apiece natively.
+		at once: its server's, shared by every session of the server (one
+		runtime, one frame at a time), or the session's own, rather than 130
+		bytes natively for each session a server holds.
 	**/
 	@:noCompletion private function __echoBuffer():ByteArray {
 		var server:Null<ReliableDatagramServerSocket> = __server;
@@ -4624,7 +4612,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		What a peer's HANDSHAKE says about how long it holds an
 		acknowledgement: its last two bytes, from a peer on 1.0 or later, and
-		nothing, `__peerAckDelay` left at -1, from an older one.
+		nothing (`__peerAckDelay` left at -1) from an older one.
 	**/
 	@:noCompletion private function __readAnnouncedDelay(payload:ByteArray):Void {
 		if (payload == null || payload.length < ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE) {
@@ -4643,8 +4631,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/**
 		Whether a HANDSHAKE echoes a connection id other than this side's:
 		sent by a session answering an earlier attempt from this address and
-		port. One that echoes nothing, from an older build, or one answering
-		a HANDSHAKE rather than a CONNECT, is taken as before.
+		port. One that echoes nothing (from an older build, or one answering
+		a HANDSHAKE rather than a CONNECT) is taken as any HANDSHAKE is.
 	**/
 	@:noCompletion private function __answersAnotherAttempt(frame:ReliableDatagramFrame):Bool {
 		if (__connectionId == 0 || frame.payload == null || frame.payload.length < 4) {
@@ -4678,8 +4666,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			frame.fin);
 	}
 
-	// What the retransmission clock calls, made once: a closure was made for
-	// it each time the clock started, which is every time a session with
+	// What the retransmission clock calls, made once rather than a closure
+	// each time the clock starts, which is every time a session with
 	// nothing in flight sends again.
 	@:noCompletion private var __onRetransmitClock:Void->Void = null;
 
@@ -4712,7 +4700,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Acknowledgement is cumulative, so nothing behind a missing frame can
 		be released until it arrives, and sending the rest again would be
 		spending bandwidth on what the receiver is already holding. One frame
-		per timeout, the window halved, the timeout doubled, and the frames
+		per timeout, the window halved, the timeout doubled; and the frames
 		behind it go out as the window reopens.
 	**/
 	@:noCompletion private function __checkRetransmits():Void {
@@ -4782,13 +4770,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		A session reads the clock at every send and every acknowledgement, and
 		two readings the same say nothing happened between them. On neko under
 		Windows `haxe.Timer.stamp()` is the time of day to the millisecond, and
-		it moves once a system tick, every millisecond at best, every 15.6 by
-		default. A frame acknowledged in the tick it went out in measured a
-		round trip of nothing, which is thrown away, so a session there never
-		had one: no probe of a silent tail, and no allowance for a straggler
-		before a frame was called lost. A frame sent again in the tick it first
-		went out in was taken for sent before the frame whose arrival showed it
-		lost, and so was lost again, and sent again, with nothing new to say so.
+		it moves once a system tick: every millisecond at best, every 15.6 by
+		default. A frame acknowledged in the tick it went out in would measure
+		a round trip of nothing, which is thrown away, so a session there would
+		never have one: no probe of a silent tail, and no allowance for a
+		straggler before a frame was called lost. A frame sent again in the
+		tick it first went out in would be taken for sent before the frame
+		whose arrival showed it lost, and so be lost again, and sent again,
+		with nothing new to say so.
 		hl, neko and the interpreter all read the time of day, which can also
 		be set back; this clock stands still until the time of day passes it.
 
@@ -4827,8 +4816,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Adds a frame to the bundle being gathered for the peer, sending the
-		bundle first if the frame would take it past `BUNDLE_LIMIT`, less
-		what sealing adds, for an encrypted session. The frame
+		bundle first if the frame would take it past `BUNDLE_LIMIT` (less
+		what sealing adds, for an encrypted session). The frame
 		is written in place, so nothing is copied or allocated for it.
 	**/
 	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
@@ -4837,7 +4826,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// an ACK of its own ahead of it that says how long it waited: the
 		// frame's header would carry the value but not the wait, and the peer
 		// would count the wait as round trip. One owed since this pass began
-		// goes in the header as it always did.
+		// goes in the header as usual.
 		if (__ackOwed && type != ACK && type != CONNECT && __peerAckDelay >= 0 && __inFrameCacheSize == 0 && __newestArrivalAt >= 0
 			&& __clock() - __newestArrivalAt >= ACK_HELD_NOTABLY) {
 			__sendAckFrame();
@@ -4886,8 +4875,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Asks the runtime to flush this session when its loop finishes the
-		pass. With no runtime to ask, none on this thread, or one that has
-		stopped, there is no pass to wait for, and the bundle goes now.
+		pass. With no runtime to ask (none on this thread, or one that has
+		stopped) there is no pass to wait for, and the bundle goes now.
 	**/
 	@:noCompletion private function __queueFlush():Void {
 		var runtime:CrossByte = __transport != null ? __transport.__cbInstance : null;
@@ -4999,8 +4988,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Writes an ACK's payload into `__sackScratch`, its delay, if
-		`withDelay`, then the map of frames held past the gap, and says how
+		Writes an ACK's payload into `__sackScratch` (its delay, if
+		`withDelay`, then the map of frames held past the gap) and says how
 		many bytes of it matter.
 	**/
 	@:noCompletion private function __writeAckPayload(withDelay:Bool):Int {
@@ -5052,8 +5041,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		The datagram in `length` bytes of `__scratch` from `offset`, sealed
-		and sent; nothing at all while the keys are not derived, an
-		encrypted session sends nothing in the clear but its CONNECT, and
+		and sent; nothing at all while the keys are not derived (an
+		encrypted session sends nothing in the clear but its CONNECT), and
 		the session ended once its packet numbers run out.
 	**/
 	@:noCompletion private function __sendSealed(offset:Int, length:Int):Bool {
@@ -5075,10 +5064,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		What a datagram is sealed into: its server's buffer, for a session a
-		server holds, every one of them on the server's runtime, sealing
-		one datagram at a time, and a send has finished with its bytes
-		before it returns, or the session's own. One for each encrypted
-		session of a server held 1.3 KB apiece.
+		server holds (every one of them on the server's runtime, sealing one
+		datagram at a time, and a send has finished with its bytes before it
+		returns), or the session's own, rather than 1.3 KB for each encrypted
+		session of a server.
 	**/
 	@:noCompletion private function __sealBuffer():ByteArray {
 		if (__server != null) {
@@ -5125,12 +5114,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		One datagram for the relay to forward. The peer is permitted first,
-		a relay forwards to an address only once it has been told to expect it,
-		and drops anything else without a word, which costs a lookup once in
+		One datagram for the relay to forward. The peer is permitted first (a
+		relay forwards to an address only once it has been told to expect it,
+		and drops anything else without a word), which costs a lookup once in
 		place. A channel, when the relay was asked to use them, is `sendTo`'s
 		to ask for, with the first datagram to the peer, and `poll`'s to
-		renew; this asked too, before every datagram, a second lookup each.
+		renew, rather than asked again before every datagram.
 	**/
 	@:noCompletion private function __sendRelayed(buffer:ByteArray, offset:Int, length:Int):Void {
 		__relay.permit(__remoteAddress, haxe.Timer.stamp());
@@ -5149,16 +5138,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Whether another frame may go out: what is still in the network, sent,
-		not acknowledged, and not reported held past a gap, is held to the
+		Whether another frame may go out: what is still in the network (sent,
+		not acknowledged, and not reported held past a gap) is held to the
 		congestion window, as RFC 6675 counts it, and everything from the
 		first frame not acknowledged to the newest is held to what the peer
 		will buffer, `DELIVERY_WINDOW`.
 
-		Counting held frames as in the network, as this did, stopped the
-		sender at a gap: the window filled with frames already delivered,
-		nothing new went out, so no acknowledgement came back to say what
-		else was lost, and every lost resend waited for its timeout.
+		Counting held frames as in the network would stop the sender at a
+		gap: the window would fill with frames already delivered, nothing new
+		would go out, so no acknowledgement would come back to say what else
+		was lost, and every lost resend would wait for its timeout.
 	**/
 	@:noCompletion private function __windowExceeded():Bool {
 		var outstanding:Int = __outSequence - __windowBase;
@@ -5204,9 +5193,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		A datagram from this session's own transport, for an encrypted
-		session: a sealed one opened, if it is from the peer as known, or,
+		session: a sealed one opened, if it is from the peer as known (or,
 		for the hello that connects a session dialling, from the address it
-		dialled, whatever port answers, and one in the clear taken only as
+		dialled, whatever port answers), and one in the clear taken only as
 		far as an encrypted session takes any (`__acceptPlain`).
 	**/
 	@:noCompletion private function __receiveEncrypted(data:ByteArray, address:String, port:Int):Void {
@@ -5244,8 +5233,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Opens a sealed datagram from the peer, whichever transport it came
-		through, and takes what it held as the datagram this session would
+		Opens a sealed datagram from the peer (whichever transport it came
+		through) and takes what it held as the datagram this session would
 		have been sent in the clear, a frame or a bundle; says whether it
 		opened. A hello carries the peer's random, which derives the keys if
 		they are not derived yet: one that then does not open, answering this
@@ -5347,7 +5336,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	/** What a sealed datagram held: a bundle, or a frame, never a CONNECT or a PATH frame, which go in the clear. **/
+	/** What a sealed datagram held: a bundle, or a frame; never a CONNECT or a PATH frame, which go in the clear. **/
 	@:noCompletion private function __acceptOpened(opened:ByteArray):Void {
 		if (ReliableDatagramProtocol.isBundle(opened)) {
 			__acceptBundle(opened);
@@ -5364,8 +5353,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		A frame that came in the clear to an encrypted session. Only what is
 		never sealed is taken: a PATH frame (a cookie, a REBOUND, a refusal),
 		a CONNECT, and a server's reset carrying a rebind challenge, which is
-		answered with a REBIND, a reset is not authenticated, so it ends
-		nothing here. A plain HANDSHAKE answering this side's attempt ends
+		answered with a REBIND (a reset is not authenticated, so it ends
+		nothing here). A plain HANDSHAKE answering this side's attempt ends
 		the attempt: the peer cannot, or will not, encrypt it. Anything else
 		is dropped, and counted.
 	**/
@@ -5388,9 +5377,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	// The frame each arrival is decoded into. Nothing holds a decoded frame
-	// past the call that takes it, a frame held past a gap is made anew,
-	// so one serves every arrival, where each had a frame, a payload buffer
-	// and a boxed acknowledgement of its own.
+	// past the call that takes it (a frame held past a gap is made anew),
+	// so one serves every arrival, rather than a frame, a payload buffer
+	// and a boxed acknowledgement each.
 	@:noCompletion private var __decodedFrame:ReliableDatagramFrame = null;
 
 	@:noCompletion private inline function __decoded():ReliableDatagramFrame {

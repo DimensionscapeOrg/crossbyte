@@ -8,24 +8,23 @@ class TimerHeap implements ITimerScheduler {
 	/**
 	 * How near the clock a timer counts as due. The clock is summed from frame
 	 * deltas and a due time from the clock plus a delay, and the two round
-	 * differently: two 50ms frames fell a rounding error short of the 0.1s a
-	 * 100ms timer was due at, and it waited a whole frame more. A nanosecond
-	 * is far below anything a timer is asked for.
+	 * differently: two 50ms frames can fall a rounding error short of the
+	 * 0.1s a 100ms timer is due at, which would leave it a whole frame late.
+	 * A nanosecond is far below anything a timer is asked for.
 	 */
 	private static inline var DUE_EPSILON:Float = 1e-9;
 
 	/**
 	 * Most nodes kept for reuse once their timers are done.
 	 *
-	 * A node was made for every timer armed, 80 bytes natively, all of what
-	 * arming and clearing a timeout allocated, and reliable UDP arms one per
-	 * acknowledgement it holds, so a server allocated one per message per
-	 * session. A done node now waits here for the next timer. The bound is
-	 * what a burst can pin: a hundred thousand timers armed and cleared once
-	 * leave 4,096 nodes behind, under a third of a megabyte natively, not
-	 * all of them. It covers the churn of a few thousand sessions a frame; a
-	 * runtime arming more at once than that allocates for the rest, as
-	 * every timer did.
+	 * Without them a node is made for every timer armed, 80 bytes natively,
+	 * and reliable UDP arms one per acknowledgement it holds, so a server
+	 * would allocate one per message per session. A done node waits here
+	 * for the next timer. The bound is what a burst can pin: a hundred
+	 * thousand timers armed and cleared once leave 4,096 nodes behind, under
+	 * a third of a megabyte natively. It covers the churn of a few thousand
+	 * sessions a frame; a runtime arming more at once than that allocates
+	 * for the rest.
 	 */
 	public static inline var SPARE_LIMIT:Int = 4096;
 
@@ -100,10 +99,9 @@ class TimerHeap implements ITimerScheduler {
 	/**
 		A delay as a timer is armed with it: a negative one is zero, due at
 		the next pass, and an infinite one is never due, its timer held until
-		cleared. NaN is refused. A NaN due time compares false with every
-		other, so the heap could not order it: at its root it read as never
-		due and stopped every timer behind it, measured on a runtime where 40
-		armed around one NaN fired none.
+		cleared. NaN is refused: a NaN due time compares false with every
+		other, so the heap could not order it, and at its root it would read
+		as never due and stop every timer behind it.
 	**/
 	public static inline function checkDelay(delay:Float):Float {
 		if (delay != delay) {
@@ -261,20 +259,19 @@ class TimerHeap implements ITimerScheduler {
 	/**
 	 * Fires every timer due by the new time, in order.
 	 *
-	 * There used to be a cap of 256 fires per call, and the runtime never
-	 * passed anything else, so a runtime with more than that due each frame,
-	 * a few hundred sessions each keeping a 50ms retransmit clock, fell
-	 * behind a little more every frame, without bound: a 30 second idle
-	 * timeout fired at 78. Nothing is capped by count now. A caller that
-	 * must bound the pass gives it a `budget` of wall-clock seconds instead,
-	 * which is what the runtime does, so a burst of work too big for one
-	 * frame is spread over several rather than starving the sockets; what a
-	 * budget leaves is reported by `overdue()` and `cutShort`.
+	 * Nothing is capped by count unless `maxFires` says so: with a cap, a
+	 * runtime with more than that due each frame (a few hundred sessions
+	 * each keeping a 50ms retransmit clock) would fall behind a little more
+	 * every frame, without bound. A caller that must bound the pass gives
+	 * it a `budget` of wall-clock seconds instead, which is what the runtime
+	 * does, so a burst of work too big for one frame is spread over several
+	 * rather than starving the sockets; what a budget leaves is reported by
+	 * `overdue()` and `cutShort`.
 	 *
 	 * A timer armed during a pass never fires in that pass, however soon it
 	 * is due: it waits for the next one. Without that, a callback re-arming
-	 * itself for "now", a poll-until-ready loop, would run for the whole
-	 * budget every frame, where before the cap stopped it after 256.
+	 * itself for "now" (a poll-until-ready loop) would run for the whole
+	 * budget every frame.
 	 *
 	 * @param maxFires Most timers to fire in this call. Unbounded by default.
 	 * @param budget Wall-clock seconds this call may spend firing timers, or
@@ -322,11 +319,11 @@ class TimerHeap implements ITimerScheduler {
 				}
 			} else {
 				// Each callback is contained. A timer that throws is settled
-				// exactly as if it had returned, a recurring one re-armed, a
-				// one-shot freed, and only then is the failure passed on.
-				// Letting it propagate from inside the call left a recurring
-				// timer dequeued for good, its handle still reading as live,
-				// and took whatever was driving the scheduler down with it.
+				// exactly as if it had returned (a recurring one re-armed, a
+				// one-shot freed), and only then is the failure passed on, so a
+				// recurring timer is not left dequeued for good with its handle
+				// still reading as live, and whatever is driving the scheduler is
+				// not taken down with it.
 				var failed:Bool = false;
 				var failure:Dynamic = null;
 				node.firing = true;
@@ -474,8 +471,8 @@ class TimerHeap implements ITimerScheduler {
 					queue.enqueue(node);
 				} else {
 					// Cleared lazily while held back. No pass dequeues it to
-					// retire it, and its handle stayed live for as long as the
-					// scheduler ran.
+					// retire it, so it is retired here, or its handle would stay
+					// live for as long as the scheduler ran.
 					retire(node);
 				}
 			}

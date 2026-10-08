@@ -6,10 +6,10 @@ import sys.net.Socket;
 /**
 	neko's poll natives, which its `sys.net.Socket` never exposed.
 
-	`select` there takes at most 64 sockets on Windows, the default
-	`FD_SETSIZE`: and throws past it, so a server's registry, which selected
-	every socket it held at once, serviced none of them from the 65th
-	connection on: 39 of 100 connections timed out. On POSIX an `fd_set`
+	`select` there takes at most 64 sockets on Windows (the default
+	`FD_SETSIZE`) and throws past it, so a registry selecting every socket
+	it held at once would service none of them from the 65th connection
+	on. On POSIX an `fd_set`
 	cannot hold a descriptor of 1024 or more at all. The poll natives have
 	neither limit: on Windows they size their sets to what they are given,
 	elsewhere they call `poll()`. The shape is hxcpp's `cpp.net.Poll`, which
@@ -20,13 +20,13 @@ import sys.net.Socket;
 	array starts 8 bytes in, not 4, so each poll copies its set four bytes
 	short: the upper half of the last socket is whatever that buffer held
 	before, and when the collector has handed it out used, `select` refuses
-	the set as holding something that is not a socket. Measured over recycled
-	memory, 136 of 200 polls failed so. hxcpp's copy of these natives measures
+	the set as holding something that is not a socket, which over recycled
+	memory is most polls. hxcpp's copy of these natives measures
 	from `offsetof(fd_set, fd_array)` and is unaffected.
 
 	So each buffer is primed once, before its first real poll, through a set
-	one short of full, every byte a later, smaller set's copy leaves alone
-	is then the zero upper half of a real socket, and two slots beyond what
+	one short of full (every byte a later, smaller set's copy leaves alone
+	is then the zero upper half of a real socket), and two slots beyond what
 	this reports as its capacity are kept for that: one the short copy never
 	reaches, and one because a full set would overrun the short allocation.
 	With natives that size their sets rightly the priming is merely unneeded.

@@ -23,7 +23,7 @@ package crossbyte.db.sql._internal;
  * safe for the context it is actually spliced into, so substituting anywhere
  * the scanner does not model is substituting under an assumption that may not
  * hold. Skipping a context this scanner cannot reason about produces a query
- * with an unsubstituted `:name` in it, a loud, immediate failure, while
+ * with an unsubstituted `:name` in it, a loud and immediate failure, while
  * substituting into one produces a query that runs and may not mean what it
  * says.
  *
@@ -35,20 +35,20 @@ package crossbyte.db.sql._internal;
  *   honours them: MySQL does unless `NO_BACKSLASH_ESCAPES` is set, and
  *   Postgres does not with `standard_conforming_strings` on. `substitute`
  *   ends a literal at the first undoubled quote, so against MySQL a literal
- *   holding a backslash-escaped quote left the scanner and the server
- *   disagreeing about where the string ended, in one direction a
- *   placeholder was left unsubstituted, in the other one was substituted at a
- *   point the server still read as inside a literal. `substituteWith` takes
+ *   holding a backslash-escaped quote would leave the scanner and the server
+ *   disagreeing about where the string ended: in one direction a placeholder
+ *   is left unsubstituted, in the other one is substituted at a point the
+ *   server still reads as inside a literal. `substituteWith` takes
  *   `backslashEscapes`, which the MySQL driver sets from the session's mode.
  * - **Postgres escape strings**, `E'...'`, which honour backslash escapes
  *   whatever `standard_conforming_strings` says. They are read so in every
  *   dialect: elsewhere it can only make the scan take more of a statement
  *   for a literal than the server does, which leaves a placeholder
- *   unsubstituted, the loud failure, never the unsafe one.
+ *   unsubstituted: the loud failure, never the unsafe one.
  * - **Postgres dollar-quoting**, `$$ ... $$` and `$tag$ ... $tag$`, when the
  *   caller asks (`dollarQuotes`): everything up to the closing tag is
- *   literal, quotes included. Unmodelled, a placeholder inside one was
- *   substituted, and a value holding the tag ended the string there.
+ *   literal, quotes included. Unmodelled, a placeholder inside one would be
+ *   substituted, and a value holding the tag would end the string there.
  *   Asked for by the Postgres driver only: SQLite reads `$name` as a
  *   parameter of its own.
  */
@@ -75,8 +75,8 @@ class ParamBinder {
 	 * @return The substituted text.
 	 */
 	public static function substitute(text:String, lookup:String->Null<Dynamic>, escape:Dynamic->String):String {
-		// One lookup per placeholder, as before: `has` keeps what it found for
-		// the `get` that follows it.
+		// One lookup per placeholder: `has` keeps what it found for the
+		// `get` that follows it.
 		var found:Null<Dynamic> = null;
 		return substituteWith(text, name -> (found = lookup(name)) != null, _ -> found, escape, false);
 	}
@@ -86,9 +86,9 @@ class ParamBinder {
 	 * escapes quotes with a backslash.
 	 *
 	 * @param has     Whether a parameter of that name exists. One that does is
-	 *                substituted even when `get` gives `null`, as `NULL`, or
-	 *                whatever `escape` makes of null, where `substitute`
-	 *                left it in the SQL as `:name`.
+	 *                substituted even when `get` gives `null` (as `NULL`, or
+	 *                whatever `escape` makes of null), where `substitute`
+	 *                leaves it in the SQL as `:name`.
 	 * @param get     The raw value of a parameter `has` said exists.
 	 * @param escape  As for `substitute`.
 	 * @param backslashEscapes Whether a backslash inside a quoted run escapes
@@ -252,8 +252,8 @@ class ParamBinder {
 	}
 
 	/**
-		Where the dollar-quote tag opening at `at` ends, just past its
-		second `$`, or -1 when there is none: `$$`, or `$` and a name and
+		Where the dollar-quote tag opening at `at` ends (just past its
+		second `$`), or -1 when there is none: `$$`, or `$` and a name and
 		`$`. A digit cannot start the name, so `$1` is a parameter.
 	**/
 	private static function __dollarTagEnd(text:String, at:Int):Int {
@@ -293,11 +293,8 @@ class ParamBinder {
 	rules, for substituting values into it again and again: a statement run
 	repeatedly scans its text once, not on every run.
 
-	The scan copied the statement into a buffer a character at a time on
-	every run, and ran even with no placeholder in the text: 270-460 ns for a
-	55-character SELECT with none, 1.5-2.8 µs with six (the audit's
-	SqlitePerf). Rendering is now its pieces joined, and text with no
-	placeholder is itself.
+	Rendering joins its pieces, and text with no placeholder renders as
+	itself.
 **/
 @:noCompletion
 class ParamTemplate {

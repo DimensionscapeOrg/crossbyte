@@ -72,14 +72,12 @@ class StunClient {
 		Whether this target can ask at all.
 
 		Discovery needs a UDP socket, and it needs a cryptographically secure
-		source for the transaction id, both, not either. The id is what a
+		source for the transaction id: both, not either. The id is what a
 		reply is believed by, so it is the whole of what stops an off-path
 		party who can guess it from handing this host an address of its
 		choosing; drawn from a weak generator it would still look random and
-		defend nothing. HashLink, python and lua have UDP and no CSPRNG, and
-		this flag used to say `true` there while the first thing `discover`
-		did threw, a flag that lies leaves a caller no other path to take,
-		which is the one thing a support flag exists to prevent.
+		defend nothing. HashLink, python and lua have UDP and no CSPRNG, so
+		this is `false` there, where `discover` would throw at once.
 	**/
 	public static var isSupported(default, null):Bool = DatagramSocket.isSupported && crossbyte.crypto.SecureRandom.isSupported;
 
@@ -90,21 +88,21 @@ class StunClient {
 		Asks `server` for this host's reflexive address.
 
 		The request is repeated on RFC 5389's schedule until the deadline, each
-		gap twice the last, see `StunQuery`, which owns the schedule and the
-		reading of a reply for all three places here that ask this question.
+		gap twice the last (see `StunQuery`, which owns the schedule and the
+		reading of a reply for all three places here that ask this question).
 
 		@param timeoutMs How long to keep asking before giving up. UDP has no
-		failure to report, a request that reaches nothing looks exactly like
-		one still in flight, so only a deadline ends a question nobody
+		failure to report (a request that reaches nothing looks exactly like
+		one still in flight), so only a deadline ends a question nobody
 		answers. 0 or less sets none, as it does for a connection's `timeout`:
 		the question is asked until it is answered, or until the socket it is
 		asked through closes, so one asked through a socket of its own, with
 		no deadline, holds that socket until the server answers. The same for
-		every question here. 0 meant three seconds.
+		every question here.
 		@param socket The socket to ask through, whose mapping is then what the
 		answer describes; bound, and not connected. It is left open, and left
 		not receiving if it was not. The answer reaches its other `data`
-		listeners too, as every datagram does, a STUN message is the one
+		listeners too, as every datagram does: a STUN message is the one
 		whose first byte is below 4 (RFC 7983). Closing it ends the question,
 		which fails. Without one, a socket of the question's own is bound and
 		closed.
@@ -126,7 +124,7 @@ class StunClient {
 
 	/**
 		Asks one RFC 5780 question: what `server` sees, and what it says about
-		itself, the other address it can answer from, and where it answered
+		itself: the other address it can answer from, and where it answered
 		from. The building block `classifyMapping` and `classifyFiltering` are
 		made of, for a caller running RFC 5780's other tests.
 
@@ -158,20 +156,20 @@ class StunClient {
 		How the NAT in front of `socket` maps it toward different destinations:
 		RFC 5780 section 4.3.
 
-		Three questions through one socket, to the server, to its other
-		address on the same port, and to its other address and port, and a
+		Three questions through one socket (to the server, to its other
+		address on the same port, and to its other address and port) and a
 		comparison of what each saw. `server` has to be able to answer from two
 		addresses; one that cannot leaves `OTHER-ADDRESS` out and this fails
 		saying so.
 
-		When the server sees the socket as it is, the address it sent from
-		and its own port, there is no NAT, and this answers
+		When the server sees the socket as it is (the address it sent from
+		and its own port), there is no NAT, and this answers
 		`ENDPOINT_INDEPENDENT` after that first question, as RFC 5780 does:
-		with no NAT the mapping is the socket itself. It went on asking, and a
-		host whose source address follows the destination, one with a route
-		out on each of two networks, or macOS sending to a loopback alias from
-		that alias, was reported `ADDRESS_DEPENDENT`, its own addresses taken
-		for a NAT's mappings.
+		with no NAT the mapping is the socket itself. Asking on would report
+		a host whose source address follows the destination (one with a
+		route out on each of two networks, or macOS sending to a loopback
+		alias from that alias) as `ADDRESS_DEPENDENT`, its own addresses
+		taken for a NAT's mappings.
 
 		@param timeoutMs For each question, as for `discover`: 0 or less is
 		no deadline.
@@ -419,7 +417,7 @@ class StunClient {
 
 		if (!owned) {
 			// A connected socket sends only to its peer, and an unbound one
-			// has no port whose mapping could be asked about, the answer
+			// has no port whose mapping could be asked about: the answer
 			// would describe whichever port a send happened to bind.
 			if (socket.connected) {
 				then(null, "Cannot ask " + server + ":" + port + " through a connected socket: it sends only to its peer.", false);
@@ -438,10 +436,10 @@ class StunClient {
 		var wasReceiving:Bool = !owned && socket.receiving;
 		var settled:Bool = false;
 		// Where the question goes: `server`, or for a name the address it
-		// resolves to, null until then. A name given to the socket would be
-		// looked up by it, and a name that did not resolve reported as the
-		// socket's ioError, which on a caller's socket is the caller's, and
-		// says nothing to this question, so it waited out its deadline.
+		// resolves to, null until then. Given to the socket, a name would be
+		// looked up by it, and one that did not resolve reported as the
+		// socket's ioError, which on a caller's socket is the caller's and
+		// says nothing to this question, so it would wait out its deadline.
 		var target:Null<String> = IPv6.isNumericAddress(server) ? server : null;
 		var onData:DatagramSocketDataEvent->Void = null;
 		var onError:IOErrorEvent->Void = null;
@@ -519,9 +517,9 @@ class StunClient {
 			finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + event.text, false);
 		};
 
-		// A caller's socket closed under the question ends it now. It ended
-		// at the next ask, whose send failed, with no deadline, gaps that
-		// double put that hours away.
+		// A caller's socket closed under the question ends it now, rather
+		// than at the next ask, whose send would fail (with no deadline,
+		// gaps that double put that hours away).
 		onClose = function(_:Event):Void {
 			finish(null, "The socket asking " + server + ":" + port + " for a reflexive address closed before an answer came.", false);
 		};

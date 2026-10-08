@@ -38,7 +38,7 @@ class FixedStepTest extends utest.Test {
 		// exactly five twelfths of a step, so the steps fall on a fixed
 		// pattern. A 144th of a second does not add up to a 60th exactly in
 		// binary, and floored without care the tick that completes a step
-		// sometimes falls a hair short and the next one steps twice, a
+		// sometimes falls a hair short and the next one steps twice: a
 		// stutter at a perfectly even rate, on 500 ticks of these 6000.
 		var sim = new FixedStep(1 / 60);
 		var twelfths:Int = 0;

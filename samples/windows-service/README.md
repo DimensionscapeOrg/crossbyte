@@ -4,10 +4,10 @@
 the Windows Service Control Manager stops it, and behaves the same way under
 `Ctrl+C` when run from a console.
 
-It is also the harness for verifying the service control by hand. Nothing in CI
-installs a real service, so `StartServiceCtrlDispatcher` succeeding,
-`ServiceMain` being invoked, and the status transitions as the SCM sees them
-are only ever proven here.
+It is also how to check the service control by hand. Nothing in CI installs a
+real service, so `StartServiceCtrlDispatcher` succeeding, `ServiceMain` being
+invoked, and the status transitions as the SCM sees them are checked only
+here.
 
 Useful commands from `samples/windows-service`:
 
@@ -40,8 +40,8 @@ executable.
 
 ## Service run
 
-Both commands need an elevated prompt. `binPath=` must be an absolute path, and
-the space after `=` is required by `sc`, it is not a typo.
+These commands need an elevated prompt. `binPath=` must be an absolute path,
+and `sc` requires the space after `=`.
 
 ```
 sc create CrossByteSample binPath= "C:\full\path\to\WindowsServiceSample.exe" start= demand
@@ -61,16 +61,15 @@ The point of the exercise is that the stop is orderly rather than a kill:
    happen and everything below is moot.
 2. `http://127.0.0.1:8080/` serves the sample page while the service runs.
 3. After `sc stop`, the log contains `stop requested; draining` followed by
-   `drain complete; reporting service stopped`. **This is the observable that
-   did not exist before service control was added**, the callback did not run at all, so
-   neither line was ever written.
+   `drain complete; reporting service stopped`. These two lines show the stop
+   callback ran; a process that was simply killed writes neither.
 4. `sc query` reports `STOPPED`, and the Windows event log has no
    "terminated unexpectedly" entry for the service. That entry is what a
    process dying without reporting `SERVICE_STOPPED` produces, and its absence
    is the difference between a drain and a kill.
 
 To watch the drain actually wait on something, hold a request open across the
-stop, the log line reports the connection count it started draining with.
+stop: the log line reports the connection count it started draining with.
 
 ### If the service will not start
 

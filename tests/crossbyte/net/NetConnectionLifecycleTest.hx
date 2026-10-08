@@ -10,13 +10,13 @@ import utest.Async;
 	`onError` for what went wrong, then `onClose` exactly once, with the
 	reason the connection ended, and `Reason.Timeout` for a deadline.
 
-	Each transport told its own. Over TCP a connect that failed ended with
-	`onError` and no `onClose`, where over a WebSocket it ended with both, so
-	code cleaning up in `onClose` ran on one and not the other. Closed by this
-	side, a TCP connection told `onClose` every time `close()` was called,
-	and once more after its peer's close; closing a WebSocket connection its
-	peer had closed threw. And `Reason.Timeout` was never told to anyone: a
-	connect that timed out was `Reason.Error` with the time in its text.
+	So code cleaning up in `onClose` runs on every transport: a TCP connect
+	that fails ends with `onError` and `onClose`, as over a WebSocket. Closed
+	by this side, a connection tells `onClose` once, however many times
+	`close()` is called and whether or not its peer closed first; closing a
+	WebSocket connection its peer has closed does not throw. And a connect
+	that times out is `Reason.Timeout`, not `Reason.Error` with the time in
+	its text.
 **/
 class NetConnectionLifecycleTest extends utest.Test {
 	#if (cpp || java || jvm || eval || nodejs)
@@ -131,8 +131,8 @@ class NetConnectionLifecycleTest extends utest.Test {
 	/**
 		A reliable session's connect not made within its `timeout` is
 		`Reason.Timeout` too. The peer is a datagram socket that takes every
-		CONNECT and answers none. The session's timeout errors carried no
-		`TIMEOUT_ERROR_ID`, so this ended as `Reason.Error` with the time in
+		CONNECT and answers none. The session's timeout errors carry
+		`TIMEOUT_ERROR_ID`, or this would end as `Reason.Error` with the time in
 		its text.
 	**/
 	@:timeout(20000)
@@ -169,9 +169,8 @@ class NetConnectionLifecycleTest extends utest.Test {
 	/**
 		A WebSocket connect not open within its `timeout` is `Reason.Timeout`
 		too. The server takes the TCP connection and never answers the
-		upgrade. The session's deadline errors carried no
-		`TIMEOUT_ERROR_ID`, so this ended as `Reason.Error` with the time in
-		its text.
+		upgrade. The session's deadline errors carry `TIMEOUT_ERROR_ID`, or this
+		would end as `Reason.Error` with the time in its text.
 	**/
 	@:timeout(20000)
 	public function testAWebSocketConnectThatTimesOutIsATimeout(async:Async):Void {
@@ -205,8 +204,8 @@ class NetConnectionLifecycleTest extends utest.Test {
 	#end
 
 	/**
-		A connection closed for a reason, an RPC session's heartbeat that
-		heard nothing closes its connection as `Reason.Timeout`, tells
+		A connection closed for a reason (an RPC session's heartbeat that
+		heard nothing closes its connection as `Reason.Timeout`) tells
 		`onClose` that reason, and a `NetHost` tells `onDisconnect`.
 	**/
 	@:timeout(20000)

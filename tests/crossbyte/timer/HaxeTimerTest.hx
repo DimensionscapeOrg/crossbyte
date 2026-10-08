@@ -9,11 +9,11 @@ import utest.Assert;
 @:access(haxe.Timer)
 class HaxeTimerTest extends utest.Test {
 	// Made while the program's statics are initialized. Natively that is
-	// before main, so before any runtime exists, where a library's static
-	// initializer makes its timers, as hxcpp's debug server does in every
-	// debug build that includes it when no debugger is listening. On the jvm
-	// statics wait for first use, when the harness's runtime is already up,
-	// and this is an ordinary timer.
+	// before main, so before any runtime exists, which is where a library's
+	// static initializer makes its timers, as hxcpp's debug server does in
+	// every debug build that includes it when no debugger is listening. On
+	// the jvm statics wait for first use, when the harness's runtime is
+	// already up, and this is an ordinary timer.
 	static var early:EarlyTimer = new EarlyTimer();
 
 	public function testConstructorStartsTimerImmediately():Void {
@@ -32,10 +32,10 @@ class HaxeTimerTest extends utest.Test {
 	}
 
 	public function testAnIntervalRunsAtTheRateItAskedFor():Void {
-		// It counted tick deltas down and reset to the full interval after
-		// each run, dropping the overshoot, so a period rounded up to whole
-		// ticks: 100ms at 12 ticks a second ran every 167ms, 12 times in two
-		// seconds rather than 20.
+		// The overshoot carries into the next period. Counting tick deltas down
+		// and resetting to the full interval after each run would round a period
+		// up to whole ticks: 100ms at 12 ticks a second would run every 167ms, 12
+		// times in two seconds rather than 20.
 		var runtime = CrossByte.current();
 		var fired = 0;
 		var timer = new HxTimer(100);
@@ -67,8 +67,8 @@ class HaxeTimerTest extends utest.Test {
 	}
 
 	public function testStoppingOneTimerLeavesTheOthersRunning():Void {
-		// Timers were kept in one map by an id that wrapped, so a new timer
-		// could take a live one's id and evict it; there is no such map now.
+		// Timers are not kept in one map by an id that wraps, where a new timer
+		// could take a live one's id and evict it.
 		var runtime = CrossByte.current();
 		var a = 0;
 		var b = 0;

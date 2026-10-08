@@ -10,10 +10,10 @@ import utest.Assert;
 	listening `LocalConnection` does: its client leaves, and the next one
 	lands on the same object.
 
-	The session stayed ended once the first client left. For every client
-	after it, each error answer and each answer given later was dropped,
-	the second worker's refused call never heard it was refused, and the
-	heartbeat stayed off.
+	The session must not stay ended once the first client leaves: for every
+	client after it, each error answer and each answer given later still
+	arrives (a second worker's refused call hears it was refused), and the
+	heartbeat comes back on.
 **/
 class RPCReadyAgainTest extends utest.Test {
 	/**

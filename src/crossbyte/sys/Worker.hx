@@ -6,15 +6,14 @@ package crossbyte.sys;
 
 	What the work sends is delivered through the owning runtime's post queue,
 	which wakes the runtime for it: one post per batch, when the first message
-	of a batch arrives. A worker used to hold a tick listener for as long as it
-	ran and poll its queue every tick, so a message waited for the next tick,
-	up to a whole frame, and every idle tick paid for every running worker.
+	of a batch arrives. A message waits for no tick, and an idle tick costs
+	nothing for a running worker.
 
 	On JavaScript, which has no threads, the work runs on the one thread there
 	is, inside `run()`, holding it for as long as the work takes. What it sends
 	is still delivered in a later turn, in order, as from a thread elsewhere, so
 	a listener added after `run()` hears it and `state` changes as the messages
-	arrive; it was all dispatched inside `run()`.
+	arrive.
 
 	This is `TypedWorker<Dynamic, Dynamic, Dynamic>`. A worker whose messages
 	have known types is a `TypedWorker` of those types.
@@ -24,10 +23,10 @@ class Worker extends TypedWorker<Dynamic, Dynamic, Dynamic> {
 		How many queued messages one worker delivers at a time: every
 		worker, `TypedWorker`s too.
 
-		A worker used to deliver exactly one per tick, so a background job
-		reporting progress drained at the runtime's tick rate, twelve a second
-		under the default `tps`, however often the host pumped, and a job that
-		reported faster than that fell further behind the longer it ran.
+		One a tick would drain a background job's progress at the runtime's
+		tick rate (twelve a second under the default `tps`, however often the
+		host pumps), and a job that reported faster than that would fall
+		further behind the longer it ran.
 
 		Delivery is bounded rather than unbounded so that one talkative worker
 		cannot hold the loop in one go: past the bound, the rest are delivered

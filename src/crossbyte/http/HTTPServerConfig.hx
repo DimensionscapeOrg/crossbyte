@@ -37,14 +37,12 @@ class HTTPServerConfig {
 	/**
 		Bytes a request body may reach, on the wire and once decoded, over
 		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
-		Large`, as soon as a `Content-Length` says so, before any of the body
-		is read, on either protocol; over HTTP/2 it was found only once that
-		much had arrived. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+		Large` as soon as a `Content-Length` says so, before any of the body
+		is read, on either protocol. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
 
-		The limit used to be fixed at a megabyte that counted the request's
-		headers too, and a `Content-Length` past it was answered `400`, which
-		tells a client its request was malformed rather than too big. Raise it
-		for uploads; the whole body is held in memory before middleware runs.
+		The limit counts the body alone; the header block has its own. Raise
+		it for uploads; the whole body is held in memory before middleware
+		runs.
 		An HTTP/1.1 connection reads one request at a time, so it holds one
 		such body; an HTTP/2 connection carries many at once, and
 		`http2MaxRequestBodyBuffer` is what all of them may hold together.
@@ -59,12 +57,12 @@ class HTTPServerConfig {
 		server takes always fits.
 
 		HTTP/1.1 reads one request at a time, so a connection holds one body.
-		HTTP/2 carries up to 128 requests at once, and each body was let grow
-		to `maxRequestBodySize`: a client uploading slowly on every stream made
-		the server hold 128 of them, 128 MB at the defaults, from one
-		connection, and with `requestTimeout` at `0` for as long as it liked.
-		Nothing checked that a client kept to its flow-control windows either,
-		so one that ignored them sent whatever it pleased.
+		HTTP/2 carries up to 128 requests at once, and with each body allowed
+		to grow to `maxRequestBodySize`, a client uploading slowly on every
+		stream would make the server hold 128 of them (128 MB at the
+		defaults, from one connection, and with `requestTimeout` at `0` for
+		as long as it liked), and a client ignoring its flow-control windows
+		could send whatever it pleased.
 
 		Held to it with HTTP/2's own flow control. The server opens its
 		windows only as far as this has room, so a client that keeps to them
@@ -72,28 +70,26 @@ class HTTPServerConfig {
 		`FLOW_CONTROL_ERROR`. The room goes to the oldest stream first. Every
 		stream may send its first window unasked, so that window is made
 		small enough for all 128 streams' to fit with one whole body besides:
-		the largest of 64, 32 or 16 KB that does, 16 KB at the defaults,
-		and 64 KB, the protocol's own, from about 9 MB up with the default
-		`maxRequestBodySize`. Past it, a stream's
-		window is opened as its HEADERS arrive, from what is left once those
-		first windows and every older stream's remaining body, its
-		`Content-Length`, or else `maxRequestBodySize`, are set aside, up
-		to a megabyte at a time. Uploads that fit together go together; ones
+		the largest of 64, 32 or 16 KB that does (16 KB at the defaults, and
+		64 KB, the protocol's own, from about 9 MB up with the default
+		`maxRequestBodySize`). Past it, a stream's window is opened as its
+		HEADERS arrive, from what is left once those first windows and every
+		older stream's remaining body (its `Content-Length`, or else
+		`maxRequestBodySize`) are set aside, up to a megabyte at a time.
+		Uploads that fit together go together; ones
 		that do not go a few at a time, the rest waiting for window, and
 		none is turned away for it. What a client sees:
 
 		- a body larger than the first window waits a round trip for the
-		  rest of its window; one between 16 and 64 KB used not to, and one
-		  past 64 KB waited one per 64 KB, where now it waits one per
-		  megabyte;
+		  rest of its window, and then one round trip per megabyte;
 		- a stream waits for window while the bodies ahead of it arrive, its
 		  `requestTimeout` still counted from its HEADERS. One left waiting
 		  with no body arriving and none finished on its connection for 30
 		  seconds is reset with `REFUSED_STREAM`, which tells the client the
 		  request was not processed and may be sent again;
 		- the header sections of requests whose bodies are still to come are
-		  held to a quarter of this, a megabyte at the default, by HPACK's
-		  count of them, since flow control cannot hold a HEADERS back and
+		  held to a quarter of this (a megabyte at the default, by HPACK's
+		  count of them), since flow control cannot hold a HEADERS back and
 		  HPACK makes a large one cheap to send. A stream whose section would
 		  go past it is reset with `REFUSED_STREAM` the same way;
 		- nothing is answered `413` for it: that is `maxRequestBodySize`'s.
@@ -115,15 +111,12 @@ class HTTPServerConfig {
 	/**
 		Bytes of small static files kept in memory, so a file read once is
 		served from memory while its size and modification time stay as they
-		were, they are read on every request, which is how a change is seen.
+		were (they are read on every request, which is how a change is seen).
 		Defaults to 16 MB; `0` keeps nothing. Files over 256 KB, which are
 		streamed from disk, are not kept, and neither is a file modified in the
 		last two seconds: a modification time is often whole seconds, so a
 		file written twice within one, at the same size, would otherwise be
 		served as it first was.
-
-		Every request for a static file read it from disk again: an open, a
-		read and a close on the runtime's thread.
 	**/
 	public var fileCacheSize(default, set):Int = 16 * 1024 * 1024;
 
@@ -139,19 +132,16 @@ class HTTPServerConfig {
 	/**
 		Asked, with the request's method, path and headers, whether a request
 		carrying `Expect: 100-continue` may send its body. Return `true` to let
-		it; to refuse, answer with `handler.respond()`, a `401`, say, and
+		it; to refuse, answer with `handler.respond()` (a `401`, say) and
 		return `false`. A `false` with no answer is answered `417`.
 
-		This is the moment authentication belongs in for such a request. The
-		server told every client to go ahead before any middleware had seen the
-		request, so an unauthenticated upload was invited and read in full
-		before it could be refused. Left `null`, a request within
-		`maxRequestBodySize` is told to go ahead, as before.
+		This is the moment authentication belongs in for such a request: an
+		unauthenticated upload is refused before it is sent. Left `null`, a
+		request within `maxRequestBodySize` is told to go ahead.
 
 		Over HTTP/2 too, when the request's headers arrive: a refusal answers
 		its stream and resets it, which asks the client not to send the body,
-		and going ahead sends an interim `100`. It used not to be asked of an
-		HTTP/2 request at all.
+		and going ahead sends an interim `100`.
 	**/
 	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
 
@@ -161,11 +151,11 @@ class HTTPServerConfig {
 
 		Set it to `0.0.0.0` (or one interface's address) to serve other
 		machines, which a deployed server, and any server in a container,
-		needs. It used to default to `0.0.0.0`. The two mistakes are not alike:
-		a server that should be public and is not fails its first request from
-		outside, loudly, and is one line from fixed, while a development server
-		or an admin endpoint that should be private and is not keeps working
-		and shows nothing wrong.
+		needs. The default is the safer of the two mistakes: a server that
+		should be public and is not fails its first request from outside,
+		loudly, and is one line from fixed, while a development server or an
+		admin endpoint that should be private and is not keeps working and
+		shows nothing wrong.
 	**/
 	public var address:String;
 	public var port:UInt;
@@ -177,12 +167,10 @@ class HTTPServerConfig {
 		`404 Not Found` without the filesystem being consulted, which is what
 		a server that only has routes wants.
 
-		It used to default to `File.applicationStorageDirectory`: the account's
-		home directory on Linux and macOS, `%APPDATA%` on Windows. A server that
-		only had routes, and never set a root, answered every other path from
-		there, on every interface: `GET /.ssh/id_rsa` returned the key, and the
-		files `Store` keeps under the same directory, sessions among them,
-		were one guessable path away. Name the directory to serve:
+		Nothing is served by default, so a server with only routes does not
+		answer other paths from an account's home or storage directory
+		(`GET /.ssh/id_rsa`, or the files `Store` keeps). Name the directory
+		to serve:
 
 		```haxe
 		config.rootDirectory = new File("/srv/www");
@@ -204,8 +192,8 @@ class HTTPServerConfig {
 		a file that is not there, so the answer does not confirm it exists.
 
 		`/.well-known/` is served either way. RFC 8615 reserves it for exactly
-		the files a site is meant to publish, an ACME challenge, a
-		`security.txt`: and refusing it would break certificate renewal.
+		the files a site is meant to publish (an ACME challenge, a
+		`security.txt`), and refusing it would break certificate renewal.
 
 		This decides static files only. Middleware and routes see every path.
 	**/
@@ -225,8 +213,6 @@ class HTTPServerConfig {
 		Its `Content-Type` is the one its extension names, as for any file
 		served. It is read when first needed and kept, so a change to it is
 		seen after a restart, and `validate` refuses one that is not there.
-
-		It used to be accepted and kept and never read.
 	**/
 	public var errorDocument:File;
 
@@ -250,11 +236,10 @@ class HTTPServerConfig {
 
 		Each entry is a file's `File.nativePath`, compared whole, so build it
 		from the root: `config.rootDirectory.resolvePath("admin.php").nativePath`.
-		It is checked against the file a request resolves to, the one it
-		names, a directory's index, or a rewrite's target, for every method,
+		It is checked against the file a request resolves to (the one it
+		names, a directory's index, or a rewrite's target) for every method,
 		so a blacklisted script is refused to a `POST`, and to a rewrite with
-		the `PHP` flag, as it is to a `GET`. It used to be checked for a static
-		`GET` or `HEAD` alone, and the script ran for the rest.
+		the `PHP` flag, as it is to a `GET`.
 
 		This decides what the filesystem answers with. Middleware and routes
 		run first and see every path.
@@ -267,37 +252,35 @@ class HTTPServerConfig {
 		Called when a middleware or route throws, or passes an error to
 		`next()`, with the request and what was thrown or passed.
 
-		The hook may answer the request itself, a JSON error body, say,
+		The hook may answer the request itself (a JSON error body, say)
 		with `handler.respond()`, and must do so before it returns. If it does
 		not, the server answers `500`, or the status an `Int` error names; the
 		client is told the status and never the error's text. A response
 		whose head has already gone out, cut short by a write that threw, is
 		answered by neither: no status can follow a head, so the response is
-		given up, the connection closed under HTTP/1.1, the stream reset
-		under HTTP/2, which the client can tell from the length it was
+		given up (the connection closed under HTTP/1.1, the stream reset
+		under HTTP/2), which the client can tell from the length it was
 		promised.
 
-		What the server's own handling throws before any middleware runs,
-		the rate limiter's key, say, or on a server with no middleware, is
+		What the server's own handling throws before any middleware runs (the
+		rate limiter's key, say), or on a server with no middleware, is
 		answered `500` without the hook, over either protocol.
 
 		Whatever it does, an error that is not an `Int` is first logged at
 		ERROR with the method, the path and, where the target keeps one, the
-		stack. It used not to be logged at all: a route that threw a database
-		error left only an INFO line saying `Status: 500`.
+		stack.
 	**/
 	public var onError:(handler:HTTPRequestHandler, error:Dynamic) -> Void = null;
 	/**
 		Refuses a request with `429` once its client has spent its budget,
 		saying in `Retry-After` how many seconds until it may try again.
 
-		Keyed by `rateLimitKey`, the client's address unless that says
-		otherwise, and consulted for **every** request, not every connection.
+		Keyed by `rateLimitKey` (the client's address unless that says
+		otherwise), and consulted for **every** request, not every connection.
 		Leaving it out of the constructor does not leave the server unlimited:
 		one is fitted, allowing `DEFAULT_REQUESTS_PER_MINUTE`, which is a
 		visitor's page load with room to spare rather than `RateLimiter`'s own
-		default of ten, ten is smaller than one page, and a document with
-		eleven assets used to come back as ten served and two refused.
+		default of ten, which is smaller than one page.
 
 		Pass a limiter of your own to say something different.
 
@@ -318,8 +301,8 @@ class HTTPServerConfig {
 
 		Unset, a request is keyed by `RateLimiter.addressKey(remoteAddress)`: an
 		IPv4 address as it is and an IPv6 one by its /64, which is what one
-		subscriber is given. Keyed on the whole address, a client stepping
-		through its own /64 had a fresh budget for every request.
+		subscriber is given, so a client stepping through its own /64 does
+		not get a fresh budget for every request.
 
 		Behind a proxy every request arrives from the proxy's address, so key on
 		the address it forwards, but only when the request did come through
@@ -340,7 +323,7 @@ class HTTPServerConfig {
 
 	/**
 		Origins a cross-origin page may read responses from, such as
-		`https://app.example.com`, or `["*"]`, the default, for any.
+		`https://app.example.com`, or `["*"]` (the default) for any.
 
 		`"*"` is answered as `*`, never by echoing the request's `Origin`, and
 		cannot be combined with `corsAllowCredentials`: `validate` refuses the
@@ -365,11 +348,10 @@ class HTTPServerConfig {
 		Connections the server holds at once. Past it, a new connection is
 		closed as it is accepted, and logged. Defaults to 10,000.
 
-		A held connection costs a few kilobytes, under 2 KB for a bare one,
-		around 6 KB as a WebSocket, measured on native, so the default is
-		tens of megabytes at most. It was 256, which refused the 257th
-		connection: a few dozen browser users reach that, at six connections
-		each.
+		A held connection costs a few kilobytes (under 2 KB for a bare one,
+		around 6 KB as a WebSocket, measured on native), so the default is
+		tens of megabytes at most, while a few dozen browser users at six
+		connections each come nowhere near it.
 	**/
 	public var maxConnections:Int;
 	public var backlog:Int;
@@ -379,15 +361,15 @@ class HTTPServerConfig {
 		uses more than one core; `null`, the default, serves them all on the
 		runtime that makes the server. See `ServerSocket.runtimes`, which this
 		sets as the server starts: the listener stays on its runtime, and
-		each connection it accepts is handed to one of these, where all of it,
-		its TLS handshake, its requests, HTTP/1.1 or HTTP/2, its timeouts,
+		each connection it accepts is handed to one of these, where all of it
+		(its TLS handshake, its requests, HTTP/1.1 or HTTP/2, its timeouts)
 		is served for its whole life. Make them with
 		`CrossByte.make(POLL)`, or set `runtimeCount` instead.
 
 		Every runtime then runs the code this configuration names, at once:
 		`middleware`, routes, `onError`, `onExpectContinue` and `rateLimitKey`
 		are called on whichever runtime holds the request, so what they share
-		between requests, a cache, a session table, a connection pool,
+		between requests (a cache, a session table, a connection pool)
 		must be thread-safe, or kept per runtime (`CrossByte.current()` says
 		which). A `Router` is read-only once its routes are added, and is
 		safe to share once they are. What the server itself shares is made
@@ -430,14 +412,13 @@ class HTTPServerConfig {
 		Seconds a single PHP request may take before the server gives up on it
 		and answers `504 Gateway Timeout`. `0` disables the deadline.
 
-		Defaults to 30. There was no deadline at all before, and no socket
-		timeout either, so a php-fpm that accepted a connection and then said
-		nothing held the runtime for as long as it liked. That is not one slow
-		request: a CrossByte runtime serves all of its connections from one
-		tick, so an unresponsive backend stopped the server for every client
-		at once and stayed stopped.
+		Defaults to 30. Without a deadline, a php-fpm that accepted a
+		connection and then said nothing would hold the runtime for as long
+		as it liked, and since a CrossByte runtime serves all of its
+		connections from one tick, an unresponsive backend would stop the
+		server for every client at once.
 
-		Note that `requestTimeout` does not cover this window, it stops the
+		Note that `requestTimeout` does not cover this window: it stops the
 		moment a request has been read, on the principle that the time a
 		response takes is the server's own. This is that principle's other
 		half: the server's own time still has a limit.
@@ -445,16 +426,16 @@ class HTTPServerConfig {
 	public var phpTimeout:Float;
 
 	/**
-		The most bytes a PHP script's response may take, its CGI header
-		block and its body together, as the script writes them, before the
+		The most bytes a PHP script's response may take (its CGI header
+		block and its body together, as the script writes them) before the
 		server gives up on it and answers `502 Bad Gateway`. Defaults to
 		8 MiB; `0` or less removes the limit. Raise it for a script that
 		serves larger files, or serve those files as static ones.
 
-		Nothing bounded a response, which the server holds whole before it
-		answers, twice over for a moment as the body is taken from it,
-		so a script, or a backend that is not running PHP at all, chose how
-		much of the server's memory each request took.
+		Without it, a script, or a backend that is not running PHP at all,
+		would choose how much of the server's memory each request takes: a
+		response is held whole before it is answered, twice over for a
+		moment as the body is taken from it.
 
 		The header block has limits of its own whatever this says: 64 KiB
 		and 100 lines, past which the response fails the same way.
@@ -467,10 +448,10 @@ class HTTPServerConfig {
 		removes the limit.
 
 		More wait their turn, in the order they came, each still under
-		`phpTimeout`: `504 Gateway Timeout` if it passes while waiting,
-		and past 1,024 waiting a request is refused at once: the PHP bridge
-		fails it as busy. Nothing bounded them: every request for a script
-		opened its own connection to the backend however many were already
+		`phpTimeout` (`504 Gateway Timeout` if it passes while waiting), and
+		past 1,024 waiting a request is refused at once: the PHP bridge
+		fails it as busy. Without the limit every request for a script would
+		open its own connection to the backend however many were already
 		waiting on it, and the `php-cgi -b` that `phpMode` 1 launches answers
 		one at a time.
 	**/
@@ -481,7 +462,7 @@ class HTTPServerConfig {
 
 		The order the server actually follows is fixed at the front and only
 		free at the back, so the list is required to be spelled the way it
-		runs, see `validate`, which rejects anything else rather than
+		runs: see `validate`, which rejects anything else rather than
 		silently reordering it:
 
 		1. `$uri`: the request path as a file
@@ -499,24 +480,22 @@ class HTTPServerConfig {
 		is tried in its place even then, so to have a rule win over a file
 		that exists, give it a `FileExists` condition without `negate`: it
 		then applies to exactly the requests that name an existing file.
-		(This doc used to say `negate` set, which asks the opposite, and no
-		rule could win over an existing file at all.) It is not nginx's
-		model, where `try_files` runs after the rewrite phase in the order
-		written.
+		It is not nginx's model, where `try_files` runs after the rewrite
+		phase in the order written.
 
 		Defaults to `["$uri", "$uri/"]`: the request path as a file, then as a
 		directory to be resolved to its index. A path matching neither answers
 		404.
 
-		It used to end with `"/index.html"` as well, a single-page application
-		fallback, on for every server whether or not it served an application.
-		The two failure modes are not comparable. An SPA that wanted the
-		fallback and does not have it breaks on the first refresh of a deep
-		link, which is loud, immediate, and one entry from fixed. A static site
-		that did not want it and had it answers **200 with the root index for
-		every path that does not exist**: a broken link looks alive to a
-		crawler, a monitor sees a healthy page, and a cache stores the wrong
-		body under the missing URL. Silent, and indistinguishable from working.
+		It does not end with `"/index.html"`, a single-page application
+		fallback, by default. The two failure modes are not comparable. An
+		SPA that wants the fallback and does not have it breaks on the first
+		refresh of a deep link, which is loud, immediate, and one entry from
+		fixed. A static site that does not want it and has it answers **200
+		with the root index for every path that does not exist**: a broken
+		link looks alive to a crawler, a monitor sees a healthy page, and a
+		cache stores the wrong body under the missing URL. Silent, and
+		indistinguishable from working.
 
 		Add `"/index.html"` back as a final entry for an SPA:
 
@@ -526,37 +505,33 @@ class HTTPServerConfig {
 
 		In an entry after the first two, `$uri` is the request path, so
 		`"$uri.html"` serves `/about` from `about.html`, the way clean URLs
-		are served. It was looked for as a file named `$uri.html`.
+		are served.
 	**/
 	public var tryFiles:Array<String>;
 
 	/**
 		Rewrite rules, applied in order to a request that names no existing
 		file or directory index. One that does is tried only against the rules
-		that ask about files, a `FileExists` or `DirExists` condition, and
+		that ask about files (a `FileExists` or `DirExists` condition), and
 		served its file when none of them applies; see `tryFiles`.
 
 		Empty by default. A rule carrying the `PHP` flag needs `phpEnabled`,
-		and the two shipped out of step until 1.0.0-rc.2: the defaults rewrote
-		every `/api` path to `/index.php` while PHP defaulted to off, so a
-		stock server took a null bridge and segfaulted on a request path a
-		great many services use. Nothing here is enabled unless it is asked
-		for now, and a `PHP` rewrite without a bridge answers 500 rather than
-		reaching one.
+		and a `PHP` rewrite without a bridge answers 500 rather than reaching
+		one.
 	**/
 	public var rewrites:Array<RewriteRule>;
 
 	/**
-		Seconds a request has to arrive in full, request line, headers and
-		body together. `0` disables the deadline. Defaults to 60.
+		Seconds a request has to arrive in full (request line, headers and
+		body together). `0` disables the deadline. Defaults to 60.
 
 		The rate limiter cannot cover this window: it runs once a complete
-		header block exists, so a client trickling one byte at a time was
-		never rate limited and held a connection slot for as long as it
-		cared to. Tying up every one of `maxConnections` slots this way cost
-		an attacker almost nothing. A connection
-		that misses the deadline is answered with `408 Request Timeout`
-		and closed.
+		header block exists, so without the deadline a client trickling one
+		byte at a time would never be rate limited and would hold a
+		connection slot for as long as it cared to, and tying up every one of
+		`maxConnections` slots this way would cost an attacker almost
+		nothing. A connection that misses the deadline is answered with
+		`408 Request Timeout` and closed.
 
 		Over HTTP/2 each request has its own deadline, counted from its
 		HEADERS, and nothing sent after them moves it: a request whose body
@@ -570,14 +545,11 @@ class HTTPServerConfig {
 
 		Neither this at `0` nor `keepAliveTimeout` at `0` lifts the deadline
 		a response keeps of its own while it goes out: one whose client takes
-		none of it for 30 seconds is given up, a file the server sends in
+		none of it for 30 seconds is given up (a file the server sends in
 		bursts, a body written whole and waiting on an HTTP/2 stream's window,
-		or bytes in a socket its client stopped reading, the connection
+		or bytes in a socket its client stopped reading), the connection
 		closed under HTTP/1.1, and under HTTP/2 the stream reset, or the
-		connection closed when its own window is what holds them. With both at
-		`0` that deadline went unchecked for a file, and a body written whole
-		had none at all: a client that stopped reading held either, and its
-		connection, for good.
+		connection closed when its own window is what holds them.
 	**/
 	public var requestTimeout:Float;
 
@@ -587,8 +559,8 @@ class HTTPServerConfig {
 		Opt-in but not exclusive: each connection is served as whichever
 		version it turns out to be speaking. Over TLS that is settled by ALPN,
 		which the listener advertises as `h2` and `http/1.1`. Over cleartext
-		there is nothing to negotiate, RFC 9113 3.1 retired the
-		`Upgrade: h2c` handshake, leaving prior knowledge, so the first bytes
+		there is nothing to negotiate (RFC 9113 3.1 retired the
+		`Upgrade: h2c` handshake, leaving prior knowledge), so the first bytes
 		decide: an HTTP/2 client opens with a connection preface no HTTP/1.1
 		client would send.
 
@@ -633,20 +605,18 @@ class HTTPServerConfig {
 		Whether one connection may carry more than one request.
 
 		Off, every response ends its connection, so every request pays TCP
-		setup, and a full TLS handshake when `tlsEnabled` is set, to be
+		setup (and a full TLS handshake when `tlsEnabled` is set) to be
 		answered: a page, its stylesheet and its favicon are three
 		handshakes. On, a response whose framing allows it leaves the
 		connection open for the next request, which is what HTTP/1.1
 		specifies and what every client already expects. Defaults to
-		`true`; `false` restores the one-shot close-per-request behavior
-		exactly.
+		`true`; `false` closes each connection after its one response.
 
 		Off, an HTTP/2 connection ends at its first stream, as
 		`keepAliveMaxRequests` describes with a limit of one: streams the
 		client sent with it are answered too, one opened after it has said it
-		read the GOAWAY is refused with `REFUSED_STREAM`, safe to send again
-		elsewhere, and the connection closes once they have been answered.
-		It used to make no difference to HTTP/2 at all.
+		read the GOAWAY is refused with `REFUSED_STREAM` (safe to send again
+		elsewhere), and the connection closes once they have been answered.
 	**/
 	public var keepAlive:Bool;
 
@@ -664,16 +634,16 @@ class HTTPServerConfig {
 		`requestTimeout`, so precision is roughly a quarter second.
 
 		A connection is idle from when its last response has gone to the
-		client, not from when it was written: counted from then, a response
-		larger than the system takes at once, to a client slower to read it
-		than this, was cut off as though the connection sat idle. One with
+		client, not from when it was written, so a response larger than the
+		system takes at once, to a client slower to read it than this, is not
+		cut off as though the connection sat idle. One with
 		`Connection: close`, and one `HTTPServer.drain` closes, likewise close
-		once what they sent has gone, where it was thrown away.
+		once what they sent has gone.
 
 		An HTTP/2 connection is idle while it has no stream open, counted
 		from when its last one ended. Its PINGs, SETTINGS and WINDOW_UPDATEs
-		ask nothing of the server and do not count: they used to, so a client
-		sending only PINGs held a connection for as long as it liked.
+		ask nothing of the server and do not count, so a client sending only
+		PINGs cannot hold a connection open.
 	**/
 	public var keepAliveTimeout:Float;
 
@@ -681,8 +651,8 @@ class HTTPServerConfig {
 		Responses one connection may carry before the server closes it.
 		Defaults to 1,000, as nginx's does; `0` and below means unlimited.
 
-		Bounds how long any single connection's accumulated state, peer
-		buffers, handler bookkeeping, can live, and gives a server behind
+		Bounds how long any single connection's accumulated state (peer
+		buffers, handler bookkeeping) can live, and gives a server behind
 		a load balancer a periodic chance to rebalance. A limit of 1,000
 		yields exactly 1,000 responses, the 1,000th carrying
 		`Connection: close`.
@@ -695,14 +665,14 @@ class HTTPServerConfig {
 		taken, one opened after that is refused with `REFUSED_STREAM`, and
 		the connection closes once the streams it took have been answered.
 		A client that never answers the PING has the final GOAWAY two seconds
-		on. HTTP/2 used to take no notice of the limit, and then named the
-		last stream in its only GOAWAY, so the streams a busy client had in
-		flight were refused: 42 of 12,001 from eight concurrent clients.
+		on. So the streams a busy client has in flight are answered, rather
+		than refused as a GOAWAY naming the last stream at once would refuse
+		them.
 
 		Each close costs the client a new connection, and over HTTPS a new
-		handshake. It defaulted to 100, and a native HTTPS server with 64
-		clients spent two thirds of its time on those handshakes: 18,900
-		requests a second, where 1,000 serves 55,800.
+		handshake: at 100, a native HTTPS server with 64 clients spends two
+		thirds of its time on those handshakes, 18,900 requests a second
+		where 1,000 serves 55,800.
 	**/
 	public var keepAliveMaxRequests:Int;
 
@@ -711,8 +681,8 @@ class HTTPServerConfig {
 		connection before `outputOverflowPolicy` applies, or `0` for no
 		limit.
 
-		A client that stops reading mid-response, a dropped mobile
-		connection, a stalled proxy, leaves its response buffered in
+		A client that stops reading mid-response (a dropped mobile
+		connection, a stalled proxy) leaves its response buffered in
 		memory with nothing to reclaim it. Setting a limit bounds that per
 		connection, which matters most on a server holding many at once.
 
@@ -721,26 +691,25 @@ class HTTPServerConfig {
 
 		`DEFAULT_MAX_OUTPUT_BUFFER` by default, which no ordinary response comes
 		near. A file over 256 KB streams, and streaming peaks at the watermark
-		plus one slice, 320 KB, while a file under that is buffered whole and
+		plus one slice (320 KB), while a file under that is buffered whole and
 		so is smaller again. What is left above the default is a peer that
 		stopped reading, and a response an application built in one call that is
 		larger than any file this server would have buffered.
 
-		`0` restores the old behaviour of no limit at all, which bounds nothing:
+		`0` means no limit at all, which bounds nothing:
 		a client that stops reading mid-response then holds its whole response in
 		memory for as long as it likes, and many of them hold many.
 
 		Over HTTP/2 the limit is the connection's, across its streams: what
 		flow control holds back on each stream counts with what the socket
 		holds. While a connection holds this much, the requests it sends next
-		wait to be handed to the application, as an HTTP/1.1 connection's
-		next request waits behind the response going out, and go on, in the
+		wait to be handed to the application (as an HTTP/1.1 connection's
+		next request waits behind the response going out) and go on, in the
 		order they came, as its client takes what is held. They wait rather
 		than being refused: `REFUSED_STREAM` would turn a slow reader's page
-		into errors and retries. Each stream's response used to wait whole on
-		its client's window, up to this much apiece, so a client that opened
-		128 streams and no window held 128 times this, a gigabyte at the
-		default. An answer an application gives later, to a request it was
+		into errors and retries. A client that opens 128 streams and no
+		window holds this much, not 128 times it. An answer an application
+		gives later, to a request it was
 		handed before the connection filled, is held as well; what bounds that
 		is the stall deadline (see `requestTimeout`).
 	**/
@@ -775,7 +744,7 @@ class HTTPServerConfig {
 	/**
 		Path to the PEM certificate chain this server presents. Set together
 		with `tlsKeyPath` to serve HTTPS; `validate` refuses one without the
-		other, which used to be served as plain HTTP.
+		other.
 	**/
 	public var tlsCertificatePath:String;
 
@@ -846,8 +815,8 @@ class HTTPServerConfig {
 		Checked:
 
 		- the shape of `tryFiles`, below;
-		- that nothing which resolves files under `rootDirectory`, PHP,
-		  `rewrites`, `tryFiles` entries past the first two, is asked for
+		- that nothing which resolves files under `rootDirectory` (PHP,
+		  `rewrites`, `tryFiles` entries past the first two) is asked for
 		  without one;
 		- that `corsAllowCredentials` is not paired with an
 		  `corsAllowedOrigins` of `"*"`;
@@ -856,18 +825,17 @@ class HTTPServerConfig {
 		  at all.
 
 		`$uri` and `$uri/` are
-		tested by the resolver before it reads this list at all, before the
+		tested by the resolver before it reads this list at all (before the
 		rewrite rules look at the request, and whether or not the list
-		mentions them, so any spelling other than those two first describes
+		mentions them), so any spelling other than those two first describes
 		something that does not happen. Listing a literal ahead of them does not give it priority;
 		leaving them out does not switch direct file serving off, which is the
 		reading most likely to be mistaken for a restriction.
 
 		Refusing at construction rather than warning is deliberate. The list
 		decides which bytes a request is answered with, a config that quietly
-		means something other than it says is how the `/api` default came to
-		crash a stock server, and the correction is to write the two entries
-		out.
+		means something other than it says is worse than one refused, and the
+		correction is to write the two entries out.
 	**/
 	public function validate():Void {
 		if (tryFiles == null || tryFiles.length < 2 || tryFiles[0] != "$uri" || tryFiles[1] != "$uri/") {
@@ -911,9 +879,9 @@ class HTTPServerConfig {
 			throw new ArgumentError("errorDocument " + errorDocument.nativePath + " is not a file that is there.");
 		}
 
-		// One path without the other is not HTTPS, so tlsEnabled is false, and
-		// the server listened in plaintext for a caller who had asked for
-		// HTTPS: a key variable misspelt was an unencrypted server.
+		// One path without the other is not HTTPS, so tlsEnabled would be
+		// false, and the server would listen in plaintext for a caller who
+		// asked for HTTPS.
 		var certificate:Bool = tlsCertificatePath != null && tlsCertificatePath != "";
 		var key:Bool = tlsKeyPath != null && tlsKeyPath != "";
 		if (certificate != key) {
@@ -926,7 +894,7 @@ class HTTPServerConfig {
 
 /**
 	A middleware: given the request and `next`, it answers the request, or
-	calls `next()` to pass it on, or `next(error)` to fail it, an `Int` is
+	calls `next()` to pass it on, or `next(error)` to fail it: an `Int` is
 	the status to answer with, anything else answers `500` (see
 	`HTTPServerConfig.onError`). The error is `Any`, as a thrown value is.
 **/

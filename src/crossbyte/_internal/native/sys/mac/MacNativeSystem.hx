@@ -4,12 +4,12 @@ package crossbyte._internal.native.sys.mac;
  * System queries for macOS.
  *
  * The processor count comes from the POSIX call, the same one the Linux build
- * uses, `_SC_NPROCESSORS_ONLN` counts the cores currently online, which is
+ * uses: `_SC_NPROCESSORS_ONLN` counts the cores currently online, which is
  * what a caller sizing a pool wants.
  *
  * Affinity does not, because macOS does not have it. There is no
  * `sched_setaffinity`, and the nearest thing, `thread_policy_set` with
- * `THREAD_AFFINITY_POLICY`: is not the same feature: it is a hint rather
+ * `THREAD_AFFINITY_POLICY`, is not the same feature: it is a hint rather
  * than a binding, it is scoped to one thread rather than the process, and it
  * returns `KERN_NOT_SUPPORTED` on Apple silicon. Reporting an empty mask says
  * "this platform cannot answer", which is true; returning a mask the scheduler

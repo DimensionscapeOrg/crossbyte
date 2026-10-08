@@ -136,10 +136,9 @@ class Rendezvous {
 		var total:Int = __nodes.length;
 		var limit:Int = count < total ? count : total;
 
-		// The best `limit` so far, best first, where each is in the
-		// membership, and its score, kept by insertion: a look at the worst
-		// of them for most nodes. Every node was made an anonymous structure
-		// and all of them sorted, by a closure reading each by name.
+		// The best `limit` so far, best first (where each is in the
+		// membership, and its score), kept by insertion: a look at the worst
+		// of them for most nodes, with nothing made per node and no sort.
 		var bestAt:Array<Int> = [];
 		var bestScore:Array<Int> = [];
 		var held:Int = 0;
@@ -237,7 +236,7 @@ class Rendezvous {
 		The mixing has to be strong, not merely deterministic. An xorshift
 		over the two hashes is a permutation with weak avalanche, and a
 		permutation of a XOR is not enough to decorrelate the scores: with
-		eight nodes it gave one of them twice its share of the keys and two
+		eight nodes it gives one of them twice its share of the keys and two
 		others half, which is a cluster with a hot node in it.
 
 		This is murmur3's finalizer, which avalanches properly.

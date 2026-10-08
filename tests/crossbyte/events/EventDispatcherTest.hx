@@ -19,8 +19,8 @@ class EventDispatcherTest extends utest.Test {
 		Assert.same(["first", "second", "third"], order);
 		Assert.same(["listener bug"], dispatcher.failures);
 
-		// The ordinary dispatch is unchanged: a component dispatching its own
-		// events still hears that a listener failed.
+		// The ordinary dispatch: a component dispatching its own events still
+		// hears that a listener failed.
 		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")));
 	}
 
@@ -38,9 +38,9 @@ class EventDispatcherTest extends utest.Test {
 	}
 
 	/**
-		What the doc says `priority` is: an ordering, not the insertion index
-		it used to call it. Ties run in the order added, a negative priority
-		runs after the default, and a large one is not clamped to anything.
+		What the doc says `priority` is: an ordering, not an insertion index.
+		Ties run in the order added, a negative priority runs after the default,
+		and a large one is not clamped to anything.
 	**/
 	public function testEqualPrioritiesRunInTheOrderAddedAndNegativesRunLast():Void {
 		var dispatcher = new EventDispatcher();
@@ -112,10 +112,10 @@ class EventDispatcherTest extends utest.Test {
 	}
 
 	public function testOutsideADispatchTheListIsChangedWhereItIs():Void {
-		// Every add and every remove copied the whole list, dispatching or
-		// not, so n connections or tasks each attaching a listener cost n^2
-		// to attach and again to detach. Only a list a dispatch is walking
-		// needs replacing.
+		// Only a list a dispatch is walking needs replacing. Copying the whole
+		// list on every add and every remove, dispatching or not, would make n
+		// connections or tasks each attaching a listener cost n^2 to attach and
+		// again to detach.
 		var dispatcher = new EventDispatcher();
 		var first = (_:Event) -> {};
 		var second = (_:Event) -> {};
@@ -185,10 +185,10 @@ class EventDispatcherTest extends utest.Test {
 	}
 
 	public function testAListenerThatThrowsOutOfADispatchLeavesTheDispatcherCorrect():Void {
-		// A listener's failure leaves dispatchEvent with the walk over: the
-		// walk count stayed raised, so from then on every add and remove
-		// copied the dispatcher's listener array, still right, but each
-		// change paid for every listener, forever, after one throw.
+		// A listener's failure leaves dispatchEvent with the walk over and the
+		// walk count lowered. Left raised, it would make every later add and
+		// remove copy the dispatcher's listener array: still right, but each
+		// change paying for every listener, forever, after one throw.
 		var dispatcher = new EventDispatcher();
 		var calls:Array<String> = [];
 		var failing = true;
@@ -229,8 +229,8 @@ class EventDispatcherTest extends utest.Test {
 	public function testABoundMethodIsRemovedByAFreshReadOfIt():Void {
 		// `removeEventListener(type, this.onTick)` reads the method again. On
 		// eval and the jvm every read is a new closure that `==` never matches,
-		// so the listener stayed attached for good: a closed socket or a
-		// stopped timer went on being called.
+		// so compared that way the listener would stay attached for good: a
+		// closed socket or a stopped timer would go on being called.
 		var dispatcher = new EventDispatcher();
 		var subscriber = new MethodSubscriber();
 		dispatcher.addEventListener("demo", subscriber.handle);

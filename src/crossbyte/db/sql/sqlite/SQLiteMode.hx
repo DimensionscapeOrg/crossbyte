@@ -13,8 +13,8 @@ enum abstract SQLiteMode(String) from String to SQLiteMode {
 	/**
 		To read only. The file must exist, and a statement that would change
 		the database fails with an `SQLError`. The limit is SQLite's
-		`query_only`, set as the connection opens, hxcpp's glue opens every
-		file to read and write, so a statement the connection runs itself,
+		`query_only`, set as the connection opens (hxcpp's glue opens every
+		file to read and write), so a statement the connection runs itself,
 		`PRAGMA query_only = 0`, can lift it.
 	**/
 	var READ:String = "read";

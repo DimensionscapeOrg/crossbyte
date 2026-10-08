@@ -12,18 +12,18 @@ import utest.Async;
 
 	`select` takes no descriptor at or past it there, and hxcpp refuses one
 	rather than overflow its set: "Socket descriptor too large for select
-	(use poll)". CrossByte asks `select` about single sockets in several
-	places, whether a connect has finished, whether a listener has a
-	connection waiting, so in a process holding a thousand descriptors,
-	the newer sockets failed there. The load harness's idle scenario found
-	it on Linux: each process of WebSocket clients stopped at 1,018
-	connections, every one after failing to connect.
+	(use poll)". CrossByte asks about single sockets in several places
+	(whether a connect has finished, whether a listener has a connection
+	waiting), so in a process holding a thousand descriptors, through
+	`select` the newer sockets would fail there: a process of WebSocket
+	clients would stop at about 1,018 connections, every one after failing
+	to connect.
 
 	These open descriptors first, so that the sockets made after them land
 	past the ceiling, where the system allows that many: Linux does, and
 	macOS's default limit of 256 does not, so there they test nothing more
-	than any other case. Windows has no such ceiling, a set there is a
-	counted array, and runs the same cases as a check that nothing else
+	than any other case. Windows has no such ceiling (a set there is a
+	counted array) and runs the same cases as a check that nothing else
 	changed.
 **/
 class DescriptorCeilingTest extends utest.Test {
@@ -91,8 +91,8 @@ class DescriptorCeilingTest extends utest.Test {
 
 	/**
 		A WebSocket client whose socket is past the ceiling connects: its
-		connect was asked about through `select`, which threw, and the
-		attempt failed.
+		connect is not asked about through `select`, which would throw, and the
+		attempt fail.
 	**/
 	@:timeout(30000)
 	public function testAWebSocketClientPastTheCeilingConnects(async:Async):Void {
@@ -125,9 +125,10 @@ class DescriptorCeilingTest extends utest.Test {
 
 	/**
 		A server listening on a socket past the ceiling accepts: before it
-		accepts it asks select whether a connection is waiting, which threw,
-		so a listener opened in a process already holding a thousand
-		descriptors, a second service, a listener per match, took none.
+		accepts it asks whether a connection is waiting, not through select,
+		which would throw, so that a listener opened in a process already
+		holding a thousand descriptors (a second service, a listener per match)
+		would take none.
 	**/
 	@:timeout(30000)
 	public function testAServerSocketPastTheCeilingAccepts(async:Async):Void {
@@ -160,7 +161,7 @@ class DescriptorCeilingTest extends utest.Test {
 
 	/**
 		A `Socket` client whose socket is past the ceiling connects: whether
-		its connect had finished was asked of select, which threw.
+		its connect has finished is not asked of select, which would throw.
 	**/
 	@:timeout(30000)
 	public function testASocketClientPastTheCeilingConnects(async:Async):Void {

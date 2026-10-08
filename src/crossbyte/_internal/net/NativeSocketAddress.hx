@@ -19,7 +19,7 @@ extern class NativeSocketAddress {
 		socket has nothing to give or no room to take; a real failure still
 		throws, as the throwing forms do. `tryRecv` answers 0 at the end of
 		the stream. `tryRecvFrom` answers -3 for a read that found an earlier
-		datagram's ICMP error instead, a destination's port unreachable,
+		datagram's ICMP error instead (a destination's port unreachable),
 		which says nothing about this socket: nothing was received, and more
 		may be waiting.
 	**/
@@ -38,9 +38,10 @@ extern class NativeSocketAddress {
 		Datagrams received in batches, by one `recvmmsg` (Linux; see
 		NativeSocketAddress.cpp). `batchSupported` says whether there are
 		any here; `batchNew` maps a batch of `capacity` slots of 64 KB, or
-		answers null; `batchReceive` takes in up to `max` waiting datagrams,
-		how many, -1 for none waiting, -2 for a kernel without the call,
-		-3 for an earlier datagram's ICMP error, as `tryRecvFrom`, and
+		any here; `batchNew` maps a batch of `capacity` slots of 64 KB, or
+		answers null; `batchReceive` takes in up to `max` waiting datagrams
+		(how many, -1 for none waiting, -2 for a kernel without the call,
+		-3 for an earlier datagram's ICMP error, as `tryRecvFrom`), and
 		`batchTake`/`batchCopy` read datagram `index` of them: its
 		length and source, then its bytes. `batchFree` unmaps it now.
 	**/

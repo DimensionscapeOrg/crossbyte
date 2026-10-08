@@ -43,14 +43,13 @@ class CodecFormatsTest extends utest.Test {
 
 	/**
 	 * RFC 9110 defines HTTP's `deflate` as zlib, and every client and server
-	 * that sends it sends zlib. ByteArray had raw deflate and nothing else, so
-	 * a CrossByte client could read none of them.
+	 * that sends it sends zlib, so ByteArray reads zlib as well as raw deflate.
 	 */
 	/**
 		A body compressed as it is streamed, a piece at a time, inflates to
-		everything written, as gzip and as zlib, across more than two
-		windows, so the buffer the matches reach into slides, and with a
-		write of nothing among the pieces.
+		everything written, as gzip and as zlib, across more than two windows,
+		so the buffer the matches reach into slides, and with a write of
+		nothing among the pieces.
 	**/
 	public function testAStreamedBodyInflatesToEverythingWritten():Void {
 		var pieces:Array<Bytes> = [];
@@ -97,8 +96,8 @@ class CodecFormatsTest extends utest.Test {
 	/**
 		Later pieces reach back into earlier ones: two hundred short messages
 		that repeat their fields compress, streamed, to far less than the same
-		messages compressed one at a time, which is what compressing each
-		chunk of a stream alone would have cost.
+		messages compressed one at a time, which is what compressing each chunk
+		of a stream alone would cost.
 	**/
 	public function testAStreamReachesBackIntoWhatWasWritten():Void {
 		var streamed:Int = 0;
@@ -231,10 +230,9 @@ class CodecFormatsTest extends utest.Test {
 	/**
 	 * GZIP_TEXT through Node's gzipSync, with the header fields RFC 1952
 	 * allows added the way the gzip tool writes them, then as two members,
-	 * each accepted by Node's gunzipSync. ByteArray read a name and nothing
-	 * else: an extra field, a comment or a header CRC was refused as
-	 * unsupported, and a second member failed its CRC, since the trailer was
-	 * taken to be the input's last eight bytes.
+	 * each accepted by Node's gunzipSync. An extra field, a comment or a
+	 * header CRC are read, not refused as unsupported, and a second member is
+	 * checked against its own trailer, not the input's last eight bytes.
 	 */
 	private static final NODE_GZIP_VARIANTS:Array<{name:String, hex:String}> = [
 		{
@@ -308,8 +306,8 @@ class CodecFormatsTest extends utest.Test {
 	];
 
 	/**
-	 * ByteArray had LZ4 blocks and nothing else: no way to read what the lz4
-	 * tool writes, or to write a stream a reader can check for being whole.
+	 * The frames the lz4 tool writes are read, and written, so a stream can be
+	 * checked for being whole, not only bare LZ4 blocks.
 	 */
 	public function testLz4FramesAreReadAsTheLz4LibraryWritesThem():Void {
 		for (hex in REFERENCE_FRAMES) {
@@ -390,11 +388,11 @@ class CodecFormatsTest extends utest.Test {
 
 	/**
 	 * Every codec says a stream is bad the same way, with an IOError, and a
-	 * stream too big for the caller's limit with a RangeError. They threw bare
-	 * strings, "Brotli decompression failed", "Could not perform
-	 * decompression", InflateImpl's "Invalid data", or haxe.io.Eof, and the
-	 * HTTP client reported every one of those as an unsupported content
-	 * coding, since a String is how it is told of one.
+	 * stream too big for the caller's limit with a RangeError, not bare strings
+	 * ("Brotli decompression failed", "Could not perform decompression",
+	 * InflateImpl's "Invalid data") or haxe.io.Eof, which the HTTP client
+	 * would report as an unsupported content coding, since a String is how it
+	 * is told of one.
 	 */
 	public function testEveryCodecThrowsIOErrorForBadData():Void {
 		var cases:Array<{algorithm:CompressionAlgorithm, hex:String}> = [
@@ -417,11 +415,11 @@ class CodecFormatsTest extends utest.Test {
 
 	/**
 		On native, gzip, zlib and raw DEFLATE come from hxcpp's own zlib, and
-		on Node from Node's. A 64 KB page of JSON went to 8.3 KB through the
+		on Node from Node's. A 64 KB page of JSON goes to 8.3 KB through the
 		pure Haxe deflater, at three and a half times zlib's cost natively and
 		five times on Node; zlib writes about 6 KB. Each still reads back whole
 		through the readers here, and a gzip member's header is the same
-		everywhere: Node's named its system.
+		everywhere, where Node's would name its system.
 	**/
 	public function testDeflateCodingsCompressAPageOfJson():Void {
 		var json:Bytes = __jsonPage();
@@ -443,11 +441,11 @@ class CodecFormatsTest extends utest.Test {
 
 	/**
 		Brotli from Node's zlib on Node, as from `crossbyte-brotli` natively.
-		The page took 2.5 ms at quality 4 through the Haxe encoder, and Node's
+		The page takes 2.5 ms at quality 4 through the Haxe encoder, and Node's
 		takes about 0.17 for the same size, so a server answering browsers
-		was held to a few hundred compressed responses a second. The budget
-		is a millisecond a page, and the stream reads back whole through the
-		Haxe decoder.
+		through the Haxe encoder would be held to a few hundred compressed
+		responses a second. The budget is a millisecond a page, and the stream
+		reads back whole through the Haxe decoder.
 	**/
 	public function testNativeBrotliCompressesAPageOfJsonQuickly():Void {
 		#if (nodejs || crossbyte_brotli_native)
@@ -468,7 +466,7 @@ class CodecFormatsTest extends utest.Test {
 
 	/**
 		A body compressed as it is streamed comes from hxcpp's zlib on native,
-		as a whole body does. The page streamed as gzip in 8 KB pieces came to
+		as a whole body does. The page streamed as gzip in 8 KB pieces comes to
 		8.4 KB through the Haxe deflater, at three times zlib's cost; zlib
 		writes 5.8 KB. It still reads back whole.
 	**/

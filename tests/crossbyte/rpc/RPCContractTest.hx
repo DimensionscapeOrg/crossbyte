@@ -9,10 +9,11 @@ import utest.Assert;
 	RPC surfaces built from parts: contracts that extend other contracts, and
 	handlers that extend other handlers.
 
-	A contract read only its own methods, so one built from reusable ones had
-	stubs for part of itself and a handler that answered part of it. A
-	handler could not extend another at all: the macro made `ping` and
-	`dispatch` again in the subclass, which Haxe refused without `override`.
+	A contract reads the methods of the contracts it extends, so one built
+	from reusable ones has stubs for the whole of itself and a handler that
+	answers all of it. A handler can extend another: the macro does not
+	make `ping` and `dispatch` again in the subclass, which Haxe would refuse
+	without `override`.
 **/
 class RPCContractTest extends utest.Test {
 	// ----------------------------------------------------------- contracts
@@ -151,10 +152,10 @@ class RPCContractTest extends utest.Test {
 
 	public function testAParentsUntypedMethodIsNotTypedDuringItsChildsBuild():Void {
 		// NotingParentHandler.note declares no return type and reads a field of
-		// the class that extends it. The child's build followed the parent's
-		// method types, which typed `note` there and then, before the child had
-		// its fields: "Class<NotingChildHandler> has no field noted". This class
-		// did not compile. The parent's build now records what it dispatches.
+		// the class that extends it. The child's build must not follow the
+		// parent's method types, which would type `note` there and then, before
+		// the child had its fields ("Class<NotingChildHandler> has no field
+		// noted"): the parent's build records what it dispatches.
 		NotingChildHandler.noted = 0;
 		var link = LinkedConnection.pair();
 		var commands = new NotingCommands();
@@ -169,8 +170,7 @@ class RPCContractTest extends utest.Test {
 	public function testAChildReadsItsParentsTypesWhateverItsParentNamesThemBy():Void {
 		// The parents name Bytes by an import alias and Int by a private
 		// typedef, neither of which this module can name. Recorded as written,
-		// the child could not read them; written with toComplexType(), as the
-		// parent's types were read before, it could not either.
+		// or written with toComplexType(), the child could not read them.
 		var link = LinkedConnection.pair();
 		var commands = new BlobChildCommands();
 		var clientSession = new RPCSession<BlobChildCommands>(link.client, commands);

@@ -26,8 +26,8 @@ import crossbyte.url.URLRequest;
  *
  * Run without arguments it fetches both pages, checks what came back and
  * exits: 0 when both arrived as served, 1 otherwise, so CI can run it. The
- * client never falls back to HTTP/1.1, a server that does not answer in
- * HTTP/2 fails the request, so two correct bodies mean two HTTP/2 streams.
+ * client never falls back to HTTP/1.1 (a server that does not answer in
+ * HTTP/2 fails the request), so two correct bodies mean two HTTP/2 streams.
  */
 class Http2Sample extends ServerApplication {
 	// Long enough for a loaded CI runner, short enough that a hang fails the
@@ -71,8 +71,8 @@ class Http2Sample extends ServerApplication {
 		// Port 0, so a port someone else holds cannot fail the run.
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
 
-		// The whole of the server-side opt-in. Everything below the framing,
-		// routing, middleware, static files, CORS, is untouched by it.
+		// The whole of the server-side opt-in. Everything below the framing
+		// (routing, middleware, static files, CORS) is untouched by it.
 		config.http2Enabled = true;
 
 		__server = new HTTPServer(config);

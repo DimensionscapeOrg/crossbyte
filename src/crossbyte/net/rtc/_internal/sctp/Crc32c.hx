@@ -17,15 +17,14 @@ import haxe.io.Bytes;
 	The textbook table walk takes one byte per step: a table lookup, a shift
 	and an XOR, each depending on the last. Intel's slicing construction takes
 	eight, by splitting the state across eight tables whose entries answer
-	"what does this byte contribute once seven more have gone by", the
+	"what does this byte contribute once seven more have gone by": the
 	lookups become independent of each other, which is what lets the processor
 	overlap them, and the message is read a word at a time instead of a byte.
 
-	The performance suite is what put this here. The single-table version,
-	pulling each byte through the stream API, ran at a shade over 600 MB/s and
-	was nearly the entire cost of an SCTP packet in either direction, the
-	framing around it was close to free. Same vectors before and after: the
-	catalogue check value and RFC 3720's, in `SctpPacketTest`.
+	A single-table version, pulling each byte through the stream API, runs at
+	a shade over 600 MB/s and is nearly the entire cost of an SCTP packet in
+	either direction, the framing around it being close to free. The check
+	values are the catalogue's and RFC 3720's, in `SctpPacketTest`.
 
 	Bytes are read with `Bytes.getInt32`, which is little-endian by definition
 	on every target, and little-endian is what the reflected form of the
@@ -66,9 +65,9 @@ class Crc32c {
 			end = bytes.length;
 		}
 
-		// The ByteArray's own storage, the conversion is a view, not a copy,
+		// The ByteArray's own storage (the conversion is a view, not a copy),
 		// read by direct index rather than through the stream API, whose
-		// position bookkeeping was a real cost at one call per byte.
+		// position bookkeeping would be a real cost at one call per byte.
 		var data:Bytes = bytes;
 		var tables = __tables;
 		var crc:Int = seed;

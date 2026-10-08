@@ -27,10 +27,8 @@ import sys.db.ResultSet;
 class SQLiteStatement extends EventDispatcher {
 	// hxcpp lays fields out in the order they are declared, padding each to
 	// its own size: each Int below sits in the room a flag before it leaves,
-	// so a statement takes no more memory than it did without them. Placed
-	// after the rest, they made each 16 bytes bigger, and moved the
-	// collector's schedule enough to add a collection inside a batch of
-	// asynchronous statements.
+	// so a statement takes no more memory than it would without them;
+	// placed after the rest, they would make each 16 bytes bigger.
 	public var executing(get, null):Bool;
 	// How many times cancel() has been called on an asynchronous
 	// connection. Work asked of the statement before the latest is dropped
@@ -54,10 +52,9 @@ class SQLiteStatement extends EventDispatcher {
 
 		Natively the statement is prepared once per text and kept by the
 		connection, so running it again with other values costs SQLite's own
-		work only. They were `String`s written into the text as quoted
-		literals, and the text prepared again on every run: a repeated INSERT
-		took 3.8-6.1 µs where it takes 0.36-0.63 µs bound (the audit's
-		SqlitePerf).
+		work only. A repeated INSERT takes 0.36-0.63 µs bound this way,
+		against 3.8-6.1 µs with its values written into the text and the
+		text prepared again on every run.
 
 		Read when `execute()` is called: on an asynchronous connection, which
 		binds them on its worker later, they are copied then, bytes included,
@@ -70,22 +67,19 @@ class SQLiteStatement extends EventDispatcher {
 
 	private var __sqlConnection:SQLiteConnection;
 	private var __executing:Bool = false;
-	// Where the statement runs, the worker, on an asynchronous connection,
+	// Where the statement runs (the worker, on an asynchronous connection),
 	// the cancel count __resultSet was made under.
 	@:noCompletion private var __resultEpoch:Int = 0;
 	// The result being read. On an asynchronous connection it is the
 	// worker's alone: made, read and dropped there.
 	private var __resultSet:ResultSet;
 	// Pages read and not yet taken by getResult(), oldest first. Only the
-	// thread that called the statement touches it, the worker sends its
-	// pages there, so a plain Array serves every target. It was a Deque on
-	// cpp and, elsewhere, an Array read with pop(), which hands back the
-	// newest page first.
+	// thread that called the statement touches it (the worker sends its
+	// pages there), so a plain Array serves every target.
 	private var __resultQueue:Array<Array<Dynamic>> = [];
 	// The connection's last rowid as this statement finished, read on the
-	// thread that ran it once its rows were all read. It was read by
-	// getResult(), on the caller's thread while the worker might be running
-	// the next statement, and so reported whichever insert had happened last.
+	// thread that ran it once its rows were all read, so it is this
+	// statement's and not whichever insert happened last.
 	@:noCompletion private var __rowId:Float = 0;
 	// What the statement changed, from where it ran; see __affectedOf.
 	@:noCompletion private var __affected:Float = 0;
@@ -106,8 +100,8 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		Stops this statement, and only it, as AIR's `cancel()` does: its work
-		that has not run is dropped, its work running now is interrupted,
-		SQLite stops it at its next step, and the rows it had left unread
+		that has not run is dropped, its work running now is interrupted
+		(SQLite stops it at its next step), and the rows it had left unread
 		are let go of, which ends the read it held open. `executing` is
 		`false` from the call on, and nothing more is dispatched for what was
 		asked of it before; the connection's other work carries on. Does
@@ -123,14 +117,8 @@ class SQLiteStatement extends EventDispatcher {
 		still being prepared is stopped within a thousand steps of SQLite's
 		virtual machine, or at its next step when its first ends sooner:
 		SQLite clears an interrupt that lands as a statement starts, and it
-		ran on. On targets other than cpp work already running is not
+		would run on. On targets other than cpp work already running is not
 		interrupted, and finishes first.
-
-		It reset only the statement's own fields: the work queued for it
-		still ran, an INSERT cancelled before its turn inserted, a
-		statement running ran on to its end, and the rows of one read a page
-		at a time stayed open on the worker, holding SQLite's read, until the
-		next statement there read them all.
 	**/
 	public function cancel():Void {
 		if (!__executing) {
@@ -177,15 +165,12 @@ class SQLiteStatement extends EventDispatcher {
 		Postgres's statements do; on an asynchronous connection it is only
 		dispatched, since the caller has returned by then.
 
-		A synchronous statement dispatched no `RESULT` at all, and a failed
-		one let the driver's raw `String` escape with no `SQLErrorEvent`.
-
 		@throws IllegalOperationError When `sqlConnection` is not set, or not
 		open.
 	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__sqlConnection == null || !__sqlConnection.__isOpen()) {
-			// Dereferenced: a statement with no open connection crashed.
+			// Refused here, before anything dereferences the connection.
 			throw new IllegalOperationError("SQLiteStatement: sqlConnection is not set, or is not open.");
 		}
 
@@ -266,9 +251,7 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		`query` with `parameters` substituted. A parameter set to null is
-		written as `NULL`, as MySQL's statements write it. It was taken for one
-		never set and left as `:name`, which SQLite read as an unbound
-		parameter, NULL as well, by luck rather than by design.
+		written as `NULL`, as MySQL's statements write it.
 	**/
 	@:noCompletion private function __applyParameters(query:String):String {
 		return SQLiteConnection.__substitute(query, __values());
@@ -281,11 +264,10 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		`values` as they are now, for the worker to bind later: the map
-		copied, and bytes in it copied too, from 0 to their `length`. The map
-		alone was copied, so a blob bound from a payload valid only during a
-		listener's call, a datagram's `event.data`, was bound on the
-		worker after the socket had emptied it, and stored empty; and bytes
-		the caller changed after `execute` returned were stored changed.
+		copied, and bytes in it copied too, from 0 to their `length`, so a
+		blob bound from a payload valid only during a listener's call (a
+		datagram's `event.data`) is stored as it was, and bytes the caller
+		changes after `execute` returns are stored as they were.
 	**/
 	@:noCompletion private static function __snapshot(values:StringMap<Dynamic>):StringMap<Dynamic> {
 		var copy = new StringMap<Dynamic>();
@@ -311,9 +293,8 @@ class SQLiteStatement extends EventDispatcher {
 		Natively, on a synchronous connection only: an asynchronous one runs
 		its statements on its worker, where `each` cannot be called.
 
-		The same SELECT of 20,000 rows of 8 columns took 199-330 ns a row this
-		way, and 539-775 ns a row as objects read by name (the audit's
-		SqlitePerf).
+		The same SELECT of 20,000 rows of 8 columns takes 199-330 ns a row
+		this way, and 539-775 ns a row as objects read by name.
 
 		@throws SQLError When SQLite refuses the statement, as `execute()`
 		throws, after dispatching it as an `SQLErrorEvent`. What `each`
@@ -383,14 +364,9 @@ class SQLiteStatement extends EventDispatcher {
 	}
 
 	/**
-		The work `execute()` queues on an asynchronous connection: runs the
-		statement and reads its first page on the worker, then sends both to
-		the runtime's thread.
-	**/
-	/**
 		On the worker: the work `job` asks of the statement, its `execute()`
-		or its `next()`, run from the job itself, a function was made for
-		each, which every statement's run paid to allocate and collect.
+		or its `next()`, run from the job itself, with no function made for
+		each run.
 	**/
 	@:noCompletion private function __work(job:SQLiteJob):Void {
 		if (job.fresh) {
@@ -450,7 +426,7 @@ class SQLiteStatement extends EventDispatcher {
 		Takes the rowid for this statement's results, once its rows are all
 		read, never while some remain. Past 2^31 the rowid is a query of its
 		own, and hxcpp's glue starts one by finalizing the statement before
-		it: read as soon as a SELECT had started, it cut the SELECT to the one
+		it: read as soon as a SELECT had started, it would cut the SELECT to the one
 		row already stepped. A write has no rows, so its rowid is taken at
 		once.
 	**/
@@ -473,10 +449,8 @@ class SQLiteStatement extends EventDispatcher {
 		The rows a write changed: SQLite's own count for a statement with no
 		result columns, and 0 for one that returns rows, as AIR's
 		`SQLResult.rowsAffected` has it. Taken where the statement ran, before
-		its rows are read. `getResult()` asked the result set its length,
-		which for a SELECT stepped through the rest of its rows, on the
-		caller's thread even on an asynchronous connection, and reported
-		however many were left.
+		its rows are read, rather than from the result set's length, which
+		for a SELECT steps through the rest of its rows.
 	**/
 	@:noCompletion private static function __affectedOf(result:ResultSet):Float {
 		return result.nfields == 0 ? result.length : 0;
@@ -550,8 +524,7 @@ class SQLiteStatement extends EventDispatcher {
 	public function getResult():SQLResult {
 		var results:Array<Dynamic> = __resultQueue.shift();
 		// The last page is the one read as the rows ran out, with none behind
-		// it. This was !__executing alone, which called every page still
-		// waiting complete once the last had been read.
+		// it.
 		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
@@ -574,8 +547,7 @@ class SQLiteStatement extends EventDispatcher {
 		}
 
 		if (__resultSet == null) {
-			// Thrown: it was made and dropped, so next() on a statement that
-			// had not run did nothing at all, and said nothing.
+			// Thrown: next() on a statement that has not run is an error.
 			throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
 		}
 
@@ -631,10 +603,10 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		Only kept: whether the connection is open, and which way, is asked of
-		it each time the statement runs. Both were copied here when this was
-		set, so a statement given its connection before `open()`, or before
-		an asynchronous open had finished, held no connection at all, and one
-		kept across a `close()` and `open()` held the closed one.
+		it each time the statement runs, so a statement given its connection
+		before `open()`, or before an asynchronous open has finished, runs
+		once it is open, and one kept across a `close()` and `open()` uses
+		the open one.
 	**/
 	private function set_sqlConnection(value:SQLiteConnection):SQLiteConnection {
 		return __sqlConnection = value;
