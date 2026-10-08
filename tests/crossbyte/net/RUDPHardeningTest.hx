@@ -5,7 +5,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.net._internal.reliable.OutstandingFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.ds.SequenceRing;
-import haxe.ds.IntMap;
+import crossbyte.net._internal.reliable.FrameWindow;
 import utest.Assert;
 
 /**
@@ -160,7 +160,7 @@ class RUDPHardeningTest extends utest.Test {
 		// A fast path: the timeout should come down near the round trip,
 		// nowhere near the three seconds it used to be.
 		for (_ in 0...20) {
-			socket.__sampleRoundTrip(0.010);
+			socket.__sampleRoundTrip(0.010, 0);
 		}
 
 		Assert.isTrue(socket.__rto < 0.5, "a 10ms path still waits " + socket.__rto + "s before resending");
@@ -170,7 +170,7 @@ class RUDPHardeningTest extends utest.Test {
 		var slow = makeSender();
 
 		for (_ in 0...20) {
-			slow.__sampleRoundTrip(1.2);
+			slow.__sampleRoundTrip(1.2, 0);
 		}
 
 		Assert.isTrue(slow.__rto > 1.0, "a 1.2s path resends after only " + slow.__rto + "s");
@@ -244,7 +244,8 @@ class RUDPHardeningTest extends utest.Test {
 
 		try {
 			for (_ in 0...64) {
-				socket.__queuePacket(payloadOf(oneKilobyte()));
+				var message = payloadOf(oneKilobyte());
+				socket.__queueBytes(message, 0, message.length);
 			}
 		} catch (e:Dynamic) {
 			refused = true;
@@ -322,7 +323,7 @@ class RUDPHardeningTest extends utest.Test {
 		var socket:ReliableDatagramSocket = Type.createEmptyInstance(ReliableDatagramSocket);
 		// createEmptyInstance does not run field initialisers, so the values
 		// a real socket starts with are set here rather than inherited.
-		socket.__outFrameCache = new IntMap();
+		socket.__outFrameCache = new FrameWindow();
 		socket.__outgoingQueue = [];
 		socket.__queueAt = 0;
 		socket.__queuedBytes = 0;

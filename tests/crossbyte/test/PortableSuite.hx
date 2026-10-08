@@ -104,6 +104,8 @@ class PortableSuite {
 		// Encrypted sessions attacked through memory, Node's crypto opening the
 		// large datagrams.
 		runner.addCase(new crossbyte.net.ReliableDatagramTamperTest());
+		// The frames a reliable message is kept in, given back for the next.
+		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
 		// And what a datagram listener is handed, sends back and keeps.
 		runner.addCase(new crossbyte.net.DatagramArrivalTest());
 		// Red team: a datagram forwarded as an HTTP body from its listener.

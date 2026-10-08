@@ -436,6 +436,29 @@ message allocates; a session in the clear is unchanged. An encrypted session a
 server holds costs about 1.8 KB more than one in the clear (keys, IVs, the
 replay window); the buffers it seals and opens into are the server's, shared.
 
+## Reliable UDP: what a message and a session cost
+
+**Garbage per message: none natively.** A reliable message is copied when
+it is sent, so the caller may reuse its bytes as soon as `send` returns, and
+the copy is kept until the peer acknowledges it, since only this side can
+send it again. It is kept in a frame taken from a pool, one for all of a
+server's sessions, on its runtime, whose buffer is the smallest of 64, 128,
+256, 512, 768 or 1,024 bytes, or a whole 1,200-byte frame, that holds it, and
+the frame goes back to the pool once acknowledged. The frames in flight are found by
+sequence in a ring, not a map. A 200-byte message delivered and
+acknowledged allocated 424 bytes natively and 392 to 528 on the jvm; it
+allocates nothing natively now, and 64 to 80 bytes on the jvm, none of it
+reliable UDP's: Java 8's selector adds each socket it finds ready to a set
+(32 bytes a select, at each end), and a `send(bytes, 0, length)` boxes its
+`length`, as the jvm boxes every optional `Int` argument.
+
+The pool keeps as many frames as were in flight at once in the last ten to
+twenty seconds, and 64 more: a game server's tick sends to every session and
+has it all back before the next, so a thousand frames go out and come back
+every tick, and all of them are kept for the next. Once the traffic falls,
+what was kept for it goes within twenty seconds; once nothing has come back
+for ten, all but 64 go.
+
 ## WebSocket servers: what a peer can cost
 
 Every limit on a `ServerWebSocket` is on by default, and each is the

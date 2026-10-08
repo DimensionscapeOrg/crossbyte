@@ -254,7 +254,7 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		Assert.equals(1, frames.length);
 		Assert.equals(ReliableDatagramFrameType.UNRELIABLE, frames[0].type);
 		Assert.equals("once", frames[0].payload.toString());
-		Assert.isFalse(sender.__outFrameCache.keys().hasNext(), "kept for resending");
+		Assert.isFalse(sender.__outFrameCache.count > 0, "kept for resending");
 		Assert.equals(sequenceBefore, sender.__outSequence, "it took a reliable sequence number");
 		Assert.equals(0, sender.bufferedAmount);
 		sender.close();
@@ -389,13 +389,13 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		if (socket == null) return;
 
 		// The first measurement is taken whole, with half of it as variation.
-		socket.__sampleRoundTrip(0.1);
+		socket.__sampleRoundTrip(0.1, 0);
 		Assert.floatEquals(0.1, socket.roundTripTime);
 		Assert.floatEquals(0.05, socket.roundTripVariation);
 		Assert.floatEquals(0.3, socket.retransmitTimeout);
 
 		// Each after that moves them an eighth and a quarter of the way.
-		socket.__sampleRoundTrip(0.2);
+		socket.__sampleRoundTrip(0.2, 0);
 		Assert.floatEquals(0.1125, socket.roundTripTime);
 		Assert.floatEquals(0.0625, socket.roundTripVariation);
 		Assert.floatEquals(0.3625, socket.retransmitTimeout);
@@ -403,13 +403,13 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 
 		// And the timeout is held between its floor and its ceiling.
 		var fast = RecordingSocket.make();
-		fast.__sampleRoundTrip(0.001);
+		fast.__sampleRoundTrip(0.001, 0);
 		Assert.floatEquals(0.001, fast.roundTripTime);
 		Assert.floatEquals(0.2, fast.retransmitTimeout);
 		fast.close();
 
 		var slow = RecordingSocket.make();
-		slow.__sampleRoundTrip(20);
+		slow.__sampleRoundTrip(20, 0);
 		Assert.floatEquals(10, slow.retransmitTimeout);
 		slow.close();
 	}
@@ -436,7 +436,7 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		for (ack in acks) {
 			pair.sender.__acceptFrame(ack);
 		}
-		Assert.isFalse(pair.sender.__outFrameCache.keys().hasNext(), "the resent frame was not acknowledged");
+		Assert.isFalse(pair.sender.__outFrameCache.count > 0, "the resent frame was not acknowledged");
 		Assert.equals(measured, pair.sender.roundTripTime, "a frame sent twice was measured");
 		pair.close();
 	}
