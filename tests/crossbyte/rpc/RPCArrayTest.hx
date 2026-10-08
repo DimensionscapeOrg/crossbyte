@@ -111,10 +111,10 @@ class RPCArrayTest extends utest.Test {
 		Assert.equals(sent, fixture.link.client.sent, "a call with a null inside an array was sent");
 		// The session's frame was given back, not left taken: the next call
 		// is framed in it.
-		Assert.isFalse(@:privateAccess fixture.client.__frame.busy, "the frame was left taken by the call that threw");
+		Assert.isFalse((@:privateAccess fixture.client.__frame != null && @:privateAccess fixture.client.__frame.busy), "the frame was left taken by the call that threw");
 		fixture.commands.grid([[4]]);
 		Assert.same(["grid [[4]]"], fixture.handler.calls);
-		Assert.isFalse(@:privateAccess fixture.client.__frame.busy);
+		Assert.isFalse((@:privateAccess fixture.client.__frame != null && @:privateAccess fixture.client.__frame.busy));
 	}
 
 	public function testAnAnswerWithANullInsideFailsTheCallAndTheConnectionStays():Void {
@@ -125,7 +125,7 @@ class RPCArrayTest extends utest.Test {
 		Assert.isFalse(answer.succeeded);
 		Assert.equals(RPCError.INTERNAL_MESSAGE, answer.error);
 		Assert.same(["split"], reported);
-		Assert.isFalse(@:privateAccess fixture.server.__frame.busy, "the answer's frame was left taken");
+		Assert.isFalse((@:privateAccess fixture.server.__frame != null && @:privateAccess fixture.server.__frame.busy), "the answer's frame was left taken");
 		Assert.same(["x"], fixture.commands.split("x").result);
 	}
 
