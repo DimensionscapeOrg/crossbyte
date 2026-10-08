@@ -36,6 +36,7 @@ import sys.net.Host;
 #end
 
 @:access(crossbyte.net.ReliableDatagramSocket)
+@:access(crossbyte.net.PreparedDatagram)
 /**
 	The `ReliableDatagramServerSocket` class accepts reliable UDP sessions from
 	remote peers on top of a single bound `DatagramSocket`.
@@ -1107,6 +1108,129 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
+		Sends `message` to every session this server has connected, those
+		peers opened and those it dialled, or, given `sessions`, to each of
+		those that is connected: one message made ready once (see
+		`PreparedDatagram`), which each session frames, paces, bundles and
+		sends again as `ReliableDatagramSocket.sendPrepared` would, from the
+		same bytes, holding no copy of its own. Who receives, a room, a
+		team, an area of interest, is the application's to say with
+		`sessions`.
+
+		Nothing is thrown for one session. One not connected, closing, or in
+		`STREAM` mode is passed over; one the message takes past its
+		`maxOutputBufferSize` under the `THROW` `outputOverflowPolicy` is
+		sent it and not thrown for, its `bufferedAmount` says what waits,
+		and one under `CLOSE` is ended, as `send` would end it. A session
+		that closes during the broadcast is passed over, and the others are
+		each sent the message once.
+
+		`sessions` may hold sessions of other servers, and sockets that
+		connected on their own: each is sent the message as `sendPrepared`
+		sends it, on the calling thread. A prepared message is never changed
+		once made, so sessions on other runtimes may be sent it at the same
+		time, each from its own.
+
+		@param message The message, made with `PreparedDatagram.of`.
+		@param sessions Who to send it to; every session this server has
+		       connected when `null`.
+		@param delivery `RELIABLE` unless given. An unreliable or sequenced
+		       message must fit one frame of every session it goes to.
+		@throws ArgumentError If `message` is `null`.
+		@throws RangeError If `delivery` is unreliable or sequenced and the
+		        message is larger than one frame of a session it would go
+		        to, 1,200 bytes, 1,179 for an encrypted one, before it is
+		        sent to any.
+	**/
+	public function broadcast(message:PreparedDatagram, ?sessions:Array<ReliableDatagramSocket>, delivery:DeliveryMode = DeliveryMode.RELIABLE):Void {
+		if (message == null) {
+			throw new ArgumentError("broadcast needs a message.");
+		}
+		var source:Array<ReliableDatagramSocket> = sessions != null ? sessions : __sessionList;
+		var count:Int = source.length;
+		// Too large for a session it would go to: said before any is sent it.
+		if (delivery != DeliveryMode.RELIABLE && message.length > ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE) {
+			for (i in 0...count) {
+				var session:ReliableDatagramSocket = source[i];
+				if (__takesPrepared(session) && message.length > session.maxPayloadSize) {
+					throw new RangeError('An unreliable message must fit one frame of each session it goes to, ${session.maxPayloadSize} bytes for '
+						+ '${session.encrypted ? "an encrypted" : "a"} session, and this one is ${message.length}; split it, or send it RELIABLE.');
+				}
+			}
+		}
+
+		// From a list of this call's own: a session closing as it is sent to,
+		// past its output limit, or a close listener closing another,
+		// comes off the server's list, whose last session takes its place,
+		// and would be sent to twice or passed over. The list is kept for the
+		// next broadcast; one inside another, from a close listener, takes a
+		// copy.
+		var nested:Bool = __broadcasting;
+		var list:Array<ReliableDatagramSocket> = nested ? source.copy() : __broadcastList;
+		if (!nested) {
+			for (i in 0...count) {
+				list[i] = source[i];
+			}
+			__broadcasting = true;
+		}
+		try {
+			for (i in 0...count) {
+				var session:ReliableDatagramSocket = list[i];
+				if (__takesPrepared(session)) {
+					session.__sendPreparedNow(message, delivery);
+					if (delivery == DeliveryMode.RELIABLE) {
+						session.__enforceOutputLimit(false);
+					}
+				}
+			}
+		} catch (e:Dynamic) {
+			__broadcastDone(nested, count);
+			Arrivals.rethrow(e);
+		}
+		__broadcastDone(nested, count);
+	}
+
+	/** Whether a session can be sent a prepared message now, as `sendPrepared` would refuse to. **/
+	@:noCompletion private static inline function __takesPrepared(session:Null<ReliableDatagramSocket>):Bool {
+		return session != null && !session.__closed && !session.__closing && session.__connected && session.__transport != null
+			&& session.__mode == DATAGRAM;
+	}
+
+	@:noCompletion private inline function __broadcastDone(nested:Bool, count:Int):Void {
+		if (!nested) {
+			// Let go of, so a session that closed is not kept by the list.
+			var list:Array<ReliableDatagramSocket> = __broadcastList;
+			for (i in 0...count) {
+				list[i] = null;
+			}
+			__broadcasting = false;
+		}
+	}
+
+	// Every session filed here, each at the index it holds
+	// (`ReliableDatagramSocket.__listedAt`): what a broadcast walks, which
+	// walking the map would have it build a list of the keys for, natively
+	// a copy of all of them, every broadcast. And the list a broadcast walks,
+	// kept from one to the next, and whether one is walking it.
+	@:noCompletion private var __sessionList:Array<ReliableDatagramSocket> = [];
+	@:noCompletion private var __broadcastList:Array<ReliableDatagramSocket> = [];
+	@:noCompletion private var __broadcasting:Bool = false;
+
+	/** Takes a session out of `__sessionList`, its last taking its place. **/
+	@:noCompletion private function __delist(socket:ReliableDatagramSocket):Void {
+		var at:Int = socket.__listedAt;
+		socket.__listedAt = -1;
+		if (at < 0 || at >= __sessionList.length || __sessionList[at] != socket) {
+			return;
+		}
+		var last:ReliableDatagramSocket = __sessionList.pop();
+		if (last != socket) {
+			__sessionList[at] = last;
+			last.__listedAt = at;
+		}
+	}
+
+	/**
 		Refuses a key for a dialled session that is not one, or on a target
 		that cannot encrypt, as `ReliableDatagramSocket.encryptionKey` does,
 		before anything is made for it.
@@ -1959,6 +2083,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			__byHostCount.set(address, count == null ? 1 : count + 1);
 		}
 		ports.set(port, socket);
+		if (socket.__listedAt < 0) {
+			socket.__listedAt = __sessionList.length;
+			__sessionList.push(socket);
+		}
 	}
 
 	/** Takes whatever is filed under an endpoint out of both maps. **/
@@ -2782,6 +2910,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private function __onSocketClosed(socket:ReliableDatagramSocket):Void {
 		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
 		__unfile(socket.remoteAddress, socket.remotePort);
+		__delist(socket);
 		__releasePending(key);
 		if (__byConnectionId != null && socket.__offersRebind && __byConnectionId.get(socket.__peerConnectionId) == socket) {
 			__byConnectionId.remove(socket.__peerConnectionId);

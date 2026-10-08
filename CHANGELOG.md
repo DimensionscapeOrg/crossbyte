@@ -477,6 +477,25 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- One reliable UDP message to many sessions, prepared once:
+  `PreparedDatagram.of(bytes, offset, length)` copies a message once, and
+  `ReliableDatagramSocket.sendPrepared(message, delivery)` and
+  `ReliableDatagramServerSocket.broadcast(message, ?sessions, delivery)`,
+  to every session the server has connected, or a list, send it in any
+  delivery mode. Each session frames it with its own sequence numbers,
+  bundles it, paces it by its own window and sends it again until its peer
+  has it, all from the prepared bytes, holding a record of each frame in
+  flight and no copy, where a `send` per session copied the message for
+  each and held every copy until acknowledged. A kilobyte to 1,000
+  sessions with 1% loss each way (`tests/perf/realtime/RudpFanout`): held
+  until every peer has it, 1.27 MB as a `send` each, under 0.1 MB prepared
+  (jvm: 1.08 MB and 9 KB); the call, 880-940 ns a session as a `send`
+  each, 630 prepared (jvm: 630-645 and 500). An encrypted session shares
+  the message the same way; its sealing stays per session.
+  Who receives, rooms, areas of interest, stays the application's. As
+  `ServerWebSocket.broadcast`, it throws for no one session: one not
+  connected or closing is passed over, and one past its output limit under
+  `THROW` is not thrown for.
 - Encrypted reliable UDP sessions, opt-in and keyed by the application, as
   netcode.io's are: `ReliableDatagramSocket.encryptionKey` (set before
   `connect`), `ReliableDatagramServerSocket.encryptionKeyFor(address,

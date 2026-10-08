@@ -494,6 +494,9 @@ class TestSuites {
 		// The frames a message is kept in until acknowledged, given back for
 		// the next. Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
+		// One message to many sessions: PreparedDatagram, sendPrepared and a
+		// server's broadcast.
+		runner.addCase(new crossbyte.net.ReliableDatagramBroadcastTest());
 		// Joins under a flood, and the resets strangers are sent.
 		runner.addCase(new crossbyte.net.ReliableDatagramJoinTest());
 		// A session following its player to a new address, through a NAT
