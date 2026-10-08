@@ -1995,6 +1995,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, owned, __decodedFrame, false, copy);
 		if (frame == null) {
+			// Neither a frame nor sealed, to a session that takes only sealed
+			// datagrams: counted there.
+			if (connection != null && connection.__cipher != null) {
+				connection.__plainDropped++;
+			}
 			return;
 		}
 

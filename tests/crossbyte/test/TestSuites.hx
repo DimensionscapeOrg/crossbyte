@@ -499,6 +499,9 @@ class TestSuites {
 		// Encrypted sessions over real sockets, through a path written for the
 		// tests that records, loses, reorders and forges what crosses it.
 		runner.addCase(new crossbyte.net.ReliableDatagramEncryptionTest());
+		// Sealed datagrams changed, repeated and forged, through memory. Also in
+		// PortableSuite, for Node's crypto.
+		runner.addCase(new crossbyte.net.ReliableDatagramTamperTest());
 		// Real sockets: a raw Bytes write, and a burst taken within one pass.
 		runner.addCase(new crossbyte.net.SocketPassTest());
 		// A socket's kernel buffers, natively and on the jvm; elsewhere, that
