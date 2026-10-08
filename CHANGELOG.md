@@ -477,6 +477,24 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- `Array<T>` on the compiled RPC lane, of every kind it carries, nested
+  too: an argument or an answer of a contract method can be
+  `Array<Int>`, `Array<Null<String>>`, `Array<Array<Float>>`. A varint
+  count, then each element as its kind is written, with no tag or length
+  of its own; in the op, the element's kind in brackets (`[i32]`), so
+  every method that carried a kind before keeps its op. The count is the
+  peer's to choose and is checked against what is left of the frame, at
+  the least each element takes, before anything is made for it: a frame
+  of twenty bytes naming two billion elements is answered
+  `RPCError.UNREADABLE_MESSAGE`, as any call whose arguments do not read.
+  A null array, or a null inside one where the element cannot be absent,
+  throws an `ArgumentError` before anything is sent, and the session's
+  frame is given back. Numbers and `Bool`s are written and read as a run,
+  checked once: natively a one-way call carrying 16 Ints takes 77 ns where
+  one Int takes 40, and 4 strings of 8 characters 108 ns (`RpcTypeBench`).
+  A method that carries an array is decoded by a call of its own rather
+  than inlined into `dispatch`, which would make every method of its
+  contract slower. Tests: `RPCArrayTest`.
 - `PeerConnection.maxPeerChannels` (512) and `maxLabelSize` (1,024 bytes),
   and `refusedChannels`: the channels a peer may have open that it opened
   itself, and how long a name it may give one, where the stream numbers

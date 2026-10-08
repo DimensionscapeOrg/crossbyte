@@ -219,13 +219,64 @@ class RPCContractMacroTools {
 		parent could not read a type declared through one.
 	**/
 	public static function fullComplexType(t:Type):ComplexType {
+		return fullComplexTypeWithin(t, []);
+	}
+
+	/**
+		`fullComplexType`, all the way down: the parameters of a type (an
+		`Array`'s element) and the fields of an anonymous structure written
+		the same way, since they are read in the same other module. A
+		typedef met again inside itself, a structure that holds itself,
+		which the lane refuses, keeps its name, rather than going on for
+		ever.
+	**/
+	static function fullComplexTypeWithin(t:Type, within:Array<String>):ComplexType {
 		return switch (t) {
 			case TAbstract(ref, [inner]) if (ref.get().name == "Null" && ref.get().pack.length == 0):
-				TPath({pack: [], name: "Null", params: [TPType(fullComplexType(inner))]});
-			case TType(_, _):
-				fullComplexType(Context.follow(t, true));
+				TPath({pack: [], name: "Null", params: [TPType(fullComplexTypeWithin(inner, within))]});
+			case TType(ref, _):
+				final key:String = TypeTools.toString(t);
+				if (within.indexOf(key) >= 0) {
+					t.toComplexType();
+				} else {
+					fullComplexTypeWithin(Context.follow(t, true), within.concat([key]));
+				}
+			case TLazy(lazy):
+				fullComplexTypeWithin(lazy(), within);
+			case TMono(ref) if (ref.get() != null):
+				fullComplexTypeWithin(ref.get(), within);
+			case TInst(ref, params) if (params.length > 0):
+				withParams(t.toComplexType(), params, within);
+			case TAbstract(ref, params) if (params.length > 0):
+				withParams(t.toComplexType(), params, within);
+			case TAnonymous(anon):
+				TAnonymous([
+					for (field in anon.get().fields)
+						({
+							name: field.name,
+							meta: field.meta.get(),
+							kind: FVar(fullComplexTypeWithin(field.type, within), null),
+							pos: field.pos,
+							access: []
+						} : Field)
+				]);
 			case _:
 				t.toComplexType();
+		}
+	}
+
+	/** `ct`, a path, with `params` written as `fullComplexType` writes them. **/
+	static function withParams(ct:ComplexType, params:Array<Type>, within:Array<String>):ComplexType {
+		return switch (ct) {
+			case TPath(path):
+				TPath({
+					pack: path.pack,
+					name: path.name,
+					sub: path.sub,
+					params: [for (param in params) TPType(fullComplexTypeWithin(param, within))]
+				});
+			case _:
+				ct;
 		}
 	}
 

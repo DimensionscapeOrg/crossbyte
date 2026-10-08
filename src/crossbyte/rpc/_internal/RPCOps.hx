@@ -12,14 +12,16 @@ import haxe.io.Bytes;
 
 	```
 	signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
-	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes" )
+	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
+	                     | "[" kind "]" )
 	```
 
 	The kinds are the method's arguments in order, and after the colon its
 	answer's; a one-way method has none. A `?` is a value that may be
 	absent, an optional argument, a `Null<T>`, which a byte before it
-	says. `add(a:Int, b:Int):Int` is `add(i32,i32):i32`, and
-	`say(text:String):Void` is `say(utf8)`.
+	says. An array is its element's kind in brackets. `add(a:Int, b:Int):Int`
+	is `add(i32,i32):i32`, `say(text:String):Void` is `say(utf8)`, and
+	`grid(rows:Array<Array<Null<Int>>>):Void` is `grid([[?i32]])`.
 
 	A kind names a layout, not a type: a typedef is the kind it names, so
 	renaming one, or an argument, changes no op, and a client and a server
@@ -36,9 +38,8 @@ import haxe.io.Bytes;
 	surface with two such fails the build. `ping`, every session's own, is
 	the hash of its name alone (`RPCWire.PING_OP`).
 
-	A kind added later, an array, a structure, an enum, names its own
-	layout, a structure's by a hash of its shape, and every kind above
-	keeps its token. Compiled into the macros as well as the runtime, so
+	A kind added later, a structure, an enum, names its own layout, and
+	every kind above keeps its token. Compiled into the macros as well as the runtime, so
 	the check the build makes is the one the tests exercise.
 **/
 class RPCOps {

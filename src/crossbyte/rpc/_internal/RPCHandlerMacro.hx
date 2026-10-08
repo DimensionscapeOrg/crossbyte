@@ -475,7 +475,12 @@ class RPCHandlerMacro {
 
 		return {
 			name: decoderName(tag, m.name),
-			access: [APrivate, AInline],
+			// Inlined into dispatch, the call it would cost saved, when it is
+			// small: numbers, strings and bytes. One that reads or answers an
+			// array or a structure is a call of its own, where its code would
+			// make dispatch larger for every method, natively a one-Int
+			// call to a contract with arrays in it took 54 ns, where 40.
+			access: carriesCompound(m) ? [APrivate] : [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
 				args: [
@@ -486,6 +491,22 @@ class RPCHandlerMacro {
 			}),
 			pos: m.pos
 		};
+	}
+
+	/** Whether a method's arguments or answer include a kind made of others: an array, a structure. **/
+	static function carriesCompound(m:MethodInfo):Bool {
+		for (arg in m.args) {
+			final kind = arg.type == null ? null : RPCKinds.of(unwrapNull(arg.type), m.pos);
+			if (kind != null && kind.compound) {
+				return true;
+			}
+		}
+		final answer:Null<ComplexType> = answerOf(m.ret, m.pos);
+		if (answer != null) {
+			final kind = RPCKinds.of(unwrapNull(answer), m.pos);
+			return kind != null && kind.compound;
+		}
+		return false;
 	}
 
 	/**
@@ -905,7 +926,16 @@ class RPCHandlerMacro {
 		// refused, as the method failing.
 		final size:Int = RPCKinds.size(kind, optional);
 		final room:Expr = size >= 0 ? macro $v{FRAME_HEAD + size} : macro $v{FRAME_HEAD} + $e{RPCKinds.room(kind, optional, value)};
-		final writeValue:Expr = RPCKinds.write(kind, optional, macro framed, value);
+		var writeValue:Expr = RPCKinds.write(kind, optional, macro framed, value);
+		if (kind.compound) {
+			// A null inside an array or a structure is found as it is written:
+			// the frame goes back to the session, and the method fails as if
+			// it had thrown.
+			writeValue = macro try $writeValue catch (__error:Dynamic) {
+				this.__rpc_dropFrame(__on, framed);
+				throw __error;
+			};
+		}
 		// On the session whose call is running, or on the one a call answered
 		// later came from.
 		final on:Expr = session == null ? macro this.this_session : session;

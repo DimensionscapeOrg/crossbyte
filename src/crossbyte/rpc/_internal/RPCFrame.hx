@@ -91,6 +91,15 @@ class RPCFrame extends ByteArrayData {
 		}
 	}
 
+	/**
+		Makes room for `count` more bytes from `position`, keeping what is
+		written: an array of fixed-size elements makes room for all of them
+		at once, then writes each where it goes with the `Bytes` setters.
+	**/
+	public inline function fit(count:Int):Void {
+		__fit(count);
+	}
+
 	/** Makes room for `count` more bytes, keeping what is written. **/
 	private inline function __fit(count:Int):Void {
 		if (count > __length - position) {

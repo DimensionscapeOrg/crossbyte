@@ -125,6 +125,18 @@ abstract class RPCCommands {
 	}
 
 	/**
+		Gives back a frame `__startFrame` began whose arguments could not be
+		written, a null inside an array or a structure, so that its
+		session's next frame is written in it, not in a fresh one.
+	**/
+	@:noCompletion private function __dropFrame(framed:RPCFrame):Void {
+		final session = __session;
+		if (session != null) {
+			session.__sent(framed);
+		}
+	}
+
+	/**
 		Sends a one-way call's frame, as its stub built it. On a connection
 		that has ended it is dropped: nobody is told what becomes of a one-way
 		call.
