@@ -466,8 +466,32 @@ entry below says how:
   line, or set the cap it wants. A host asks for the system's largest
   backlog. A class implementing `INetHost` declares `maxConnections` as
   `(get, set)` and adds `refusedConnections(get, never)`.
+- `PeerConnection.readyTimeout = 0` is no deadline, where it failed the
+  connection at once, and NaN or a negative number throws
+  `ArgumentError`: code that set 0 to fail fast sets a small number of
+  seconds instead.
+- A `PeerConnection` refuses a channel its peer opens past 512 of the
+  peer's open at once (`maxPeerChannels`), or naming a label or protocol of
+  more than 1 KiB (`maxLabelSize`), and `createDataChannel` throws
+  `ArgumentError` for a label or protocol past 65,535 bytes: raise or zero
+  the limits for a peer that opens more, or names longer.
 
 ### Added
+- `PeerConnection.maxPeerChannels` (512) and `maxLabelSize` (1,024 bytes),
+  and `refusedChannels`: the channels a peer may have open that it opened
+  itself, and how long a name it may give one, where the stream numbers
+  were the only bound, 3,000 OPENs with 1 KB labels left 3,000 channels
+  and 3 MB of labels (512 and 512 KB now). An OPEN past either is refused
+  as RFC 8832 refuses a channel: no acknowledgement, and the stream reset,
+  which closes the peer's end; `onChannel` is not called. 512 is what
+  libwebrtc's 1,024 SCTP streams give one side; channels this end creates
+  are not counted. 0 lifts each. The same on `DataChannelSet`, with
+  `DEFAULT_MAX_PEER_CHANNELS` and `DEFAULT_MAX_LABEL_SIZE`. Tests:
+  `DataChannelTest` (the limits, a name measured in bytes, the next channel
+  taken once one closes, 0) and `PeerConnectionTest`; they failed before.
+  `createDataChannel` also refuses a label or protocol past the OPEN's
+  sixteen-bit length, as the W3C API does, where it wrote the length cut
+  short and the peer read the protocol out of the label.
 - `ServerSocket.maxConnections` (10,000, `DEFAULT_MAX_CONNECTIONS`),
   `maxPendingHandshakesPerAddress` (16) and `refusedConnections`, the
   names and shapes `ServerWebSocket` had, moved up to the class every
@@ -1977,6 +2001,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `PeerConnection.readyTimeout` reads 0 as no deadline, as
+  `IceAgent.timeout`, `Socket.timeout` and every other timeout here do;
+  it read 0 as a deadline already past, so a connection given 0 failed
+  `ready` at the first poll after `connect`, and an ICE restart was given
+  up at once. With no deadline only the agent's own `timeout` ends a
+  connect or restart that finds no path. NaN and negative values are
+  refused with `ArgumentError`: NaN compared false with every elapsed
+  time, so its deadline never came, and a negative one failed every
+  connection at once. Tests: `PeerConnectionTest`, a connect and a
+  restart given 0, and the values refused; each failed before.
 - A TCP connection lets go of its buffers' storage once it has gone
   quiet. Each buffer kept the largest it had needed for as long as the
   connection was open: after one 16 KB message each way an idle accepted
@@ -3942,6 +3976,83 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The TURN relay interoperability test (`ci/relay/run.js`) no longer
+  fails on a loaded runner. node-turn 0.0.6 never finds the allocation a
+  client already has when an Allocate arrives, so a retransmitted one,
+  sent when the first answer takes more than half a second, made a second
+  allocation and filed it over the first: the client advertised the first
+  address, the server installed permissions on and sent from the second,
+  and every datagram was refused ("permission fail") until the run gave
+  up, "the peers never connected through the relay". Under 64 spinning
+  processes it failed 16 runs in 30, each with four allocations for two
+  clients. The harness now answers a retransmission from the allocation
+  already made, as RFC 5766 section 6.2 has it, and requires exactly two:
+  30 in 30 under the same load (retransmissions answered in half of them),
+  200 in 200 without.
+- One SCTP packet from a connected WebRTC peer costs what its size
+  allows, not what the peer sent before it. Measured on the jvm, each
+  from one packet of 16 KB or less, the runtime serving nothing else
+  meanwhile:
+  - a SACK listing 4,000 gap blocks highest first took 84 ms to sort
+    (half a second on the interpreter), each block costing more the more
+    there were (3.1 -> 13.6 us a block from 500 to 4,000): the first 256 are
+    read now, as many as a SACK fits in the largest packet this end sends
+    (0.2 us a block at 4,000); and only the first SACK in a packet is
+    read, where a packet of a thousand walked everything outstanding a
+    thousand times (12 ms against 0.85 ms over 8,192 fragments);
+  - a FORWARD TSN naming a stream 500 times cost more with every message
+    the stream held (0.9 -> 7.8 ms over 1,000 to 8,000 held; 1.9 s for
+    2,000 entries over 8,000 on the interpreter): a stream costs the
+    shorter of the range an entry names and what it holds now (28 us at
+    every size);
+  - 200 FORWARD TSN chunks asked every stream reassembling for fragments to
+    drop (6.2 -> 22 ms over 1,000 to 8,000 streams; 1.6 s on the
+    interpreter): streams are found by the TSN each starts at now, so a
+    chunk costs what it drops (13 us at 8,000).
+  The association also holds at most 18,432 pieces, fragments and
+  messages waiting their turn, every stream together, the most an honest
+  peer can make it hold (`MAX_TSN_AHEAD` above the acknowledgement, one
+  message of `MAX_FRAGMENTS` below), where its bounds counted bytes alone
+  and pieces of no bytes pinned 20,000 objects and more with the window
+  untouched; past it, it gives back half, as past the window. Packets of
+  300 HEARTBEATs drew 300 answers and 60 INITs 60 INIT ACKs: one HEARTBEAT
+  is answered a packet, and an INIT not alone in its packet (RFC 9260
+  section 6.10) is not acted on. A packet of 800 stream-reset requests
+  built a 25,612-byte answer, past the largest datagram DTLS sends, which
+  threw and ended the connection: eight answers are owed at most, the rest
+  going as if lost. And no more than 16,384 fragments go past the peer's
+  cumulative acknowledgement: a peer acknowledging everything but the
+  first fragment made this end keep everything sent after it with
+  `bufferedAmount` at 0; past it what is sent waits where `bufferedAmount`
+  counts it. Tests: `SctpDataTransferTest` and `SctpAssociationTest`, each
+  attack at four sizes with the cost staying flat, and the bounds' edges;
+  all failed before.
+- A WebRTC message missing a fragment is no longer dropped when a later
+  message on its data channel completes first. Delivering a message took
+  every fragment of its stream before it too, so an earlier message
+  waiting on a retransmission lost what it had, and, ordered, the later
+  one then waited for good on a sequence that could no longer complete,
+  holding the channel. Test: `SctpDataTransferTest`, a message whose middle
+  fragment is retransmitted after the next message completes; failed
+  before.
+- An ICE agent's answers no longer cost more with each one. Each answer
+  to a check names where the peer saw it arrive from, and one naming a
+  place the agent had no candidate for made a peer-reflexive candidate of
+  it, with no bound, and paired the whole candidate list again: a peer
+  that named a new place in every answer (re-asked each time with a role
+  conflict) made the 2,000th answer cost 5.7 ms on the jvm, and answers
+  1,000 to 2,000 took 137 seconds on the interpreter, with the runtime
+  serving nothing else. An agent now learns at most
+  `IceAgent.MAX_LEARNED_LOCAL_CANDIDATES` (64, one per remote candidate,
+  as libwebrtc keeps one per connection) and never pairs them, RFC 8445
+  section 7.2.5.3.1: a check leaves from the candidate's base, already
+  paired, and a candidate added is paired with the other side alone
+  rather than both whole lists again. Answer 4,000 costs what answer 500
+  did (jvm: 13 us, from 9 ms). `PeerConnection` and
+  `ReliableDatagramServerSocket.attachIceAgent` both used it. Tests:
+  `IceAgentTest`, 4,000 answers each naming a new place (failed before:
+  165 us an answer in the first 500, 8,975 us in the last 2,000), and the
+  list paired a candidate at a time against `IceCandidatePair.pair`.
 - Natively on macOS, an address written out on several threads at once
   could read back as "[inet_ntoa error]": hxcpp formatted it with
   `inet_ntoa`, whose buffer is one for the whole process there, filled
