@@ -101,16 +101,20 @@ class RPCCallWriterTest extends utest.Test {
 	public function testACancelledWriterGivesItsFrameBack():Void {
 		var pair = new SessionPair();
 		var writer = pair.client.runtimeCall(OP).int(1);
-		Assert.isTrue(@:privateAccess pair.client.__frame.busy);
+		// The session's own buffer, taken; under the checking defines every
+		// frame is a fresh one and the session keeps none.
+		#if !(crossbyte_check_events || crossbyte_fresh_events)
+		Assert.isTrue((@:privateAccess pair.client.__frame != null && @:privateAccess pair.client.__frame.busy));
+		#end
 		writer.cancel();
-		Assert.isFalse(@:privateAccess pair.client.__frame.busy);
+		Assert.isFalse((@:privateAccess pair.client.__frame != null && @:privateAccess pair.client.__frame.busy));
 		Assert.raises(() -> writer.int(2), IllegalOperationError);
 		writer.cancel();
 		// A request cancelled leaves nothing waiting.
 		var request = pair.client.runtimeRequest(OP).int(1);
 		request.cancel();
 		Assert.equals(0, pair.client.callsWaiting);
-		Assert.isFalse(@:privateAccess pair.client.__frame.busy);
+		Assert.isFalse((@:privateAccess pair.client.__frame != null && @:privateAccess pair.client.__frame.busy));
 	}
 
 	public function testAWriterTakenWhileAnotherIsWrittenHasAFrameOfItsOwn():Void {
@@ -124,7 +128,7 @@ class RPCCallWriterTest extends utest.Test {
 		pair.client.runtimeCall(OP).int(2).int(3).send();
 		outer.int(4).send();
 		Assert.same(["2,3", "1,4"], calls);
-		Assert.isFalse(@:privateAccess pair.client.__frame.busy);
+		Assert.isFalse((@:privateAccess pair.client.__frame != null && @:privateAccess pair.client.__frame.busy));
 	}
 
 	public function testACallOverTheFrameLimitIsRefused():Void {
@@ -135,7 +139,7 @@ class RPCCallWriterTest extends utest.Test {
 			writer.int(i);
 		}
 		Assert.raises(() -> writer.send(), ArgumentError);
-		Assert.isFalse(@:privateAccess pair.client.__frame.busy);
+		Assert.isFalse((@:privateAccess pair.client.__frame != null && @:privateAccess pair.client.__frame.busy));
 		var request = pair.client.runtimeRequest(OP);
 		for (i in 0...20) {
 			request.int(i);

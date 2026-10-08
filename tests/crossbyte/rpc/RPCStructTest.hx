@@ -216,7 +216,7 @@ class RPCStructTest extends utest.Test {
 		named.name = null;
 		Assert.raises(() -> fixture.commands.spawn(named), ArgumentError);
 		Assert.equals(sent, fixture.link.client.sent, "a structure with a null where a value has to be was sent");
-		Assert.isFalse(@:privateAccess fixture.client.__frame.busy, "the frame was left taken");
+		Assert.isFalse((@:privateAccess fixture.client.__frame != null && @:privateAccess fixture.client.__frame.busy), "the frame was left taken");
 		fixture.commands.spawn(new StructUnit());
 		Assert.equals(1, fixture.handler.units.length);
 	}

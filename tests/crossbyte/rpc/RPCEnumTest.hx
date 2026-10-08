@@ -173,7 +173,7 @@ class RPCEnumTest extends utest.Test {
 		Assert.raises(() -> fixture.commands.stances([Prone, null]), ArgumentError);
 		Assert.raises(() -> fixture.commands.orders([Idle, null]), ArgumentError);
 		Assert.equals(sent, fixture.link.client.sent);
-		Assert.isFalse(@:privateAccess fixture.client.__frame.busy);
+		Assert.isFalse((@:privateAccess fixture.client.__frame != null && @:privateAccess fixture.client.__frame.busy));
 		Assert.equals("none", fixture.commands.maybe(null).result);
 		Assert.equals("Say", fixture.commands.maybe(Say("x")).result);
 	}
