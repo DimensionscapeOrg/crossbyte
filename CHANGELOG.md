@@ -498,7 +498,10 @@ entry below says how:
   carry at most 1,179 bytes (`MAX_ENCRYPTED_PAYLOAD_SIZE`,
   `maxPayloadSize`, which also bounds its unreliable messages and CONNECT
   payload) and no sealed datagram is larger than one in the clear, 1,211
-  bytes. It fails closed: a session that asked for encryption never falls back to
+  bytes. With `allowRebind`, an encrypted session's REBIND proof is keyed
+  with a rebind key both ends derive with its sealing keys and neither
+  sends, where a session in the clear is given one in the HANDSHAKE: even
+  someone who saw the whole handshake cannot move it. It fails closed: a session that asked for encryption never falls back to
   the clear, and a peer that answers without it, a key mismatch, and a
   server that refuses (a new `PATH` frame saying why) end the attempt with
   an `ioError` naming the reason. Natively through libsodium, on Node

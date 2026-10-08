@@ -366,7 +366,9 @@ session there, on the same object, and both sides send again what was lost
 meanwhile: over loopback, traffic resumed 0.2 ms after the first frame from
 the new port natively, 0.35 ms on the jvm, a round trip. Without encryption the key crosses the
 network in the clear, so turn it on with encryption, or where nobody
-hostile shares the players' paths. TCP and WebSocket connections cannot
+hostile shares the players' paths: an encrypted session's rebind key is
+derived at both ends with its sealing keys and never sent, so even someone
+who saw the whole handshake cannot move it. TCP and WebSocket connections cannot
 follow an address: those players reconnect and resume, as
 `ReliableDatagramServerSocket`'s class doc shows under "Resuming a player",
 which is also the fallback for a peer from before 1.0.
