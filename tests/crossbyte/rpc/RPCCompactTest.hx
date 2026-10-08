@@ -79,10 +79,11 @@ class RPCCompactTest extends utest.Test {
 		Assert.equals(Math.POSITIVE_INFINITY, scaled(fixture, 1e300));
 	}
 
-	// The answer through a Single first: HashLink cannot cast a Null<Single>
-	// to a Float in one step ("Don't know how to cast null(f32) to f64").
+	// The answer through a Float32 first, Single where the target has one:
+	// HashLink cannot cast a Null<Single> to a Float in one step ("Don't know
+	// how to cast null(f32) to f64").
 	private static function scaled(fixture:CompactFixture, value:Float):Float {
-		var result:Single = fixture.commands.scale(value).result;
+		var result:Float32 = fixture.commands.scale(value).result;
 		return result;
 	}
 
