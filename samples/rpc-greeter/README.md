@@ -9,6 +9,8 @@ It demonstrates:
 - a handler that implements the shared contract directly
 - one-way RPC calls
 - typed `RPCResponse<T>` results
+- a structure (`Visitor implements RPCStruct`) carrying an enum, a compact
+  `UInt8` and an `Array<Float32>`, sent with no packing by hand
 
 Useful commands from `samples/rpc-greeter`:
 
