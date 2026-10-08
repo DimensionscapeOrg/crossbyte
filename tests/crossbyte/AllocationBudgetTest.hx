@@ -86,6 +86,11 @@ class AllocationBudgetTest extends utest.Test {
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 624], [216, 216, 848]);
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 528], [696, 696, 728]);
+	// The same, every datagram sealed and opened (RUDP-2): what encryption
+	// adds is buffers the server's sessions share, made once. Measured
+	// natively on Windows and on the jvm (Oracle 8), 2026-10-08; Linux
+	// taken as Windows until measured.
+	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [424, 424, 384], [600, 600, 544]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
@@ -441,6 +446,64 @@ class AllocationBudgetTest extends utest.Test {
 			};
 			__warm(op, WARM);
 			__within(RELIABLE, AllocationMeter.measure(op, 2000));
+		} catch (error:Dynamic) {
+			try client.close() catch (_:Dynamic) {}
+			try server.close() catch (_:Dynamic) {}
+			__finish();
+			throw error;
+		}
+		try client.close() catch (_:Dynamic) {}
+		try server.close() catch (_:Dynamic) {}
+		__finish();
+	}
+
+	/**
+		`testAReliableMessageDeliveredAndAcknowledged` with the session
+		encrypted (`ReliableDatagramSocket.encryptionKey`): every datagram
+		sealed by one end and opened by the other. Not on a target that
+		cannot encrypt.
+	**/
+	public function testAnEncryptedReliableMessageDeliveredAndAcknowledged():Void {
+		if (!ReliableDatagramSocket.isEncryptionSupported) {
+			Assert.pass();
+			return;
+		}
+		var runtime = __start();
+		var key = haxe.io.Bytes.alloc(32);
+		for (i in 0...32) {
+			key.set(i, i * 5);
+		}
+		var server = new ReliableDatagramServerSocket();
+		server.encryptionKeyFor = (_, _, _) -> key;
+		var accepted:ReliableDatagramSocket = null;
+		var arrived:Int = 0;
+		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+			accepted = e.socket;
+			accepted.addEventListener(DatagramSocketDataEvent.DATA, (_:DatagramSocketDataEvent) -> arrived++);
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var client = new ReliableDatagramSocket();
+		client.encryptionKey = key;
+		var message = new ByteArray();
+		for (i in 0...200) {
+			message.writeByte(i);
+		}
+		var sent:Int = 0;
+		var delivered:Float = 0;
+		var done:Void->Bool = () -> arrived == sent && client.framesDelivered >= delivered;
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			__pumpUntil(() -> client.connected && accepted != null && accepted.connected, false);
+			var op = () -> {
+				sent++;
+				delivered = client.framesDelivered + 1;
+				client.send(message, 0, 200);
+				__pumpUntil(done, false);
+			};
+			__warm(op, WARM);
+			__within(RELIABLE_ENCRYPTED, AllocationMeter.measure(op, 2000));
 		} catch (error:Dynamic) {
 			try client.close() catch (_:Dynamic) {}
 			try server.close() catch (_:Dynamic) {}
