@@ -196,6 +196,14 @@ final class ReliableDatagramFrame {
 	units, and a peer whose HANDSHAKE carries fewer is from before 1.0, and
 	acknowledged every pass, as it always was.
 
+	An ACK with `ACK_DUPLICATE_MASK`, the bit a PACKET calls a resend,
+	which no ACK set before, was drawn by a frame its sender already had:
+	a copy sent again after the first had arrived. Its receiver takes it as
+	that copy delivered, RFC 2883's D-SACK put to the use RFC 8985 makes of
+	it, and judges loss from when the copy went (see
+	`ReliableDatagramSocket.__creditDuplicate`). A peer from before 1.0
+	neither sends nor reads it.
+
 	A bundle is several frames in one datagram: `BUNDLE_MAGIC`, then each
 	frame preceded by its length in two bytes. A session sends one only to a
 	peer whose CONNECT or HANDSHAKE said it takes them, since an older peer
@@ -302,6 +310,14 @@ final class ReliableDatagramProtocol {
 
 	/** On an ACK: a delay leads the payload. The bit is `GRACEFUL_MASK`, which means that only on a FIN. **/
 	public static inline var ACK_DELAY_MASK:Int = 0x08;
+
+	/**
+		On an ACK: a frame its sender already had drew it, a duplicate. The bit
+		is `RESEND_MASK`, which means that only on a frame that is sent again;
+		`encodeInto` sets it for `resend`, and a decoded ACK reads it as
+		`resend`.
+	**/
+	public static inline var ACK_DUPLICATE_MASK:Int = 0x40;
 
 	/** What one unit of an ACK's delay, or of a HANDSHAKE's announced one, stands for: ten microseconds. **/
 	public static inline var ACK_DELAY_UNIT:Float = 0.00001;

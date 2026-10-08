@@ -75,9 +75,12 @@ import crossbyte._internal.net.IPv6;
 	A frame lost on the way is found from what arrives after it. The
 	receiver's acknowledgement names the frames it holds past a gap, and a
 	frame sent before one that arrived is sent again once it has had that
-	one's round trip, and a little more, to arrive in. When nothing comes back
-	at all, the last frame goes again as a probe, and only then does a frame
-	wait out its retransmission timeout.
+	one's round trip, and a little more, to arrive in. A frame sent again
+	whose first copy had in fact arrived, only its acknowledgement was
+	held or lost, arrives as a duplicate, which the peer reports, and what
+	was sent before that copy and is still missing goes then. When nothing
+	comes back at all, the last frame goes again as a probe, and only then
+	does a frame wait out its retransmission timeout.
 
 	A session ends in one of three ways, and dispatches `close` once when it
 	has. `close()` is graceful: everything sent before it arrives, in order,
@@ -1156,6 +1159,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __rackSentAt:Float = -1;
 	@:noCompletion private var __rackSequence:Seq32 = 0;
 	@:noCompletion private var __rackRtt:Float = 0;
+
+	// A copy sent again after its first had arrived, on its way to arrive as
+	// a duplicate: when it went, and which (see `__creditDuplicate`); -1
+	// while none is.
+	@:noCompletion private var __duplicateSentAt:Float = -1;
+	@:noCompletion private var __duplicateSequence:Seq32 = 0;
+
+	// A frame this side already had arrived again since the last ACK went,
+	// which the next ACK says (`ReliableDatagramProtocol.ACK_DUPLICATE_MASK`).
+	@:noCompletion private var __duplicateArrived:Bool = false;
 
 	// The fastest round trip measured, -1 until one is.
 	@:noCompletion private var __minRtt:Float = -1;
@@ -2357,7 +2370,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			case PACKET:
 				__acceptPacket(frame.sequence, frame.payload, frame.more);
 			case ACK:
-				__acceptAckFrame(frame.sequence, frame.payload, frame.ackDelay);
+				// An ACK's resend bit says a duplicate drew it.
+				__acceptAckFrame(frame.sequence, frame.payload, frame.ackDelay, frame.resend);
 			case FIN:
 				if (frame.graceful) {
 					__acceptFin(frame.sequence);
@@ -2926,11 +2940,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		@param heldFor How long the peer says it held this acknowledgement, or
 		       -1 where it does not say.
+		@param duplicate Whether the peer says a frame it already had drew
+		       this acknowledgement (`ReliableDatagramProtocol.ACK_DUPLICATE_MASK`).
 	**/
-	@:noCompletion private function __acceptAckFrame(ackValue:Seq32, sack:ByteArray, heldFor:Float = -1):Void {
+	@:noCompletion private function __acceptAckFrame(ackValue:Seq32, sack:ByteArray, heldFor:Float, duplicate:Bool):Void {
 		var now:Float = __clock();
 		var held:Float = heldFor > 0 ? heldFor : 0;
 		var progressed:Bool = __release(ackValue, now, held);
+		// After the release, which can find the first copy of what was sent
+		// again arriving, the copy this says arrived is the one after it.
+		var credited:Bool = duplicate && __creditDuplicate();
 
 		if (sack != null && sack.length > 0) {
 			__peerSacks = true;
@@ -2946,6 +2965,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		if (progressed) {
 			__dupAcks = 0;
+			__detectLosses(now);
+			__drainQueue();
+			return;
+		}
+
+		// Nothing released, and a copy sent again known delivered: what went
+		// before it and is still missing is judged by when it went.
+		if (credited) {
 			__detectLosses(now);
 			__drainQueue();
 			return;
@@ -3023,8 +3050,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var roundTrip:Float = now - frame.sentAt;
 		// Sent again, and back faster than anything has ever come back: the
-		// first copy arrived, not the one the send time is of.
+		// first copy arrived, not the one the send time is of, and what was
+		// sent after the first and before this one may still be on its way,
+		// as RFC 8985 has it. The copy sent again is on its way too, and
+		// arrives as a duplicate, which the peer says it got: that is when
+		// this one counts (see `__creditDuplicate`).
 		if (frame.attempts > 1 && __minRtt >= 0 && roundTrip < __minRtt) {
+			if (__duplicateSentAt < 0 || frame.sentAt < __duplicateSentAt) {
+				__duplicateSentAt = frame.sentAt;
+				__duplicateSequence = sequence;
+			}
 			return;
 		}
 		if (__rackSentAt < 0 || frame.sentAt > __rackSentAt || (frame.sentAt == __rackSentAt && __rackSequence < sequence)) {
@@ -3032,6 +3067,38 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__rackSequence = sequence;
 			__rackRtt = roundTrip;
 		}
+	}
+
+	/**
+		The peer says a frame it already had arrived again, the copy sent
+		after the first one arrived and only its acknowledgement was late or
+		lost (`__noteDelivered` keeps when that copy went). Delivered, then,
+		and sent later than anything known delivered: loss is judged from
+		when it went, as RFC 8985 judges it from the most recent frame
+		delivered, without a round trip measured from it, since what it
+		answers is not one transmission's. What was sent before it and is
+		still missing goes now rather than at the tail probe or the timeout.
+
+		RFC 8985 skips such a frame, to keep what the late first copy
+		overtook from being sent again for nothing, and that still holds
+		here: what is credited is the duplicate's own arrival, which the
+		peer reported after everything sent before it had had a round trip
+		to arrive in, RFC 2883's D-SACK, as TCP uses it; QUIC gets the same
+		from never reusing a packet number. Says whether there was one to
+		credit.
+	**/
+	@:noCompletion private function __creditDuplicate():Bool {
+		var sentAt:Float = __duplicateSentAt;
+		if (sentAt < 0) {
+			return false;
+		}
+		__duplicateSentAt = -1;
+		if (__rackSentAt < 0 || sentAt > __rackSentAt || (sentAt == __rackSentAt && __rackSequence < __duplicateSequence)) {
+			__rackSentAt = sentAt;
+			__rackSequence = __duplicateSequence;
+			// The round trip it is judged with is the last one measured.
+		}
+		return true;
 	}
 
 	/**
@@ -3290,6 +3357,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__drainBufferedPackets();
 		} else if (__shouldBufferPacket(sequence)) {
 			__cacheFrame(sequence, payload, more);
+		} else if (sequence < __inSequence || __inFrameCache.has(sequence)) {
+			// One already here, sent again: its first copy's acknowledgement
+			// was late or lost. The ACK this draws says so, which tells the
+			// peer this copy arrived (see `__creditDuplicate`).
+			__duplicateArrived = true;
 		}
 
 		// A handler may have closed the session, or a message too large may
@@ -3704,6 +3776,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__sackedCount = 0;
 		__rackSentAt = -1;
 		__rackRtt = 0;
+		__duplicateSentAt = -1;
+		__duplicateArrived = false;
 		__minRtt = -1;
 		__reorderingSeen = false;
 		__peerSacks = false;
@@ -4572,10 +4646,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			} else if (__ackHeld && __pendingCount == 0) {
 				// Held, and nothing of this side's goes to carry it: it waits
 				// for something that will, or for its timer.
-			} else if (__inFrameCacheSize > 0 || !(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
+			} else if (__inFrameCacheSize > 0 || __duplicateArrived || !(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
 				// Frames held past a gap make the acknowledgement say which,
 				// and it goes on its own even when a frame going out carries
-				// the cumulative value: that one has no room for the map.
+				// the cumulative value: that one has no room for the map,
+				// nor to say a duplicate arrived.
 				__sendAckFrame();
 			} else {
 				// A frame going out carries it.
@@ -4632,7 +4707,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (withDelay || __inFrameCacheSize > 0) {
 			length = __writeAckPayload(withDelay);
 		}
-		__sendFrame(ACK, __inSequence, length > 0 ? __sackScratch : null, 0, length, false, 0, false, false, withDelay);
+		// The resend bit, on an ACK, says a duplicate drew it.
+		var duplicate:Bool = __duplicateArrived;
+		__duplicateArrived = false;
+		__sendFrame(ACK, __inSequence, length > 0 ? __sackScratch : null, 0, length, duplicate, 0, false, false, withDelay);
 	}
 
 	/**

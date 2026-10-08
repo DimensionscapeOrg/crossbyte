@@ -4149,6 +4149,20 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable UDP frame lost behind one that was sent again needlessly,
+  its first copy had arrived, only the acknowledgement was held up or lost,
+  is sent again a round trip after that copy, where it waited for the
+  tail probe or the timeout: 72 ms later in the test, with a 20 ms round
+  trip and the default 25 ms acknowledgement hold. The acknowledgement
+  that comes back faster than any round trip is the first copy's, and
+  RACK (RFC 8985) rightly takes nothing from it, since what was sent
+  between the two copies may still be on its way. But the copy sent again
+  arrives as a duplicate, and a receiver now says so in the
+  acknowledgement it draws, the resend bit, which no ACK set before,
+  RFC 2883's D-SACK in a bit, and the sender takes that copy as
+  delivered: what went before it and is still missing is lost. Both
+  peers on 1.0 for it; an older peer neither sends the bit nor reads it,
+  and recovers as before.
 - The TURN relay interoperability test (`ci/relay/run.js`) no longer
   fails on a loaded runner. node-turn 0.0.6 never finds the allocation a
   client already has when an Allocate arrives, so a retransmitted one,

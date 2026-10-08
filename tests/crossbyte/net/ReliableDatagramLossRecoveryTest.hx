@@ -71,6 +71,56 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		receiver.close();
 	}
 
+	/**
+		A frame that arrives again, sent again by a peer whose first copy's
+		acknowledgement was held or lost, draws an acknowledgement that says
+		so, with the bit an ACK never set before; one drawn by anything new
+		does not.
+	**/
+	public function testADuplicateIsSaidInTheAcknowledgementItDraws():Void {
+		var receiver = RecordingSocket.make();
+		if (receiver == null) return;
+
+		receiver.__acceptFrame(packet(1000, "a"));
+		Assert.same(["ACK 1001"], described(receiver.take()), "a new frame's acknowledgement said a duplicate drew it");
+
+		receiver.__acceptFrame(packet(1000, "a"));
+		Assert.same(["ACK 1001 duplicate"], described(receiver.take()));
+		Assert.equals(1, receiver.delivered.length, "a duplicate was delivered");
+
+		// One held past a gap, arriving again: the map, and the bit.
+		receiver.__acceptFrame(packet(1002, "c"));
+		Assert.same(["ACK 1001"], described(receiver.take()));
+		receiver.__acceptFrame(packet(1002, "c"));
+		var frames = receiver.take();
+		Assert.same(["ACK 1001 duplicate"], described(frames));
+		Assert.same([0x01], bytesOf(frames[0].payload));
+
+		// Said once: the next acknowledgement is drawn by something new.
+		receiver.__acceptFrame(packet(1001, "b"));
+		Assert.same(["ACK 1003"], described(receiver.take()));
+		receiver.close();
+	}
+
+	/**
+		A message going out in the same pass carries the cumulative
+		acknowledgement in its header, which has no room to say a duplicate
+		drew it: an ACK goes beside it to say so.
+	**/
+	public function testADuplicateIsSaidEvenWhenAMessageCarriesTheAcknowledgement():Void {
+		var receiver = RecordingSocket.make();
+		if (receiver == null) return;
+
+		receiver.__acceptFrame(packet(1000, "a"));
+		receiver.take();
+		receiver.__acceptFrame(packet(1000, "a"));
+		receiver.send(text("reply"));
+		var frames = receiver.take();
+		Assert.same(["PACKET 1000", "ACK 1001 duplicate"], described(frames));
+		Assert.equals(1001, (frames[0].ack : Int));
+		receiver.close();
+	}
+
 	// ------------------------------------------------------------- sending
 
 	public function testAFrameSentBeforeOnesThePeerHoldsIsSentAgainAtOnce():Void {
@@ -186,6 +236,74 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		// still on its way, would be sent again for nothing.
 		sender.__acceptFrame(ack(1005, []));
 		Assert.same([], described(sender.take()), "a frame still on its way was sent again");
+
+		// The resend arrives as a duplicate a round trip on, and the peer's
+		// acknowledgement of it says so, and that the sixth arrived: it was
+		// on its way, and nothing goes for it, then or later.
+		waitFor(0.02);
+		var resends:Int = sender.__fastResends;
+		sender.__acceptFrame(duplicateAck(1006));
+		sender.__checkRetransmits();
+		Assert.same([], described(sender.take()), "a frame the duplicate's acknowledgement covered was sent again");
+		Assert.equals(resends, sender.__fastResends);
+		sender.close();
+	}
+
+	/**
+		RUDP-1's leftover, and RFC 8985's gap: a frame sent again whose first
+		copy had arrived, only its acknowledgement held up on the way. That
+		acknowledgement comes back faster than any round trip, so it is the
+		first copy's, and RACK takes nothing from it, what was sent after the
+		first copy may still be on its way. But the copy sent again arrives as
+		a duplicate, the peer says so, and that copy is then known delivered:
+		what was sent before it and is still missing goes at once. It waited
+		for the tail probe, two round trips and twice the peer's hold after
+		the last delivery, or the timeout.
+	**/
+	public function testWhatWentBeforeACopyThePeerAlreadyHadGoesWhenItSaysSo():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+
+		// A peer that holds its acknowledgements up to 25 ms, as a 1.0 peer
+		// does by default, and a round trip of 20 ms measured.
+		sender.__peerAckDelay = 0.025;
+		sendMessages(sender, 1);
+		sender.take();
+		waitFor(0.02);
+		sender.__acceptFrame(ack(1001, []));
+
+		// Six out: 1001 is held up on the way, 1002 to 1005 arrive, and 1006
+		// is lost.
+		sendMessages(sender, 6);
+		sender.take();
+		waitFor(0.02);
+		sender.__acceptFrame(ack(1001, [0, 1, 2, 3]));
+		Assert.same(["PACKET 1001 resend"], described(sender.take()));
+
+		// 1001's first copy arrives after all, and the peer's acknowledgement
+		// of it at once: the first copy's. 1006, sent before the copy that
+		// went again, may still be on its way, and nothing goes for it.
+		sender.__acceptFrame(ack(1006, []));
+		Assert.same([], described(sender.take()), "a frame that may still be on its way was sent again");
+
+		// The copy sent again arrives as a duplicate, a round trip later, and
+		// the peer says so, and that 1006 is still missing: it goes now.
+		waitFor(0.02);
+		var reported:Float = Timer.stamp();
+		sender.__acceptFrame(duplicateAck(1006));
+		var sent:Array<String> = described(sender.take());
+		var waited:Float = 0;
+		// Where it does not, how long it is left to wait, for the message.
+		while (sent.length == 0 && waited < 1) {
+			waitFor(0.001);
+			sender.__checkRetransmits();
+			sent = described(sender.take());
+			waited = Timer.stamp() - reported;
+		}
+		Assert.equals(0.0, waited, 'the frame lost before the duplicate went ${Math.round(waited * 1000)} ms after the peer reported it, as $sent');
+		Assert.same(["PACKET 1006 resend"], sent);
+		Assert.equals(0, sender.__probes, "the tail was probed for it");
+		Assert.equals(0, sender.__timeoutResends);
 		sender.close();
 	}
 
@@ -506,6 +624,11 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		return new ReliableDatagramFrame(ACK, value, map, false);
 	}
 
+	/** An acknowledgement of `value` that a duplicate drew: the resend bit, on an ACK. **/
+	private static function duplicateAck(value:Int):ReliableDatagramFrame {
+		return new ReliableDatagramFrame(ACK, value, new ByteArray(), true);
+	}
+
 	private static function sendMessages(socket:ReliableDatagramSocket, count:Int):Void {
 		for (i in 0...count) {
 			socket.send(text("m" + i));
@@ -515,7 +638,8 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 	private static function described(frames:Array<ReliableDatagramFrame>):Array<String> {
 		return [
 			for (frame in frames)
-				RecordingSocket.typeName(frame.type) + " " + (frame.sequence : Int) + (frame.resend ? " resend" : "")
+				RecordingSocket.typeName(frame.type) + " " + (frame.sequence : Int)
+					+ (frame.resend ? (frame.type == ReliableDatagramFrameType.ACK ? " duplicate" : " resend") : "")
 		];
 	}
 
