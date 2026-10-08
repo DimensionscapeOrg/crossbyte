@@ -25,6 +25,7 @@ import crossbyte.net._internal.reliable.OutstandingFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
+import crossbyte.net._internal.reliable.SessionCipher;
 import crossbyte.net._internal.RuntimeHandOff;
 import haxe.Serializer;
 import haxe.Unserializer;
@@ -288,6 +289,197 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		of an ordinary server never receives a CONNECT, and reads `null`.
 	**/
 	public var connectPayload(default, null):ByteArray = null;
+
+	/**
+		Whether sessions can be encrypted on this target (see
+		`encryptionKey`): natively, on Node and on the jvm. Not on HashLink,
+		neko or the interpreter, which have no secure random source for the
+		random each end of an encrypted session contributes, and not in the
+		browser, which has no reliable UDP at all.
+	**/
+	public static var isEncryptionSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isEncryptionSupported():Bool {
+		return isSupported && SessionCipher.isSupported;
+	}
+
+	/**
+		The 32-byte key this session's datagrams are sealed with, or null,
+		the default, for a session in the clear. Write-only; set it before
+		`connect()`.
+
+		CrossByte does no key exchange here: the application gives each end
+		the same key for the session, as netcode.io's connect tokens do.
+		Typically a login service, reached over HTTPS, hands the client a
+		connect token and a key; the client sets the key here and sends the
+		token as its `connect` payload, and the server's
+		`ReliableDatagramServerSocket.encryptionKeyFor` derives or unwraps
+		the same key from the token. The guide's "Encrypted sessions" shows
+		both ends with `HKDF`.
+
+		With a key, every datagram the session sends after its CONNECT,
+		messages of every delivery mode, acknowledgements, bundles,
+		keepalives, the FIN, is sealed with ChaCha20-Poly1305 (RFC 8439)
+		under a key of its own for each direction, derived with HKDF from
+		this key and a random of each end's, so the same key given to two
+		sessions never seals two datagrams alike. A datagram that does not
+		authenticate, one seen before and one older than the replay window
+		are dropped, and counted (`unauthenticatedDatagrams`,
+		`replayedDatagrams`, `lateDatagrams`); so is anything sent in the
+		clear where only sealed datagrams are taken. Each sealed datagram is
+		`ENCRYPTION_OVERHEAD` (21) bytes larger than it would have been.
+
+		It fails closed. A session that asked for encryption never falls back
+		to the clear: a peer that answers without encryption, one from
+		before encryption was added, or a server that gave this session no
+		key, and a peer whose key is not this one end the attempt, with an
+		`ioError` saying which, and then `close`; so does a server's refusal
+		(`ReliableDatagramServerSocket.encryptionKeyFor`).
+
+		What is not protected: the CONNECT itself, whose payload, the
+		connect token, crosses in the clear, as `connect` says, so the
+		token must be one the server can check and that is worthless to a
+		listener without the key (single-use, short-lived, or bound to the
+		address); who talks to whom, when, how often and how much (the
+		sizes, timing and count of datagrams, and the packet numbers in
+		each); and past traffic once the key is known: there is no forward
+		secrecy in this mode, so a key that leaks later opens what was
+		recorded. A reset from a server is not authenticated either, so a
+		connected encrypted session does not end on one; a server that lost
+		the session (restarted) is noticed at `idleTimeout`.
+
+		@throws IllegalOperationError If set on a session a server accepted
+		        (the server gives those theirs), after `connect()`, or on a
+		        target without encryption (`isEncryptionSupported`), naming
+		        it.
+		@throws ArgumentError If the key is not 32 bytes.
+	**/
+	public var encryptionKey(never, set):Null<haxe.io.Bytes>;
+
+	@:noCompletion private function set_encryptionKey(value:Null<haxe.io.Bytes>):Null<haxe.io.Bytes> {
+		if (!__ownsTransport || __incoming) {
+			throw new IllegalOperationError("A session a server accepted is given its key by the server's encryptionKeyFor.");
+		}
+		if (__closed || __closing || __connected || __lookingUp || __remoteAddress != "") {
+			throw new IllegalOperationError("Set encryptionKey before connect().");
+		}
+		if (value == null) {
+			if (__encryptionKey != null) {
+				__encryptionKey.fill(0, __encryptionKey.length, 0);
+			}
+			__encryptionKey = null;
+			return null;
+		}
+		if (!isEncryptionSupported) {
+			throw new IllegalOperationError('Reliable UDP sessions cannot be encrypted on ${__targetName()}: '
+				+ 'it has no secure random source, or no reliable UDP; see isEncryptionSupported.');
+		}
+		if (value.length != SessionCipher.KEY_SIZE) {
+			throw new ArgumentError('An encryption key is ${SessionCipher.KEY_SIZE} bytes, and this one is ${value.length}.');
+		}
+		__encryptionKey = haxe.io.Bytes.alloc(SessionCipher.KEY_SIZE);
+		__encryptionKey.blit(0, value, 0, SessionCipher.KEY_SIZE);
+		return value;
+	}
+
+	/**
+		Whether this session seals its datagrams: it was given a key, through
+		`encryptionKey` or by the server that accepted it. True before the
+		handshake completes, for a session that asked; a session that cannot
+		have it never connects.
+	**/
+	public var encrypted(get, never):Bool;
+
+	@:noCompletion private inline function get_encrypted():Bool {
+		return __cipher != null || __encryptionKey != null;
+	}
+
+	/** What sealing adds to each datagram of an encrypted session: a byte of type, four of packet number, the 16-byte tag. **/
+	public static inline var ENCRYPTION_OVERHEAD:Int = SessionCipher.OVERHEAD;
+
+	/**
+		The largest CONNECT payload an encrypted session sends: 1,179 bytes,
+		the 1,200 of one frame less `ENCRYPTION_OVERHEAD`.
+	**/
+	public static inline var MAX_ENCRYPTED_PAYLOAD_SIZE:Int = ReliableDatagramProtocol.MAX_PAYLOAD_SIZE - SessionCipher.OVERHEAD;
+
+	/**
+		A cipher for a new attempt, made from `key` with a random of this
+		side's; none without a key. The one before is wiped.
+	**/
+	@:noCompletion private function __beginCipher(key:Null<haxe.io.Bytes>):Void {
+		if (__cipher != null) {
+			__cipher.dispose();
+			__cipher = null;
+		}
+		__peerHasKeys = false;
+		if (key != null) {
+			__cipher = new SessionCipher(key);
+		}
+	}
+
+	/**
+		Datagrams an encrypted session dropped because they did not
+		authenticate under its key: tampered with, forged, sealed under
+		another key, or sent in the clear where only sealed ones are taken.
+		Zero for a session in the clear.
+	**/
+	public var unauthenticatedDatagrams(get, never):Float;
+
+	@:noCompletion private function get_unauthenticatedDatagrams():Float {
+		return __plainDropped + (__cipher != null ? __cipher.forged : 0);
+	}
+
+	/** Datagrams an encrypted session dropped because their packet number had already been opened: replays. **/
+	public var replayedDatagrams(get, never):Float;
+
+	@:noCompletion private function get_replayedDatagrams():Float {
+		return __cipher != null ? __cipher.replayed : 0;
+	}
+
+	/**
+		Datagrams an encrypted session dropped because their packet number was
+		older than its replay window, 1,024 below the newest opened: replays
+		too old to tell, or a datagram delayed that long.
+	**/
+	public var lateDatagrams(get, never):Float;
+
+	@:noCompletion private function get_lateDatagrams():Float {
+		return __cipher != null ? __cipher.late : 0;
+	}
+
+	// The key `encryptionKey` was given, until connect() makes the cipher
+	// from it; the cipher; datagrams in the clear dropped by an encrypted
+	// session; whether the peer has shown it holds the keys, by sending
+	// something that opened (until then this side sends hellos, which carry
+	// its random); and the buffers a datagram is sealed into and opened into,
+	// the second taken afresh while it is out.
+	@:noCompletion private var __encryptionKey:Null<haxe.io.Bytes> = null;
+	@:noCompletion private var __cipher:Null<SessionCipher> = null;
+	@:noCompletion private var __plainDropped:Float = 0;
+	@:noCompletion private var __peerHasKeys:Bool = false;
+	@:noCompletion private var __sealed:ByteArray = null;
+	@:noCompletion private var __opened:ByteArray = null;
+	@:noCompletion private var __openedOut:Bool = false;
+	// Set while a CONNECT goes, the one frame an encrypted session sends in
+	// the clear.
+	@:noCompletion private var __sendingPlain:Bool = false;
+
+	@:noCompletion private static function __targetName():String {
+		#if eval
+		return "the interpreter";
+		#elseif neko
+		return "neko";
+		#elseif hl
+		return "HashLink";
+		#elseif js
+		return "JavaScript";
+		#elseif jvm
+		return "the jvm";
+		#else
+		return "this target";
+		#end
+	}
 
 	/**
 		The round trip to the peer in seconds, smoothed, as the session
@@ -1335,11 +1527,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			throw new RangeError("Invalid socket port number specified.");
 		}
 
-		var outgoing:ByteArray = __connectPayloadOf(payload);
+		var outgoing:ByteArray = __connectPayloadOf(payload, __encryptionKey != null);
 
 		if (!bound) {
 			__transport.bind();
 		}
+
+		// A random of this side's for the attempt, and the cipher that will
+		// derive the keys once the peer's comes.
+		__beginCipher(__encryptionKey);
 
 		#if nodejs
 		// No resolution step. hxnodejs resolves a name synchronously through
@@ -1449,12 +1645,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		A copy of a CONNECT payload, or null for none; refused rather than
 		split when it is larger than the one frame a CONNECT is.
 	**/
-	@:noCompletion private static function __connectPayloadOf(payload:ByteArray):ByteArray {
+	@:noCompletion private static function __connectPayloadOf(payload:ByteArray, encrypted:Bool = false):ByteArray {
 		if (payload == null || payload.length == 0) {
 			return null;
 		}
-		if (payload.length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
-			throw new RangeError('A CONNECT payload must fit one frame, ${ReliableDatagramProtocol.MAX_PAYLOAD_SIZE} bytes, and this one is ${payload.length}.');
+		var limit:Int = encrypted ? MAX_ENCRYPTED_PAYLOAD_SIZE : ReliableDatagramProtocol.MAX_PAYLOAD_SIZE;
+		if (payload.length > limit) {
+			throw new RangeError('A CONNECT payload must fit one frame, $limit bytes${encrypted ? " for an encrypted session" : ""}, and this one is ${payload.length}.');
 		}
 		var copy = new ByteArray();
 		copy.length = payload.length;
@@ -1862,10 +2059,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		congestion:CongestionControl,
 		peerConnectionId:Int = 0,
 		?relay:TurnClient,
-		?rebindKey:haxe.io.Bytes
+		?rebindKey:haxe.io.Bytes,
+		?cipher:SessionCipher
 	):ReliableDatagramSocket {
 		var socket = __adopted();
-		// Before the handshake, whose HANDSHAKE gives the peer the key.
+		// Before the handshake, whose HANDSHAKE gives the peer the key, and
+		// is the first datagram sealed, for an encrypted session.
+		socket.__cipher = cipher;
 		socket.__rebindKey = rebindKey;
 		socket.__offersRebind = rebindKey != null;
 		if (congestion != null) {
@@ -1923,11 +2123,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 */
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:Null<String>, remotePort:Int,
 			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
-			congestion:CongestionControl, ?relay:TurnClient):ReliableDatagramSocket {
+			congestion:CongestionControl, ?relay:TurnClient, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		var socket = __adopted();
 		if (congestion != null) {
 			socket.__congestion = congestion;
 		}
+		// Before the first CONNECT, which carries this side's random.
+		socket.__beginCipher(encryptionKey);
 		// Before the handshake, whose first CONNECT goes through it.
 		socket.__relay = relay;
 
@@ -2066,6 +2268,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				// HANDSHAKE is the same frame an accepted session replies with,
 				// so the client-and-server case is unchanged: it took this
 				// branch before and takes it now.
+				//
+				// An encrypted session takes the peer's random from it, a peer
+				// dialling this side as this side dials it, and refuses one
+				// that asked for no encryption.
+				if (__cipher != null && !__takeConnectRandom(frame)) {
+					return;
+				}
 				if (frame.bundles) {
 					__peerTakesBundles = true;
 				}
@@ -2157,7 +2366,53 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__endRebind();
 			__alive = true;
 			__afterRebind();
+		} else if (kind == ReliableDatagramProtocol.PATH_REFUSE) {
+			// The server will not open this attempt's session, and says why:
+			// taken only while the attempt it names is under way.
+			if (__incoming || __connected || (frame.sequence : Int) != __connectionId || payload.length < 2) {
+				return;
+			}
+			var reason:Int = bytes.get(1);
+			__failAttempt(reason == ReliableDatagramProtocol.REFUSE_ENCRYPTION_REQUIRED
+				? 'The server refused the session: it encrypts this session, and this side was given no key (set encryptionKey before connect()).'
+				: reason == ReliableDatagramProtocol.REFUSE_NO_KEY
+				? 'The server refused the session: this side asked for encryption, and the server has no key for it (its encryptionKeyFor gave none).'
+				: 'The server refused the session (reason $reason).');
 		}
+	}
+
+	/**
+		Ends an attempt, or, for a reason found only once connected, the
+		session, with an `ioError` saying why, and then `close`, as a
+		connect that fails does.
+	**/
+	@:noCompletion private function __failAttempt(reason:String):Void {
+		if (__closed) {
+			return;
+		}
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, reason));
+		__dispose(true);
+	}
+
+	/**
+		The peer's random, from a CONNECT to an encrypted session, which
+		derives the keys if they are not derived yet; false, with the CONNECT
+		to be dropped, for one from another attempt, or one that asked for
+		no encryption, which ends this attempt: it never falls back to the
+		clear.
+	**/
+	@:noCompletion private function __takeConnectRandom(frame:ReliableDatagramFrame):Bool {
+		if (!frame.hasRandom) {
+			if (!__incoming && !__connected) {
+				__failAttempt('The peer\'s CONNECT asked for no encryption, and this session has a key: it is from before encryption was added, '
+					+ 'or was given no key. Nothing was sent in the clear but this side\'s CONNECT.');
+			}
+			return false;
+		}
+		if (__cipher.ready) {
+			return __cipher.sameRandom(frame.random);
+		}
+		return __cipher.derive(frame.random);
 	}
 
 	/**
@@ -3353,6 +3608,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__closed = true;
 		__clearHandshakeTimers();
 		__endRebind();
+		// Every key wiped; the cipher stays, for its counts.
+		if (__cipher != null) {
+			__cipher.dispose();
+		}
+		if (__encryptionKey != null) {
+			__encryptionKey.fill(0, __encryptionKey.length, 0);
+		}
 		if (__keepAliveHandle != -1) {
 			__timers().clear(__keepAliveHandle);
 			__keepAliveHandle = -1;
@@ -3899,16 +4161,29 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// as every 1.0 peer does, and the server's cookie, once it has sent
 		// one. Padded, so whatever the server sends back is no larger.
 		var length:Int = __connectOut == null ? 0 : __connectOut.length;
-		var room:Int = length + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX + ReliableDatagramProtocol.MIN_CONNECT_SIZE;
+		var room:Int = __cipher == null ? length + ReliableDatagramProtocol.CONNECT_EXTENSION_MAX + ReliableDatagramProtocol.MIN_CONNECT_SIZE : length
+			+ ReliableDatagramProtocol.SEALED_CONNECT_EXTENSION_MAX + ReliableDatagramProtocol.MIN_SEALED_CONNECT_SIZE;
 		if (__connectScratch == null) {
 			__connectScratch = new ByteArray();
 		}
 		if (__connectScratch.length < room) {
 			__connectScratch.length = room;
 		}
+		// An encrypted session's random, which says it is one.
+		var random:Null<haxe.io.Bytes> = __cipher != null ? __cipher.localRandom : null;
 		var written:Int = ReliableDatagramProtocol.writeConnectPayload(__connectScratch, 0, ReliableDatagramProtocol.FEATURE_REBIND, __hasJoinCookie,
-			__joinCookieHigh, __joinCookieLow, __connectOut, 0, length);
+			__joinCookieHigh, __joinCookieLow, __connectOut, 0, length, random);
+		if (__cipher == null) {
+			__sendFrame(CONNECT, __connectionId, __connectScratch, 0, written, false, 0, false, false, true);
+			return;
+		}
+		// The one frame an encrypted session sends in the clear, so in a
+		// datagram of its own: what was gathered goes first, sealed.
+		__sendBundle();
+		__sendingPlain = true;
 		__sendFrame(CONNECT, __connectionId, __connectScratch, 0, written, false, 0, false, false, true);
+		__sendBundle();
+		__sendingPlain = false;
 	}
 
 	/**
@@ -4167,7 +4442,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// frame's header would carry the value but not the wait, and the peer
 		// would count the wait as round trip. One owed since this pass began
 		// goes in the header as it always did.
-		if (__ackOwed && type != ACK && __peerAckDelay >= 0 && __inFrameCacheSize == 0 && __newestArrivalAt >= 0
+		if (__ackOwed && type != ACK && type != CONNECT && __peerAckDelay >= 0 && __inFrameCacheSize == 0 && __newestArrivalAt >= 0
 			&& __clock() - __newestArrivalAt >= ACK_HELD_NOTABLY) {
 			__sendAckFrame();
 		}
@@ -4358,13 +4633,42 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	#end
 
 	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
+		if (__cipher != null && !__sendingPlain) {
+			return __sendSealed(offset, length);
+		}
+		return __sendBytes(__scratch, offset, length);
+	}
+
+	/**
+		The datagram in `length` bytes of `__scratch` from `offset`, sealed
+		and sent; nothing at all while the keys are not derived, an
+		encrypted session sends nothing in the clear but its CONNECT, and
+		the session ended once its packet numbers run out.
+	**/
+	@:noCompletion private function __sendSealed(offset:Int, length:Int):Bool {
+		if (!__cipher.ready) {
+			return true;
+		}
+		if (__sealed == null) {
+			__sealed = new ByteArray();
+			__sealed.length = __scratch.length + SessionCipher.HELLO_OVERHEAD;
+		}
+		var sealed:Int = __cipher.seal(__scratch, offset, length, __sealed, !__peerHasKeys, __peerConnectionId);
+		if (sealed < 0) {
+			__failAttempt("The session sealed as many datagrams as its keys allow (2^62); it was closed.");
+			return false;
+		}
+		return __sendBytes(__sealed, 0, sealed);
+	}
+
+	@:noCompletion private function __sendBytes(buffer:ByteArray, offset:Int, length:Int):Bool {
 		__sentSinceKeepAlive = true;
 		try {
 			if (__relay != null) {
-				__sendRelayed(offset, length);
+				__sendRelayed(buffer, offset, length);
 			} else {
 				#if nodejs
-				__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+				__transport.send(buffer, offset, length, __remoteAddress, __remotePort);
 				#else
 				// With everything else this transport sends in the pass, and
 				// on Linux in a call or a few rather than one each; see
@@ -4372,9 +4676,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				// __datagramFailed, after this has returned.
 				var target:Null<sys.net.Address> = __peerTarget();
 				if (target == null) {
-					__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+					__transport.send(buffer, offset, length, __remoteAddress, __remotePort);
 				} else {
-					__transport.__sendInPass(__scratch, offset, length, target, this);
+					__transport.__sendInPass(buffer, offset, length, target, this);
 				}
 				#end
 			}
@@ -4394,9 +4698,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		to ask for, with the first datagram to the peer, and `poll`'s to
 		renew; this asked too, before every datagram, a second lookup each.
 	**/
-	@:noCompletion private function __sendRelayed(offset:Int, length:Int):Void {
+	@:noCompletion private function __sendRelayed(buffer:ByteArray, offset:Int, length:Int):Void {
 		__relay.permit(__remoteAddress, haxe.Timer.stamp());
-		__relay.sendTo(__scratch, __remoteAddress, __remotePort, offset, length);
+		__relay.sendTo(buffer, __remoteAddress, __remotePort, offset, length);
 	}
 
 	@:noCompletion private function __teardownTransportListener():Void {
@@ -4438,6 +4742,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		dialled is handed its datagrams by the server instead.
 	**/
 	@:noCompletion public function __receiveDatagram(data:ByteArray, address:String, port:Int):Void {
+		if (__cipher != null) {
+			__receiveEncrypted(data, address, port);
+			return;
+		}
 		if (ReliableDatagramProtocol.isBundle(data)) {
 			// Only from the peer as already known: it sends bundles once it
 			// has heard from this side, so there is no port left to learn.
@@ -4458,6 +4766,169 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__acceptFrame(frame);
+	}
+
+	/**
+		A datagram from this session's own transport, for an encrypted
+		session: a sealed one opened, if it is from the peer as known, or,
+		for the hello that connects a session dialling, from the address it
+		dialled, whatever port answers, and one in the clear taken only as
+		far as an encrypted session takes any (`__acceptPlain`).
+	**/
+	@:noCompletion private function __receiveEncrypted(data:ByteArray, address:String, port:Int):Void {
+		var first:Int = data.length > 0 ? (data : haxe.io.Bytes).get(0) : -1;
+		if (first == SessionCipher.SEALED || first == SessionCipher.SEALED_HELLO) {
+			if (__matchesRemoteEndpoint(address, port, null)) {
+				__receiveSealed(data);
+			} else if (first == SessionCipher.SEALED_HELLO && !__incoming && !__connected && address == __remoteAddress) {
+				// The peer's port for its answers, learnt as a plain HANDSHAKE
+				// teaches it, but only from one that opens.
+				if (__receiveSealed(data) && !__closed && __remoteResponsePort == 0) {
+					__remoteResponsePort = port;
+				}
+			}
+			return;
+		}
+		if (ReliableDatagramProtocol.isBundle(data)) {
+			if (__matchesRemoteEndpoint(address, port, null)) {
+				__plainDropped++;
+			}
+			return;
+		}
+		var frame = ReliableDatagramProtocol.decodeInto(data, 0, data.length, true, __decoded());
+		if (frame == null || !__matchesRemoteEndpoint(address, port, frame)) {
+			return;
+		}
+		__acceptPlain(frame);
+	}
+
+	/**
+		Opens a sealed datagram from the peer, whichever transport it came
+		through, and takes what it held as the datagram this session would
+		have been sent in the clear, a frame or a bundle; says whether it
+		opened. A hello carries the peer's random, which derives the keys if
+		they are not derived yet: one that then does not open, answering this
+		side's own attempt, means the two ends hold different keys, and ends
+		the attempt. Anything else that does not open is dropped and counted,
+		as replays and datagrams older than the window are by the cipher.
+	**/
+	@:noCompletion public function __receiveSealed(data:ByteArray):Bool {
+		var cipher:SessionCipher = __cipher;
+		var bytes:haxe.io.Bytes = data;
+		var length:Int = data.length;
+		var deriving:Bool = false;
+		if (bytes.get(0) == SessionCipher.SEALED_HELLO) {
+			if (length < SessionCipher.HELLO_OVERHEAD) {
+				__plainDropped++;
+				return false;
+			}
+			var answering:Int = (bytes.get(1) << 24) | (bytes.get(2) << 16) | (bytes.get(3) << 8) | bytes.get(4);
+			// An answer to an earlier attempt from this address and port.
+			if (answering != 0 && __connectionId != 0 && answering != __connectionId) {
+				return false;
+			}
+			if (!cipher.ready) {
+				if (!cipher.derive(bytes, 5)) {
+					__plainDropped++;
+					return false;
+				}
+				deriving = true;
+			} else if (!cipher.sameRandom(bytes, 5)) {
+				__plainDropped++;
+				return false;
+			}
+		} else if (!cipher.ready) {
+			__plainDropped++;
+			return false;
+		}
+
+		// Into the session's own buffer, unless it is out: a listener that
+		// pumps the runtime can be handed the next datagram inside its call.
+		var pooled:Bool = Arrivals.REUSE && !__openedOut;
+		var opened:ByteArray;
+		if (pooled) {
+			opened = __opened;
+			if (opened == null) {
+				opened = __opened = new ByteArray();
+			}
+		} else {
+			opened = new ByteArray();
+		}
+		Arrivals.sized(opened, length);
+		var plain:Int = cipher.open(bytes, length, opened);
+		if (plain < 0) {
+			__openedDone(opened, pooled);
+			if (plain == SessionCipher.FORGED) {
+				if (deriving && !__incoming && !__connected) {
+					__failAttempt("The peer's answer did not authenticate under this session's key: the two ends were given different keys.");
+				} else if (cipher.forged >= SessionCipher.FORGERY_LIMIT) {
+					__failAttempt('${cipher.forged} datagrams failed to authenticate, which is as many as a session takes (2^36); it was closed.');
+				}
+			}
+			return false;
+		}
+		__peerHasKeys = true;
+		opened.length = plain;
+		if (pooled) {
+			__openedOut = true;
+		}
+		try {
+			__acceptOpened(opened);
+		} catch (e:Dynamic) {
+			__openedDone(opened, pooled);
+			Arrivals.rethrow(e);
+		}
+		__openedDone(opened, pooled);
+		return true;
+	}
+
+	@:noCompletion private inline function __openedDone(opened:ByteArray, pooled:Bool):Void {
+		if (pooled) {
+			Arrivals.release(opened);
+			__openedOut = false;
+		} else {
+			Arrivals.done(opened);
+		}
+	}
+
+	/** What a sealed datagram held: a bundle, or a frame, never a CONNECT or a PATH frame, which go in the clear. **/
+	@:noCompletion private function __acceptOpened(opened:ByteArray):Void {
+		if (ReliableDatagramProtocol.isBundle(opened)) {
+			__acceptBundle(opened);
+			return;
+		}
+		var frame = ReliableDatagramProtocol.decodeInto(opened, 0, opened.length, true, __decoded());
+		if (frame == null || frame.type == CONNECT || frame.type == PATH || (frame.type == HANDSHAKE && __answersAnotherAttempt(frame))) {
+			return;
+		}
+		__acceptFrame(frame);
+	}
+
+	/**
+		A frame that came in the clear to an encrypted session. Only what is
+		never sealed is taken: a PATH frame (a cookie, a REBOUND, a refusal),
+		a CONNECT, and a server's reset carrying a rebind challenge, which is
+		answered with a REBIND, a reset is not authenticated, so it ends
+		nothing here. A plain HANDSHAKE answering this side's attempt ends
+		the attempt: the peer cannot, or will not, encrypt it. Anything else
+		is dropped, and counted.
+	**/
+	@:noCompletion public function __acceptPlain(frame:ReliableDatagramFrame):Void {
+		switch (frame.type) {
+			case PATH:
+				__acceptPath(frame);
+			case CONNECT:
+				__acceptFrame(frame);
+			case FIN if (!frame.graceful):
+				if ((frame.sequence : Int) != 0 && __rebindKey != null && !__offersRebind && __connected && !__closing) {
+					__answerChallenge(frame.sequence);
+				}
+			case HANDSHAKE if (!__incoming && !__connected && !__answersAnotherAttempt(frame)):
+				__failAttempt('The peer answered without encryption, and this session asked for it: the peer is from before encryption was added, '
+					+ 'or gave this session no key. Nothing was sent in the clear but this side\'s CONNECT.');
+			default:
+				__plainDropped++;
+		}
 	}
 
 	// The frame each arrival is decoded into. Nothing holds a decoded frame

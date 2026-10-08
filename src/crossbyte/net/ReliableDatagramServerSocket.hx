@@ -27,6 +27,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import crossbyte.net._internal.reliable.ResetBudget;
 import crossbyte.net._internal.reliable.SipHash;
+import crossbyte.net._internal.reliable.SessionCipher;
 import haxe.ds.StringMap;
 import crossbyte._internal.net.IPv6;
 #if !nodejs
@@ -535,6 +536,44 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
+		The 32-byte key a session this server accepts is encrypted with, or
+		null, the default, for a session in the clear: asked once for each
+		CONNECT `admit` lets in, with the same address, port and payload, the
+		payload read from its start again. See
+		`ReliableDatagramSocket.encryptionKey` for what encryption protects,
+		and what it does not.
+
+		CrossByte does no key exchange: the application decides each
+		session's key and gives the client the same one, typically through a
+		login service that hands the client a key and a connect token over
+		HTTPS. The token is the client's `connect` payload, and this derives
+		the key from it, with `crossbyte.crypto.HKDF` and a secret only the
+		servers hold, or unwraps it (`crossbyte.crypto.Aead`). The guide's
+		"Encrypted sessions" shows both ends.
+
+		It fails closed, either way round. A CONNECT asking for encryption
+		that this answers with null, and one asking for none that this gives
+		a key, open no session: the peer is told why with a refusal, which a
+		peer on this version reports as an `ioError` naming the reason, and
+		one from before encryption was added times out. Return a key for
+		every session of a server that only takes encrypted ones.
+
+		Like `admit`, this runs for every CONNECT from a new address that
+		gets this far, so keep it cheap: derive, don't look anything up that
+		can stall. The payload is valid only during the call, as `admit`'s
+		is. A hook that throws, or returns a key that is not 32 bytes,
+		refuses the CONNECT without a word, as `admit` returning `false`
+		does. The key is copied; the hook may wipe its own.
+
+		On a target where sessions cannot be encrypted
+		(`ReliableDatagramSocket.isEncryptionSupported`) a key refuses the
+		CONNECT, as one asked for and not given does.
+	**/
+	public dynamic function encryptionKeyFor(address:String, port:Int, payload:ByteArray):Null<haxe.io.Bytes> {
+		return null;
+	}
+
+	/**
 		The congestion policy for a session this server accepts or dials,
 		given the peer's address and port: a new `CongestionControl` each,
 		which is TCP's Reno, unless this is replaced. A server that knows some
@@ -855,19 +894,29 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		       attempt goes on until the peer answers or the session is
 		       closed. 0 meant the default.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
-		       sends it: copied now, and at most one frame.
+		       sends it: copied now, and at most one frame
+		       (`ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE` with a key).
+		@param encryptionKey The session's key, as
+		       `ReliableDatagramSocket.encryptionKey` takes it, for a session
+		       encrypted from its first sealed datagram; null for one in the
+		       clear. Copied now.
 		@throws IOError if this server is closed, unbound, or not listening.
 		@throws ArgumentError if the address is malformed, or, on Node, a
-		name, or if a session to this endpoint already exists.
+		name, or if a session to this endpoint already exists, or the key is
+		not 32 bytes.
+		@throws crossbyte.errors.IllegalOperationError if given a key on a
+		target that cannot encrypt (`ReliableDatagramSocket.isEncryptionSupported`).
 		@throws RangeError if `payload` is larger than one frame, or
 		`timeoutMs` is negative.
 	**/
-	public function connect(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT, ?payload:ByteArray):ReliableDatagramSocket {
+	public function connect(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT, ?payload:ByteArray,
+			?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		__checkTimeout(timeoutMs);
+		__checkKey(encryptionKey);
 
 		if (!bound) {
 			throw new IOError("Cannot dial from a server socket that is not bound.");
@@ -877,7 +926,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			throw new IOError("Cannot dial from a server socket that is not listening: replies are routed by the listen pump, so nothing would deliver them.");
 		}
 
-		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload);
+		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload, encryptionKey != null);
 
 		var resolved:String;
 
@@ -894,7 +943,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// Without a runtime on this thread there is nothing to hand an answer
 		// back to, so a name is looked up here, as it always was.
 		if (Resolver.needsLookup(address) && Resolver.runtimeHere() != null) {
-			return __dialByName(address, port, timeoutMs, outgoing);
+			return __dialByName(address, port, timeoutMs, outgoing, encryptionKey);
 		}
 
 		try {
@@ -917,9 +966,26 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing,
-			congestionControlFor(resolved, port));
+			congestionControlFor(resolved, port), null, encryptionKey);
 		__file(resolved, port, socket);
 		return socket;
+	}
+
+	/**
+		Refuses a key for a dialled session that is not one, or on a target
+		that cannot encrypt, as `ReliableDatagramSocket.encryptionKey` does,
+		before anything is made for it.
+	**/
+	@:noCompletion private static function __checkKey(key:Null<haxe.io.Bytes>):Void {
+		if (key == null) {
+			return;
+		}
+		if (!ReliableDatagramSocket.isEncryptionSupported) {
+			throw new crossbyte.errors.IllegalOperationError('Reliable UDP sessions cannot be encrypted on ${ReliableDatagramSocket.__targetName()}; see ReliableDatagramSocket.isEncryptionSupported.');
+		}
+		if (key.length != SessionCipher.KEY_SIZE) {
+			throw new ArgumentError('An encryption key is ${SessionCipher.KEY_SIZE} bytes, and this one is ${key.length}.');
+		}
 	}
 
 	/**
@@ -947,8 +1013,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`congestionControlFor` that throws, each asked about only once the
 		address is known.
 	**/
-	@:noCompletion private function __dialByName(name:String, port:Int, timeoutMs:Int, outgoing:ByteArray):ReliableDatagramSocket {
-		var socket = ReliableDatagramSocket.__createDialed(__socket, null, port, this, socketMode, timeoutMs, outgoing, null);
+	@:noCompletion private function __dialByName(name:String, port:Int, timeoutMs:Int, outgoing:ByteArray, encryptionKey:Null<haxe.io.Bytes>):ReliableDatagramSocket {
+		var socket = ReliableDatagramSocket.__createDialed(__socket, null, port, this, socketMode, timeoutMs, outgoing, null, null, encryptionKey);
 		if (__dialling == null) {
 			__dialling = [];
 		}
@@ -1506,6 +1572,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		@param timeoutMs As for `connect`: 20 seconds unless given, and 0 for
 		       no deadline.
+		@param payload As for `connect`.
+		@param encryptionKey As for `connect`: the session's key, or null for
+		       a session in the clear. The relay forwards sealed datagrams
+		       it cannot read.
 		@throws IOError If this server is closed or not listening, or there is
 		no relay holding an address.
 		@throws ArgumentError If `address` is not an IPv4 address, or a session
@@ -1514,12 +1584,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`timeoutMs` is negative.
 	**/
 	public function connectRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT,
-			?payload:ByteArray):ReliableDatagramSocket {
+			?payload:ByteArray, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed || !bound || !listening) {
 			throw new IOError("Cannot dial from a server socket that is not bound and listening.");
 		}
 
 		__checkTimeout(timeoutMs);
+		__checkKey(encryptionKey);
 
 		if (relay == null || !relay.active) {
 			throw new IOError("There is no relay to connect through: allocateRelay first, and wait for it.");
@@ -1529,7 +1600,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			throw new ArgumentError("A relay forwards to an IPv4 address, and \"" + address + "\" is not one.");
 		}
 
-		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload);
+		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload, encryptionKey != null);
 		var key:String = __endpointKey(address, port);
 
 		if (__connections.exists(key)) {
@@ -1540,7 +1611,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		relay.permit(address, haxe.Timer.stamp());
 
 		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs, outgoing,
-			congestionControlFor(address, port), relay);
+			congestionControlFor(address, port), relay, encryptionKey);
 		__file(address, port, socket);
 		return socket;
 	}
@@ -1871,15 +1942,33 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>, owned:Bool = false):Void {
 		var connection:ReliableDatagramSocket = __sessionAt(address, port);
 
+		// Sealed: for the encrypted session at this address to open. From an
+		// address with none, it is a peer to tell its session is gone, as for
+		// a bundle, or, with `allowRebind`, to challenge.
+		if (data.length > 0) {
+			var first:Int = (data : haxe.io.Bytes).get(0);
+			if (first == SessionCipher.SEALED || first == SessionCipher.SEALED_HELLO) {
+				if (connection == null) {
+					__resetStranger(null, address, port, via);
+				} else if (connection.__cipher != null) {
+					connection.__receiveSealed(data);
+				}
+				return;
+			}
+		}
+
 		// Several frames at once, and only ever from a session already here:
 		// a peer bundles once it has heard this side, so a bundle from an
 		// address with no session has nothing in it to open one with, only
 		// a peer to tell its session is gone.
 		if (ReliableDatagramProtocol.isBundle(data)) {
-			if (connection != null) {
-				connection.__acceptBundle(data);
-			} else {
+			if (connection == null) {
 				__resetStranger(null, address, port, via);
+			} else if (connection.__cipher != null) {
+				// In the clear, to a session that takes only sealed ones.
+				connection.__plainDropped++;
+			} else {
+				connection.__acceptBundle(data);
 			}
 			return;
 		}
@@ -1947,6 +2036,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		if (connection != null) {
+			// In the clear, to an encrypted session: only what is never
+			// sealed is taken there, a CONNECT below.
+			if (connection.__cipher != null && frame.type != ReliableDatagramFrameType.CONNECT) {
+				connection.__acceptPlain(frame);
+				return;
+			}
 			if (frame.type != ReliableDatagramFrameType.CONNECT || !__isAnotherAttempt(connection, frame)) {
 				connection.__acceptFrame(frame);
 				return;
@@ -1988,10 +2083,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		var extended:Bool = frame.extended;
 		var canRebind:Bool = extended && (frame.features & ReliableDatagramProtocol.FEATURE_REBIND) != 0;
 
+		var encrypting:Bool = extended && frame.hasRandom;
+
 		// No connect() sends more than a frame, and each pending session
 		// keeps what its CONNECT carried, so a larger one is not held.
 		var payload:ByteArray = frame.payload;
-		if (payload.length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
+		if (payload.length > (encrypting ? ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE : ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)) {
 			return;
 		}
 
@@ -2012,6 +2109,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
+		// The peer's random, copied out of the frame before the hooks run.
+		var peerRandom:Null<haxe.io.Bytes> = null;
+		if (encrypting) {
+			peerRandom = haxe.io.Bytes.alloc(ReliableDatagramProtocol.RANDOM_SIZE);
+			peerRandom.blit(0, frame.random, 0, ReliableDatagramProtocol.RANDOM_SIZE);
+		}
+
 		var admitted:Bool = false;
 		try {
 			admitted = admit(address, port, payload);
@@ -2020,10 +2124,48 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return;
 		}
 
+		// The session's key, if it has one; and no session where only one
+		// side would encrypt, see `encryptionKeyFor`.
+		payload.position = 0;
+		var key:Null<haxe.io.Bytes> = null;
+		try {
+			key = encryptionKeyFor(address, port, payload);
+		} catch (_:Dynamic) {
+			return;
+		}
+		if (key != null && key.length != SessionCipher.KEY_SIZE) {
+			return;
+		}
+		var cipher:Null<SessionCipher> = null;
+		if (encrypting || key != null) {
+			if (!encrypting) {
+				// A CONNECT from before 1.0 is too short to be answered with
+				// more than it brought: dropped.
+				if (extended) {
+					__refuse(connectionId, ReliableDatagramProtocol.REFUSE_ENCRYPTION_REQUIRED, address, port, via);
+				}
+				return;
+			}
+			if (key == null || !ReliableDatagramSocket.isEncryptionSupported) {
+				__refuse(connectionId, ReliableDatagramProtocol.REFUSE_NO_KEY, address, port, via);
+				return;
+			}
+			cipher = new SessionCipher(key);
+			// Refused only for a random equal to the one just made: a CONNECT
+			// carrying this side's own, which nobody can know in advance.
+			if (!cipher.derive(peerRandom)) {
+				cipher.dispose();
+				return;
+			}
+		}
+
 		var congestion:CongestionControl = null;
 		try {
 			congestion = congestionControlFor(address, port);
 		} catch (_:Dynamic) {
+			if (cipher != null) {
+				cipher.dispose();
+			}
 			return;
 		}
 
@@ -2034,7 +2176,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// somewhere nothing but the relay reaches. The session keeps a copy
 		// of the payload, which is the datagram's.
 		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, connectionId, via,
-			rebindKey);
+			rebindKey, cipher);
 		connection.__peerTakesBundles = bundles;
 		if (rebindKey != null) {
 			__byConnectionId.set(connectionId, connection);
@@ -2384,6 +2526,22 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		var written:Int = ReliableDatagramProtocol.encodeInto(__pathScratch, type, sequence, null, 0, 0, false, 0, false, false);
 		(__pathScratch : haxe.io.Bytes).set(written, kind);
 		return __pathScratch;
+	}
+
+	/**
+		Tells the sender of a CONNECT why no session is opened for it, with a
+		`PATH_REFUSE`: encryption asked for and no key, or a key and none
+		asked for. Within the process's allowance of resets
+		(`maxResetsPerSecond`), and never larger than the 1.0 CONNECT it
+		answers.
+	**/
+	@:noCompletion private function __refuse(connectionId:Int, reason:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+		if (!ResetBudget.take(maxResetsPerSecond, haxe.Timer.stamp())) {
+			return;
+		}
+		var scratch:ByteArray = __pathFrame(ReliableDatagramFrameType.PATH, connectionId, ReliableDatagramProtocol.PATH_REFUSE);
+		(scratch : haxe.io.Bytes).set(ReliableDatagramProtocol.HEADER_SIZE + 1, reason);
+		__sendScratch(ReliableDatagramProtocol.REFUSE_FRAME_SIZE, address, port, via);
 	}
 
 	/** `length` bytes of `__pathScratch` to a peer, back the way it reached this server. **/

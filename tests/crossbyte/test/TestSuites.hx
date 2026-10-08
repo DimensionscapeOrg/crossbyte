@@ -496,6 +496,9 @@ class TestSuites {
 		// A session following its player to a new address, through a NAT
 		// written for the tests.
 		runner.addCase(new crossbyte.net.ReliableDatagramRebindTest());
+		// Encrypted sessions over real sockets, through a path written for the
+		// tests that records, loses, reorders and forges what crosses it.
+		runner.addCase(new crossbyte.net.ReliableDatagramEncryptionTest());
 		// Real sockets: a raw Bytes write, and a burst taken within one pass.
 		runner.addCase(new crossbyte.net.SocketPassTest());
 		// A socket's kernel buffers, natively and on the jvm; elsewhere, that
