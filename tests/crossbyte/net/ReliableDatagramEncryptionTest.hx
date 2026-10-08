@@ -395,6 +395,166 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		pair.close();
 	}
 
+	/**
+		J3 with encryption: the NAT gives the client a new port mid-stream,
+		and the session follows it, every message both ways once and in
+		order, on the same session object, the REBIND's proof keyed with
+		the session's own rebind key, which both ends derived and no
+		datagram carried. The server's hello, carrying no key, is no larger
+		than the CONNECT it answers.
+	**/
+	public function testAnEncryptedSessionFollowsItsPlayer():Void {
+		if (!requireEncryption()) return;
+		var pair = Pair.open(key(12), key(12), true);
+		if (pair == null) {
+			Assert.fail("the encrypted pair never connected");
+			return;
+		}
+		try {
+			var derived:Bytes = pair.client.__cipher.rebindKey;
+			Assert.notNull(pair.client.__rebindKey, "the client has no rebind key");
+			Assert.isTrue(pair.client.__rebindKey == derived, "the client's rebind key is not the derived one");
+			Assert.isTrue(pair.session.__rebindKey != null && pair.session.__rebindKey.toHex() == derived.toHex(),
+				"the server's session does not hold the same derived key");
+			var leaked:Int = 0;
+			for (d in pair.wire.out.concat(pair.wire.back)) {
+				leaked += countBytes(d, derived);
+			}
+			Assert.equals(0, leaked, "the rebind key crossed the wire");
+			var connect:Int = 0;
+			for (d in pair.wire.out) {
+				if (d.get(0) == 0xCB) {
+					connect = d.length;
+					break;
+				}
+			}
+			for (d in pair.wire.back) {
+				if (d.get(0) == SessionCipher.SEALED_HELLO) {
+					Assert.isTrue(d.length <= connect, 'the server answered a ${connect}-byte CONNECT with ${d.length} bytes');
+					break;
+				}
+			}
+
+			var oldPort:Int = pair.session.remotePort;
+			for (i in 0...20) {
+				pair.client.send(Pair.text("c" + i));
+				pair.session.send(Pair.text("s" + i));
+				Pair.pumpUntil(() -> false, 0.004);
+			}
+			pair.wire.remap();
+			for (i in 20...50) {
+				if (pair.client.connected) {
+					pair.client.send(Pair.text("c" + i));
+				}
+				if (pair.session.connected) {
+					pair.session.send(Pair.text("s" + i));
+				}
+				Pair.pumpUntil(() -> false, 0.004);
+			}
+			Pair.pumpUntil(() -> pair.serverGot.length >= 50 && pair.clientGot.length >= 50, 10.0);
+			Assert.same([for (i in 0...50) "c" + i], pair.serverGot);
+			Assert.same([for (i in 0...50) "s" + i], pair.clientGot);
+			Assert.equals(1, pair.accepted.length, "the server announced another session");
+			Assert.isTrue(pair.client.connected && pair.session.connected, "the session did not survive the move");
+			Assert.equals(pair.wire.outsidePort, pair.session.remotePort, "the session is not at the new port");
+			Assert.notEquals(oldPort, pair.session.remotePort);
+			Assert.isTrue(pair.session == pair.server.__sessionAt("127.0.0.1", pair.wire.outsidePort));
+			// Sealed wherever it went: nothing in the clear from the client but
+			// its CONNECT and its REBINDs.
+			var plain:Int = 0;
+			var rebinds:Int = 0;
+			for (d in pair.wire.out) {
+				if (d.get(0) != SessionCipher.SEALED && d.get(0) != SessionCipher.SEALED_HELLO) {
+					var frame = ReliableDatagramProtocol.decode(ByteArray.fromBytes(d));
+					if (frame != null && frame.type == PATH) {
+						rebinds++;
+					} else if (frame == null || frame.type != CONNECT) {
+						plain++;
+					}
+				}
+			}
+			Assert.isTrue(rebinds > 0, "no REBIND went");
+			Assert.equals(0, plain, "the client sent frames in the clear");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		pair.close();
+	}
+
+	/**
+		A REBIND whose proof is keyed with anything but the derived key,
+		as one made with a key seen in the clear would be, moves nothing.
+	**/
+	public function testARebindProvedWithoutTheSessionKeyIsRefused():Void {
+		if (!requireEncryption()) return;
+		var pair = Pair.open(key(13), key(13), true);
+		if (pair == null) {
+			Assert.fail("the encrypted pair never connected");
+			return;
+		}
+		try {
+			var home:Int = pair.session.remotePort;
+			var forger = new RawPeer();
+			// A frame in the clear from the forger's address draws a reset
+			// carrying the challenge for that address.
+			forger.send(ReliableDatagramProtocol.encode(PACKET, 1, Pair.text("x"), false, 1), pair.server.localPort);
+			Pair.pumpUntil(() -> forger.got.length > 0, 1.0);
+			Assert.isTrue(forger.got.length > 0, "no reset came");
+			if (forger.got.length > 0) {
+				var reset = ReliableDatagramProtocol.decode(ByteArray.fromBytes(forger.got[0]));
+				var challenge:Int = reset.sequence;
+				Assert.notEquals(0, challenge);
+				var id:Int = pair.session.__peerConnectionId;
+				var input = Bytes.alloc(9);
+				input.set(0, 0x52);
+				setInt(input, 1, id);
+				setInt(input, 5, challenge);
+				var hash = new crossbyte.net._internal.reliable.SipHash(Bytes.alloc(16));
+				hash.hash(input, 0, 9);
+				var body = new ByteArray();
+				body.length = 13;
+				var b:Bytes = body;
+				b.set(0, ReliableDatagramProtocol.PATH_REBIND);
+				setInt(b, 1, challenge);
+				setInt(b, 5, hash.high);
+				setInt(b, 9, hash.low);
+				forger.send(ReliableDatagramProtocol.encode(PATH, id, body), pair.server.localPort);
+				Pair.pumpUntil(() -> false, 0.3);
+			}
+			Assert.equals(home, pair.session.remotePort, "a forged REBIND moved the session");
+			forger.close();
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		pair.close();
+	}
+
+	static function setInt(bytes:Bytes, at:Int, value:Int):Void {
+		bytes.set(at, value >>> 24);
+		bytes.set(at + 1, (value >>> 16) & 0xFF);
+		bytes.set(at + 2, (value >>> 8) & 0xFF);
+		bytes.set(at + 3, value & 0xFF);
+	}
+
+	static function countBytes(data:Bytes, needle:Bytes):Int {
+		var found:Int = 0;
+		var at:Int = 0;
+		while (at + needle.length <= data.length) {
+			var match:Bool = true;
+			for (i in 0...needle.length) {
+				if (data.get(at + i) != needle.get(i)) {
+					match = false;
+					break;
+				}
+			}
+			if (match) {
+				found++;
+			}
+			at++;
+		}
+		return found;
+	}
+
 	// ------------------------------------------------------------ helpers
 
 	public static function requireEncryption():Bool {
@@ -530,6 +690,7 @@ private class Pair {
 			var now = haxe.Timer.stamp();
 			runtime.pump(now - last, 0);
 			last = now;
+			Wire.tickAll();
 			crossbyte.sys.System.sleep(0.001);
 		}
 	}
@@ -597,11 +758,34 @@ private class Wire {
 
 	var inside:DatagramSocket;
 	var outside:DatagramSocket;
+	var outsides:Array<DatagramSocket> = [];
 	var serverPort:Int;
 	var clientPort:Int = 0;
 	var random:Int = 4242;
 	var pendingOut:Null<Bytes> = null;
 	var pendingBack:Null<Bytes> = null;
+	var pendingOutAt:Float = 0;
+	var pendingBackAt:Float = 0;
+
+	// Every wire open, so the pump can let go of what one holds.
+	static var open:Array<Wire> = [];
+
+	/** A datagram held for one to follow it goes alone after 10 ms: reordered, not held until something else is sent. **/
+	public static function tickAll():Void {
+		var now:Float = haxe.Timer.stamp();
+		for (wire in open) {
+			if (wire.pendingOut != null && now - wire.pendingOutAt > 0.01) {
+				var held = wire.pendingOut;
+				wire.pendingOut = null;
+				wire.send(held, true);
+			}
+			if (wire.pendingBack != null && now - wire.pendingBackAt > 0.01) {
+				var held = wire.pendingBack;
+				wire.pendingBack = null;
+				wire.send(held, false);
+			}
+		}
+	}
 
 	public function new(serverPort:Int) {
 		this.serverPort = serverPort;
@@ -612,12 +796,22 @@ private class Wire {
 			forward(copy(e.data), true);
 		});
 		inside.receive();
-		outside = new DatagramSocket();
-		outside.bind(0, "127.0.0.1");
-		outside.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
-			forward(copy(e.data), false);
+		remap();
+		open.push(this);
+	}
+
+	/** A new outside port for the client, from now on, as a NAT that remaps does; the old one forwards nothing more. **/
+	public function remap():Void {
+		var socket = new DatagramSocket();
+		socket.bind(0, "127.0.0.1");
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			if (socket == outside) {
+				forward(copy(e.data), false);
+			}
 		});
-		outside.receive();
+		socket.receive();
+		outsides.push(socket);
+		outside = socket;
 	}
 
 	function forward(data:Bytes, up:Bool):Void {
@@ -637,7 +831,13 @@ private class Wire {
 			// Each datagram waits for the next, which goes first.
 			var pending:Null<Bytes> = up ? pendingOut : pendingBack;
 			if (pending == null) {
-				if (up) pendingOut = data else pendingBack = data;
+				if (up) {
+					pendingOut = data;
+					pendingOutAt = haxe.Timer.stamp();
+				} else {
+					pendingBack = data;
+					pendingBackAt = haxe.Timer.stamp();
+				}
 				return;
 			}
 			if (up) pendingOut = null else pendingBack = null;
@@ -674,8 +874,11 @@ private class Wire {
 	}
 
 	public function close():Void {
+		open.remove(this);
 		try inside.close() catch (_:Dynamic) {}
-		try outside.close() catch (_:Dynamic) {}
+		for (socket in outsides) {
+			try socket.close() catch (_:Dynamic) {}
+		}
 	}
 
 	function lost():Bool {

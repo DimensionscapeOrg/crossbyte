@@ -983,7 +983,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// A rebind (see `ReliableDatagramServerSocket.allowRebind`). The
 	// session's rebind key: made by the server for a session it accepted,
 	// and given to the peer in its HANDSHAKE; taken from that HANDSHAKE by
-	// a session dialling; null without. Whether this side is the server's,
+	// a session dialling; derived by both ends of an encrypted session, and
+	// sent by neither; null without. Whether this side is the server's,
 	// which gives the key and checks proofs, and the hash made with it.
 	@:noCompletion private var __rebindKey:haxe.io.Bytes = null;
 	@:noCompletion private var __offersRebind:Bool = false;
@@ -2330,9 +2331,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				}
 				__readAnnouncedDelay(frame.payload);
 				// A rebind key, from the HANDSHAKE that connects a session
-				// this side dialled, and from no other.
+				// this side dialled, and from no other, or, encrypted, the
+				// one derived with the session's keys, which no HANDSHAKE
+				// carries.
 				if (!__connected && !__incoming && !__offersRebind) {
-					__takeRebindKey(frame.payload);
+					if (__cipher != null) {
+						__rebindKey = __cipher.rebindKey;
+						__rebindHash = null;
+					} else {
+						__takeRebindKey(frame.payload);
+					}
 				}
 				__onHandshake(frame.sequence, frame.hasAck);
 			case PACKET:
@@ -2463,9 +2471,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		with, left in `__proofHigh` and `__proofLow`: of the dialling side's
 		connection id and the challenge, under the rebind key.
 
-		The key crossed the network in the server's HANDSHAKE. Where a
-		session is encrypted, its own key is the one to use, which nobody on
-		the path ever saw: this is where the proof is keyed.
+		In the clear, the key crossed the network in the server's HANDSHAKE.
+		An encrypted session's key is its own rebind key instead, derived
+		with HKDF from the application's key and both ends' randoms beside
+		its sealing keys (see `SessionCipher`) and never sent: someone who
+		saw the whole handshake cannot make the proof.
 	**/
 	@:noCompletion private function __proofFor(connectionId:Int, challenge:Int):Void {
 		if (__rebindHash == null) {
@@ -4233,7 +4243,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// peer shows it took a HANDSHAKE: the one that connects it is the
 		// one it takes the key from.
 		var length:Int = ReliableDatagramProtocol.HANDSHAKE_PAYLOAD_SIZE;
-		var givesKey:Bool = __offersRebind && !__peerConfirmed && __rebindKey != null;
+		// Never from an encrypted session, whose peer derives the key.
+		var givesKey:Bool = __offersRebind && !__peerConfirmed && __rebindKey != null && __cipher == null;
 		if (givesKey) {
 			length = ReliableDatagramProtocol.REBIND_HANDSHAKE_PAYLOAD_SIZE;
 		}

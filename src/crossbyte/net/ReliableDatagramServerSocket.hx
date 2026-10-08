@@ -360,7 +360,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		"Resuming a player" shows).
 
 		With this on, each session a peer on 1.0 or later opens is given a
-		rebind key, 16 random bytes, in the server's HANDSHAKE. When that
+		rebind key, 16 random bytes, in the server's HANDSHAKE, or, for an
+		encrypted session, has one derived at both ends with its keys, which
+		never crosses the network. When that
 		peer's frames then arrive from an address with no session, the reset
 		sent back carries a challenge: the server's keyed hash of the new
 		address and port and the time, made like a join cookie, for which it
@@ -391,9 +393,15 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		**Without encryption, the key is only as secret as the HANDSHAKE.**
 		It crosses the network in the clear, so anyone on the path when the
 		session began can later move it to an address of their own, taking
-		over what the server sends the player. Turn this on with encryption,
-		where the session's own key keys the proof, or for a game whose
-		players' paths nobody hostile shares. And every reset carries a
+		over what the server sends the player. Turn this on with encryption
+		(`ReliableDatagramSocket.encryptionKey`), where the proof is keyed
+		with the session's own rebind key, derived with HKDF from the
+		application's key and both ends' randoms, sent by neither side, so
+		someone who saw the whole handshake still cannot make it, or for a
+		game whose players' paths nobody hostile shares. Encrypted, the
+		session's datagrams are sealed wherever it moves; the REBIND, the
+		REBOUND and the reset's challenge stay in the clear, as before, and
+		say nothing a sealed datagram would hide. And every reset carries a
 		challenge while this is on, made per reset within
 		`maxResetsPerSecond`.
 
@@ -2171,7 +2179,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 
 		payload.position = 0;
 		// A key to rebind with, for a peer that can, while it is allowed.
-		var rebindKey:Null<haxe.io.Bytes> = canRebind ? __newRebindKey(connectionId) : null;
+		var rebindKey:Null<haxe.io.Bytes> = canRebind ? __newRebindKey(connectionId, cipher) : null;
 		// Through the relay, when that is how the CONNECT came: the peer is
 		// somewhere nothing but the relay reaches. The session keeps a copy
 		// of the payload, which is the datagram's.
@@ -2369,7 +2377,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		is not allowed, with no secure random source, or when another session
 		that may rebind has the same id, which 32 random bits make rare.
 	**/
-	@:noCompletion private function __newRebindKey(connectionId:Int):Null<haxe.io.Bytes> {
+	@:noCompletion private function __newRebindKey(connectionId:Int, ?cipher:SessionCipher):Null<haxe.io.Bytes> {
 		if (!allowRebind || connectionId == 0 || !crossbyte.crypto.SecureRandom.isSupported) {
 			return null;
 		}
@@ -2377,6 +2385,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			__byConnectionId = new haxe.ds.IntMap();
 		} else if (__byConnectionId.exists(connectionId)) {
 			return null;
+		}
+		// An encrypted session's is derived with its keys, at both ends, and
+		// never sent.
+		if (cipher != null) {
+			return cipher.rebindKey;
 		}
 		try {
 			var random:ByteArray = crossbyte.crypto.SecureRandom.getSecureRandomBytes(ReliableDatagramProtocol.REBIND_KEY_SIZE);
