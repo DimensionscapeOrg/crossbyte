@@ -1650,7 +1650,21 @@ class SctpDataTransferTest extends utest.Test {
 		var costOne:Float = cheapest(() -> big.client.receive(one, big.now));
 		var costMany:Float = cheapest(() -> big.client.receive(many, big.now));
 
-		Assert.isTrue(flat([costOne, costMany], 0.002), "a packet of one SACK and of a thousand cost " + microseconds([costOne, costMany]));
+		// Reading the packet's thousand chunks, and checking its CRC over
+		// 16 KB, is the packet's own cost, whatever the SACKs in it do: on a
+		// slow runner it alone came to 3 ms under Node (CI, 2026-10-08),
+		// where comparing the two packets' costs directly failed. What must
+		// not grow is the handling: a thousand SACKs cost what decoding them
+		// does, plus one SACK's handling. Each walked every outstanding
+		// chunk before, and a packet of them took half a second.
+		var decodeMany:Float = cheapest(() -> {
+			many.position = 0;
+			SctpPacket.decode(many);
+		});
+
+		Assert.isTrue(costMany <= decodeMany + costOne * 2 + 0.002,
+			"a packet of a thousand SACKs cost " + microseconds([costMany]) + ", decoding it " + microseconds([decodeMany]) + " and a packet of one "
+			+ microseconds([costOne]));
 	}
 
 	private function gapAcknowledged(transfer:SctpDataTransfer):Int {
