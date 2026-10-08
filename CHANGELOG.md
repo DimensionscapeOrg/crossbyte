@@ -477,6 +477,12 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- `Null<T>` of every kind the compiled RPC lane now carries, compact
+  numbers, arrays, structures, enums, as an argument (or `?name`), an
+  answer, an array element, a structure's field or an enum constructor's
+  argument, a typedef of one included: a byte saying whether the value is
+  there, then the value; absent, the byte alone. Tests:
+  `RPCNullTypesTest`.
 - Enums on the compiled RPC lane. A simple enum is its constructor's
   index, one byte (two for more than 256 constructors), and an array of
   them is written and read as one run. An enum with arguments is the same

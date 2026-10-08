@@ -185,8 +185,10 @@ on the wire:
 | an abstract over any of these, `enum abstract Team(Int)`, `UInt` | as the type it abstracts |
 
 An argument that may be absent, `?value:Int`, or `value:Null<Int>`, costs
-one more byte to say whether it is there, and so does an element of an
-`Array<Null<T>>`. One that may not cannot be null: a call with a null
+one more byte to say whether it is there, whatever its kind (a compact number,
+an array, a structure, an enum), and so does an element of an
+`Array<Null<T>>`, a structure's field that may be absent and an enum
+constructor's optional argument. An absent value is that byte alone. One that may not cannot be null: a call with a null
 `String`, `Bytes` or array there, or inside an array, throws an
 `ArgumentError` before anything is sent, and a handler answering null where
 its type is not `Null<T>` fails the call as a throw does. A return type is
