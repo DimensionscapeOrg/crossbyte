@@ -128,14 +128,28 @@ class RPCFrame extends ByteArrayData {
 
 	public inline function putInt(value:Int):Void {
 		__fit(4);
-		setInt32(position, value);
+		RPCBytes.setI32(this, position, value);
 		position += 4;
 	}
 
 	public inline function putDouble(value:Float):Void {
 		__fit(8);
-		setDouble(position, value);
+		RPCBytes.setF64(this, position, value);
 		position += 8;
+	}
+
+	/** `value` rounded to single precision: IEEE 754 binary32, four bytes. **/
+	public inline function putFloat32(value:Float):Void {
+		__fit(4);
+		RPCBytes.setF32(this, position, value);
+		position += 4;
+	}
+
+	/** The low sixteen bits of `value`, two bytes. **/
+	public inline function putShort(value:Int):Void {
+		__fit(2);
+		RPCBytes.set16(this, position, value);
+		position += 2;
 	}
 
 	/** An unsigned LEB128 varint: 0 to 0xFFFFFFFF, a negative `Int` as the unsigned value it holds. **/

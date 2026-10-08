@@ -477,6 +477,25 @@ entry below says how:
   the limits for a peer that opens more, or names longer.
 
 ### Added
+- Compact numbers on the compiled RPC lane: `crossbyte.rpc.Float32` (four
+  bytes, single precision; Haxe's `Single` where the target has one, which
+  a contract may also declare), `Int8` and `UInt8` (one byte), `Int16` and
+  `UInt16` (two), where an `Int` takes four and a `Float` eight, a
+  position as three `Float32`s is 12 bytes, not 24. Each is an `Int` (or a
+  `Float`) wherever one is wanted; an `Int` assigned to one keeps its low
+  bits, as a C cast does, so what it holds is what is sent; operators and
+  comparisons work on the `Int` it holds. In the op: `f32`, `i8`, `u8`,
+  `i16`, `u16`. An abstract over a kind the lane carries, an
+  `enum abstract Team(Int)`, an abstract over `String`, `UInt`, is now
+  carried as that kind, with its token, where it failed the build. The
+  compiled lane also reads and writes an `Int`, a `Float` and the compact
+  numbers with one load or store natively, checked against what the frame
+  holds in every build (`ByteArrayInput.readInt` was four bounds-checked
+  byte reads, unchecked in `final`): a request and its answer of two Ints
+  140 -> 111 ns, a one-way call of three Floats 44 -> 41 ns, and the runtime
+  lane's 3-5% faster (RpcLaneBench, natively). A call of `Int8, UInt8,
+  Int16, UInt16, Float32` is 10 bytes of arguments where four Ints and a
+  Float are 24, in the same 51 ns. Tests: `RPCCompactTest`.
 - `Array<T>` on the compiled RPC lane, of every kind it carries, nested
   too: an argument or an answer of a contract method can be
   `Array<Int>`, `Array<Null<String>>`, `Array<Array<Float>>`. A varint

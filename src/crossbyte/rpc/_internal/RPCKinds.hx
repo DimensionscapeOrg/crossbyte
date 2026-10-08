@@ -130,7 +130,7 @@ class RPCKinds {
 		zero: macro 0,
 		compound: false,
 		write: (frame, value) -> macro $frame.putInt($value),
-		read: (input, end) -> macro $input.readInt(),
+		read: (input, end) -> macro crossbyte.rpc._internal.RPCWire.readI32($input),
 		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.setI32($data, $at, $value),
 		get: (data, at) -> macro crossbyte.rpc._internal.RPCBytes.getI32($data, $at)
 	};
@@ -156,10 +156,113 @@ class RPCKinds {
 		zero: macro 0.0,
 		compound: false,
 		write: (frame, value) -> macro $frame.putDouble($value),
-		read: (input, end) -> macro $input.readDouble(),
+		read: (input, end) -> macro crossbyte.rpc._internal.RPCWire.readF64($input),
 		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.setF64($data, $at, $value),
 		get: (data, at) -> macro crossbyte.rpc._internal.RPCBytes.getF64($data, $at)
 	};
+
+	// ------------------------------------------------- compact numbers
+
+	/**
+		`crossbyte.rpc.Float32`, or Haxe's `Single` where the target has one:
+		IEEE 754 binary32, four bytes. Read as a `Float` holding the single
+		value, which a `Single` takes exactly.
+	**/
+	static final FLOAT32:RPCKind = {
+		name: "Float32",
+		token: "f32",
+		size: 4,
+		roomOf: null,
+		zero: macro 0.0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putFloat32($value),
+		read: (input, end) -> macro crossbyte.rpc._internal.RPCWire.readF32($input),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.setF32($data, $at, $value),
+		get: (data, at) -> macro crossbyte.rpc._internal.RPCBytes.getF32($data, $at)
+	};
+
+	/** `crossbyte.rpc.Int8`: one byte, read back signed. **/
+	static final INT8:RPCKind = {
+		name: "Int8",
+		token: "i8",
+		size: 1,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putByte($value),
+		read: (input, end) -> macro crossbyte.rpc.Int8.fromInt($input.readByte()),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.set8($data, $at, $value),
+		get: (data, at) -> macro crossbyte.rpc.Int8.fromInt(crossbyte.rpc._internal.RPCBytes.getU8($data, $at))
+	};
+
+	/** `crossbyte.rpc.UInt8`: one byte. **/
+	static final UINT8:RPCKind = {
+		name: "UInt8",
+		token: "u8",
+		size: 1,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putByte($value),
+		read: (input, end) -> macro(cast $input.readByte() : crossbyte.rpc.UInt8),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.set8($data, $at, $value),
+		get: (data, at) -> macro(cast crossbyte.rpc._internal.RPCBytes.getU8($data, $at) : crossbyte.rpc.UInt8)
+	};
+
+	/** `crossbyte.rpc.Int16`: two bytes, little-endian, read back signed. **/
+	static final INT16:RPCKind = {
+		name: "Int16",
+		token: "i16",
+		size: 2,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putShort($value),
+		read: (input, end) -> macro(cast crossbyte.rpc._internal.RPCWire.readI16($input) : crossbyte.rpc.Int16),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.set16($data, $at, $value),
+		get: (data, at) -> macro(cast crossbyte.rpc._internal.RPCBytes.getI16($data, $at) : crossbyte.rpc.Int16)
+	};
+
+	/** `crossbyte.rpc.UInt16`: two bytes, little-endian. **/
+	static final UINT16:RPCKind = {
+		name: "UInt16",
+		token: "u16",
+		size: 2,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putShort($value),
+		read: (input, end) -> macro(cast crossbyte.rpc._internal.RPCWire.readU16($input) : crossbyte.rpc.UInt16),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.set16($data, $at, $value),
+		get: (data, at) -> macro(cast crossbyte.rpc._internal.RPCBytes.getU16($data, $at) : crossbyte.rpc.UInt16)
+	};
+
+	/**
+		An abstract the table does not name, an `enum abstract` over `Int`,
+		an abstract over `String`, `UInt`, is the kind of the type it
+		abstracts, with the same token: it is those bytes. Written as that
+		type and read back as the abstract, both by a cast, which costs
+		nothing.
+	**/
+	static function abstractKind(inner:RPCKind, name:String, abstractType:ComplexType, innerType:ComplexType):RPCKind {
+		final asInner = (value:Expr) -> macro(cast $value : $innerType);
+		final asAbstract = (value:Expr) -> macro(cast $value : $abstractType);
+		final put = inner.put;
+		final get = inner.get;
+		final roomOf = inner.roomOf;
+		return {
+			name: name,
+			token: inner.token,
+			size: inner.size,
+			roomOf: roomOf == null ? null : value -> roomOf(asInner(value)),
+			zero: macro cast ${inner.zero},
+			compound: inner.compound,
+			write: (frame, value) -> inner.write(frame, asInner(value)),
+			read: (input, end) -> asAbstract(inner.read(input, end)),
+			put: put == null ? null : (data, at, value) -> put(data, at, asInner(value)),
+			get: get == null ? null : (data, at) -> asAbstract(get(data, at))
+		};
+	}
 
 	// UTF-8 is at most three bytes a UTF-16 unit, after a varint count.
 	static final STRING:RPCKind = {
@@ -325,7 +428,20 @@ class RPCKinds {
 					case "Int": INT;
 					case "Bool": BOOL;
 					case "Float": FLOAT;
+					case "Single" | "crossbyte.rpc.Float32": FLOAT32;
+					case "crossbyte.rpc.Int8": INT8;
+					case "crossbyte.rpc.UInt8": UINT8;
+					case "crossbyte.rpc.Int16": INT16;
+					case "crossbyte.rpc.UInt16": UINT16;
 					case "Null" if (params.length == 1): ofType(params[0], pos);
+					// An Int's bits, whichever way a target holds it: on
+					// HashLink it is a core type of its own.
+					case "UInt": abstractKind(INT, "UInt", macro :UInt, macro :Int);
+					case _ if (!abs.meta.has(":coreType")):
+						final underlying:Type = TypeTools.applyTypeParameters(abs.type, abs.params, params);
+						final inner:Null<RPCKind> = ofType(underlying, pos);
+						inner == null ? null : abstractKind(inner, pathKey(abs.pack, abs.name), RPCContractMacroTools.fullComplexType(type),
+							RPCContractMacroTools.fullComplexType(underlying));
 					case _: null;
 				}
 			case TInst(ref, params):

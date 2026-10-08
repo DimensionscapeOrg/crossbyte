@@ -13,13 +13,17 @@ import haxe.io.Bytes;
 	```
 	signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
+	                     | "f32" | "i8" | "u8" | "i16" | "u16"
 	                     | "[" kind "]" )
 	```
 
 	The kinds are the method's arguments in order, and after the colon its
 	answer's; a one-way method has none. A `?` is a value that may be
 	absent, an optional argument, a `Null<T>`, which a byte before it
-	says. An array is its element's kind in brackets. `add(a:Int, b:Int):Int`
+	says. `f32`, `i8`, `u8`, `i16` and `u16` are the compact numbers
+	(`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`); an
+	abstract is the kind of what it abstracts. An array is its element's
+	kind in brackets. `add(a:Int, b:Int):Int`
 	is `add(i32,i32):i32`, `say(text:String):Void` is `say(utf8)`, and
 	`grid(rows:Array<Array<Null<Int>>>):Void` is `grid([[?i32]])`.
 
