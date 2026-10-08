@@ -88,9 +88,11 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [504, 504, 528], [696, 696, 728]);
 	// The same, every datagram sealed and opened (RUDP-2): what encryption
 	// adds is buffers the server's sessions share, made once. Measured
-	// natively on Windows and on the jvm (Oracle 8), 2026-10-08; Linux
-	// taken as Windows until measured.
-	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [424, 424, 384], [600, 600, 544]);
+	// natively on Windows, 2026-10-08; Linux taken as Windows until measured.
+	// The jvm column is CI's Temurin 8 on Linux, 544 B, where Oracle 8 here
+	// read 384 and its budget of 544 failed CI (2026-10-08), the plain
+	// reliable line reads 528 there.
+	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [424, 424, 544], [600, 600, 744]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
