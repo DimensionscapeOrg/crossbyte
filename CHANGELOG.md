@@ -772,6 +772,11 @@ says how.
 
 #### RPC
 
+- A `NetConnection` wrapping an `INetConnection` of your own stamps
+  `outTimestamp` with its runtime's clock as it sends, as CrossByte's own
+  transports do, rather than reading the wrapped connection's: on the jvm
+  that read was reflection, 24 bytes a send, and an RPC call over such a
+  connection now allocates nothing there.
 - A compiled call is named on the wire by a hash of its method's signature,
   not its name alone, so two builds with different signatures no longer
   read each other's bytes as their own. (Upgrading)
