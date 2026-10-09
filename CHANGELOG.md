@@ -538,6 +538,14 @@ says how.
   sent 1 MB bursts allocates 16 KB for each megabyte where it took
   2.4 MB, at a third of the CPU or less. A backlog is moved down in place
   rather than into a new buffer.
+- Input past 64 KB takes its storage from the same pool, natively and on
+  the jvm: a socket's, a WebSocket session's, and a WebSocket message's,
+  given back once read or handed out. A connection receiving 1 MB bursts
+  allocates 17 KB for each megabyte where it took 2.4 MB, at a third of
+  the CPU or less; 1 MB WebSocket messages 32 KB where they took 3.4 MB.
+  A socket moves what it has not read down only once a quarter of its
+  input has been read: an application reading 64 KB a pass behind an
+  8 MB backlog spent 4.5 ms of CPU a megabyte moving it, and spends 0.37.
 - The socket read buffer is 64 KB, shared per thread, and arrivals are
   appended to the input rather than rebuilding it, so a reader that falls
   behind no longer costs the square of its backlog. Draining an output

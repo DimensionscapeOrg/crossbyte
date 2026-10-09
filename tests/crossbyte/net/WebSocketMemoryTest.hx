@@ -135,6 +135,78 @@ class WebSocketMemoryTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || jvm)
+	/**
+		Natively and on the jvm a message past 64 KB, and the input its frames
+		arrive in, take their storage from the runtime's pool and give it back
+		once the message has been handed out: the message arrives whole, in
+		order, across its fragments, and a second message of the same size
+		makes no storage of its own.
+	**/
+	@:timeout(30000)
+	public function testALargeMessageTakesItsStorageFromTheRuntimesPool(async:Async):Void {
+		__openSession(async, null, null, function(server, session, peer, done) {
+			var pool = @:privateAccess crossbyte.core.CrossByte.current().__storagePool();
+			var framing = session.__webSocket;
+			var piece:Int = 120 * 1024;
+			var delivered:Int = 0;
+			var wrong:Int = -2;
+			var storages:Array<haxe.io.BytesData> = [];
+			session.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) {
+				var data:ByteArray = e.data;
+				storages.push((data : crossbyte.io.ByteArray.ByteArrayData).getData());
+				wrong = data.length == 3 * piece ? -1 : data.length;
+				for (i in 0...data.length) {
+					if (data[i] != ((i * 31) & 0xFF)) {
+						wrong = i;
+						break;
+					}
+				}
+				delivered++;
+			});
+			var bytes = Bytes.alloc(3 * piece);
+			for (i in 0...bytes.length) {
+				bytes.set(i, i * 31);
+			}
+			var made:Int = 0;
+			function message(round:Int, then:Void->Void):Void {
+				// A fragment at a time, each read before the next is sent, so
+				// both rounds take the same sizes from the pool.
+				function fragment(k:Int):Void {
+					if (k == 3) {
+						NetPump.until(() -> delivered == round, 10.0, function(_) {
+							Assert.equals(round, delivered, "the message was not delivered");
+							Assert.equals(-1, wrong, "the message arrived as sent, first wrong at " + wrong);
+							Assert.equals(0, __storage(framing.__messageKept), "the message buffer kept its storage once handed out");
+							Assert.isTrue(__storage(framing.__input) <= 64 * 1024, "the input kept " + __storage(framing.__input) + " bytes");
+							then();
+						});
+						return;
+					}
+					peer.sendFrame(k == 0 ? WirePeer.BINARY : 0, bytes.sub(k * piece, piece), false, k == 2);
+					if (k == 2) {
+						fragment(3);
+						return;
+					}
+					NetPump.until(() -> framing.__incomingMessageSize >= (k + 1) * piece, 10.0, _ -> fragment(k + 1));
+				}
+				fragment(0);
+			}
+			message(1, function() {
+				Assert.isTrue(pool.held() >= 3 * piece, "the message's storage did not go back to the pool, which holds " + pool.held());
+				made = pool.made;
+				message(2, function() {
+					Assert.equals(made, pool.made, "the second message made storage of its own rather than taking the pool's");
+					// The message's own size, which the input, a fragment at a
+					// time, never needs: the same storage both times.
+					Assert.isTrue(storages[0] == storages[1], "the second message was not read into the storage the first gave back");
+					done();
+				});
+			});
+		});
+	}
+	#end
+
 	/**
 		A server hangs no listener of its own on its sessions: it is told of
 		a close by the session itself, and still takes the session off its
