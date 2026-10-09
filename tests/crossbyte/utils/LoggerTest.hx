@@ -381,4 +381,138 @@ class LoggerTest extends utest.Test {
 		Logger.info("suppressed, so nothing reaches stdout");
 		Assert.pass();
 	}
+
+	/**
+		A sink that throws does not throw into whoever logged. A logging call
+		is made from everywhere, error handlers included, and log4j2 and
+		Python's `logging` settled this long ago: an appender's failure goes
+		to standard output, never to the caller.
+
+		Nor does one failure turn the sink off: the next record is offered to
+		it again, since what broke it (a full disk) may have cleared.
+	**/
+	public function testASinkThatThrowsDoesNotThrowIntoTheCaller():Void {
+		var calls:Int = 0;
+		Logger.sink = function(line:String) {
+			calls++;
+			if (calls == 1) {
+				throw "disk full";
+			}
+			captured.push(line);
+		};
+
+		Logger.error("the first goes to stdout instead");
+		Logger.error("the second reaches the sink");
+
+		Assert.equals(2, calls);
+		Assert.equals("[ERROR] the second reaches the sink", captured.join("|"));
+	}
+
+	/** As for `sink`, so for `recordSink`. **/
+	public function testARecordSinkThatThrowsDoesNotThrowIntoTheCaller():Void {
+		var records:Array<LogRecord> = [];
+		var calls:Int = 0;
+		Logger.recordSink = function(record:LogRecord) {
+			calls++;
+			if (calls == 1) {
+				throw "collector unreachable";
+			}
+			records.push(record);
+		};
+
+		Logger.warn("the first goes to stdout instead");
+		Logger.warn("the second reaches the sink");
+
+		Assert.equals(2, calls);
+		Assert.equals(1, records.length);
+		Assert.equals("the second reaches the sink", records[0].message);
+	}
+
+	/**
+		What a throwing sink did to the code that logs: `Future` logs a
+		handler that throws, from inside the `catch` that contains it, so a
+		failing sink threw out of `Completer.complete` and every handler after
+		the first never ran.
+	**/
+	public function testAThrowingSinkLeavesAFuturesOtherHandlersRunning():Void {
+		Logger.sink = function(line:String) throw "disk full";
+
+		var ran:Array<String> = [];
+		var completer = new crossbyte.Completer<Int>();
+		completer.future.then(function(value:Int) {
+			ran.push("first");
+			throw "a handler's own bug";
+		});
+		completer.future.then(function(value:Int) ran.push("second"));
+		completer.future.then(function(value:Int) ran.push("third"));
+
+		completer.complete(1);
+
+		Assert.equals("first,second,third", ran.join(","));
+	}
+
+	/**
+		A sink that logs, itself or through something it calls, does not
+		recurse: the record logged from inside it goes to standard output, and
+		the sink is not entered again. It recursed until the stack ran out,
+		which natively ends the process.
+	**/
+	public function testASinkThatLogsDoesNotRecurse():Void {
+		var calls:Int = 0;
+		Logger.sink = function(line:String) {
+			calls++;
+			if (calls > 50) {
+				// Fail the test rather than the run, if it does recurse.
+				throw "the sink was entered " + calls + " times";
+			}
+			captured.push(line);
+			Logger.info("logged from inside the sink");
+		};
+
+		Logger.info("outer");
+
+		Assert.equals(1, calls);
+		Assert.equals("[INFO] outer", captured.join("|"));
+	}
+
+	#if (target.threaded && !js)
+	/**
+		What keeps a sink from recursing is kept a thread at a time: one
+		thread inside a slow sink does not send another thread's records to
+		standard output. A flag shared by every thread would, so this holds the
+		first thread inside the sink while the second logs.
+	**/
+	public function testOneThreadInsideTheSinkDoesNotDivertAnothersRecords():Void {
+		var got:Array<String> = [];
+		var guard = new sys.thread.Mutex();
+		var inside = new sys.thread.Lock();
+		var release = new sys.thread.Lock();
+		var finished = new sys.thread.Lock();
+
+		Logger.sink = function(line:String) {
+			guard.acquire();
+			got.push(line);
+			guard.release();
+			if (line.indexOf("first thread") >= 0) {
+				inside.release();
+				release.wait();
+			}
+		};
+
+		sys.thread.Thread.create(function() {
+			Logger.info("first thread");
+			finished.release();
+		});
+
+		Assert.isTrue(inside.wait(10), "the first thread never reached the sink");
+		Logger.info("second thread, while the first is inside the sink");
+		release.release();
+		Assert.isTrue(finished.wait(10), "the first thread never left the sink");
+
+		guard.acquire();
+		var lines:String = got.join("|");
+		guard.release();
+		Assert.equals("[INFO] first thread|[INFO] second thread, while the first is inside the sink", lines);
+	}
+	#end
 }
