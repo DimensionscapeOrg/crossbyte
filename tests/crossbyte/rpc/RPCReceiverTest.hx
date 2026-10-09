@@ -217,8 +217,8 @@ class RPCReceiverTest extends utest.Test {
 		Assert.same([refused, broken, missing], heard.failureCalls);
 		Assert.same([
 			Refused("not today"),
-			Refused(RPCError.INTERNAL_MESSAGE),
-			Refused(RPCError.UNKNOWN_METHOD_MESSAGE)
+			HandlerFailed,
+			UnknownMethod
 		], heard.failures);
 		Assert.same([], heard.log);
 

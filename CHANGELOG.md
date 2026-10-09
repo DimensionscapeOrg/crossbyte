@@ -389,8 +389,13 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - Errors: `crossbyte.rpc.RPCError`, whose message reaches the caller, and
   `RPCSession.onHandlerError` and `onUnreadableFrame`. `RPCResponse.failure`
   says why a future's call failed as the `RPCFailure` a receiver is told
-  (`TimedOut`, `Cancelled`, `Stopped`, `Disconnected`, `Refused`, `Unsent`,
-  `Unreadable`).
+  (`TimedOut`, `Cancelled`, `Stopped`, `Disconnected`, `Unsent`,
+  `Unreadable`), and a refusal says what refused it: `Refused(message)` for
+  the handler's own `RPCError`, and `UnknownMethod`, `UnreadableArguments`,
+  `Busy`, `NoHandler`, `HandlerTimedOut` and `HandlerFailed` for the
+  session's own refusals, carried as a code after the error answer's
+  message and passed on by a handler that answers with a refused call.
+  (Upgrading)
 - Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
   `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
 - Contracts, handlers and commands classes can extend others of their
@@ -1676,6 +1681,33 @@ an API added in this release has is not listed here.
   	public function say(room:String, text:String):Void {
   		session.commands.said(room, '${session.data}: $text');
   	}
+  }
+  ```
+- A call the other side's session refused fails with a case of `RPCFailure`
+  of its own (`UnknownMethod`, `UnreadableArguments`, `Busy`, `NoHandler`,
+  `HandlerTimedOut`, `HandlerFailed`), where it was `Refused` with one of
+  `RPCError`'s messages; `Refused(message)` is now only a handler's own
+  `RPCError`. A `switch` that lists every case needs the new ones, and one
+  that compared a message matches the case instead.
+
+  Before:
+
+  ```haxe
+  switch (failure) {
+  	case Refused(message) if (message == RPCError.BUSY_MESSAGE): retryLater();
+  	case Refused(message): trace('refused: $message');
+  	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
+  }
+  ```
+
+  After:
+
+  ```haxe
+  switch (failure) {
+  	case Busy: retryLater();
+  	case Refused(message): trace('refused: $message');
+  	case UnknownMethod | UnreadableArguments | NoHandler | HandlerTimedOut | HandlerFailed: giveUp();
+  	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
   }
   ```
 

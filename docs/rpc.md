@@ -279,6 +279,8 @@ class Lobby implements RPCIntReceiver {
 		switch (failure) {
 			case TimedOut:
 				trace("no answer in time");
+			case Busy:
+				trace("the server is busy; try again later");
 			case Refused(message):
 				trace('refused: $message');
 			case _:
@@ -311,9 +313,25 @@ answer, so it can tell its calls apart.
 
 Every call is told exactly once, through its answer or through `onFailure`,
 which says why with an `RPCFailure`: `TimedOut` past its deadline (the
-session's `callTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)`
-for an `RPCError` from the other side, `Unsent(message)` for a call that could
-not go, or `Unreadable(message)`. A call that cannot go at all (its connection
+session's `callTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`,
+`Disconnected(reason)`, `Unsent(message)` for a call that could not go, or
+`Unreadable(message)` for an answer this side could not read. When the other
+side refused the call, the failure says what refused it:
+
+| failure | the other side | its message |
+|---|---|---|
+| `Refused(message)` | its handler, with an `RPCError` | the error's, word for word |
+| `UnknownMethod` | has no method for the call | `RPCError.UNKNOWN_METHOD_MESSAGE` |
+| `UnreadableArguments` | could not read the call's arguments | `RPCError.UNREADABLE_MESSAGE` |
+| `Busy` | had `maxCallsWaiting` calls waiting | `RPCError.BUSY_MESSAGE` |
+| `NoHandler` | has nothing to answer calls | `RPCError.NO_HANDLER_MESSAGE` |
+| `HandlerTimedOut` | its handler ran past `handlerTimeout` | `RPCError.TIMEOUT_MESSAGE` |
+| `HandlerFailed` | its handler threw something else | `RPCError.INTERNAL_MESSAGE` |
+
+What refused it decides the case, not the words: a handler that throws an
+`RPCError` with the words of `RPCError.BUSY_MESSAGE` is `Refused`. A
+refusal the other side's session made is a single value, and allocates
+nothing to be told. A call that cannot go at all (its connection
 has ended, or it is over `maxFrameLength`) is told before its `...Then`
 method returns. A receiver that throws is logged, and nothing else is
 affected.
@@ -333,10 +351,15 @@ reading the words of its `error`:
 final joining = commands.join("lobby");
 joining.catchError(_ -> switch (joining.failure) {
 	case Disconnected(reason): trace('the server went: $reason');
+	case UnknownMethod: trace('the server is of another version');
 	case Refused(message): trace('refused: $message');
 	case other: trace('failed: $other');
 });
 ```
+
+A handler that answers with a call the other side refused passes the
+refusal on as it came: a hub whose backend was busy tells its own caller
+`Busy`.
 
 The receivers are interfaces rather than callbacks for a reason: natively a
 function value passes its argument as an object, so an `Int->Void` callback
@@ -614,8 +637,11 @@ class RoomHandler extends RPCHandler {
 }
 ```
 
-The caller's `RPCResponse` then fails with `"A room needs a name."`. Anything
-else a handler throws (a database error, a bug) is the handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
+The caller's `RPCResponse` then fails with `"A room needs a name."`, and its
+`failure` is `Refused("A room needs a name.")`. Anything
+else a handler throws (a database error, a bug) is the handler failing, and the
+caller is told only `RPCError.INTERNAL_MESSAGE` (its `failure` is
+`HandlerFailed`), so a
 stack trace or a file path never crosses to whoever made the call. The error
 itself goes to the session's `onHandlerError`, which logs it unless you
 replace it. It arrives as a `haxe.Exception`: what was thrown, if it was one,

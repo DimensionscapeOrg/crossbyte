@@ -33,6 +33,69 @@ class RPCWire {
 	public static inline final CAPABILITY_CALL_CONTROL:Int = 0x01;
 	public static inline final MIN_PAYLOAD_LEN:Int = 5;
 
+	// What refused a call, after an error answer's message: a varuint, left
+	// out for REFUSED_BY_HANDLER, so a handler's refusal is framed as before.
+	// A reader takes an answer with none, as one from before 1.0 has, and one
+	// it does not know, as a later version's could be, as the handler's own.
+	//
+	//   varuint request id
+	//   varuint length, UTF-8   the message
+	//   varuint code            absent for REFUSED_BY_HANDLER
+
+	/** An `RPCError` the handler meant its caller to see: `RPCFailure.Refused`. **/
+	public static inline final REFUSED_BY_HANDLER:Int = 0;
+
+	/** The handler failed with something else: `RPCFailure.HandlerFailed`, `RPCError.INTERNAL_MESSAGE`. **/
+	public static inline final REFUSED_HANDLER_FAILED:Int = 1;
+
+	/** No method answers the call: `RPCFailure.UnknownMethod`. **/
+	public static inline final REFUSED_UNKNOWN_METHOD:Int = 2;
+
+	/** Its arguments did not read: `RPCFailure.UnreadableArguments`. **/
+	public static inline final REFUSED_UNREADABLE:Int = 3;
+
+	/** Too many calls were waiting: `RPCFailure.Busy`. **/
+	public static inline final REFUSED_BUSY:Int = 4;
+
+	/** Nothing answers calls on that session: `RPCFailure.NoHandler`. **/
+	public static inline final REFUSED_NO_HANDLER:Int = 5;
+
+	/** The handler did not answer in time: `RPCFailure.HandlerTimedOut`. **/
+	public static inline final REFUSED_HANDLER_TIMEOUT:Int = 6;
+
+	/** The message a refusal of `code` is framed with, or `null` for one whose message is the handler's. **/
+	public static function refusalMessage(code:Int):Null<String> {
+		return switch (code) {
+			case REFUSED_HANDLER_FAILED: crossbyte.rpc.RPCError.INTERNAL_MESSAGE;
+			case REFUSED_UNKNOWN_METHOD: crossbyte.rpc.RPCError.UNKNOWN_METHOD_MESSAGE;
+			case REFUSED_UNREADABLE: crossbyte.rpc.RPCError.UNREADABLE_MESSAGE;
+			case REFUSED_BUSY: crossbyte.rpc.RPCError.BUSY_MESSAGE;
+			case REFUSED_NO_HANDLER: crossbyte.rpc.RPCError.NO_HANDLER_MESSAGE;
+			case REFUSED_HANDLER_TIMEOUT: crossbyte.rpc.RPCError.TIMEOUT_MESSAGE;
+			case _: null;
+		}
+	}
+
+	/**
+		The code of the error answer whose message `input` is at, in a frame
+		ending at `end`: what follows the message, or `REFUSED_BY_HANDLER`
+		when nothing does. `input` is left at the message, which is read only
+		when the code does not say it: a refusal the session made costs no
+		string to read.
+	**/
+	public static function refusalCode(input:ByteArrayInput, end:Int):Int {
+		final start:Int = input.position;
+		final length:Int = input.readVarUInt();
+		requireRoom(input, end, length);
+		input.position += length;
+		var code:Int = REFUSED_BY_HANDLER;
+		if (input.position < end) {
+			code = input.readVarUInt();
+		}
+		input.position = start;
+		return code > REFUSED_BY_HANDLER && code <= REFUSED_HANDLER_TIMEOUT ? code : REFUSED_BY_HANDLER;
+	}
+
 	/**
 		The op of `ping`, `RPCOps.opOf("ping")`, written out so that the check
 		every one-way frame gets for it is against a constant.
