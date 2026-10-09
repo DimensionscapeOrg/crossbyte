@@ -887,6 +887,11 @@ says how.
 - `LocalConnection` and `SharedChannel` write what a pass sent in one
   write and deliver up to 2 ms of messages a pass, where they delivered 32
   a tick: 4 KB messages went from 20 to 120 MB/s.
+- On Windows, a `LocalConnection`'s reader wakes as data arrives rather
+  than at its next look, 1 to 10 ms later: the writer rings an event the
+  reader waits on, as a Linux or macOS reader waits on its socket. An RPC
+  round trip over local IPC takes 0.1 ms (p50) where it took 2.9 (TCP over
+  loopback: 0.05), and an idle connection costs nothing more.
 - `System` asks the operating system directly rather than starting a
   process, and throws where nothing answers. (Upgrading)
 - A native Windows build no longer raises its process to
