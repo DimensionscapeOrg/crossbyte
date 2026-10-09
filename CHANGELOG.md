@@ -1006,6 +1006,9 @@ Fixes to code new in this release are not listed.
   the end of a connection throws `Eof`.
 - `NetConnection.close()` on a connection that has already ended does
   nothing, and a `NetConnection`'s timestamps come from its own runtime.
+- A `NetConnection` over TCP, WebSocket or reliable UDP reads `connected` as
+  `false` inside its `onClose`, in a page as natively, where one that closed
+  itself still read `true` there.
 - A URL port too large for an `Int` is refused the same way on every target.
 - IPv6 addresses are written in RFC 5952 form on every target.
 

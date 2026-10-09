@@ -743,8 +743,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		return __onReady;
 	}
 
+	// Not once it has ended: onClose, told as this side closes and before its
+	// socket has, reads it as over, as it does when the peer closed.
 	@:noCompletion private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion inline function get_readEnabled():Bool {
@@ -1011,8 +1013,10 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		return __socket.localPort;
 	}
 
+	// Not once it has ended: onClose, told as this side closes and before its
+	// socket has, reads it as over, as it does when the peer closed.
 	@:noCompletion private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
@@ -1278,8 +1282,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		return __socket.localPort;
 	}
 
+	// Not once it has ended; see TCPConnection.
 	private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
