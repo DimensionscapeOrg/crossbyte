@@ -178,7 +178,11 @@ class AllocationBudgetTest extends utest.Test {
 		__report("Bytes.alloc(1000)", small);
 		Assert.isTrue(small.perOperation >= 1000 && small.perOperation < 1000 * 1.05 + 64, "1,000-byte allocations read " + small);
 
-		var large = AllocationMeter.measure(() -> __sink = Bytes.alloc(8000), 1000);
+		// On the jvm an array this size is allocated outside the thread's
+		// allocation buffer, and the thread's count also takes in the buffers
+		// it refills, a megabyte or so at a time: over 1,000 operations one
+		// refill reads as a kilobyte each. Ten times as many spreads it out.
+		var large = AllocationMeter.measure(() -> __sink = Bytes.alloc(8000), #if jvm 10000 #else 1000 #end);
 		__report("Bytes.alloc(8000)", large);
 		Assert.isTrue(large.perOperation >= 8000 && large.perOperation < 8000 * 1.05 + 64, "8,000-byte allocations read " + large);
 		__sink = null;
