@@ -138,11 +138,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		call waits for as long as the connection lasts. A call can have a
 		deadline of its own instead; see `RPCResponse.timeout`.
 
-		Read as each call is made. A call with no deadline arms nothing. The
-		calls given this one wait in a queue, in the order they were made, and
-		one timer serves them all; a call answered leaves it at once. One
-		made after it was lowered, which would fall due before the calls
-		ahead of it, holds a timer of its own until it is answered.
+		Read as each call is made. A call with no deadline arms nothing. A
+		call's deadline (this, or one of its own from the commands'
+		`withTimeout` or the response's `timeout`) waits in a heap, with one
+		timer for all of the session's calls, whatever their deadlines; a
+		call answered leaves it at once, and nothing is allocated for it.
 	**/
 	public var callTimeout:Int = 0;
 
@@ -913,21 +913,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __handlerDeadlines:Null<HandlerDeadlines> = null;
 
 	/**
-		Gives `response` the session's deadline, `milliseconds` from now, in
-		the queue one timer keeps for all of them; one that would fall before
-		the last queued (`callTimeout` lowered between calls) arms its own,
-		rather than each call arming a timer of its own, a closure and a timer
-		node a call.
+		Gives `response` a deadline `milliseconds` from now, in the heap one
+		timer keeps for all of this session's calls, rather than a timer, a
+		closure and a timer node of its own.
 	**/
 	@:noCompletion private function __queueDeadline(response:RPCResponse<Dynamic>, milliseconds:Int):Void {
 		var queue:Null<RPCDeadlines> = __deadlines;
 		if (queue == null) {
 			queue = __deadlines = new RPCDeadlines();
 		}
-		if (!queue.add(response, milliseconds, Timer.getTime())) {
-			response.__arm(milliseconds);
-		} else if (response.__pooled) {
-			// The queue it leaves, should its commands be bound to another
+		queue.add(response, milliseconds, Timer.getTime());
+		if (response.__pooled) {
+			// The heap it leaves, should its commands be bound to another
 			// session before it is answered.
 			(cast response : RPCReceiverCall).queuedIn = cast this;
 		}

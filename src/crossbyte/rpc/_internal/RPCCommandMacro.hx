@@ -154,8 +154,37 @@ class RPCCommandMacro {
 			injectPing(newFields, Context.currentPos());
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
+		newFields.push(withTimeoutField());
 		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
 		return fields.concat(newFields);
+	}
+
+	/**
+		`withTimeout`, returning this class, so the call made through what it
+		returns is this class's: an override of `RPCCommands.withTimeout`, in
+		every commands class, each returning its own type.
+	**/
+	static function withTimeoutField():Field {
+		final local = Context.getLocalClass().get();
+		final self:ComplexType = TPath({
+			pack: [],
+			name: local.name,
+			params: [for (param in local.params) TPType(TPath({pack: [], name: param.name}))]
+		});
+		return {
+			name: "withTimeout",
+			doc: "Gives the next call made through these commands a deadline of its own; see `RPCCommands.withTimeout`.",
+			access: [APublic, AOverride],
+			kind: FFun({
+				args: [{name: "milliseconds", type: macro :Int}],
+				ret: self,
+				expr: macro {
+					this.__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+					return this;
+				}
+			}),
+			pos: Context.currentPos()
+		};
 	}
 
 	/** `__rpc_fingerprint`, answering the fingerprint of `ops`, worked out here. **/

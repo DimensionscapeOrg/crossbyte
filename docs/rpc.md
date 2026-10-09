@@ -310,8 +310,8 @@ answers with its type, and a class can implement several of these. The
 answer, so it can tell its calls apart.
 
 Every call is told exactly once, through its answer or through `onFailure`,
-which says why with an `RPCFailure`: `TimedOut` past the session's
-`callTimeout`, `Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)`
+which says why with an `RPCFailure`: `TimedOut` past its deadline (the
+session's `callTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)`
 for an `RPCError` from the other side, `Unsent(message)` for a call that could
 not go, or `Unreadable(message)`. A call that cannot go at all (its connection
 has ended, or it is over `maxFrameLength`) is told before its `...Then`
@@ -1147,14 +1147,22 @@ joining.catchError(message -> {
 });
 ```
 
-`timeout(0)` leaves a call no deadline. A call without one arms nothing and
-costs nothing for it. The calls under `callTimeout` fall due in the order they
-were made, so they wait in one queue a session, with one timer for all of them,
-and a call answered leaves it at once: a deadline costs a call no allocation,
-and no timer of its own, of which a runtime holds at most 524,288 at once. A
-call given its own with `timeout` holds a timer of its own until it is
-answered, as does one made after `callTimeout` was lowered, which would fall due
-before the calls ahead of it.
+`timeout(0)` leaves a call no deadline. A call made with a receiver has no
+`RPCResponse` to give one to, so a deadline of its own is given before it,
+through the commands: `withTimeout(ms)` gives the next call made through
+them its deadline, in place of `callTimeout` (`0` for none), and returns the
+commands, so the call follows. It works for a future's call as well.
+
+```haxe
+// Given commands:ChatCommands.
+commands.withTimeout(2000).joinThen("lobby", new Lobby());
+```
+
+A call without a deadline arms nothing and costs nothing for it. Every
+deadline a session's calls have, whatever its length, waits in one heap with
+one timer for all of them, and a call answered leaves it at once: a deadline
+costs a call no allocation, and no timer of its own, of which a runtime holds
+at most 524,288 at once.
 
 A handler can be held to one as well. `handlerTimeout` is how long a call its
 handler answers with a `Future` may wait for that future: past it the caller is

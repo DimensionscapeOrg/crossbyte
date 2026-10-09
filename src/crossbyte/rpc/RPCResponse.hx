@@ -140,10 +140,14 @@ class RPCResponse<T> extends Future<T> {
 		an answer arriving after that is dropped. The connection is left as
 		it was: a slow answer is not a broken connection.
 
-		A call with no deadline costs nothing for having none. One given a
-		deadline here holds a timer, on the thread the call was made on, until
-		it is answered; the calls under a session's `callTimeout` share one
-		instead. A call already complete is left as it is.
+		A call with no deadline costs nothing for having none, and one given a
+		deadline here waits with its session's other calls under one timer,
+		allocating nothing. A call already complete is left as it is.
+
+		Given here, after the call has gone, the deadline stays on this side:
+		when it passes, a peer of 1.0 or later is told the call is cancelled.
+		One given before the call goes (`RPCSession.callTimeout`, or the
+		commands' `withTimeout`) travels with it, so its handler can read it.
 
 		```haxe
 		commands.join("lobby").timeout(2000).then(count -> trace(count), message -> trace(message));
@@ -158,6 +162,11 @@ class RPCResponse<T> extends Future<T> {
 	@:noCompletion private function __arm(milliseconds:Int):Void {
 		__disarm();
 		if (milliseconds <= 0 || completed) {
+			return;
+		}
+		final session:Null<RPCSession<Dynamic, Dynamic>> = __commands != null ? __commands.__session : __session;
+		if (session != null) {
+			session.__queueDeadline(this, milliseconds);
 			return;
 		}
 		__deadline = Timer.setTimeout(milliseconds / 1000, () -> __expire(milliseconds));

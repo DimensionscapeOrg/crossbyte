@@ -62,6 +62,36 @@ abstract class RPCCommands {
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
+	// The deadline `withTimeout` gave the next call, or -1 for none given;
+	// and the one the request being made waits under, read as it is framed.
+	@:noCompletion private var __nextTimeout:Int = -1;
+	@:noCompletion private var __callTimeout:Int = 0;
+
+	/**
+		Gives the next call made through these commands a deadline of its
+		own, `milliseconds` from when it is made, in place of its session's
+		`RPCSession.callTimeout`; `0` gives it none. Returns these commands,
+		so the call follows:
+
+		```haxe
+		// Given commands:PlayerCommands, receiver:crossbyte.rpc.RPCStringReceiver.
+		commands.withTimeout(2000).getNameThen(7, receiver);
+		commands.withTimeout(500).getName(7).then(name -> trace(name));
+		```
+
+		Past it, a call made with a receiver is told `RPCFailure.TimedOut`, and
+		an `RPCResponse` fails with an `RPCTimeoutError` as its `cause`. The
+		deadline waits with the session's others, under one timer, so it
+		allocates nothing. Only the next call takes it, one-way or not; a
+		one-way call has no answer to wait for, and drops it.
+
+		Each commands class returns its own type, so the call that follows is
+		typed.
+	**/
+	public function withTimeout(milliseconds:Int):RPCCommands {
+		__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+		return this;
+	}
 
 	/**
 		Built-in heartbeat/system ping. This stays on the commands surface and should not
@@ -140,11 +170,13 @@ abstract class RPCCommands {
 			}
 			__pendingResponses.put(requestId, response);
 		}
-		// The session's deadline for every call, if it has one, in its queue
-		// of them; a call without one arms nothing.
+		// Its deadline, as it was framed, in its session's heap of them; a
+		// call without one arms nothing.
+		final timeout:Int = __callTimeout;
 		final session = __session;
-		if (session != null && session.callTimeout > 0) {
-			session.__queueDeadline(response, session.callTimeout);
+		if (timeout > 0 && session != null) {
+			__callTimeout = 0;
+			session.__queueDeadline(response, timeout);
 		}
 	}
 
@@ -161,7 +193,15 @@ abstract class RPCCommands {
 	@:noCompletion private inline function __startFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
+		// The deadline `withTimeout` gave, taken by this call, one-way or not.
+		var timeout:Int = __nextTimeout;
+		if (timeout >= 0) {
+			__nextTimeout = -1;
+		}
 		if (session != null) {
+			if (requestId != 0) {
+				__callTimeout = timeout >= 0 ? timeout : session.callTimeout;
+			}
 			return session.__takeFrame(room, flags, op, requestId);
 		}
 		final frame = new RPCFrame(room);
