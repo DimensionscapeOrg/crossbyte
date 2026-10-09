@@ -75,9 +75,14 @@ abstract Seq32(Int) from Int to Int {
 		return (a : Int) >>> b;
 	}
 
+	// Ahead by less than half the circle: the wrapped difference, read as a
+	// signed 32-bit number, is positive. Exactly half is neither ahead nor
+	// behind, as RFC 1982 leaves it. The difference wraps through haxe.Int32
+	// as the arithmetic above does: where an Int does not wrap (Python, PHP,
+	// Lua), a plain subtraction read a sequence up to half the circle behind
+	// as ahead of it.
 	private static inline function ugt(a:Seq32, b:Seq32):Bool {
-		var d:Int = (a : Int) - (b : Int);
-		return d != 0 && ((d ^ 0x80000000) < 0);
+		return (((a : Int) : haxe.Int32) - ((b : Int) : haxe.Int32) : Int) > 0;
 	}
 
 	@:op(A > B) private static inline function gt(a:Seq32, b:Seq32):Bool {
