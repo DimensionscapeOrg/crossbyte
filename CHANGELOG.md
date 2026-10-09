@@ -1183,6 +1183,11 @@ Fixes to code new in this release are not listed.
   and Node running on Windows.
 - `System.totalCpuUsage()`, `getDeviceId()`, `processorCount` on macOS and
   `memoryUsage()` past 2 GiB answer correctly.
+- On eval and neko, counts past 2^31 no longer wrap negative: a client
+  socket's `OutputProgressEvent.bytesTotal`, a `Counter` after `reset()`, a
+  `Gauge` after `set()`, a total of `MongoConnection.count()` answers, and
+  the HTTP/2 server's request-body budget with tens of thousands of
+  concurrent streams.
 - `SharedObject` opens on macOS, reads a region whole under one lock, and
   no longer replaces `data` with `{}` on a race.
 - `LocalConnection`: a peer that stops reading no longer stalls this side,

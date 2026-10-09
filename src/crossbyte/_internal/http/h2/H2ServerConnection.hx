@@ -1956,16 +1956,18 @@ class H2ServerConnection {
 		var streams:Int = localSettings.maxConcurrentStreams;
 		if (requestBodyBudget > 0 && streams > 0) {
 			// Every first window and the oldest body whole: see above.
+			// In Float, past 2^31 at 32,768 streams. Plus 0.0, not a cast:
+			// eval and neko multiply two Ints in 32 bits whatever their type.
 			var whole:Float = __bodyLimit + 1.0;
 			var first:Int = PREREAD_WINDOWS[PREREAD_WINDOWS.length - 1];
 			for (candidate in PREREAD_WINDOWS) {
-				if (whole + streams * (candidate : Float) <= budget) {
+				if (whole + streams * (candidate + 0.0) <= budget) {
 					first = candidate;
 					break;
 				}
 			}
-			if (whole + streams * (first : Float) > budget) {
-				budget = whole + streams * (first : Float);
+			if (whole + streams * (first + 0.0) > budget) {
+				budget = whole + streams * (first + 0.0);
 				if (budget > H2Settings.MAX_WINDOW_SIZE) {
 					budget = H2Settings.MAX_WINDOW_SIZE;
 				}
@@ -2086,10 +2088,12 @@ class H2ServerConnection {
 		that is under a frame's worth.
 	**/
 	private function __grant(target:H2Stream, want:Int):Int {
-		var room:Float = (__budget : Float) - __bodyHeld - __promised;
+		// Plus 0.0, not a cast: eval and neko do Int arithmetic in 32 bits
+		// whatever its type, and every first window together can pass 2^31.
+		var room:Float = (__budget + 0.0) - __bodyHeld - __promised;
 		var streams:Int = localSettings.maxConcurrentStreams;
 		if (streams > __budgeted) {
-			room -= (streams - __budgeted) * (localSettings.initialWindowSize : Float);
+			room -= (streams - __budgeted) * (localSettings.initialWindowSize + 0.0);
 		}
 		if (room > 0) {
 			for (other in __streams) {
