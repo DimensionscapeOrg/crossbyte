@@ -655,7 +655,12 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 
 	public inline function send(data:ByteArray):Void {
 		__connection.send(data);
-		outTimestamp = __connection.outTimestamp;
+		// When it sent, by its runtime's clock, as the connections CrossByte
+		// ships stamp theirs: reading the wrapped connection's outTimestamp
+		// goes through reflection on the jvm, a boxed Float, 24 bytes a send.
+		// With no runtime on this thread there is no clock but its own.
+		final now:Float = @:privateAccess crossbyte.Timer.tryGetTime();
+		outTimestamp = now >= 0.0 ? now : __connection.outTimestamp;
 	}
 
 	public inline function close():Void {

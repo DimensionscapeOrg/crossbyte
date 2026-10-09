@@ -116,26 +116,25 @@ class AllocationBudgetTest extends utest.Test {
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse (128 B natively, 80 on the jvm) and the answer boxed into it
 	// (24 B, 16 on the jvm); a frame
-	// costs nothing. Measured later than MEASURED_ON. On the jvm 24 B a send is
-	// the test double's: NetConnection reads its outTimestamp through
-	// reflection, a boxed Double.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [152, 152, 144], [256, 256, 248]);
-	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
+	// costs nothing. Measured later than MEASURED_ON; the jvm's on 2026-10-09,
+	// once a send through the test double stopped reading its outTimestamp
+	// through reflection (24 B a send before).
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [152, 152, 96], [256, 256, 184]);
+	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 0], [8, 8, 8]);
 	// The array and the string the handler is given are most of it.
-	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
+	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 128], [256, 248, 224]);
 	// Written with runtimeCall and read with registerArgs: no array, nothing
 	// boxed. Measured natively on Windows and on the jvm (Oracle 8), later
 	// than MEASURED_ON; Linux taken as Windows until measured.
 	// Made with a receiver (`addThen(a, b, receiver)`): no RPCResponse, and
 	// the answer handed over unboxed. Measured later than MEASURED_ON, Linux
-	// taken as Windows until measured. The jvm's figure is the test double's,
-	// 24 B for each of the two sends, as the one-way call's.
-	private static final RPC_INT_RECEIVER = new Budget("an RPC call answered through an RPCIntReceiver", "call", [0, 0, 48], [8, 8, 128]);
-	private static final RPC_FLOAT_RECEIVER = new Budget("an RPC call answered through an RPCFloatReceiver", "call", [0, 0, 48], [8, 8, 128]);
-	private static final RPC_INT64_RECEIVER = new Budget("an RPC call answered through an RPCInt64Receiver", "call", [0, 0, 48], [8, 8, 128]);
-	private static final RPC_BOOL_RECEIVER = new Budget("an RPC call answered through an RPCBoolReceiver", "call", [0, 0, 48], [8, 8, 128]);
+	// taken as Windows until measured; the jvm's on 2026-10-09, as above.
+	private static final RPC_INT_RECEIVER = new Budget("an RPC call answered through an RPCIntReceiver", "call", [0, 0, 0], [8, 8, 8]);
+	private static final RPC_FLOAT_RECEIVER = new Budget("an RPC call answered through an RPCFloatReceiver", "call", [0, 0, 0], [8, 8, 8]);
+	private static final RPC_INT64_RECEIVER = new Budget("an RPC call answered through an RPCInt64Receiver", "call", [0, 0, 0], [8, 8, 8]);
+	private static final RPC_BOOL_RECEIVER = new Budget("an RPC call answered through an RPCBoolReceiver", "call", [0, 0, 0], [8, 8, 8]);
 	// The answer's own string, 12 characters, and nothing else.
-	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 112], [96, 96, 208]);
+	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 64], [96, 96, 144]);
 	// The same over a TCP NetConnection to a NetHost, both ends on this
 	// thread's runtime: what RPC costs on a real transport. Measured later than
 	// MEASURED_ON; Linux taken as Windows until measured. Alone the jvm reads 0
@@ -143,7 +142,7 @@ class AllocationBudgetTest extends utest.Test {
 	// (the JDK's Windows selector boxing what it finds ready).
 	private static final RPC_TCP_RECEIVER = new Budget("an RPC call over TCP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
 	private static final RPC_TCP_CALL = new Budget("an RPC call over TCP and its answer", "call", [152, 152, 128], [256, 256, 224]);
-	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 24], [8, 8, 96]);
+	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -936,6 +935,26 @@ class AllocationBudgetTest extends utest.Test {
 			"a receiver call under withTimeout allocated " + readings[1] + ", where one without allocated " + readings[0]);
 		Assert.isTrue(readings[3].perOperation - readings[2].perOperation <= 16,
 			"a call given timeout() allocated " + readings[3] + ", where one without allocated " + readings[2]);
+	}
+
+	/**
+		A send through a connection of the application's own, wrapped as a
+		`NetConnection`, allocates nothing for being wrapped. On the jvm the
+		wrapper read the connection's `outTimestamp` through the interface,
+		which is reflection there, and boxed it: 24 bytes a send, and so a
+		call made through `LinkedConnection` cost 24 bytes more there than
+		over TCP.
+	**/
+	public function testASendThroughAnApplicationsConnectionAllocatesNothing():Void {
+		var link = LinkedConnection.pair();
+		var wrapped:NetConnection = NetConnection.fromINetConnection(link.client);
+		var payload = new crossbyte.io.ByteArray();
+		payload.writeInt(7);
+		var op = () -> wrapped.send(payload);
+		__warm(op, WARM_CHEAP);
+		var reading:AllocationReading = AllocationMeter.measure(op, 20000);
+		__report("a send through an application's INetConnection", reading);
+		Assert.isTrue(reading.perOperation <= 8, "a send through a wrapped connection allocated " + reading);
 	}
 
 	public function testAnRpcCallOverTcp():Void {
