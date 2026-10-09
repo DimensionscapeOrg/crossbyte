@@ -698,6 +698,16 @@ sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
 caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
 Both ends of a connection should agree on the limit.
 
+A frame has to fit its transport's own limits too, which hold whatever
+`maxFrameLength` says: a TCP socket reads at most its `maxInputBufferSize`
+(16 MiB unless set) ahead of what is read, so a frame larger than that never
+arrives whole; a WebSocket session takes messages up to its `maxMessageSize`
+(1 MiB unless set) and closes on a larger one; and a reliable UDP session
+ends when more than its `maxOutputBufferSize` (256 KB unless set) waits to go.
+An answer longer than `chunkLength` goes in pieces (see "Large answers"),
+which each of these takes; a call that large needs the limit raised on the
+transport that carries it.
+
 A request to a session with no handler to answer it (one with only commands,
 calling out) is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
 one is dropped.
@@ -1112,7 +1122,34 @@ A peer that sends calls and never reads their answers would make this side
 hold every answer. Over TCP and WebSocket, once more than the session's
 `maxOutputPending` (16 MiB unless set) waits unsent for its peer, the session
 takes the peer to have stopped reading and closes the connection, its reason
-saying so; reliable UDP and local IPC bound what waits themselves.
+saying so; reliable UDP and local IPC bound what waits themselves, and the
+pieces of large answers waiting count on every transport.
+
+### Large answers
+
+An answer longer than the session's `chunkLength` (64 KiB unless set) goes in
+pieces of that length, between the frames sent while it goes, as HTTP/2's
+streams interleave: a small call made just after a large one is answered
+without waiting for the whole of it. Natively over loopback TCP, while a 64 MB
+answer was in flight a small call took 3 ms (p50) and 15 ms (p99) where it
+took 56 and 98, and the large answer itself went as fast (850 MB/s against
+700); with an 8 MB answer, 1.6 and 6.6 ms where it took 11 and 27. The pieces go as the connection takes them: what it holds unsent is
+kept under four pieces, so a frame behind a large answer waits for at most
+those, and what waits behind them is the session's, counted toward
+`maxOutputPending`. Up to four answers go at once, a piece each in turn, and
+the rest wait their turn.
+
+Calls never go in pieces, so they arrive in the order they were made. An
+answer in pieces is complete when its last piece is in, so a frame sent after
+it can arrive before it does: a notification sent after a large answer can be
+heard before that answer. An application that needs every frame in the order
+it was sent sets `chunkLength` to `0`, and every answer goes whole.
+
+Pieces go over TCP, WebSocket and reliable UDP, to a peer whose hello says it
+reads them (every 1.0 session's does); to any other an answer goes whole.
+Each answer in pieces counts toward the reader's `maxFrameLength`, which it
+learns from the first piece, and the reader holds no more than a few times
+what has arrived of it.
 
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller
@@ -1126,8 +1163,9 @@ connection ended with no code known.
 Every session says hello as its connection starts (at once on a connection
 that is up already, as an accepted one is, or as one becomes ready), with the
 protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
-capabilities it has (in 1.0, reading a call's deadline and a cancel; see
-"The handler's side of a deadline"), and a fingerprint of the
+capabilities it has (in 1.0, reading a call's deadline and a cancel, see
+"The handler's side of a deadline", and reading answers in pieces, see
+"Large answers"), and a fingerprint of the
 methods its commands call and one of those its handler answers. The hello goes
 out ahead of the session's calls and nothing waits for it, so it costs no
 round trip. The peer's sets `peerVersion`, `peerCapabilities`,
@@ -1293,3 +1331,59 @@ call has gone stays on the caller's side: its handler does not see it, and
 is told only once it passes. One that went with the call binds the handler
 as it was sent, so a longer one given with `timeout` afterwards waits for an
 answer that, past the first, does not come.
+
+## On the wire
+
+What a session sends, for a reader writing a peer of their own, or reading a
+capture. Every frame is its length and then that many bytes, little-endian:
+
+```
+u32      length       of what follows
+u8       flags
+i32      op           the call's op, a runtime number, or a piece's stream
+varuint  request id   on a request and an answer; none on a one-way call
+...                   the arguments, the answer, or an error's message
+```
+
+| flags | the frame |
+|---|---|
+| `0x00` | a one-way call |
+| `0x01` | a request; with `0x10`, the caller's deadline follows the request id, a varuint of milliseconds |
+| `0x02` | an answer |
+| `0x06` | an error answer: the message (a varuint length, then UTF-8), then a varuint code of what refused the call |
+| `0x08` | with any of these, the runtime lane: values carry a tag each |
+| `0x20` | a cancel: the caller has stopped waiting for the call it names (op and request id) |
+| `0x40` | a piece of an answer, `0xC0` its last; see below |
+
+The codes after an error answer's message say what refused the call, as
+`RPCFailure` does: none or `0` its handler (`Refused`), `1` its handler
+failing (`HandlerFailed`), `2` no such method (`UnknownMethod`), `3`
+arguments that did not read (`UnreadableArguments`), `4` too many calls
+waiting (`Busy`), `5` nothing to answer calls (`NoHandler`), `6` its handler
+out of time (`HandlerTimedOut`). A code a reader does not know is the
+handler's refusal, with its message.
+
+A ping is a one-way call to op `0x165DF089` with no arguments, answered with
+a pong: an answer under request id 0. The hello is an answer under request id
+0 for op `0xADD0D102`: varuints of the protocol version (1) and the
+capabilities (`1` reads a request's deadline and a cancel, `2` reads answers
+in pieces), then two `i32` fingerprints, of the methods its commands call and
+its handler answers. A reader takes what it knows of a hello and passes over
+the rest, and a frame of a kind it does not know is passed over too: every
+frame says where the next begins.
+
+A piece of an answer:
+
+```
+u32      length       5 + the rest
+u8       flags        0x40, or 0xC0 on the last piece
+i32      stream       which answer it is a piece of
+varuint  total        on the first piece only: the answer's frame length
+...      the piece    the answer's frame after its length, in order
+```
+
+The pieces of one answer, joined, are its frame after its length, `total`
+bytes in all: the first piece carries its flags and op, and the rest follow.
+At most four answers go in pieces at once, one way on a connection; more,
+pieces past `total`, an answer ending short of it, or a first piece that does
+not begin an answer, end the connection.

@@ -24,6 +24,7 @@ import crossbyte.net.NetConnection;
 import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.rpc._internal.RPCChunks;
 import crossbyte.rpc._internal.RPCDeadlines;
 import crossbyte.rpc._internal.RPCReceiverCall;
 import crossbyte.rpc._internal.RPCRefusal;
@@ -192,10 +193,36 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 		Checked as each frame is sent, against what was still waiting before
 		it, so one frame as large as `maxFrameLength` never trips it.
-		Reliable UDP and local IPC bound what waits themselves. `0` removes
-		the limit.
+		Reliable UDP and local IPC bound what waits themselves; what waits
+		here of answers going in pieces (see `chunkLength`) counts on every
+		transport. `0` removes the limit.
 	**/
 	public var maxOutputPending:Int = DEFAULT_MAX_OUTPUT_PENDING;
+
+	/** Default for `chunkLength`: 64 KiB. **/
+	public static inline final DEFAULT_CHUNK_LENGTH:Int = 64 * 1024;
+
+	/**
+		An answer longer than this many bytes goes in pieces of this many,
+		between the frames sent while it goes, so that one large answer does
+		not hold up every call and answer behind it on the connection, as
+		HTTP/2's DATA frames let a stream's bytes interleave with others'.
+		Over TCP, WebSocket and reliable UDP, to a peer whose hello says it
+		reads pieces (every 1.0 session's does); to any other an answer goes
+		whole, as before. Calls are never sent in pieces, so they keep their
+		order; an answer in pieces is complete when its last piece is in, so
+		a frame sent after it can arrive before it does.
+
+		The pieces go as the connection takes them: what it holds unsent is
+		kept under four pieces, and what waits behind is this session's,
+		counted toward `maxOutputPending`. Up to four answers go at once, a
+		piece each in turn. `0` sends every answer whole.
+	**/
+	public var chunkLength:Int = DEFAULT_CHUNK_LENGTH;
+
+	// The answers going in pieces and arriving in pieces, made with the
+	// first of either; see RPCChunks.
+	@:noCompletion private var __chunks:Null<RPCChunks> = null;
 
 	// What a call waiting is failed with when the session stops, when it is
 	// cancelled, and the start of what it fails with when its send throws:
@@ -677,6 +704,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// Stopped, not forgotten: `start()` still stands, for a connection
 		// that becomes ready again.
 		__stopHeartbeat();
+		// Answers going and arriving in pieces go nowhere now.
+		if (__chunks != null) {
+			__chunks.drop();
+		}
 		// The calls its handler is answering later have nobody to answer now.
 		while (__firstWaiting != null) {
 			__firstWaiting.__disconnected(reason);
@@ -1279,6 +1310,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 					__helloArrived(input, frameEnd);
 				}
 				// Otherwise id 0, which answers no call: a pong.
+			} else if ((flags & ~RPCWire.FLAG_CHUNK_END) == RPCWire.FLAG_CHUNK) {
+				__pieceArrived(op, input, frameEnd, flags != RPCWire.FLAG_CHUNK);
 			} else if (flags == RPCWire.FLAG_CANCEL) {
 				__readCancel(op, input, frameEnd, false);
 			} else {
@@ -1292,6 +1325,20 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (now >= 0.0) {
 			__connection.inTimestamp = now;
 		}
+	}
+
+	/** A piece of an answer the peer sends in pieces; see RPCChunks. **/
+	@:noCompletion private function __pieceArrived(stream:Int, input:ByteArrayInput, frameEnd:Int, last:Bool):Void {
+		var chunks:Null<RPCChunks> = __chunks;
+		if (chunks == null) {
+			chunks = __chunks = new RPCChunks(cast this);
+		}
+		chunks.arrived(stream, input, frameEnd, last, maxFrameLength);
+	}
+
+	/** An answer that arrived in pieces, whole: read as a frame that came so. **/
+	@:noCompletion private function __readAssembled(frame:ByteArrayInput):Void {
+		__readFrames(frame);
 	}
 
 	/** A cancel: the call it names, if its handler is answering it later, is told. **/
@@ -1735,9 +1782,38 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// has nobody to go to.
 		if (__ended) {
 			__sent(framed);
+		} else if (chunkLength > 0 && framed.payloadLength > chunkLength) {
+			__sendLongAnswer(framed);
 		} else {
 			__sendFrame(framed);
 		}
+	}
+
+	/**
+		An answer past `chunkLength`: in pieces, to a peer that reads them
+		over a connection that says what it holds unsent, and otherwise whole.
+		The frame is the pieces' from here, out of the session's hands.
+	**/
+	@:noCompletion private function __sendLongAnswer(framed:RPCFrame):Void {
+		if ((peerCapabilities & RPCWire.CAPABILITY_CHUNKS) == 0 || !(__connection : NetConnectionBase).__paces) {
+			__sendFrame(framed);
+			return;
+		}
+		// What waits here in pieces counts on every connection that sends
+		// them, reliable UDP among them, whose own limit sees only what it
+		// has been handed.
+		if (maxOutputPending > 0 && !__peerReads()) {
+			__sent(framed);
+			return;
+		}
+		if (framed == __frame) {
+			__frame = null;
+		}
+		var chunks:Null<RPCChunks> = __chunks;
+		if (chunks == null) {
+			chunks = __chunks = new RPCChunks(cast this);
+		}
+		chunks.send(framed, chunkLength);
 	}
 
 	/**
@@ -1818,7 +1894,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__ended) {
 			return true;
 		}
-		final pending:Int = (__connection : NetConnectionBase).__bytesPending();
+		final pending:Int = (__connection : NetConnectionBase).__bytesPending() + (__chunks != null ? __chunks.unsent : 0);
 		if (pending <= maxOutputPending) {
 			return true;
 		}
@@ -2093,6 +2169,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		if (__ended) {
 			__sent(framed);
+		} else if (chunkLength > 0 && framed.payloadLength > chunkLength) {
+			__sendLongAnswer(framed);
 		} else {
 			__sendFrame(framed);
 		}

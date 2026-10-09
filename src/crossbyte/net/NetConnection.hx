@@ -17,6 +17,7 @@ import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.io.ByteArray;
 // The two events that belong to transports a page has not got.
 #if !(js && !nodejs)
@@ -770,6 +771,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	@:noCompletion private function new(socket:Socket) {
 		protocol = TCP;
 		__holdsOutput = true;
+		__paces = true;
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -795,6 +797,45 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	public function send(data:ByteArray):Void {
 		this.__writeBytes(data, 0, 0);
+		__sendWritten();
+	}
+
+	/** Part of `data` in place, sent as `send` sends. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		this.__writeBytes(data, offset, length);
+		__sendWritten();
+	}
+
+	override public function __queueLimit():Int {
+		return __socket.maxOutputBufferSize;
+	}
+
+	// A paced sender waiting for room; see __whenQueueUnder.
+	@:noCompletion private var __roomBelow:Int = 0;
+	@:noCompletion private var __onRoom:Null<Void->Void> = null;
+
+	/** Told by the socket's OUTPUT_PROGRESS, which comes at the end of a pass that moved bytes. **/
+	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		__roomBelow = below;
+		if (__onRoom == null) {
+			__socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		}
+		__onRoom = room;
+		return true;
+	}
+
+	@:noCompletion private function socket_onProgress(_:OutputProgressEvent):Void {
+		final room = __onRoom;
+		if (room == null || __socket.bytesPending >= __roomBelow) {
+			return;
+		}
+		__onRoom = null;
+		__socket.removeEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		room();
+	}
+
+	/** What was just written goes when the pass ends, or at once; see `send`. **/
+	@:noCompletion private inline function __sendWritten():Void {
 		if (__passFlushQueued) {
 			return;
 		}
@@ -1085,6 +1126,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	private function new(socket:ReliableDatagramSocket) {
 		protocol = RUDP;
+		__paces = true;
 		__socket = socket;
 		__prepareLifecycle();
 	}
@@ -1102,6 +1144,33 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
+	}
+
+	/** Part of `data` in place, as one message in `DATAGRAM` mode, as `send` sends the whole. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		switch (__socket.mode) {
+			case DATAGRAM:
+				__socket.send(data, offset, length);
+			case STREAM:
+				__socket.writeBytes(data, offset, length);
+				__socket.flush();
+		}
+		outTimestamp = __uptime();
+	}
+
+	/** What the congestion window holds back. **/
+	override public function __bytesQueued():Int {
+		return __socket.bufferedAmount;
+	}
+
+	override public function __queueLimit():Int {
+		return __socket.maxOutputBufferSize;
+	}
+
+	/** Told as the congestion window lets what waits out; see `ReliableDatagramSocket.__whenQueueUnder`. **/
+	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		@:privateAccess __socket.__whenQueueUnder(below, room);
+		return true;
 	}
 
 	/**
@@ -1349,6 +1418,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	private function new(socket:WebSocket) {
 		__holdsOutput = true;
+		__paces = true;
 		protocol = WEBSOCKET;
 		this.__socket = socket;
 		__prepareLifecycle();
@@ -1368,6 +1438,13 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	public function send(data:ByteArray):Void {
 		__socket.writeBytes(data);
+		__socket.flush();
+		outTimestamp = __uptime();
+	}
+
+	/** Part of `data` in place, as one message, as `send` sends the whole. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		__socket.writeBytes(data, offset, length);
 		__socket.flush();
 		outTimestamp = __uptime();
 	}
