@@ -1090,6 +1090,9 @@ Fixes to code new in this release are not listed.
 
 #### RPC
 
+- A contract may name a method `input` or `requestId`, and an argument
+  `requestId` or `framed`: the build failed ("ByteArrayInput cannot be
+  called", a duplicate argument, or the frame written as the argument).
 - `onHandlerError`'s default report says a handler that ran out of time
   (its `handlerTimeout`, or a call it forwarded) did not answer in time,
   where it said the handler threw.
