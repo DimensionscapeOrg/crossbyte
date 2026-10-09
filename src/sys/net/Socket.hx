@@ -2744,7 +2744,7 @@ class Socket {
 		var resRead:Array<Socket> = [];
 		var resWrite:Array<Socket> = [];
 		var resOthers:Array<Socket> = [];
-		__selectInto(read, write, others, timeout == null ? -1.0 : timeout, resRead, resWrite, resOthers);
+		__selectInto(read, write, others, timeout == null ? -1.0 : timeout, resRead, resWrite, resOthers, true);
 		return {read: resRead, write: resWrite, others: resOthers};
 	}
 
@@ -2754,9 +2754,15 @@ class Socket {
 		polling: what a runtime's socket registry calls each frame. Through
 		`select` a frame would make three arrays, their storage and the object
 		holding them, and box the timeout.
+
+		`mayLook` false keeps even a single socket polled without waiting on
+		the thread's selector, rather than registering it for the call only:
+		a runtime with one socket (a UDP server) asks about it every frame,
+		and a registration made and cancelled each time costs about 250
+		bytes a frame.
 	**/
 	@:noCompletion public static function __selectInto(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>, timeout:Float,
-			resRead:Array<Socket>, resWrite:Array<Socket>, resOthers:Array<Socket>):Void {
+			resRead:Array<Socket>, resWrite:Array<Socket>, resOthers:Array<Socket>, mayLook:Bool):Void {
 		var state = __state();
 		// Never 0, which a socket no call has asked about yet reads as.
 		var pass:Int = ++state.pass;
@@ -2786,7 +2792,7 @@ class Socket {
 		}
 
 		var polling:Bool = timeout <= 0;
-		var look:Bool = polling && asked.length == 1;
+		var look:Bool = mayLook && polling && asked.length == 1;
 		var selector:Selector = look ? state.probeSelector() : state.mainSelector();
 		var transients = state.transients;
 		transients.resize(0);

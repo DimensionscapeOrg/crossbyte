@@ -96,7 +96,10 @@ class AllocationBudgetTest extends utest.Test {
 	// above, later than MEASURED_ON (Oracle 8 on Windows: 73).
 	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 312], [8, 8, 456]);
+	// The jvm's 72 B is Java 8's selector (its selected-key set and the
+	// iterator over it), measured later than MEASURED_ON on Oracle 8 and
+	// Temurin 8 alike.
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 72], [8, 8, 160]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse and what waiting on it takes; a frame costs nothing.

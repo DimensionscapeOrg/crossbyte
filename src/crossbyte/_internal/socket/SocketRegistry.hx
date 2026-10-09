@@ -455,10 +455,10 @@ final class SocketRegistry {
 		var asked:Null<Array<Socket>> = watching ? __writeSnapshot : null;
 		if (wait > 0) {
 			var waitStart:Float = haxe.Timer.stamp();
-			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, wait, read, write, others);
+			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, wait, read, write, others, false);
 			__waited += haxe.Timer.stamp() - waitStart;
 		} else {
-			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, -1.0, read, write, others);
+			@:privateAccess Socket.__selectInto(__selectBuffer, asked, asked, -1.0, read, write, others, false);
 		}
 
 		__walkingReady = true;
