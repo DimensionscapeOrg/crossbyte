@@ -518,6 +518,13 @@ says how.
   (`VectorCallback`), `sort` taking a comparator and `concat` taking
   vectors, and `map` giving a vector of what its callback returns.
   (Upgrading)
+- Natively, `Vector` reads and writes about ten times faster than it did
+  where the code using it names its element type: an element of a
+  `Vector<Int>` takes about 2 ns rather than 18 to 21, where each one was
+  boxed through a dynamic array (an `Array<Int>` takes half a nanosecond).
+  `pop`, `shift` and `removeAt` take an element without boxing it or making
+  an array, so a push and a pop cost 9 ns rather than 43, and 21 for an
+  `Array`.
 - `SlotHandle` carries 20 index bits and 11 generation bits, and `SlotMap`
   and `PackedSlotMap` reuse the slot freed longest ago, so a stale handle
   no longer comes to name a new entity within seconds. (Upgrading)
