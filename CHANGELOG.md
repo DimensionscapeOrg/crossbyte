@@ -569,6 +569,9 @@ says how.
 - `DatagramSocket.send` is an inline forwarder, so it boxes nothing on the
   jvm. (Upgrading)
 - A datagram too large to send says so, with the size and the limit.
+- On the jvm a runtime with one socket, as a UDP server has, keeps it
+  registered with its selector rather than registering it afresh every
+  frame: a datagram sent and received allocates 72 B where it took 312.
 
 #### Reliable UDP
 
