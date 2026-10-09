@@ -3,6 +3,7 @@ package crossbyte.rpc;
 import crossbyte.Future;
 import crossbyte._internal.system.timer.TimerHandle;
 import crossbyte.rpc._internal.RPCDeadlines;
+import crossbyte.rpc._internal.RPCReceiverCall;
 
 @:allow(crossbyte.rpc.RPCCommands)
 @:allow(crossbyte.rpc.RPCSession)
@@ -35,6 +36,27 @@ class RPCResponse<T> extends Future<T> {
 	/** Operation code associated with the request. */
 	public var op(default, null):Int;
 
+	/**
+		Why the call failed, typed as a receiver is told it: `TimedOut`,
+		`Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)` for
+		an `RPCError` from the other side (one of its messages, such as
+		`RPCError.UNKNOWN_METHOD_MESSAGE`, or its handler's own), `Unsent` or
+		`Unreadable`. `null` while it waits and once it has succeeded.
+
+		Worked out from `error` and `cause` as it is read, so a call that never
+		asks pays nothing for it.
+
+		```haxe
+		final asked = commands.join("lobby");
+		asked.catchError(_ -> switch (asked.failure) {
+			case TimedOut: trace("no answer in time");
+			case Disconnected(reason): trace('gone: $reason');
+			case other: trace('failed: $other');
+		});
+		```
+	**/
+	public var failure(get, never):Null<RPCFailure>;
+
 	// Where the call waits for its answer, so a deadline can take it out:
 	// the commands that made it, or the session, for a runtime call. Set by
 	// whichever made it.
@@ -59,6 +81,10 @@ class RPCResponse<T> extends Future<T> {
 	// responder never touches.
 	@:noCompletion private var __responder:Null<Responder<T>> = null;
 	@:noCompletion private static final ANSWERED:Responder<Dynamic> = new Responder<Dynamic>();
+
+	@:noCompletion private function get_failure():Null<RPCFailure> {
+		return completed && !succeeded ? RPCReceiverCall.failureOf(error, cause) : null;
+	}
 
 	public function new(requestId:Int, op:Int, ?responder:Responder<T>) {
 		super();
