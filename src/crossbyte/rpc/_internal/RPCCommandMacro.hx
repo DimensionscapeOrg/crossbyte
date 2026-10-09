@@ -405,6 +405,15 @@ class RPCCommandMacro {
 		them as what it abstracts), or `RPCValueReceiver<T>` for anything
 		else, and for a `Null<T>` of anything, which is an object already.
 	**/
+	/** Whether an answer is a `Float32`, which a future must hold as one: on HashLink a `Single`. **/
+	private static function isSingle(ct:ComplexType, pos:Position):Bool {
+		if (RPCContractMacroTools.isNullable(ct, pos)) {
+			return false;
+		}
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		return kind != null && kind.token == "f32";
+	}
+
 	private static function receiverOf(ct:ComplexType, pos:Position):ReceiverKind {
 		if (RPCContractMacroTools.isNullable(ct, pos)) {
 			return RValue;
@@ -553,7 +562,7 @@ class RPCCommandMacro {
 			final answer:Expr = switch (receiverOf(type, method.pos)) {
 				case RInt: macro this.__answerInt(op, requestId, (cast value : Int));
 				case RInt64: macro this.__answerInt64(op, requestId, (cast value : haxe.Int64));
-				case RFloat: macro this.__answerFloat(op, requestId, (cast value : Float));
+				case RFloat: macro this.__answerFloat(op, requestId, (cast value : Float), $v{isSingle(type, method.pos)});
 				case RBool: macro this.__answerBool(op, requestId, (cast value : Bool));
 				case RString: macro this.__answerString(op, requestId, (cast value : String));
 				case RValue: macro this.__answerValue(op, requestId, value);
