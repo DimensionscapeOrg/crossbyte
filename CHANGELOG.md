@@ -625,6 +625,8 @@ says how.
 - Natively a message allocates nothing to send or receive but the `text` a
   listener asks for, and an idle session holds less (an accepted one 3.8 KB
   where it held 6.6), letting go of its buffers after a quiet heartbeat.
+- On the jvm, framing and masking a message boxes nothing: a 100-byte
+  echo allocates 396 B where it took 428.
 - A `wss://` client checks the server's certificate. (Upgrading)
 - A client's failed connect ends one way: `ioError`, then `close` with 1006.
   Its `timeout` bounds the whole connect: lookup, TCP, TLS and upgrade.
