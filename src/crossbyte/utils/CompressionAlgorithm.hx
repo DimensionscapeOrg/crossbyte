@@ -8,23 +8,26 @@ package crossbyte.utils;
 **/
 enum abstract CompressionAlgorithm(Int) {
 	/**
-		Defines the string to use for the deflate compression algorithm: a raw
-		deflate stream (RFC 1951), with no header and no checksum.
+		A raw deflate stream (RFC 1951), with no header and no checksum. Its
+		token is `deflate`. HTTP's `deflate` content coding is `ZLIB`, not this.
 	**/
 	public var DEFLATE = 0;
 
 	/**
-		Defines the string to use for the gzip compression algorithm.
+		The gzip format (RFC 1952): a deflate stream with a header and a CRC-32.
+		Its token is `gzip`.
 	**/
 	public var GZIP = 1;
 
 	/**
-		Defines the string to use for the Brotli compression algorithm.
+		Brotli (RFC 7932). Its token is `br`, as HTTP names it; `brotli` is
+		read as well.
 	**/
 	public var BROTLI = 2;
 
 	/**
-		Defines the string to use for the LZ4 compression algorithm.
+		One LZ4 block and nothing around it: no length and no checksum. Its
+		token is `lz4`. `LZ4_FRAME` carries blocks with sizes and checksums.
 	**/
 	public var LZ4 = 3;
 
