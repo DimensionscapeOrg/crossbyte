@@ -586,7 +586,9 @@ says how.
   runtime pools and lets go of when quiet, where one buffer grew to twice
   the largest pass and was kept for good: after a 1 KB broadcast to
   10,000 peers, 10 MB is held while broadcasting and 0.2 MB once quiet,
-  where 17 MB was held either way.
+  where 17 MB was held either way. What a pass no longer needs waits one
+  quiet interval (five seconds) as spare, so a burst after a short pause
+  allocates nothing.
 
 #### Reliable UDP
 

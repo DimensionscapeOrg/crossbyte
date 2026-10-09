@@ -20,9 +20,12 @@ import haxe.io.Bytes;
 
 	How much it keeps: every chunk while chunks are being taken, up to the
 	most in use at once since the registry last asked (`QuietRelease`, every
-	five seconds), so a server broadcasting every frame takes nothing new;
-	and once a whole interval has passed with none taken, all but one. A
-	burst's chunks go five to ten seconds after it.
+	five seconds), so a server broadcasting every frame takes nothing new.
+	What an interval did not need waits one interval more as spare, taken
+	before a new chunk is made, and goes if it is still unused at the next
+	ask, as Go's `sync.Pool` keeps a victim generation: a server pausing
+	between matches takes its chunks back, and a quiet one is down to one
+	chunk ten to fifteen seconds after its last burst.
 
 	One runtime's, used on its thread only.
 **/
@@ -35,6 +38,9 @@ class DatagramChunks implements QuietRelease {
 	public static inline var SPARE:Int = 1;
 
 	@:noCompletion private var __idle:Array<Bytes> = [];
+	// Chunks that went unused for a whole interval, freed if still unused at
+	// the next ask; taken before a new one is made.
+	@:noCompletion private var __spare:Array<Bytes> = [];
 	@:noCompletion private var __inUse:Int = 0;
 	// The most in use at once since the registry last asked, and whether any
 	// was taken since then.
@@ -54,7 +60,7 @@ class DatagramChunks implements QuietRelease {
 	public var inUse(get, never):Int;
 
 	private inline function get_idle():Int {
-		return __idle.length;
+		return __idle.length + __spare.length;
 	}
 
 	private inline function get_inUse():Int {
@@ -65,6 +71,9 @@ class DatagramChunks implements QuietRelease {
 	public function take():Bytes {
 		__taken = true;
 		var chunk:Null<Bytes> = __idle.pop();
+		if (chunk == null) {
+			chunk = __spare.pop();
+		}
 		if (chunk == null) {
 			chunk = Bytes.alloc(CHUNK_SIZE);
 		}
@@ -85,21 +94,24 @@ class DatagramChunks implements QuietRelease {
 	}
 
 	/**
-		Asked by the registry every few seconds: keeps the chunks the busiest
-		moment since the last time needed while chunks are still being taken,
-		and all but `SPARE` once none was. Whether to go on asking.
+		Asked by the registry every few seconds: lets go of the spare chunks
+		left from the ask before, and makes spare what this interval did not
+		need, all but `SPARE` once nothing was taken. Whether to go on asking.
 	**/
 	public function __releaseIfQuiet():Bool {
+		// What went unused a whole interval before this one goes now.
+		__spare.resize(0);
 		var keep:Int = __taken ? __peak - __inUse : SPARE;
 		if (keep < SPARE) {
 			keep = SPARE;
 		}
-		if (__idle.length > keep) {
-			__idle.resize(keep);
+		// What this interval did not need waits one more as spare.
+		while (__idle.length > keep) {
+			__spare.push(__idle.pop());
 		}
 		__taken = false;
 		__peak = __inUse;
-		if (__idle.length <= SPARE) {
+		if (__idle.length <= SPARE && __spare.length == 0) {
 			__watched = false;
 			return false;
 		}

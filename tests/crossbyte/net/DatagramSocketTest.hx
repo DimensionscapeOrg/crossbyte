@@ -1453,55 +1453,70 @@ class DatagramSocketTest extends utest.Test {
 	/**
 		The pool keeps every chunk while chunks are being taken, up to the
 		most a pass held since it was last asked, so a server broadcasting
-		every frame takes nothing new; once a whole interval passes with none
-		taken, it keeps one. Asked by the registry every few seconds; asked
-		directly here.
+		every frame takes nothing new. What an interval did not need waits one
+		interval more as spare: a burst after a pause of one quiet interval
+		takes every chunk back, and after two the pool is down to one. Asked
+		by the registry every few seconds; asked directly here.
 	**/
-	public function testThePoolOfChunksKeepsABurstWhileBusyAndLetsItGoWhenQuiet():Void {
+	public function testThePoolOfChunksKeepsABurstAcrossAPauseAndLetsItGoWhenQuiet():Void {
 		#if cpp
 		var pool = new crossbyte._internal.net.DatagramChunks(null);
-		function pass(count:Int):Array<haxe.io.Bytes> {
+		var made:Array<haxe.io.Bytes> = [];
+		function pass(count:Int):Int {
 			var taken = [for (_ in 0...count) pool.take()];
+			var fresh:Int = 0;
 			for (chunk in taken) {
+				if (made.indexOf(chunk) < 0) {
+					made.push(chunk);
+					fresh++;
+				}
 				pool.give(chunk);
 			}
-			return taken;
+			return fresh;
 		}
 
-		var first = pass(20);
+		Assert.equals(20, pass(20));
 		Assert.equals(20, pool.idle, "a pass's chunks were not kept for the next");
-		var second = pass(20);
-		var reused:Int = 0;
-		for (chunk in second) {
-			if (first.indexOf(chunk) >= 0) {
-				reused++;
-			}
-		}
-		Assert.equals(20, reused, "a second pass as large as the first made chunks of its own");
+		Assert.equals(0, pass(20), "a second pass as large as the first made chunks of its own");
 
 		// Busy: a pass since the last ask keeps the most it needed.
 		pass(5);
 		Assert.isTrue(pool.__releaseIfQuiet(), "a busy pool stopped being asked");
 		Assert.equals(20, pool.idle, "a busy pool let go of what its largest pass needed");
 
-		// Smaller passes since: the next ask keeps what they needed.
+		// One quiet interval: kept as spare, and taken back by the next burst.
+		Assert.isTrue(pool.__releaseIfQuiet(), "a pool holding spare chunks stopped being asked");
+		Assert.equals(20, pool.idle, "a pool let go of a burst after one quiet interval");
+		Assert.equals(0, pass(20), "a burst after one quiet interval made chunks of its own");
+
+		// Two quiet intervals: down to one.
+		Assert.isTrue(pool.__releaseIfQuiet());
+		Assert.isTrue(pool.__releaseIfQuiet());
+		Assert.isFalse(pool.__releaseIfQuiet(), "a quiet pool holding only its floor went on being asked");
+		Assert.equals(crossbyte._internal.net.DatagramChunks.SPARE, pool.idle, "a quiet pool kept more than its floor");
+
+		// Smaller passes since a burst: the rest waits one interval, then goes.
+		pass(20);
+		Assert.isTrue(pool.__releaseIfQuiet());
 		pass(5);
 		Assert.isTrue(pool.__releaseIfQuiet());
-		Assert.equals(5, pool.idle, "a pool kept a burst past the interval after it");
-
-		// Quiet: nothing taken for a whole interval.
-		Assert.isFalse(pool.__releaseIfQuiet(), "a quiet pool holding its spare went on being asked");
-		Assert.equals(crossbyte._internal.net.DatagramChunks.SPARE, pool.idle, "a quiet pool kept more than its spare");
+		Assert.equals(20, pool.idle, "what the smaller passes did not need was let go at once");
+		pass(5);
+		Assert.isTrue(pool.__releaseIfQuiet());
+		Assert.equals(5, pool.idle, "what the smaller passes did not need was kept past a second interval");
 
 		// Chunks out when asked are not counted against the pool.
+		pool.__releaseIfQuiet();
+		pool.__releaseIfQuiet();
 		var out = [for (_ in 0...3) pool.take()];
-		Assert.isFalse(pool.__releaseIfQuiet());
+		pool.__releaseIfQuiet();
+		pool.__releaseIfQuiet();
 		Assert.equals(3, pool.inUse);
 		for (chunk in out) {
 			pool.give(chunk);
 		}
-		Assert.equals(3, pool.idle);
 		Assert.equals(0, pool.inUse);
+		Assert.isTrue(pool.idle >= 3, "chunks out when the pool was asked were not taken back");
 		#else
 		Assert.pass();
 		#end
