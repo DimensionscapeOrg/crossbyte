@@ -478,7 +478,11 @@ class RPCHandlerMacro {
 			// array or a structure is a call of its own, where its code would
 			// make dispatch larger for every method: natively a one-Int
 			// call to a contract with arrays in it takes 54 ns with them inlined, 40 without.
-			access: carriesCompound(m) ? [APrivate] : [APrivate, AInline],
+			// On the jvm never: there each inlined decoder is about 1.4 KB of
+			// bytecode, and Haxe's jvm backend writes a method's branches with
+			// 16-bit offsets, so a dispatch past 32 KB (a handler of some 23
+			// methods) fails to load with a VerifyError.
+			access: carriesCompound(m) || Context.defined("jvm") ? [APrivate] : [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
 				args: [

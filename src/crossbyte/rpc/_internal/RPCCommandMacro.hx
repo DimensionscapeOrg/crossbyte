@@ -70,6 +70,10 @@ class RPCCommandMacro {
 				}, metaName, method.args, wrapperReturnType, method.responseType, method.op);
 				newFields.push(wrapper);
 				newFields.push(createMetaFunction(metaName, method.name, method.args, method.pos, method.op));
+				if (method.responseType != null && !isVoid(method.responseType)) {
+					requireReceiverNameFree(fields, contractMethods.map(m -> m.name), ancestors, method.name, method.pos);
+					newFields.push(createReceiverFunction(method.name, metaName, method.args, method.responseType, method.op, method.pos));
+				}
 
 				if (method.responseType != null) {
 					responseMethods.push({
@@ -101,6 +105,10 @@ class RPCCommandMacro {
 
 						field.kind = createWrapperFunction(field, metaName, method.args, retType, responseType, opCode).kind;
 						newFields.push(createMetaFunction(metaName, field.name, method.args, field.pos, opCode));
+						if (responseType != null) {
+							requireReceiverNameFree(fields, [for (other in manualRpcFields) other.name], ancestors, field.name, field.pos);
+							newFields.push(createReceiverFunction(field.name, metaName, method.args, responseType, opCode, field.pos));
+						}
 
 						if (responseType != null) {
 							responseMethods.push({
@@ -391,6 +399,110 @@ class RPCCommandMacro {
 		};
 	}
 
+	/**
+		Which receiver takes an answer of type `ct`: one for its number,
+		`Bool` or `String`, which takes it unboxed (an abstract over one of
+		them as what it abstracts), or `RPCValueReceiver<T>` for anything
+		else, and for a `Null<T>` of anything, which is an object already.
+	**/
+	/** Whether an answer is a `Float32`, which a future must hold as one: on HashLink a `Single`. **/
+	private static function isSingle(ct:ComplexType, pos:Position):Bool {
+		if (RPCContractMacroTools.isNullable(ct, pos)) {
+			return false;
+		}
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		return kind != null && kind.token == "f32";
+	}
+
+	private static function receiverOf(ct:ComplexType, pos:Position):ReceiverKind {
+		if (RPCContractMacroTools.isNullable(ct, pos)) {
+			return RValue;
+		}
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		if (kind == null) {
+			return RValue;
+		}
+		return switch (kind.token) {
+			case "i32" | "i8" | "u8" | "i16" | "u16": RInt;
+			case "i64": RInt64;
+			case "f64" | "f32": RFloat;
+			case "bool": RBool;
+			case "utf8": RString;
+			case _: RValue;
+		}
+	}
+
+	/** The receiver interface for `ct`, written out in full. **/
+	private static function receiverType(ct:ComplexType, pos:Position):ComplexType {
+		return switch (receiverOf(ct, pos)) {
+			case RInt: macro :crossbyte.rpc.RPCIntReceiver;
+			case RInt64: macro :crossbyte.rpc.RPCInt64Receiver;
+			case RFloat: macro :crossbyte.rpc.RPCFloatReceiver;
+			case RBool: macro :crossbyte.rpc.RPCBoolReceiver;
+			case RString: macro :crossbyte.rpc.RPCStringReceiver;
+			case RValue: TPath({pack: ["crossbyte", "rpc"], name: "RPCValueReceiver", params: [TPType(ct)]});
+		}
+	}
+
+	/** The suffix of the method that makes a request with a receiver: `join` and `joinThen`. **/
+	static inline final RECEIVER_SUFFIX:String = "Then";
+
+	/**
+		Refuses a build in which `method`'s receiver stub would take a name
+		something else has: a method of this class, of the contract or
+		methods it is built from, or of a commands class it extends.
+	**/
+	private static function requireReceiverNameFree(fields:Array<Field>, methods:Array<String>, ancestors:Array<ClassType>, method:String,
+			pos:Position):Void {
+		final name:String = method + RECEIVER_SUFFIX;
+		if (hasFieldNamed(fields, name) || methods.indexOf(name) >= 0 || ancestorField(ancestors, name) != null) {
+			Context.error("RPC method '" + method + "' makes a method '" + name
+				+ "', which calls it with a receiver, but something else is named that; rename one of them.", pos);
+		}
+	}
+
+	/**
+		The stub that makes the request `name` and has its answer handed to
+		a receiver: `joinThen(room, receiver)` beside `join(room)`. It frames
+		the call as `name` does, and waits in one of the calls the commands
+		keep, so nothing is allocated for it; it returns the call's id, which
+		the receiver is told with the answer.
+	**/
+	private static function createReceiverFunction(name:String, metaName:String, args:Array<FunctionArg>, responseType:ComplexType, opCode:Int,
+			pos:Position):Field {
+		final receiverName:String = Lambda.exists(args, a -> a.name == "receiver") ? "answerReceiver" : "receiver";
+		final receiver:Expr = macro $i{receiverName};
+		final argExprs:Array<Expr> = [macro __requestId].concat(args.map(a -> macro $i{a.name}));
+		final receiverDoc:String = switch (receiverOf(responseType, pos)) {
+			case RInt: "`onInt`";
+			case RInt64: "`onInt64`";
+			case RFloat: "`onFloat`";
+			case RBool: "`onBool`";
+			case RString: "`onString`";
+			case RValue: "`onValue`";
+		};
+		return {
+			name: name + RECEIVER_SUFFIX,
+			doc: "Calls `" + name + "` and has its answer handed to `" + receiverName + "`, through " + receiverDoc
+				+ " or `onFailure`, rather than returning an `RPCResponse`: nothing is allocated for the call. Returns the call's id, which the receiver is told with the answer. See `crossbyte.rpc.RPCReceiver`.",
+			access: [APublic, AInline],
+			kind: FFun({
+				args: args.concat([{name: receiverName, type: receiverType(responseType, pos)}]),
+				ret: macro :Int,
+				expr: macro {
+					if ($receiver == null) {
+						throw crossbyte.rpc.RPCCommands.__noReceiver($v{name});
+					}
+					var __requestId:Int = this.__nextRequestId();
+					var __framed:crossbyte.rpc._internal.RPCFrame = $i{metaName}($a{argExprs});
+					this.__sendRequest(this.__createReceiverCall($v{opCode}, __requestId, $receiver), __framed);
+					return __requestId;
+				}
+			}),
+			pos: pos
+		};
+	}
+
 	private static function readerForType(ct:ComplexType, errPos:Position):Expr {
 		// On the type, as the handler's side decides it, and not on how
 		// `ct` is written: through a typedef, `Null<T>` read no presence byte.
@@ -407,6 +519,25 @@ class RPCCommandMacro {
 	private static function zeroForType(ct:ComplexType, pos:Position):Expr {
 		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
 		return kind == null ? macro null : RPCKinds.zero(kind, RPCContractMacroTools.isNullable(ct, pos));
+	}
+
+	/**
+		Whether each response is read in a method of its own, called from the
+		reader's switch, rather than in the switch. On the jvm: there a case
+		is about half a kilobyte of bytecode, and Haxe's jvm backend writes a
+		method's branches with 16-bit offsets, so a reader past 32 KB (some 60
+		request methods) would fail to load with a VerifyError.
+	**/
+	static var SPLIT_READER(get, never):Bool;
+
+	static inline function get_SPLIT_READER():Bool {
+		return Context.defined("jvm");
+	}
+
+	/** A name for this class, unique among the classes it extends, for the methods it makes. **/
+	static function classTag():String {
+		final type = Context.getLocalClass().get();
+		return type.pack.concat([type.name]).join("_");
 	}
 
 	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
@@ -428,28 +559,55 @@ class RPCCommandMacro {
 			var read = readerForType(method.responseType, method.pos);
 			final type:ComplexType = method.responseType;
 			final zero:Expr = zeroForType(type, method.pos);
-			cases.push({
-				values: [macro $v{method.op}],
-				expr: macro {
-					// Read whole and within the frame before the caller is
-					// answered with it: an answer that does not read fails its
-					// call, and the connection carries on.
-					if (failed) {
-						$readMessage;
-					} else {
-						var value:$type = $zero;
-						try {
-							value = $read;
-							crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						} catch (__error:Dynamic) {
-							this.__rejectUnreadableResponse(op, requestId, __error);
-							return;
-						}
-						this.__resolveResponse(op, requestId, value);
+			final answer:Expr = switch (receiverOf(type, method.pos)) {
+				case RInt: macro this.__answerInt(op, requestId, (cast value : Int));
+				case RInt64: macro this.__answerInt64(op, requestId, (cast value : haxe.Int64));
+				case RFloat: macro this.__answerFloat(op, requestId, (cast value : Float), $v{isSingle(type, method.pos)});
+				case RBool: macro this.__answerBool(op, requestId, (cast value : Bool));
+				case RString: macro this.__answerString(op, requestId, (cast value : String));
+				case RValue: macro this.__answerValue(op, requestId, value);
+			};
+			// Read whole and within the frame before the caller is answered
+			// with it: an answer that does not read fails its call, and the
+			// connection carries on.
+			final body:Expr = macro {
+				if (failed) {
+					$readMessage;
+				} else {
+					var value:$type = $zero;
+					try {
+						value = $read;
+						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+					} catch (__error:Dynamic) {
+						this.__rejectUnreadableResponse(op, requestId, __error);
+						return;
 					}
-					return;
+					$answer;
 				}
-			});
+				return;
+			};
+			if (SPLIT_READER) {
+				final name:String = "__rpc_read_" + classTag() + "_" + method.name;
+				newFields.push({
+					name: name,
+					access: [APrivate],
+					meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+					kind: FFun({
+						args: [
+							{name: "op", type: macro :Int},
+							{name: "requestId", type: macro :Int},
+							{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+							{name: "failed", type: macro :Bool}
+						],
+						ret: macro :Void,
+						expr: body
+					}),
+					pos: method.pos
+				});
+				cases.push({values: [macro $v{method.op}], expr: macro this.$name(op, requestId, input, failed)});
+			} else {
+				cases.push({values: [macro $v{method.op}], expr: body});
+			}
 		}
 
 		var defaultExpr:Expr = macro {
@@ -561,6 +719,15 @@ class RPCCommandMacro {
 		newFields.push(wrapper);
 		newFields.push(meta);
 	}
+}
+
+private enum ReceiverKind {
+	RInt;
+	RInt64;
+	RFloat;
+	RBool;
+	RString;
+	RValue;
 }
 
 private typedef ResponseMethod = {

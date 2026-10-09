@@ -33,6 +33,11 @@ package crossbyte.utils;
  * forge an ERROR record in the access log. JSON mode escapes by
  * construction.
  *
+ * **Client text belongs in a field.** The message is written unquoted; a
+ * field value is quoted when it holds a space, a quote or an equals sign.
+ * In the message, a path such as `/a status=500` would read to a logfmt
+ * collector as a `status` field of its own. As a field value it cannot.
+ *
  * **Logging and sensitive data.** A sink receives whatever a caller passes.
  * Services handling private content should log identifiers and outcomes
  * rather than payloads: field values are not redacted or size-limited.
@@ -354,20 +359,7 @@ class Logger {
 
 	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var buffer = new StringBuf();
-
-		if (timestamps) {
-			buffer.add(__timestamp(time));
-			buffer.add(" ");
-		}
-
-		buffer.add("[");
-		buffer.add(recordLevel.toString());
-		buffer.add("] ");
-		if (category != null) {
-			buffer.add("[");
-			buffer.add(__escape(category, false));
-			buffer.add("] ");
-		}
+		__textHead(buffer, recordLevel, category, time);
 		buffer.add(message == null ? "" : __escape(message, false));
 
 		if (fields != null) {
@@ -383,6 +375,27 @@ class Logger {
 	}
 
 	/**
+		What text mode writes before a record's message: the time when there
+		is one, the level, and the category when there is one, each followed
+		by a space.
+	**/
+	@:noCompletion private static function __textHead(buffer:StringBuf, recordLevel:LogLevel, category:Null<String>, time:Float):Void {
+		if (timestamps) {
+			buffer.add(__timestamp(time));
+			buffer.add(" ");
+		}
+
+		buffer.add("[");
+		buffer.add(recordLevel.toString());
+		buffer.add("] ");
+		if (category != null) {
+			buffer.add("[");
+			buffer.add(__escape(category, false));
+			buffer.add("] ");
+		}
+	}
+
+	/**
 		One JSON object, written straight out: `level`, `message`, then `time`
 		and `category` when there are any, then the fields in the map's order.
 		Built this way rather than as an anonymous object with
@@ -392,19 +405,7 @@ class Logger {
 	**/
 	@:noCompletion private static function __formatJson(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var buffer = new StringBuf();
-		buffer.add('{"level":');
-		__jsonString(buffer, recordLevel.toString());
-		buffer.add(',"message":');
-		__jsonString(buffer, message == null ? "" : message);
-
-		if (timestamps) {
-			buffer.add(',"time":');
-			__jsonString(buffer, __timestamp(time));
-		}
-		if (category != null) {
-			buffer.add(',"category":');
-			__jsonString(buffer, category);
-		}
+		__jsonHead(buffer, recordLevel, category, message, time);
 
 		if (fields != null) {
 			for (key => value in fields) {
@@ -424,6 +425,27 @@ class Logger {
 
 		buffer.add("}");
 		return buffer.toString();
+	}
+
+	/**
+		A JSON record up to its fields: the opening brace, `level`, `message`,
+		then `time` and `category` when there are any. The caller adds the
+		fields and the closing brace.
+	**/
+	@:noCompletion private static function __jsonHead(buffer:StringBuf, recordLevel:LogLevel, category:Null<String>, message:String, time:Float):Void {
+		buffer.add('{"level":');
+		__jsonString(buffer, recordLevel.toString());
+		buffer.add(',"message":');
+		__jsonString(buffer, message == null ? "" : message);
+
+		if (timestamps) {
+			buffer.add(',"time":');
+			__jsonString(buffer, __timestamp(time));
+		}
+		if (category != null) {
+			buffer.add(',"category":');
+			__jsonString(buffer, category);
+		}
 	}
 
 	/**

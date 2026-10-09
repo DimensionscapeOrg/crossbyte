@@ -13,6 +13,9 @@ import crossbyte.http.HTTPServer;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.io.ByteArray;
 import crossbyte.net.DatagramSocket;
+import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
+import crossbyte.net.NetHost;
 import crossbyte.net.ReliableDatagramServerSocket;
 import crossbyte.net.ReliableDatagramSocket;
 import crossbyte.net.ServerSocket;
@@ -21,7 +24,13 @@ import crossbyte.net.Socket;
 import crossbyte.net.TLSTestFixture;
 import crossbyte.net.WebSocket;
 import crossbyte.rpc.LinkedConnection;
+import crossbyte.rpc.RPCBoolReceiver;
 import crossbyte.rpc.RPCCommands;
+import crossbyte.rpc.RPCFailure;
+import crossbyte.rpc.RPCFloatReceiver;
+import crossbyte.rpc.RPCInt64Receiver;
+import crossbyte.rpc.RPCIntReceiver;
+import crossbyte.rpc.RPCStringReceiver;
 import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCResponse;
 import crossbyte.rpc.RPCSession;
@@ -105,14 +114,35 @@ class AllocationBudgetTest extends utest.Test {
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 16], [8, 8, 88]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
-	// RPCResponse and what waiting on it takes; a frame costs nothing.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [200, 200, 224], [320, 320, 344]);
+	// RPCResponse (128 B natively, 80 on the jvm) and the answer boxed into it
+	// (24 B, 16 on the jvm); a frame
+	// costs nothing. Measured later than MEASURED_ON. On the jvm 24 B a send is
+	// the test double's: NetConnection reads its outTimestamp through
+	// reflection, a boxed Double.
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [152, 152, 144], [256, 256, 248]);
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
 	// The array and the string the handler is given are most of it.
 	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
 	// Written with runtimeCall and read with registerArgs: no array, nothing
 	// boxed. Measured natively on Windows and on the jvm (Oracle 8), later
 	// than MEASURED_ON; Linux taken as Windows until measured.
+	// Made with a receiver (`addThen(a, b, receiver)`): no RPCResponse, and
+	// the answer handed over unboxed. Measured later than MEASURED_ON, Linux
+	// taken as Windows until measured. The jvm's figure is the test double's,
+	// 24 B for each of the two sends, as the one-way call's.
+	private static final RPC_INT_RECEIVER = new Budget("an RPC call answered through an RPCIntReceiver", "call", [0, 0, 48], [8, 8, 128]);
+	private static final RPC_FLOAT_RECEIVER = new Budget("an RPC call answered through an RPCFloatReceiver", "call", [0, 0, 48], [8, 8, 128]);
+	private static final RPC_INT64_RECEIVER = new Budget("an RPC call answered through an RPCInt64Receiver", "call", [0, 0, 48], [8, 8, 128]);
+	private static final RPC_BOOL_RECEIVER = new Budget("an RPC call answered through an RPCBoolReceiver", "call", [0, 0, 48], [8, 8, 128]);
+	// The answer's own string, 12 characters, and nothing else.
+	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 112], [96, 96, 208]);
+	// The same over a TCP NetConnection to a NetHost, both ends on this
+	// thread's runtime: what RPC costs on a real transport. Measured later than
+	// MEASURED_ON; Linux taken as Windows until measured. Alone the jvm reads 0
+	// and 96; its figures allow the 32 B the TCP line reads in the full suite
+	// (the JDK's Windows selector boxing what it finds ready).
+	private static final RPC_TCP_RECEIVER = new Budget("an RPC call over TCP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
+	private static final RPC_TCP_CALL = new Budget("an RPC call over TCP and its answer", "call", [152, 152, 128], [256, 256, 224]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 24], [8, 8, 96]);
 
 	/**
@@ -690,8 +720,10 @@ class AllocationBudgetTest extends utest.Test {
 		var handler = new BudgetHandler();
 		var clientSession = new RPCSession<BudgetCommands>(link.client, commands);
 		var serverSession = new RPCSession(link.server, null, handler);
+		// Typed Void: an arrow function ending in an assignment returns its
+		// value, which natively is boxed as the function is called.
 		var answered:Int = 0;
-		var op = () -> {
+		var op = function():Void {
 			var response = commands.add(answered, 1);
 			if (!response.completed) {
 				throw "the call was not answered";
@@ -724,8 +756,10 @@ class AllocationBudgetTest extends utest.Test {
 		var clientSession = new RPCSession<BudgetCommands>(link.client, commands);
 		var serverSession = new RPCSession(link.server, null, new BudgetHandler());
 		clientSession.callTimeout = callTimeout;
+		// Typed Void: an arrow function ending in an assignment returns its
+		// value, which natively is boxed as the function is called.
 		var answered:Int = 0;
-		var op = () -> {
+		var op = function():Void {
 			var response = commands.add(answered, 1);
 			if (!response.completed) {
 				throw "the call was not answered";
@@ -734,6 +768,151 @@ class AllocationBudgetTest extends utest.Test {
 		};
 		__warm(op, WARM_CHEAP);
 		return AllocationMeter.measure(op, 20000);
+	}
+
+	public function testAnRpcCallAnsweredThroughAnIntReceiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.addThen(receiver.int, 1, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_INT_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(receiver.int > 0);
+	}
+
+	public function testAnRpcCallAnsweredThroughAFloatReceiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.scaleThen(receiver.float, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_FLOAT_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(receiver.float > 1);
+	}
+
+	public function testAnRpcCallAnsweredThroughAnInt64Receiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.countThen(receiver.int64, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_INT64_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(receiver.int64 > haxe.Int64.make(1, 0));
+	}
+
+	public function testAnRpcCallAnsweredThroughABoolReceiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.flipThen(receiver.bool, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_BOOL_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(receiver.told > 0);
+	}
+
+	public function testAnRpcCallAnsweredThroughAStringReceiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.greetThen(7, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_STRING_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.equals("hello, world", receiver.string);
+	}
+
+	/**
+		A call made with a receiver under the session's `callTimeout` costs
+		nothing more than one without: its deadline waits in the session's
+		queue, as a future's does.
+	**/
+	public function testAReceiverCallsDeadlineAllocatesNothing():Void {
+		var fixture = new BudgetRpc();
+		fixture.client.callTimeout = 30000;
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.addThen(receiver.int, 1, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		var under:AllocationReading = AllocationMeter.measure(op, 20000);
+		__report("an RPC call answered through an RPCIntReceiver, under callTimeout", under);
+		__within(RPC_INT_RECEIVER, under);
+	}
+
+	public function testAnRpcCallOverTcp():Void {
+		var runtime = __start();
+		var handler = new BudgetHandler();
+		var accepted:Array<RPCSession<Dynamic, Dynamic>> = [];
+		var host:NetHost = null;
+		var session:RPCSession<BudgetCommands> = null;
+		try {
+			host = new NetHost("tcp://127.0.0.1:0", (connection:INetConnection) -> {
+				accepted.push(new RPCSession(connection, null, handler));
+			});
+			host.listen();
+			__pumpUntil(() -> host.localPort != 0);
+			var commands = new BudgetCommands();
+			var connection = new NetConnection("tcp://127.0.0.1:" + host.localPort);
+			session = new RPCSession<BudgetCommands>(connection, commands);
+			__pumpUntil(() -> session.up && accepted.length > 0);
+			var receiver = new BudgetReceiver();
+			var told:Int = 0;
+			var answered:Void->Bool = () -> receiver.told == told;
+			var byReceiver = function():Void {
+				told = receiver.told + 1;
+				commands.addThen(receiver.int, 1, receiver);
+				__pumpUntil(answered);
+			};
+			__warm(byReceiver, WARM);
+			__within(RPC_TCP_RECEIVER, AllocationMeter.measure(byReceiver, 2000));
+
+			var last:RPCResponse<Int> = null;
+			var completed:Void->Bool = () -> last.completed;
+			var byFuture = function():Void {
+				last = commands.add(receiver.int, 1);
+				__pumpUntil(completed);
+				receiver.int = last.result;
+			};
+			__warm(byFuture, WARM);
+			__within(RPC_TCP_CALL, AllocationMeter.measure(byFuture, 2000));
+			Assert.isTrue(receiver.int > 0);
+		} catch (error:Dynamic) {
+			try session.close() catch (_:Dynamic) {}
+			try host.close() catch (_:Dynamic) {}
+			__finish();
+			throw error;
+		}
+		try session.close() catch (_:Dynamic) {}
+		try host.close() catch (_:Dynamic) {}
+		__finish();
 	}
 
 	public function testAOneWayRpcCall():Void {
@@ -1286,6 +1465,71 @@ private class BudgetCommands extends RPCCommands {
 	@:rpc public function add(a:Int, b:Int):RPCResponse<Int> {}
 
 	@:rpc public function move(id:Int, x:Float, y:Float):Void {}
+
+	@:rpc public function scale(x:Float):RPCResponse<Float> {}
+
+	@:rpc public function flip(on:Bool):RPCResponse<Bool> {}
+
+	@:rpc public function greet(id:Int):RPCResponse<String> {}
+
+	@:rpc public function count(n:haxe.Int64):RPCResponse<haxe.Int64> {}
+}
+
+/** A pair of sessions over the in-memory pair, and a receiver for their answers. **/
+private class BudgetRpc {
+	public final link = LinkedConnection.pair();
+	public final commands = new BudgetCommands();
+	public final handler = new BudgetHandler();
+	public final receiver = new BudgetReceiver();
+	public final client:RPCSession<BudgetCommands>;
+	public final server:RPCSession<Dynamic>;
+
+	public function new() {
+		client = new RPCSession<BudgetCommands>(link.client, commands);
+		server = new RPCSession(link.server, null, handler);
+	}
+}
+
+/** Keeps the last answer of each kind, and counts them. **/
+private class BudgetReceiver implements RPCIntReceiver implements RPCFloatReceiver implements RPCBoolReceiver implements RPCStringReceiver
+		implements RPCInt64Receiver {
+	public var told:Int = 0;
+	public var int:Int = 0;
+	public var float:Float = 1.0;
+	public var bool:Bool = false;
+	public var string:String = null;
+	public var int64:haxe.Int64 = haxe.Int64.make(1, 0);
+
+	public function new() {}
+
+	public function onInt(call:Int, value:Int):Void {
+		int = value;
+		told++;
+	}
+
+	public function onFloat(call:Int, value:Float):Void {
+		float = value;
+		told++;
+	}
+
+	public function onBool(call:Int, value:Bool):Void {
+		bool = value;
+		told++;
+	}
+
+	public function onString(call:Int, value:String):Void {
+		string = value;
+		told++;
+	}
+
+	public function onInt64(call:Int, value:haxe.Int64):Void {
+		int64 = value;
+		told++;
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		throw "the call failed: " + failure;
+	}
 }
 
 private class BudgetHandler extends RPCHandler {
@@ -1299,6 +1543,22 @@ private class BudgetHandler extends RPCHandler {
 
 	@:rpc public function move(id:Int, x:Float, y:Float):Void {
 		moves++;
+	}
+
+	@:rpc public function scale(x:Float):Float {
+		return x * 1.0001;
+	}
+
+	@:rpc public function flip(on:Bool):Bool {
+		return !on;
+	}
+
+	@:rpc public function greet(id:Int):String {
+		return "hello, world";
+	}
+
+	@:rpc public function count(n:haxe.Int64):haxe.Int64 {
+		return n + 1;
 	}
 }
 #end

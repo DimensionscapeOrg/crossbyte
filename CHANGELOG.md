@@ -27,7 +27,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   several cores.
 - **Typed RPC.** Compiled contracts carry arrays, structures, enums,
   `Null<T>` and compact numbers, generated with no reflection; the runtime
-  lane has typed calls; calls get deadlines, handlers can answer later,
+  lane has typed calls; a request can hand its answer to a receiver and
+  allocate nothing; calls get deadlines, handlers can answer later,
   clients redial, and a hello versions the protocol.
 - **Databases.** MongoDB over its wire protocol, with BSON; a native MySQL
   client with TLS and MySQL 8 logins; Postgres parameter binding,
@@ -348,7 +349,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 
 - Compiled-lane types: `Array<T>`, structures (a class implementing
   `crossbyte.rpc.RPCStruct`, or an anonymous structure), enums with or
-  without arguments, `Null<T>` of each, and compact numbers
+  without arguments, `Null<T>` of each, `haxe.Int64`, and compact numbers
   (`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`). An
   abstract over a carried type is carried as that type. Each is generated
   at compile time with no reflection; a type the lane cannot carry fails
@@ -360,6 +361,14 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
 - Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
   `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+- Calls that allocate nothing: each request method has a twin ending in
+  `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
+  instead of returning an `RPCResponse`: `RPCIntReceiver`,
+  `RPCFloatReceiver`, `RPCBoolReceiver`, `RPCStringReceiver`,
+  `RPCInt64Receiver` or `RPCValueReceiver<T>`, with failures as an
+  `RPCFailure`. A number (an `Int64` among them) or `Bool` answer
+  allocates nothing at either end, natively or on the JVM.
+  `RPCSession.cancelCall(id)` stops waiting for a call.
 - `RPCSession.dial(uri, ?commands, ?handler)`: a client that redials, from
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
   `up`.
@@ -705,6 +714,9 @@ says how.
   file: 345 to 125 µs of CPU), header lines are parsed where they lie, the
   `Date` header is formatted once a second, and the access log is written
   by a thread of its own under the category `http.access`.
+- The access log writes each response as four fields, `method`, `path`,
+  `status` and `client`: logfmt pairs in text, members of the object in
+  JSON, and the record's fields for a `Logger.recordSink`. (Upgrading)
 - A kept-alive HTTP/1.1 GET allocates 152 B natively where it allocated
   1,344, and 208 B on the jvm where it took 3,728: the head and a text
   body are written into bytes the thread keeps, which the socket copies,
@@ -755,6 +767,11 @@ says how.
 - Faster calls: frames are written into one buffer each session keeps, and
   natively a request and its answer take 133 ns where they took 233, and a
   round trip with a `Future` answer 405 ns where it took 928.
+- Lighter requests: an `RPCResponse` takes 128 bytes natively and 80 on the
+  JVM, where it took 152 on both, and a request with its answer allocates
+  152 and 96 where it allocated 176 on both. Every `Future` is smaller:
+  88 bytes natively and 48 on the JVM, where it was 112 and 120, since on
+  the JVM it no longer makes a lock of its own.
 - A handler's `@:rpc` method is no longer held to eight arguments.
 
 #### Data
@@ -1028,6 +1045,10 @@ Fixes to code new in this release are not listed.
   is refused with 400, and a chunk size is bounded before it is parsed.
 - A URL can no longer add a header or a request: control characters are
   refused and the request target, `Host` and other headers are sanitised.
+- A request path can no longer forge a field in the access log. Its
+  decoded text went into the line unquoted, so `GET /a%20status=500`
+  answered 404 read to a logfmt collector as a status of 500. The path is
+  now a field, quoted when it holds a space, a quote or an equals sign.
 - A percent-encoded NUL in a path no longer slips past `blacklist`; with PHP
   off, `.php` source is no longer served as a static file; and on Windows a
   path naming an environment variable no longer reaches a file outside the
@@ -1089,6 +1110,10 @@ Fixes to code new in this release are not listed.
   waiting, and a frame over `maxFrameLength` is refused before it is sent.
 - A session on a listening `LocalConnection` answers every client, not only
   the first.
+- On the JVM a handler of more than about twenty methods, or commands of
+  more than about sixty requests, builds and loads: its generated dispatch
+  or reader passed the 32 KB of bytecode the JVM backend can branch across,
+  failing the build (`IO.Overflow`) or the class at load (`VerifyError`).
 - `RPCResponse.respond()` replaces the responder, as documented.
   (Upgrading)
 - A contract extending another carries the parent's methods; a handler
@@ -1535,6 +1560,13 @@ an API added in this release has is not listed here.
 - `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
   and need a CrossByte runtime on the calling thread; their callbacks run
   on that thread, after the call has returned, natively and on Node.
+- The access log's line is
+  `[INFO] [http.access] method=GET path=/ status=200 client=127.0.0.1`,
+  where it was `[INFO] [http.access] Client 127.0.0.1 GET / - Status: 200`.
+  A parser or alert keyed on `Status: <code>` reads the `status` field
+  instead, and a path with a space, a quote or an equals sign comes quoted,
+  with `"` and `\` escaped. In JSON the four are members of the object
+  (`"status":"200"`, a string like every field) and `message` is empty.
 
 #### RPC
 

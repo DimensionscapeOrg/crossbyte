@@ -12,7 +12,7 @@ import haxe.io.Bytes;
 
 	```
 	signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
-	kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
+	kind      := [ "?" ] ( "i32" | "i64" | "bool" | "f64" | "utf8" | "bytes"
 	                     | "f32" | "i8" | "u8" | "i16" | "u16"
 	                     | "[" kind "]"
 	                     | "{" field ("," field)* "}"

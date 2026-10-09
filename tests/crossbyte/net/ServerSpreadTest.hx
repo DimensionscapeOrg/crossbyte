@@ -322,12 +322,16 @@ class ServerSpreadTest extends utest.Test {
 			return server;
 		});
 
-		// The worker busy for a while, so the hand-off waits in its queue.
-		worker.post(() -> crossbyte.sys.System.sleep(0.6));
+		// The worker held busy until the hand-off is seen waiting in its
+		// queue, however long the connect takes, and told to exit before it
+		// is let go.
+		var hold:Lock = new Lock();
+		worker.post(() -> hold.wait(WAIT));
 		var client:sys.net.Socket = SpreadSupport.connect(server.localPort);
 		client.setTimeout(3.0);
 		Assert.isTrue(SpreadSupport.waitFor(() -> worker.postQueueDepth > 0, WAIT), "the connection was never handed to the runtime");
 		worker.exit();
+		hold.release();
 
 		Assert.isTrue(SpreadSupport.ended(client), "a connection handed to a runtime as it exited was left open");
 		Assert.isNull(SpreadSupport.pop(arrived, 0.2), "a connection was announced on a runtime that had exited");

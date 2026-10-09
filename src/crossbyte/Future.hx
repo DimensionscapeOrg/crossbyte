@@ -6,7 +6,7 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 import crossbyte.events.TickEvent;
 import crossbyte.utils.Logger;
-#if (target.threaded && !cpp)
+#if (target.threaded && !cpp && !jvm)
 import sys.thread.Mutex;
 #end
 
@@ -46,6 +46,12 @@ class Future<T> implements IEventDispatcher {
 	/** `true` only when it resolved. */
 	public var succeeded(default, null):Bool = false;
 
+	// Whether anyone has said what to do if this fails. Only used to decide
+	// whether a failure disappeared without trace; see __reportIfUnhandled.
+	// Declared beside the two above, and the two Ints below beside each
+	// other, so natively none of them takes a word of its own.
+	@:noCompletion private var __failureObserved:Bool = false;
+
 	/** The value, when `succeeded`. */
 	public var result(default, null):Null<T>;
 
@@ -73,18 +79,6 @@ class Future<T> implements IEventDispatcher {
 	#elseif (java || jvm)
 	@:volatile @:noCompletion private var __published:Int = 0;
 	#end
-	// The handlers registered, in order: the first of each kind in a field of
-	// its own, since most futures have one, and any after it in a list made
-	// only then, so a future nobody registers on allocates no list.
-	@:noCompletion private var __onResult1:Null<T->Void> = null;
-	@:noCompletion private var __onError1:Null<String->Void> = null;
-	@:noCompletion private var __onResultMore:Null<Array<T->Void>> = null;
-	@:noCompletion private var __onErrorMore:Null<Array<String->Void>> = null;
-	@:noCompletion private var __dispatcher:Null<EventDispatcher>;
-
-	// Whether anyone has said what to do if this fails. Only used to decide
-	// whether a failure disappeared without trace; see __reportIfUnhandled.
-	@:noCompletion private var __failureObserved:Bool = false;
 
 	/**
 		Guards the completion state and the handler lists.
@@ -102,17 +96,31 @@ class Future<T> implements IEventDispatcher {
 		control invites a deadlock. So state changes under the lock, the handler
 		list is swapped out, and the calls happen after the release.
 
-		On cpp it is a word of this object's own, taken with an atomic
-		compare-and-swap and let go with an atomic store; see `__acquire`. A
-		`sys.thread.Mutex` would be an object with a finalizer made for every
-		future, and so for every RPC request, at about 250ns a time to take,
-		since taking one enters and leaves a GC-free zone.
+		On cpp and the jvm it is a word of this object's own, taken with an
+		atomic compare-and-swap and let go with an atomic store; see
+		`__acquire`. A `sys.thread.Mutex` would be an object made for every
+		future, and so for every RPC request: natively one with a finalizer, at
+		about 250ns a time to take, since taking one enters and leaves a
+		GC-free zone; on the jvm a lock and its queue, 64 bytes.
 	**/
 	#if cpp
 	@:noCompletion private var __lockWord:Int = 0;
+	#elseif jvm
+	@:volatile @:noCompletion private var __lockWord:Int = 0;
+	@:noCompletion private static final __LOCK_WORD:IntFieldUpdater<Future<Dynamic>> = IntFieldUpdater.newUpdater(cast java.Lib.toNativeType(Future),
+		"__lockWord");
 	#elseif target.threaded
 	@:noCompletion private final __lock:Mutex = new Mutex();
 	#end
+
+	// The handlers registered, in order: the first of each kind in a field of
+	// its own, since most futures have one, and any after it in a list made
+	// only then, so a future nobody registers on allocates no list. The lists
+	// and the event dispatcher are in `__more`, made with the first of them:
+	// a field each would be in every future, and so in every RPC request.
+	@:noCompletion private var __onResult1:Null<T->Void> = null;
+	@:noCompletion private var __onError1:Null<String->Void> = null;
+	@:noCompletion private var __more:Null<FutureMore<T>> = null;
 
 	public function new() {}
 
@@ -171,26 +179,36 @@ class Future<T> implements IEventDispatcher {
 
 	/** Registers `handler`, under the lock. **/
 	@:noCompletion private inline function __addResult(handler:T->Void):Void {
-		if (__onResult1 == null && __onResultMore == null) {
+		if (__onResult1 == null && (__more == null || __more.onResult == null)) {
 			__onResult1 = handler;
 		} else {
-			if (__onResultMore == null) {
-				__onResultMore = [];
+			final more:FutureMore<T> = __ensureMore();
+			if (more.onResult == null) {
+				more.onResult = [];
 			}
-			__onResultMore.push(handler);
+			more.onResult.push(handler);
 		}
 	}
 
 	/** Registers `handler`, under the lock. **/
 	@:noCompletion private inline function __addError(handler:String->Void):Void {
-		if (__onError1 == null && __onErrorMore == null) {
+		if (__onError1 == null && (__more == null || __more.onError == null)) {
 			__onError1 = handler;
 		} else {
-			if (__onErrorMore == null) {
-				__onErrorMore = [];
+			final more:FutureMore<T> = __ensureMore();
+			if (more.onError == null) {
+				more.onError = [];
 			}
-			__onErrorMore.push(handler);
+			more.onError.push(handler);
 		}
+	}
+
+	/** Where the handlers past the first of each kind and the dispatcher are kept, made with the first of them. **/
+	@:noCompletion private function __ensureMore():FutureMore<T> {
+		if (__more == null) {
+			__more = new FutureMore<T>();
+		}
+		return __more;
 	}
 
 	/**
@@ -385,23 +403,23 @@ class Future<T> implements IEventDispatcher {
 	}
 
 	public inline function removeEventListener<U>(type:EventType<U>, listener:U->Void):Void {
-		if (__dispatcher != null) {
-			__dispatcher.removeEventListener(type, listener);
+		if (__more != null && __more.dispatcher != null) {
+			__more.dispatcher.removeEventListener(type, listener);
 		}
 	}
 
 	public inline function hasEventListener(type:String):Bool {
-		return __dispatcher != null && __dispatcher.hasEventListener(type);
+		return __more != null && __more.dispatcher != null && __more.dispatcher.hasEventListener(type);
 	}
 
 	public inline function removeAllListeners():Void {
-		if (__dispatcher != null) {
-			__dispatcher.removeAllListeners();
+		if (__more != null && __more.dispatcher != null) {
+			__more.dispatcher.removeAllListeners();
 		}
 	}
 
 	public inline function dispatchEvent<E:Event>(event:E):Bool {
-		return __dispatcher != null && __dispatcher.dispatchEvent(event);
+		return __more != null && __more.dispatcher != null && __more.dispatcher.dispatchEvent(event);
 	}
 
 	/** Completes with `value`; `false`, changing nothing, if this had already completed. **/
@@ -419,11 +437,13 @@ class Future<T> implements IEventDispatcher {
 		__publish(1);
 
 		final first = __onResult1;
-		final more = __onResultMore;
+		final more:Null<Array<T->Void>> = __more != null ? __more.onResult : null;
 		__onResult1 = null;
-		__onResultMore = null;
 		__onError1 = null;
-		__onErrorMore = null;
+		if (__more != null) {
+			__more.onResult = null;
+			__more.onError = null;
+		}
 		__release();
 
 		if (first != null) {
@@ -480,11 +500,13 @@ class Future<T> implements IEventDispatcher {
 		__publish(2);
 
 		final first = __onError1;
-		final more = __onErrorMore;
+		final more:Null<Array<String->Void>> = __more != null ? __more.onError : null;
 		__onResult1 = null;
-		__onResultMore = null;
 		__onError1 = null;
-		__onErrorMore = null;
+		if (__more != null) {
+			__more.onResult = null;
+			__more.onError = null;
+		}
 		var observed:Bool = __failureObserved;
 		__release();
 
@@ -564,15 +586,21 @@ class Future<T> implements IEventDispatcher {
 		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
 			__contend();
 		}
+		#elseif jvm
+		if (!__LOCK_WORD.compareAndSet(cast this, 0, 1)) {
+			__contend();
+		}
 		#elseif target.threaded
 		__lock.acquire();
 		#end
 	}
 
-	/** Lets go of the lock: on cpp an atomic store, which publishes what was written under it. **/
+	/** Lets go of the lock: on cpp and the jvm an atomic store, which publishes what was written under it. **/
 	@:noCompletion private inline function __release():Void {
 		#if cpp
 		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __lockWord);
+		#elseif jvm
+		__LOCK_WORD.set(cast this, 0);
 		#elseif target.threaded
 		__lock.release();
 		#end
@@ -593,6 +621,17 @@ class Future<T> implements IEventDispatcher {
 			if (++tries >= 64) {
 				tries = 0;
 				crossbyte._internal.system.Sleep.sleep(0);
+			}
+		}
+	}
+	#elseif jvm
+	/** Waits for another thread to let go of the lock, yielding after a while in case the holder is not running. **/
+	@:noCompletion private function __contend():Void {
+		var tries:Int = 0;
+		while (!__LOCK_WORD.compareAndSet(cast this, 0, 1)) {
+			if (++tries >= 64) {
+				tries = 0;
+				java.lang.Thread.yield();
 			}
 		}
 	}
@@ -644,9 +683,33 @@ class Future<T> implements IEventDispatcher {
 	}
 
 	@:noCompletion private inline function __ensureDispatcher():EventDispatcher {
-		if (__dispatcher == null) {
-			__dispatcher = new EventDispatcher(cast this);
+		final more:FutureMore<T> = __ensureMore();
+		if (more.dispatcher == null) {
+			more.dispatcher = new EventDispatcher(cast this);
 		}
-		return __dispatcher;
+		return more.dispatcher;
 	}
 }
+
+/**
+	What a future holds only once it has more than one handler of a kind, or
+	anyone listening for its events.
+**/
+@:noCompletion
+private class FutureMore<T> {
+	public var onResult:Null<Array<T->Void>> = null;
+	public var onError:Null<Array<String->Void>> = null;
+	public var dispatcher:Null<EventDispatcher> = null;
+
+	public function new() {}
+}
+
+#if jvm
+/** `java.util.concurrent.atomic.AtomicIntegerFieldUpdater`: atomic operations on an `Int` field, with no object made for each. **/
+@:native("java.util.concurrent.atomic.AtomicIntegerFieldUpdater")
+private extern class IntFieldUpdater<T> {
+	static function newUpdater<U>(cls:java.lang.Class<U>, field:String):IntFieldUpdater<U>;
+	function compareAndSet(obj:T, expect:Int, update:Int):Bool;
+	function set(obj:T, value:Int):Void;
+}
+#end

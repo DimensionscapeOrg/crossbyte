@@ -3,11 +3,13 @@ package crossbyte.rpc;
 // Built for every target, JavaScript included: the portable suite runs RPC on
 // Node and in a browser.
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCPendingCalls;
+import crossbyte.rpc._internal.RPCReceiverCall;
 import crossbyte.rpc._internal.RPCWire;
 
 /**
@@ -44,6 +46,7 @@ import crossbyte.rpc._internal.RPCWire;
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
 @:access(crossbyte.rpc.RPCSession)
+@:access(crossbyte.rpc._internal.RPCReceiverCall)
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;
 	// The session these are bound to, for what it asks of every call.
@@ -52,6 +55,10 @@ abstract class RPCCommands {
 	@:noCompletion private var __pendingResponseId:Int = 0;
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
 	@:noCompletion private var __pendingResponses:Null<RPCPendingCalls> = null;
+	// The calls kept for calls made with a receiver, waiting to be used
+	// again: one is taken for each such call, and given back as it ends.
+	@:noCompletion private var __freeCalls:Null<RPCReceiverCall> = null;
+	@:noCompletion private var __freeCount:Int = 0;
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
@@ -80,22 +87,65 @@ abstract class RPCCommands {
 	@:noCompletion private function __createResponse<T>(op:Int, requestId:Int):RPCResponse<T> {
 		final response = new RPCResponse<T>(requestId, op);
 		response.__commands = this;
+		__wait(cast response);
+		return response;
+	}
+
+	/**
+		The call for `op` waiting under `requestId` to tell `receiver`, as
+		`__createResponse` makes one for a future: one of the calls these
+		commands keep, so nothing is allocated for it. Its stub framed the
+		call first, as a future's does.
+	**/
+	@:noCompletion private function __createReceiverCall(op:Int, requestId:Int, receiver:RPCReceiver):RPCReceiverCall {
+		var call:Null<RPCReceiverCall> = __freeCalls;
+		if (call != null) {
+			__freeCalls = call.nextFree;
+			call.nextFree = null;
+			__freeCount--;
+		} else {
+			call = new RPCReceiverCall(this);
+		}
+		call.begin(requestId, op, receiver);
+		__wait(call);
+		return call;
+	}
+
+	/** The most calls kept for use again; past it, one that ends is let go. **/
+	@:noCompletion private static inline final KEEP_CALLS:Int = 1024;
+
+	/** `call` has ended, and is kept for the next call made with a receiver. **/
+	@:noCompletion private function __recycle(call:RPCReceiverCall):Void {
+		if (__freeCount < KEEP_CALLS) {
+			call.nextFree = __freeCalls;
+			__freeCalls = call;
+			__freeCount++;
+		}
+	}
+
+	/** What a stub throws for a receiver that is `null`, before anything is framed. **/
+	@:noCompletion private static function __noReceiver(method:String):ArgumentError {
+		return new ArgumentError("RPC call " + method + " was given no receiver");
+	}
+
+	/** Waits for `response`'s answer, under its request id, and under the session's deadline if it has one. **/
+	@:noCompletion private function __wait(response:RPCResponse<Dynamic>):Void {
+		final requestId:Int = response.requestId;
 		if (__pendingResponse == null) {
 			__pendingResponseId = requestId;
-			__pendingResponse = cast response;
+			__pendingResponse = response;
 		} else {
 			if (__pendingResponses == null) {
 				__pendingResponses = new RPCPendingCalls();
 			}
-			__pendingResponses.put(requestId, cast response);
+			__pendingResponses.put(requestId, response);
 		}
 		// The session's deadline for every call, if it has one, in its queue
 		// of them; a call without one arms nothing.
 		final session = __session;
 		if (session != null && session.callTimeout > 0) {
-			session.__queueDeadline(cast response, session.callTimeout);
+			session.__queueDeadline(response, session.callTimeout);
 		}
-		return response;
 	}
 
 	/**
@@ -163,16 +213,135 @@ abstract class RPCCommands {
 		session.__sendRequestFrame(response, framed);
 	}
 
-	@:noCompletion private function __resolveResponse<T>(op:Int, requestId:Int, value:T):Void {
-		final response = __takeResponse(requestId);
+	/**
+		The call waiting under `requestId`, no longer waiting, to be answered
+		by an answer for `op`; `null` if there is none, or if it was made
+		for another op, which fails it.
+	**/
+	@:noCompletion private inline function __takeAnswered(op:Int, requestId:Int):Null<RPCResponse<Dynamic>> {
+		var response = __takeResponse(requestId);
+		if (response != null && response.op != op) {
+			RPCSession.__answeredForAnotherOp(response, op);
+			response = null;
+		}
+		return response;
+	}
+
+	// The answers the generated readers hand over, one for each kind of
+	// receiver: a call made with one is told typed, and nothing is boxed for
+	// it; a future is resolved with the answer.
+
+	@:noCompletion private function __answerInt(op:Int, requestId:Int, value:Int):Void {
+		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
 		}
-		if (response.op != op) {
-			RPCSession.__answeredForAnotherOp(response, op);
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCIntReceiver = cast call.finish();
+			try {
+				receiver.onInt(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			(cast response : RPCResponse<Int>).__resolve(value);
+		}
+	}
+
+	@:noCompletion private function __answerInt64(op:Int, requestId:Int, value:haxe.Int64):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response == null) {
 			return;
 		}
-		(cast response : RPCResponse<T>).__resolve(value);
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCInt64Receiver = cast call.finish();
+			try {
+				receiver.onInt64(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			(cast response : RPCResponse<haxe.Int64>).__resolve(value);
+		}
+	}
+
+	@:noCompletion private function __answerFloat(op:Int, requestId:Int, value:Float, single:Bool):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCFloatReceiver = cast call.finish();
+			try {
+				receiver.onFloat(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			#if hl
+			// HashLink keeps a Single apart from a Float, boxed or not: a
+			// Float32 future given a Float would read its bits as a Single.
+			if (single) {
+				(cast response : RPCResponse<Single>).__resolve((value : Single));
+				return;
+			}
+			#end
+			(cast response : RPCResponse<Float>).__resolve(value);
+		}
+	}
+
+	@:noCompletion private function __answerBool(op:Int, requestId:Int, value:Bool):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCBoolReceiver = cast call.finish();
+			try {
+				receiver.onBool(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			(cast response : RPCResponse<Bool>).__resolve(value);
+		}
+	}
+
+	@:noCompletion private function __answerString(op:Int, requestId:Int, value:String):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCStringReceiver = cast call.finish();
+			try {
+				receiver.onString(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			(cast response : RPCResponse<String>).__resolve(value);
+		}
+	}
+
+	/** Any other answer, an object, which goes to a receiver or a future as it is. **/
+	@:noCompletion private function __answerValue<T>(op:Int, requestId:Int, value:T):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response != null) {
+			// A call made with a receiver takes it through RPCReceiverCall's
+			// `__resolve`, as an `RPCValueReceiver`.
+			(cast response : RPCResponse<T>).__resolve(value);
+		}
 	}
 
 	/**
@@ -182,12 +351,15 @@ abstract class RPCCommands {
 		it) passes the message on, as it would one it threw.
 	**/
 	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
-		final response = __takeResponse(requestId);
+		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
 		}
-		if (response.op != op) {
-			RPCSession.__answeredForAnotherOp(response, op);
+		if (response.__pooled) {
+			// Told with the message, and no RPCError made to carry it.
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			RPCReceiverCall.tell(call.finish(), id, RPCFailure.Refused(message));
 			return;
 		}
 		response.__fail(message, new RPCError(message));
