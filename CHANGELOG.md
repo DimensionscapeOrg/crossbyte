@@ -521,6 +521,10 @@ says how.
 
 #### TCP
 
+- On the jvm under Java 8 a select allocates nothing: the selector puts
+  the sockets it finds ready in an array CrossByte gives it, as Netty
+  does, where it added each to a set. A TCP echo, a datagram and a
+  reliable UDP message allocate 0 to 48 B where they took 72 to 160.
 - Natively a TCP message allocates nothing once a connection is under way,
   and an idle connection lets go of its buffers' storage after five quiet
   seconds: 1.7 KB where it kept 51 KB after a 16 KB message each way.

@@ -2493,6 +2493,9 @@ class Socket {
 	**/
 	@:noCompletion public var __connectFailure:Null<String> = null;
 	@:noCompletion private var __selectPass:Int = 0;
+	// Where this socket's key sits in a ReadyKeys, plus one, and which.
+	@:noCompletion private var __readyAt:Int = 0;
+	@:noCompletion private var __readyIn:Null<ReadyKeys> = null;
 	@:noCompletion private var __selectOps:Int = 0;
 	// The key this socket is registered under in the selector that last
 	// watched it, and what it was last asked about when that key was set up;
@@ -2811,6 +2814,9 @@ class Socket {
 		}
 
 		var selected = selector.selectedKeys();
+		// The main selector's ready keys, in an array where Java 8 lets the
+		// selector be given one; see ReadyKeys.
+		var ready:Null<ReadyKeys> = selector == state.main ? state.ready : null;
 		var wait:Float = polling ? 0.0 : timeout;
 		var deadline:Float = polling ? 0.0 : haxe.Timer.stamp() + timeout;
 
@@ -2831,37 +2837,17 @@ class Socket {
 				}
 
 				var strays:Int = 0;
-				if (!selected.isEmpty()) {
+				if (ready != null) {
+					// Walked by index: no iterator, and nothing was added to a
+					// map to find them.
+					for (i in 0...ready.count) {
+						strays += __collect(ready.keys[i], state, pass, resRead, resWrite, resOthers);
+					}
+					ready.clear();
+				} else if (!selected.isEmpty()) {
 					var it = selected.iterator();
 					while (it.hasNext()) {
-						var key:SelectionKey = it.next();
-						var s:Socket = cast key.attachment();
-
-						if (s == null || s.__selectState != state || s.__selectPass != pass) {
-							// Watched for an earlier call and not asked about in
-							// this one: not reported, and not watched again until
-							// it is asked about.
-							try {
-								key.interestOps(0);
-							} catch (_:Dynamic) {}
-							if (s != null) {
-								s.__selectArmed = -1;
-							}
-							strays++;
-							continue;
-						}
-
-						var ready:Int = try {
-							key.readyOps();
-						} catch (_:Dynamic) {
-							0;
-						}
-						if ((ready & SelectionKey.OP_CONNECT) != 0)
-							__settleConnect(s, resWrite, resOthers);
-						if ((ready & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
-							resRead.push(s);
-						if ((ready & SelectionKey.OP_WRITE) != 0)
-							resWrite.push(s);
+						strays += __collect(it.next(), state, pass, resRead, resWrite, resOthers);
 					}
 					selected.clear();
 				}
@@ -2898,6 +2884,39 @@ class Socket {
 		// holding every socket of its last call, each with its buffers and
 		// userData (40 closed connections of 64 KB survived five collections).
 		asked.resize(0);
+	}
+
+	/**
+		What `key`, found ready, answers: its socket added to the lists it is
+		ready for. 1 for a key watched for an earlier call and not asked
+		about in this one, which is not reported, and not watched again until
+		it is asked about; 0 otherwise.
+	**/
+	@:noCompletion private static inline function __collect(key:SelectionKey, state:SelectState, pass:Int, resRead:Array<Socket>,
+			resWrite:Array<Socket>, resOthers:Array<Socket>):Int {
+		var s:Socket = cast key.attachment();
+		if (s == null || s.__selectState != state || s.__selectPass != pass) {
+			try {
+				key.interestOps(0);
+			} catch (_:Dynamic) {}
+			if (s != null) {
+				s.__selectArmed = -1;
+			}
+			return 1;
+		}
+
+		var ready:Int = try {
+			key.readyOps();
+		} catch (_:Dynamic) {
+			0;
+		}
+		if ((ready & SelectionKey.OP_CONNECT) != 0)
+			__settleConnect(s, resWrite, resOthers);
+		if ((ready & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
+			resRead.push(s);
+		if ((ready & SelectionKey.OP_WRITE) != 0)
+			resWrite.push(s);
+		return 0;
 	}
 
 	/** Records that `s` is asked about for `ops` in this call. **/
@@ -3028,6 +3047,9 @@ class Socket {
 	/** For a blocking wait on one socket, which nothing else may end. **/
 	public var wait:Selector = null;
 
+	/** The main selector's ready keys, where it could be given an array of them; see ReadyKeys. **/
+	public var ready:Null<ReadyKeys> = null;
+
 	public var pass:Int = 0;
 	public var asked:Array<Socket> = [];
 	public var transients:Array<Socket> = [];
@@ -3054,6 +3076,7 @@ class Socket {
 	public function mainSelector():Selector {
 		if (main == null) {
 			main = Selector.open();
+			ready = ReadyKeys.install(main);
 		}
 		return main;
 	}
@@ -3070,6 +3093,174 @@ class Socket {
 			wait = Selector.open();
 		}
 		return wait;
+	}
+}
+
+/**
+	A selector's ready keys in an array, given to the thread's main selector
+	in place of the set Java makes it, as Netty does: Java 8's selector adds
+	each key it finds ready to a HashSet, a map node each, and walking the set
+	takes an iterator: about 70 bytes a select with anything ready, on every
+	message a runtime sends or receives. Here a key is added by index, walked
+	by index and let go of in place.
+
+	Java 8 only. Later Javas refuse the reflection, or warn about it on the
+	console (9 to 15), and the selector keeps its own set there.
+**/
+@:noCompletion @:access(sys.net.Socket)
+private class ReadyKeys extends java.util.AbstractSet<SelectionKey> {
+	public var keys:java.NativeArray<SelectionKey> = new java.NativeArray(64);
+	public var count:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	/** An array of ready keys given to `selector`, or null where Java will not have one. **/
+	public static function install(selector:Selector):Null<ReadyKeys> {
+		if (java.lang.System.getProperty("java.specification.version") != "1.8") {
+			return null;
+		}
+		try {
+			var impl = java.lang.Class.forName("sun.nio.ch.SelectorImpl");
+			if (!impl.isInstance(selector)) {
+				return null;
+			}
+			var selected = impl.getDeclaredField("selectedKeys");
+			var published = impl.getDeclaredField("publicSelectedKeys");
+			selected.setAccessible(true);
+			published.setAccessible(true);
+			var keys = new ReadyKeys();
+			selected.set(selector, keys);
+			published.set(selector, keys);
+			return keys;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	/** The socket `key` belongs to, where it is one of ours. **/
+	static inline function __socketOf(key:SelectionKey):Null<Socket> {
+		return Std.downcast(key.attachment(), Socket);
+	}
+
+	/** Where `key` is, or -1. **/
+	function __indexOf(key:SelectionKey):Int {
+		var s:Null<Socket> = __socketOf(key);
+		if (s != null) {
+			var at:Int = s.__readyAt - 1;
+			return (s.__readyIn == this && at >= 0 && at < count && keys[at] == key) ? at : -1;
+		}
+		for (i in 0...count) {
+			if (keys[i] == key) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	@:overload override public function add(key:SelectionKey):Bool {
+		if (key == null || __indexOf(key) >= 0) {
+			return false;
+		}
+		if (count == keys.length) {
+			var grown = new java.NativeArray<SelectionKey>(count * 2);
+			java.lang.System.arraycopy(keys, 0, grown, 0, count);
+			keys = grown;
+		}
+		keys[count++] = key;
+		var s:Null<Socket> = __socketOf(key);
+		if (s != null) {
+			s.__readyIn = this;
+			s.__readyAt = count;
+		}
+		return true;
+	}
+
+	@:overload override public function contains(o:Dynamic):Bool {
+		var key:Null<SelectionKey> = Std.downcast(o, SelectionKey);
+		return key != null && __indexOf(key) >= 0;
+	}
+
+	@:overload override public function remove(o:Dynamic):Bool {
+		var key:Null<SelectionKey> = Std.downcast(o, SelectionKey);
+		var at:Int = key == null ? -1 : __indexOf(key);
+		if (at < 0) {
+			return false;
+		}
+		removeAt(at);
+		return true;
+	}
+
+	/** Takes out the key at `at`, the last moved into its place. **/
+	public function removeAt(at:Int):Void {
+		__unmark(keys[at]);
+		count--;
+		if (at < count) {
+			keys[at] = keys[count];
+			var moved:Null<Socket> = __socketOf(keys[at]);
+			if (moved != null && moved.__readyIn == this) {
+				moved.__readyAt = at + 1;
+			}
+		}
+		keys[count] = null;
+	}
+
+	@:overload override public function clear():Void {
+		for (i in 0...count) {
+			__unmark(keys[i]);
+			keys[i] = null;
+		}
+		count = 0;
+	}
+
+	@:overload override public function isEmpty():Bool {
+		return count == 0;
+	}
+
+	@:overload public function size():Int {
+		return count;
+	}
+
+	@:overload public function iterator():java.util.Iterator<SelectionKey> {
+		return new ReadyKeysIterator(this);
+	}
+
+	inline function __unmark(key:SelectionKey):Void {
+		var s:Null<Socket> = __socketOf(key);
+		if (s != null && s.__readyIn == this) {
+			s.__readyIn = null;
+			s.__readyAt = 0;
+		}
+	}
+}
+
+/** A walk of a ReadyKeys, for whatever in Java asks for one; the runtime's own select walks it by index. **/
+@:noCompletion
+private class ReadyKeysIterator implements java.util.Iterator<SelectionKey> {
+	var __keys:ReadyKeys;
+	var __at:Int = 0;
+
+	public function new(keys:ReadyKeys) {
+		__keys = keys;
+	}
+
+	@:overload public function hasNext():Bool {
+		return __at < __keys.count;
+	}
+
+	@:overload public function next():SelectionKey {
+		if (__at >= __keys.count) {
+			throw new java.util.NoSuchElementException();
+		}
+		return __keys.keys[__at++];
+	}
+
+	@:overload public function remove():Void {
+		if (__at <= 0) {
+			throw new java.lang.IllegalStateException();
+		}
+		__keys.removeAt(--__at);
 	}
 }
 

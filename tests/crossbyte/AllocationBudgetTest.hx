@@ -82,29 +82,27 @@ class AllocationBudgetTest extends utest.Test {
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
 	// The HTTP lines and the streamed line were measured later than
 	// MEASURED_ON, on Oracle 8 and Temurin 8 alike for the jvm.
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [232, 232, 760], [360, 360, 1016]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4952, 4952, 5704], [6256, 6256, 7200]);
-	private static final STREAM_TEXT = new Budget("a line of text written to a streamed response", "line", [0, 0, 72], [8, 8, 160]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3400, 3384, 2168], [4320, 4296, 2776]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [232, 232, 7488], [360, 360, 9424]);
-	// The jvm's figure measured later than MEASURED_ON: Temurin 8 on Linux
-	// (Oracle 8 on Windows: 396).
-	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [112, 112, 401], [208, 208, 568]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [232, 232, 648], [360, 360, 880]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4952, 4952, 5696], [6256, 6256, 7184]);
+	private static final STREAM_TEXT = new Budget("a line of text written to a streamed response", "line", [0, 0, 16], [8, 8, 88]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3400, 3384, 2048], [4320, 4296, 2624]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [232, 232, 7376], [360, 360, 9288]);
+	// The jvm's figure measured later than MEASURED_ON: the full suite on
+	// Windows (alone 248, Temurin 8 on Linux 253). Nearly all of it is the
+	// text the listener asks for.
+	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [112, 112, 280], [208, 208, 416]);
 	// Nothing natively: the frames each message is kept in until it is
 	// acknowledged come from a pool and go back to it (FramePool). The jvm's
-	// 80 B is CI's Temurin 8 on Linux, the largest read (Oracle 8 on Windows:
-	// 64); none of it is reliable UDP's. Linux natively taken as Windows until
-	// measured.
-	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
+	// figures on these four lines, later than MEASURED_ON, are the full suite
+	// on Windows: alone they read 0 there and on Temurin 8 on Linux, and in
+	// the full suite the JDK's Windows selector boxes the descriptors it finds
+	// ready (see sys.net.Socket's ReadyKeys).
+	private static final RELIABLE = new Budget("a 200-byte reliable UDP message delivered and acknowledged", "message", [0, 0, 48], [8, 8, 128]);
 	// The same, every datagram sealed and opened: what encryption adds is
-	// buffers the server's sessions share, made once. Measured as the line
-	// above, later than MEASURED_ON (Oracle 8 on Windows: 73).
-	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 80], [8, 8, 168]);
-	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 144], [8, 8, 248]);
-	// The jvm's 72 B is Java 8's selector (its selected-key set and the
-	// iterator over it), measured later than MEASURED_ON on Oracle 8 and
-	// Temurin 8 alike.
-	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 72], [8, 8, 160]);
+	// buffers the server's sessions share, made once.
+	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 48], [8, 8, 128]);
+	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 32], [8, 8, 104]);
+	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 16], [8, 8, 88]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
 	// RPCResponse and what waiting on it takes; a frame costs nothing.
