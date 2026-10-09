@@ -110,9 +110,35 @@ class Logger {
 	// lasts. Shared, and a race costs at most one notice too many or too few.
 	@:noCompletion private static var __sinkFailing:Bool = false;
 
+	// Held while the category levels are read or changed. Levels are set
+	// from wherever an operator's change arrives while every runtime's thread
+	// logs, and a map read while another thread grows it is not safe: natively
+	// that crashed the process, and on the jvm a level that never changed read
+	// as another. A blocking lock, not a spinning one: a lookup allocates as it
+	// walks up a dotted name, and a thread spinning where it cannot reach a
+	// collection would stall one. Only a category's lookup takes it, which
+	// `LogCategory` does once a change and a record with no category never.
+	#if (target.threaded && !js)
+	@:noCompletion private static final __levelsLock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
+
+	@:noCompletion private static inline function __lockLevels():Void {
+		#if (target.threaded && !js)
+		__levelsLock.acquire();
+		#end
+	}
+
+	@:noCompletion private static inline function __unlockLevels():Void {
+		#if (target.threaded && !js)
+		__levelsLock.release();
+		#end
+	}
+
 	@:noCompletion private static function set_level(value:LogLevel):LogLevel {
+		__lockLevels();
 		level = value;
 		__levelsVersion++;
+		__unlockLevels();
 		return value;
 	}
 
@@ -146,6 +172,7 @@ class Logger {
 		if (category == null) {
 			return;
 		}
+		__lockLevels();
 		if (categoryLevel == null) {
 			__categoryLevels.remove(category);
 		} else {
@@ -153,6 +180,7 @@ class Logger {
 		}
 		__categoryCount = Lambda.count(__categoryLevels);
 		__levelsVersion++;
+		__unlockLevels();
 	}
 
 	/**
@@ -164,18 +192,23 @@ class Logger {
 			return level;
 		}
 
+		__lockLevels();
 		var name:String = category;
+		var found:Null<LogLevel> = null;
 		while (true) {
-			var own:Null<LogLevel> = __categoryLevels.get(name);
-			if (own != null) {
-				return own;
+			found = __categoryLevels.get(name);
+			if (found != null) {
+				break;
 			}
 			var dot:Int = name.lastIndexOf(".");
 			if (dot < 0) {
-				return level;
+				break;
 			}
 			name = name.substr(0, dot);
 		}
+		var effective:LogLevel = found != null ? found : level;
+		__unlockLevels();
+		return effective;
 	}
 
 	/**
