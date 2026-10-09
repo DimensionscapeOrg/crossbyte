@@ -555,6 +555,38 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals(1, H2ConnectionPool.sessionCount(origin));
 	}
 
+	public function testThePoolLetsAnIdleConnectionGoWithNobodyAsking():Void {
+		var server = new H2MuxServer(1);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+		var origin = 'http://127.0.0.1:${server.port}';
+
+		var previousTimeout = H2ConnectionPool.idleTimeoutSeconds;
+		var previousInterval = H2ConnectionPool.__reapInterval;
+		H2ConnectionPool.idleTimeoutSeconds = 0;
+		H2ConnectionPool.__reapInterval = 0.05;
+
+		Assert.equals("/left", get(server.port, "/left"));
+		var withSession = H2ClientSession.liveThreads();
+
+		// No more requests, and nobody calls reapIdle: the pool's reaper has
+		// to close the connection, and its reader and writer have to end. A
+		// reaper already asleep from an earlier case wakes within 5 s; the
+		// server would close the connection itself only after 10 s idle.
+		var deadline = haxe.Timer.stamp() + 8;
+		while (H2ClientSession.liveThreads() > withSession - 2 && haxe.Timer.stamp() < deadline) {
+			System.sleep(0.01);
+		}
+		var left = H2ClientSession.liveThreads();
+		var count = H2ConnectionPool.sessionCount(origin);
+		H2ConnectionPool.idleTimeoutSeconds = previousTimeout;
+		H2ConnectionPool.__reapInterval = previousInterval;
+
+		Assert.equals(0, count);
+		Assert.isTrue(left <= withSession - 2, 'the idle connection\'s threads are still running ($left of $withSession)');
+	}
+
 	// ------------------------------------------------------ cancellation
 
 	public function testCancellingOneStreamLeavesTheConnectionUsable():Void {
