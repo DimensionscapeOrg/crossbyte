@@ -690,7 +690,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		var byteArrayData:ByteArrayData = bytes;
 		if (byteArrayData.length < offset + length) {
-			byteArrayData.__resize(offset + length);
+			byteArrayData.__resize(offset + length, -1);
 		}
 
 		// Read straight into the destination, rather than into a fresh
