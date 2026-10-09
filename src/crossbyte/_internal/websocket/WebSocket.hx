@@ -3820,8 +3820,9 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 
 /**
 	Random bytes for a client's frame masks, from the platform's CSPRNG, four
-	taken for each frame and none taken twice; refilled, a new block, when
-	used up. One a thread: see `WebSocket.__maskPool`.
+	taken for each frame and none taken twice; refilled in place
+	(`SecureRandom.fill`) when used up. One a thread: see
+	`WebSocket.__maskPool`.
 **/
 @:noCompletion class MaskPool {
 	public var bytes(default, null):ByteArray = null;
@@ -3839,8 +3840,12 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 		return at;
 	}
 
+	// Refilled in place, so the masks cost nothing once the pool exists.
 	private function __refill():Void {
-		bytes = SecureRandom.getSecureRandomBytes(@:privateAccess WebSocket.MASK_POOL);
+		if (bytes == null) {
+			bytes = ByteArray.fromBytes(Bytes.alloc(@:privateAccess WebSocket.MASK_POOL));
+		}
+		SecureRandom.fill(bytes);
 		__at = 0;
 	}
 }
