@@ -527,7 +527,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
-		this.__resize(index + 1);
+		this.__resize(index + 1, -1);
 		this.set(index, value);
 
 		return value;
@@ -799,7 +799,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			value = 0;
 		}
 
-		this.__resize(value);
+		this.__resize(value, -1);
 		if (value < this.position)
 			this.position = value;
 
@@ -1702,8 +1702,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		from the old end up to there are zeroed; bytes from there on are the
 		caller's to fill and are left alone, which spares an append (the
 		common case, and the whole of the bulk write path) a pass over
-		everything it is about to overwrite anyway. Omitted, the whole grown
-		region is zeroed, which is always safe.
+		everything it is about to overwrite anyway. -1 zeroes the whole grown
+		region, which is always safe. It has no default: on the jvm an
+		argument with one is an object, boxed on every write past the 127th
+		byte.
 
 		The zeroing runs against the old *logical* length and outside the
 		growth branch, both deliberately: inside that branch, from the old
@@ -1713,7 +1715,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		readable through a hole the caller skipped over, which a buffer
 		being reused for something else must never allow.
 	**/
-	@:noCompletion private function __resize(size:Int, overwriteFrom:Int = -1):Void {
+	@:noCompletion private function __resize(size:Int, overwriteFrom:Int):Void {
 		// The logical end before anything moves: everything above this is
 		// either capacity nobody has been shown or bytes already given back.
 		var exposedFrom:Int = length;
