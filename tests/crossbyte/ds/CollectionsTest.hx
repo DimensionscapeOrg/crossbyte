@@ -485,6 +485,45 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
+		A method reached through `Reflect` and given with its object as
+		`thisObject` -- ActionScript's `forEach(obj.method, obj)` -- gets the
+		arguments it takes, like any other callback. It is the one kind whose
+		arity cannot be read off its type.
+
+		The object goes with it because on JavaScript `Reflect.field` hands
+		back the method unbound, so without it the method runs with no `this`.
+
+		On the jvm such a callback is a `haxe.jvm.Closure`, which declares
+		`invokeDynamic` rather than an `invoke` of its own arity, so a search
+		for `invoke` finds nothing and the count has to come from the closure
+		itself. Guessing it called a one-argument method with two arguments
+		(`IllegalArgumentException`), and handed a three-argument one `null`
+		for the vector.
+	**/
+	public function testVectorCallbacksReachedThroughReflectGetTheirArguments():Void {
+		var vector = new Vector<Int>();
+		vector.push(10);
+		vector.push(20);
+
+		var target = new VectorCallbackTarget();
+
+		vector.forEach(Reflect.field(target, "one"), target);
+		Assert.equals("one(10),one(20)", target.seen.join(","));
+
+		target.seen = [];
+		vector.forEach(Reflect.field(target, "two"), target);
+		Assert.equals("two(10,0),two(20,1)", target.seen.join(","));
+
+		target.seen = [];
+		vector.forEach(Reflect.field(target, "three"), target);
+		Assert.equals("three(10,0,len2),three(20,1,len2)", target.seen.join(","));
+
+		target.seen = [];
+		vector.forEach(Reflect.field(target, "none"), target);
+		Assert.equals("none(),none()", target.seen.join(","));
+	}
+
+	/**
 		A fixed Vector keeps its length: whatever would change it throws
 		`RangeError`, as in ActionScript.
 	**/
@@ -536,6 +575,105 @@ class CollectionsTest extends utest.Test {
 
 		concatenated.sort(null);
 		Assert.equals("1,2,3,4,5", concatenated.join(","));
+	}
+
+	/**
+		`splice` counts a negative `startIndex` back from the end, and inserts
+		what it was given at that same place -- not at the index the removal
+		left behind. ActionScript's `[a,b,c,d,e].splice(-2, 2, "X")` leaves
+		`a,b,c,X`.
+	**/
+	public function testVectorSpliceCountsANegativeStartFromTheEnd():Void {
+		var vector = new Vector<String>();
+		for (item in ["a", "b", "c", "d", "e"]) {
+			vector.push(item);
+		}
+
+		Assert.equals("d,e", vector.splice(-2, 2, "X").join(","));
+		Assert.equals("a,b,c,X", vector.join(","));
+
+		// And with more than one item, so the insertion order shows too.
+		var second = new Vector<String>();
+		for (item in ["a", "b", "c", "d", "e"]) {
+			second.push(item);
+		}
+
+		Assert.equals("d,e", second.splice(-2, 2, "X", "Y").join(","));
+		Assert.equals("a,b,c,X,Y", second.join(","));
+
+		// A fixed Vector allows the same splice, because it puts back as many
+		// as it took out, and must place them just as exactly.
+		var fixed = new Vector<String>();
+		for (item in ["a", "b", "c", "d", "e"]) {
+			fixed.push(item);
+		}
+		fixed.fixed = true;
+
+		Assert.equals("d,e", fixed.splice(-2, 2, "X", "Y").join(","));
+		Assert.equals("a,b,c,X,Y", fixed.join(","));
+		Assert.equals(5, fixed.length);
+	}
+
+	/**
+		A length is never negative. `Array.resize` with one is
+		`Invalid_argument("Array.fill")` on the interpreter, which no `catch`
+		can hold, and silently drops elements on the jvm.
+	**/
+	public function testVectorRefusesANegativeLength():Void {
+		var vector = new Vector<String>();
+		for (item in ["a", "b", "c"]) {
+			vector.push(item);
+		}
+
+		Assert.raises(() -> vector.length = -1, crossbyte.errors.RangeError);
+		Assert.equals("a,b,c", vector.join(","));
+		Assert.raises(() -> new Vector<String>(-3), crossbyte.errors.RangeError);
+
+		// Zero is a length like any other.
+		vector.length = 0;
+		Assert.equals(0, vector.length);
+	}
+
+	/**
+		`removeAt` takes an index in range, and refuses one outside it like
+		every other indexed access on the type. It used to answer `null` for an
+		index past the end, and to take one off the end for a negative one.
+	**/
+	public function testVectorRemoveAtRefusesAnIndexOutOfRange():Void {
+		var vector = new Vector<String>();
+		for (item in ["a", "b", "c"]) {
+			vector.push(item);
+		}
+
+		Assert.raises(() -> vector.removeAt(3), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.removeAt(9), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.removeAt(-1), crossbyte.errors.RangeError);
+		Assert.equals("a,b,c", vector.join(","));
+
+		Assert.equals("b", vector.removeAt(1));
+		Assert.equals("a,c", vector.join(","));
+	}
+
+	/**
+		A callback that shortens the vector under the loop is not handed the
+		elements that are no longer there. The loop used to take its bound once
+		and read past the new end, passing `null` to a callback typed for an
+		element.
+	**/
+	public function testVectorIterationStopsWhenACallbackShortensIt():Void {
+		var vector = new Vector<String>();
+		for (item in ["a", "b", "c", "d"]) {
+			vector.push(item);
+		}
+
+		var seen:Array<String> = [];
+		vector.forEach(function(item:String) {
+			seen.push(item == null ? "NULL" : item);
+			vector.pop();
+		});
+
+		Assert.equals("a,b", seen.join(","));
+		Assert.equals("a,b", vector.join(","));
 	}
 
 	public function testDequeSupportsDoubleEndedAccessAndSizing():Void {
@@ -1565,4 +1703,30 @@ class CollectionsTest extends utest.Test {
 private class SwitchTableOpcodes {
 	public static inline var PING:Int = 1;
 	public static inline var LOGIN:Int = 2;
+}
+
+/**
+	A plain object whose methods `testVectorCallbacksReachedThroughReflectGetTheirArguments`
+	pulls off with `Reflect.field`, one of each arity a `Vector` callback can take.
+**/
+private class VectorCallbackTarget {
+	public var seen:Array<String> = [];
+
+	public function new() {}
+
+	public function none():Void {
+		seen.push("none()");
+	}
+
+	public function one(item:Int):Void {
+		seen.push("one(" + item + ")");
+	}
+
+	public function two(item:Int, index:Int):Void {
+		seen.push("two(" + item + "," + index + ")");
+	}
+
+	public function three(item:Int, index:Int, of:Vector<Int>):Void {
+		seen.push("three(" + item + "," + index + "," + (of == null ? "NULL" : "len" + of.length) + ")");
+	}
 }
