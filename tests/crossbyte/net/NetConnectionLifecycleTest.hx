@@ -293,6 +293,96 @@ class NetConnectionLifecycleTest extends utest.Test {
 	#end
 
 	#if (cpp || java || jvm || eval || nodejs)
+	/**
+		Inside `onClose` a connection is no longer `connected`, on each
+		transport and at both ends, whether it closed itself or its peer
+		closed it. A connection closing itself told `onClose` before its
+		socket had closed, so it still said it was connected.
+	**/
+	@:timeout(40000)
+	public function testAConnectionIsNotConnectedInsideItsOnClose(async:Async):Void {
+		final schemes:Array<String> = ["tcp"];
+		#if (cpp || java || jvm || nodejs)
+		schemes.push("ws");
+		#end
+		if (ReliableDatagramSocket.isSupported) {
+			schemes.push("rudp");
+		}
+		final wrong:Array<String> = [];
+		var next:Int->Void = null;
+		next = function(at:Int):Void {
+			if (at == schemes.length) {
+				Assert.same([], wrong, "connections still said they were connected inside onClose: " + wrong.join("; "));
+				async.done();
+				return;
+			}
+			__closeEachWay(schemes[at], wrong, () -> next(at + 1));
+		};
+		next(0);
+	}
+
+	/**
+		Over `scheme`, two connections to a host: the first closed by itself,
+		then everything the host accepted closed by the host, so each end sees
+		a close of its own and one of its peer's. Whatever reads `connected`
+		inside `onClose` goes into `wrong`.
+	**/
+	private static function __closeEachWay(scheme:String, wrong:Array<String>, then:Void->Void):Void {
+		final accepted:Array<INetConnection> = [];
+		final closes:Array<String> = [];
+		final host = new NetHost('$scheme://127.0.0.1:0', connection -> {
+			accepted.push(connection);
+			final at:Int = accepted.length;
+			connection.onClose = reason -> {
+				closes.push('accepted $at');
+				if (connection.connected) {
+					wrong.push('$scheme: accepted connection $at, in onClose after $reason');
+				}
+			};
+		}, null, null, true);
+		NetPump.until(() -> host.localPort != 0, 5.0, function(_) {
+			final uri:String = '$scheme://127.0.0.1:${host.localPort}';
+			var ready:Int = 0;
+			var mine:NetConnection = null;
+			var theirs:NetConnection = null;
+			mine = new NetConnection(uri, null, () -> ready++, reason -> {
+				closes.push("mine");
+				if (mine.connected) {
+					wrong.push('$scheme: a connection closed by itself, in onClose after $reason');
+				}
+			});
+			theirs = new NetConnection(uri, null, () -> ready++, reason -> {
+				closes.push("theirs");
+				if (theirs.connected) {
+					wrong.push('$scheme: a connection its peer closed, in onClose after $reason');
+				}
+			});
+			NetPump.until(() -> ready == 2 && accepted.length == 2, 10.0, function(up:Bool) {
+				if (!up) {
+					wrong.push('$scheme: the connections did not come up');
+					try host.close() catch (_:Dynamic) {}
+					then();
+					return;
+				}
+				mine.close();
+				// Its peer, at the host, hears it close.
+				NetPump.until(() -> closes.length >= 2, 10.0, function(_) {
+					for (connection in accepted) {
+						try connection.close() catch (_:Dynamic) {}
+					}
+					NetPump.until(() -> closes.length >= 4, 10.0, function(all:Bool) {
+						if (!all) {
+							wrong.push('$scheme: only ' + closes + ' closed');
+						}
+						try theirs.close() catch (_:Dynamic) {}
+						try host.close() catch (_:Dynamic) {}
+						then();
+					});
+				});
+			});
+		});
+	}
+
 	/** A port nothing listens on, obtained rather than assumed: a listener's, once it is closed. **/
 	private static function __vacantPort(then:Int->Void):Void {
 		var vacant = new ServerSocket();
