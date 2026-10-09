@@ -2180,12 +2180,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// compression failure) replaces this response entirely, and an
 		// event fired earlier would count and time a response that was
 		// never sent, twice for one request under per-response metrics.
-		// Guarded rather than handed straight to Logger.info, because the
-		// argument is built before the call regardless of whether the level
-		// admits it: five concatenations per request, on a server whose
-		// operator has every reason to run above INFO.
+		// Guarded here too, inline, so a server running above INFO pays
+		// neither the call nor the address lookup.
 		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
-			crossbyte._internal.http.AccessLog.write('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+			crossbyte._internal.http.AccessLog.write(__method, __requestPath, statusCode, __origin.remoteAddress);
 		}
 		// What was answered, as HTTPStatusEvent says: the URL asked for and the
 		// fields the response carries (for a static file, Content-Type, Date

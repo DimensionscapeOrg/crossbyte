@@ -27,8 +27,19 @@ using StringTools;
 	Lightweight static-and-middleware HTTP server built on `ServerSocket`.
 
 	**The access log.** Each response is logged at `INFO` in the category
-	`http.access` (`Client <address> <method> <path> - Status: <code>`), on by
-	default; `Logger.setLevel("http.access", LogLevel.WARN)` turns it off. The
+	`http.access` as four fields, `method`, `path`, `status` and `client`:
+
+	```text
+	[INFO] [http.access] method=GET path="/a b" status=404 client=127.0.0.1
+	```
+
+	In JSON mode they are members of the object, and a `Logger.recordSink` is
+	handed them as the record's fields. The path is decoded and quoted when
+	it holds a space, a quote or an equals sign, so no path reads as a field
+	of its own.
+
+	On by default; `Logger.setLevel("http.access", LogLevel.WARN)` turns it
+	off. The
 	lines are written to standard output by a thread of their own, a few
 	times a second, so a slow console never holds up the server: a queue of
 	at most about a megabyte of text, past which lines are dropped and
