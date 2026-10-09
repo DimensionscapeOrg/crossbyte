@@ -19,7 +19,10 @@ What a release needs, in the order it needs it.
 
 ## The release commit
 
-1. `haxelib.json`: `version`, and a `releasenote` of a sentence.
+1. The version, in every place that carries it: `haxelib.json`'s `version`
+   and a `releasenote` of a sentence; `Aedifex.hx`'s `version`,
+   `releaseNote` and the docs-site task's `-D version`; and the API docs
+   step's `-D version` in `.github/workflows/ci.yml`.
 2. `CHANGELOG.md`: rename `## Unreleased` to `## <version> - <yyyy-mm-dd>`
    and start a new, empty `## Unreleased` above it. Keep its Highlights
    and Upgrading sections current; they are what most readers read.
