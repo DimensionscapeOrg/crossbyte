@@ -12,10 +12,16 @@ import haxe.io.BytesData;
 	with the pool it takes the storage it gave back. Socket and WebSocket
 	output and input take from it, and a WebSocket session's message buffer.
 
-	Sizes are powers of two from 64 KB to 32 MB; a buffer larger than that
-	grows as before. A buffer that gives back what it grew to takes 64 KB of
-	the pool's for its next burst, which it gives back in turn when it grows
-	past it, so a burst after the first allocates nothing.
+	Sizes run from 64 KB to 32 MB, four to each doubling (64, 80, 96, 112
+	and 128 KB, and so on to 32 MB), so storage is at most a quarter larger
+	than what it was taken for, where powers of two alone left a 9 MB
+	backlog in 16 MB; jemalloc spaces its sizes the same way. A buffer
+	larger than that grows as before. A buffer that gives back what it grew
+	to takes 64 KB of the pool's for its next burst, which it gives back in
+	turn when it grows past it, so a burst after the first allocates
+	nothing; and it takes at once the size it held at most in its last
+	burst (`takeFor`), so a burst like the last neither copies itself
+	through every size below that nor leaves the pool holding each.
 
 	How much is kept: while storage is being taken, of each size as much as
 	was out at once since the registry last asked (`QuietRelease`, every five
@@ -34,8 +40,9 @@ class StoragePool implements QuietRelease {
 	/** The largest size kept. **/
 	public static inline var LARGEST:Int = 32 * 1024 * 1024;
 
-	// Sizes SMALLEST << k, k from 0 to CLASSES - 1.
-	static inline var CLASSES:Int = 10;
+	// Four sizes to each doubling: class 4k + j is (SMALLEST << k) times
+	// 1 + j / 4, so nine doublings and LARGEST make 37.
+	static inline var CLASSES:Int = 37;
 
 	@:noCompletion private var __idle:Array<Array<BytesData>> = [for (_ in 0...CLASSES) []];
 	// Of each size, what went unused for a whole interval: freed if still
@@ -54,16 +61,35 @@ class StoragePool implements QuietRelease {
 		__registry = registry;
 	}
 
-	/** The size kept for at least `needed` bytes, or -1 past the largest. **/
+	/** The class kept for at least `needed` bytes, or -1 past the largest. **/
 	static function __classFor(needed:Int):Int {
-		var size:Int = SMALLEST;
-		for (k in 0...CLASSES) {
-			if (needed <= size) {
-				return k;
-			}
-			size <<= 1;
+		if (needed <= SMALLEST) {
+			return 0;
 		}
-		return -1;
+		if (needed > LARGEST) {
+			return -1;
+		}
+		// The doubling below `needed`, then how many of its quarters past it.
+		var k:Int = 0;
+		var base:Int = SMALLEST;
+		while ((base << 1) < needed) {
+			base <<= 1;
+			k++;
+		}
+		var shift:Int = 14 + k;
+		return (k << 2) + ((needed - base + (1 << shift) - 1) >> shift);
+	}
+
+	/** The size of class `c`. **/
+	static inline function __sizeOf(c:Int):Int {
+		var base:Int = SMALLEST << (c >> 2);
+		return base + (base >> 2) * (c & 3);
+	}
+
+	/** The size kept for at least `needed` bytes, or -1 past the largest. **/
+	public static function sizeFor(needed:Int):Int {
+		var c:Int = __classFor(needed);
+		return c < 0 ? -1 : __sizeOf(c);
 	}
 
 	/** Storage of at least `needed` bytes, kept or new; null past the largest size, which grows as it would without a pool. **/
@@ -78,7 +104,7 @@ class StoragePool implements QuietRelease {
 			data = __spare[k].pop();
 		}
 		if (data == null) {
-			data = haxe.io.Bytes.alloc(SMALLEST << k).getData();
+			data = haxe.io.Bytes.alloc(__sizeOf(k)).getData();
 			made++;
 		}
 		var out:Int = ++__out[k];
@@ -89,13 +115,23 @@ class StoragePool implements QuietRelease {
 	}
 
 	/**
+		As `take`, but for `hint` bytes where that is more and a size the pool
+		keeps: what the buffer taking it held at most in its last burst, so a
+		burst like the last takes its size at once rather than growing
+		through every size below it.
+	**/
+	public inline function takeFor(needed:Int, hint:Int):Null<BytesData> {
+		return take(hint > needed && hint <= LARGEST ? hint : needed);
+	}
+
+	/**
 		`data` back, once the buffer that had it has let go of it. Storage
 		of a size the pool does not keep is left to the collector.
 	**/
 	public function give(data:BytesData):Void {
 		var capacity:Int = data.length;
 		var k:Int = __classFor(capacity);
-		if (k < 0 || (SMALLEST << k) != capacity) {
+		if (k < 0 || __sizeOf(k) != capacity) {
 			return;
 		}
 		if (__out[k] > 0) {
@@ -108,11 +144,40 @@ class StoragePool implements QuietRelease {
 		}
 	}
 
+	/**
+		`data` back from a buffer that has grown out of it into larger storage
+		from the pool: kept only as spare, taken before new storage is made
+		and let go of at the next ask if nobody has. A buffer growing a size
+		at a time passes through every size below what it needs, and, unlike
+		storage given back by a buffer that emptied, those are not what its
+		next burst will take (see `takeFor`). The smallest size, which every
+		busy buffer keeps, is kept as `give` keeps it.
+	**/
+	public function giveGrown(data:BytesData):Void {
+		var capacity:Int = data.length;
+		var k:Int = __classFor(capacity);
+		if (k < 0 || __sizeOf(k) != capacity) {
+			return;
+		}
+		if (k == 0) {
+			give(data);
+			return;
+		}
+		if (__out[k] > 0) {
+			__out[k]--;
+		}
+		__spare[k].push(data);
+		if (!__watched && __registry != null) {
+			__watched = true;
+			__registry.watchQuiet(this);
+		}
+	}
+
 	/** Bytes of storage the pool holds, not out. **/
 	public function held():Float {
 		var total:Float = 0;
 		for (k in 0...CLASSES) {
-			total += (__idle[k].length + __spare[k].length) * (SMALLEST << k) * 1.0;
+			total += (__idle[k].length + __spare[k].length) * __sizeOf(k) * 1.0;
 		}
 		return total;
 	}

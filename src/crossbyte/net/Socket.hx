@@ -637,9 +637,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * pay for its backlog again on every event: 50x the arriving bytes after
 	 * 200 events, and rising, because the cost is quadratic in the number of
 	 * arrivals. Waiting for a quarter moves at most three bytes for each one
-	 * read, however large the backlog; a reader taking 64 KB a pass behind
-	 * an 8 MB backlog spent 4.5 ms of CPU a megabyte on the moves at a fixed
-	 * 64 KB, 0.37 ms at a quarter.
+	 * read, however large the backlog: a fixed 64 KB alone would move the
+	 * whole of an 8 MB backlog for every 64 KB read.
 	 */
 	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 	@:noCompletion private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
@@ -695,6 +694,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// Its storage back to the runtime's pool for the next burst,
 					// and 64 KB of the pool's for this one's, as output does.
 					var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+					var held:Int = __input.length;
+					__inputHint = held > __inputPeak ? held : __inputPeak;
+					__inputPeak = 0;
 					__input.clear();
 					pool.give((__input : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY), 0));
 					return;
@@ -718,6 +720,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// ranges overlap, and Java's arraycopy is defined for them, so a reader
 		// behind a backlog makes no new buffer each time the front is let go.
 		var data:ByteArrayData = __input;
+		if (data.length > __inputPeak) {
+			__inputPeak = data.length;
+		}
 		data.blit(0, data, consumed, remaining);
 		__input.length = remaining;
 		__input.position = 0;
@@ -752,6 +757,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __host:String;
 	@:noCompletion private var __input:ByteArray;
 	@:noCompletion private var __output:ByteArray;
+	#if ((cpp || jvm) && !macro)
+	// The most each buffer has held since it last emptied, and the most it
+	// held in the last burst that took it past 64 KB: the size its next such
+	// burst takes from the pool at once (see __growOutput and __growInput).
+	// Small traffic between bursts leaves it as it was.
+	@:noCompletion private var __inputPeak:Int = 0;
+	@:noCompletion private var __inputHint:Int = 0;
+	@:noCompletion private var __outputPeak:Int = 0;
+	@:noCompletion private var __outputHint:Int = 0;
+	#end
 	// How much of the front of __output the system has already taken; see
 	// __retainPendingOutput.
 	@:noCompletion private var __outputSent:Int = 0;
@@ -1891,46 +1906,107 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#if ((cpp || jvm) && !macro)
 	/**
 		Room in the output for `count` more bytes, from storage the runtime
-		keeps (`StoragePool`) once that is past what a buffer keeps while busy,
-		the storage the output had given back: a connection sending a large
+		keeps (`StoragePool`) once that reaches what a buffer keeps while busy
+		(64 KB), the storage the output had given back: a connection sending a large
 		burst a pass grew its output from nothing past the burst each time it
 		drained, allocating about three times what it sent.
 	**/
 	@:noCompletion private inline function __makeOutputRoom(count:Int):Void {
 		var data:ByteArrayData = __output;
 		var needed:Int = data.position + count;
-		if (needed > @:privateAccess data.__length && needed > KEEP_WHILE_BUSY && __cbInstance != null) {
-			__growOutput(needed);
+		if (needed > @:privateAccess data.__length && needed >= KEEP_WHILE_BUSY && __cbInstance != null) {
+			__growOutput(count);
 		}
 	}
 
-	@:noCompletion private function __growOutput(needed:Int):Void {
+	/**
+		A full output, `count` more bytes to write: what has been sent goes
+		from its front, by moving what waits down in place if that leaves a
+		quarter of its storage spare, as the input does, and otherwise by
+		carrying only what waits into storage from the pool. Without this a
+		slow reader's output held what had been sent as well as what waited,
+		up to twice its backlog, until the sent part outgrew the rest.
+
+		The storage taken is the size needed, but at least what the output
+		held at most in its last burst. The pool's sizes are a quarter apart,
+		so storage taken for what is needed is never much more than that; but
+		a first burst grows through them a size at a time, copying what it
+		holds into each, and the pool keeps each size it passed through for a
+		while. A burst like the last takes its size at once: a connection
+		sending 1 MB bursts takes 1 MB at its first write past 64 KB.
+	**/
+	@:noCompletion private function __growOutput(count:Int):Void {
+		var data:ByteArrayData = __output;
+		var sent:Int = __outputSent;
+		var waiting:Int = data.length - sent;
+		var capacity:Int = @:privateAccess data.__length;
+		var needed:Int = waiting + count;
+		if (data.length > __outputPeak) {
+			__outputPeak = data.length;
+		}
+		if (sent > 0 && needed <= capacity - (capacity >> 2)) {
+			data.blit(0, data, sent, waiting);
+			__output.length = waiting;
+			__output.position = waiting;
+			__outputSent = 0;
+			return;
+		}
+		// The next size up at least: storage of the same size would only move
+		// what waits, as the move in place above does without taking any.
 		var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
-		var storage:Null<haxe.io.BytesData> = pool.take(needed);
+		var storage:Null<haxe.io.BytesData> = pool.takeFor(needed > capacity ? needed : capacity + 1, __outputHint);
 		if (storage == null) {
 			return;
 		}
-		pool.give((__output : ByteArrayData).__adoptStorage(storage, 0));
+		pool.giveGrown(data.__adoptStorage(storage, sent));
+		__outputSent = 0;
 	}
 
 	/**
 		Room at the end of the input for `count` more bytes, its unread bytes
-		starting at `readFrom`: where they start once it has made room. Past
-		what a buffer keeps while busy, a full input moves its unread bytes
-		down in place if that leaves a quarter of its storage spare, and
-		otherwise takes storage of the next size up from the runtime's pool
-		(`StoragePool`), the unread bytes carried to its front and its own
-		given back: a connection receiving a large burst a pass grew its input
-		from nothing past the burst each time it drained, allocating about
-		three times what it received. Whatever it does, the input's position
-		is left where the next byte goes.
+		starting at `readFrom`: where they start once it has made room. From
+		what a buffer keeps while busy (64 KB) up, a full input moves its
+		unread bytes down in place if that leaves a quarter of its storage
+		spare, and otherwise takes storage of the next size up from the
+		runtime's pool (`StoragePool`), the unread bytes carried to its front
+		and its own given back: a connection receiving a large burst a pass
+		grew its input from nothing past the burst each time it drained,
+		allocating about three times what it received. Whatever it does, the
+		input's position is left where the next byte goes.
 	**/
 	@:noCompletion private inline function __inputRoomFor(readFrom:Int, count:Int):Int {
 		var data:ByteArrayData = __input;
-		if (data.length + count > @:privateAccess data.__length && data.length - readFrom + count > KEEP_WHILE_BUSY && __cbInstance != null) {
+		if (data.length + count > @:privateAccess data.__length && data.length - readFrom + count >= KEEP_WHILE_BUSY && __cbInstance != null) {
 			readFrom = __growInput(readFrom, count);
 		}
 		return readFrom;
+	}
+
+	/**
+		Storage past what a buffer keeps while busy back to the runtime's pool
+		as the connection closes: the output's, whose bytes can no longer be
+		sent, and the input's once it has all been read (what is unread stays
+		readable). A connection that received a large upload and was closed
+		would otherwise take its storage with it, and the next would make its
+		own.
+	**/
+	@:noCompletion private function __storageBackOnClose():Void {
+		var pool:Null<crossbyte._internal.socket.StoragePool> = @:privateAccess __cbInstance.__storage;
+		if (pool == null) {
+			return;
+		}
+		if (__output != null && @:privateAccess (__output : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+			var storage:haxe.io.BytesData = (__output : ByteArrayData).getData();
+			__output = __emptyBuffer();
+			__outputSent = 0;
+			pool.give(storage);
+		}
+		if (__input != null && __input.position >= __input.length
+			&& @:privateAccess (__input : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+			var storage:haxe.io.BytesData = (__input : ByteArrayData).getData();
+			__input = __emptyBuffer();
+			pool.give(storage);
+		}
 	}
 
 	@:noCompletion private function __growInput(readFrom:Int, count:Int):Int {
@@ -1938,19 +2014,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var unread:Int = data.length - readFrom;
 		var capacity:Int = @:privateAccess data.__length;
 		var needed:Int = unread + count;
+		if (data.length > __inputPeak) {
+			__inputPeak = data.length;
+		}
 		if (needed <= capacity - (capacity >> 2)) {
 			data.blit(0, data, readFrom, unread);
 			__input.length = unread;
 			__input.position = unread;
 			return 0;
 		}
+		// The next size up at least, and what it held at most in its last
+		// burst, as output takes (see __growOutput).
 		var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
-		var storage:Null<haxe.io.BytesData> = pool.take(needed > capacity ? needed : capacity + 1);
+		var storage:Null<haxe.io.BytesData> = pool.takeFor(needed > capacity ? needed : capacity + 1, __inputHint);
 		if (storage == null) {
 			// Past the largest size the pool keeps: grown as it would be without one.
 			return readFrom;
 		}
-		pool.give(data.__adoptStorage(storage, readFrom));
+		pool.giveGrown(data.__adoptStorage(storage, readFrom));
 		data.position = data.length;
 		return 0;
 	}
@@ -2191,6 +2272,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			@:privateAccess __cbInstance.__socketRegistry.unwatchQuiet(this);
 		}
 		#end
+		#if ((cpp || jvm) && !macro)
+		if (__cbInstance != null) {
+			__storageBackOnClose();
+		}
+		#end
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
@@ -2378,6 +2464,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// 64 KB of the pool's for this one's, as a buffer keeps while busy.
 				if (__cbInstance != null) {
 					var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+					var held:Int = __output.length;
+					__outputHint = held > __outputPeak ? held : __outputPeak;
+					__outputPeak = 0;
 					__output.clear();
 					pool.give((__output : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY), 0));
 				} else {
@@ -2402,6 +2491,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// the jvm, copied into a new buffer elsewhere.
 				#if ((cpp || jvm) && !macro)
 				var data:ByteArrayData = __output;
+				if (data.length > __outputPeak) {
+					__outputPeak = data.length;
+				}
 				data.blit(0, data, __outputSent, remaining);
 				__output.length = remaining;
 				__output.position = remaining;

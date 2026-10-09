@@ -233,6 +233,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * a write that could not finish joins.
 	 */
 	private var __pendingOutput:ByteArray;
+	#if ((cpp || jvm) && !macro)
+	// The most the input and what waits to be sent have held since each last
+	// emptied, and the most each held in the last burst that took it past
+	// `KEEP`: the size its next such burst takes from the pool at once, as
+	// `Socket`'s.
+	private var __inputPeak:Int = 0;
+	private var __inputHint:Int = 0;
+	private var __pendingPeak:Int = 0;
+	private var __pendingHint:Int = 0;
+	#end
 
 	/**
 	 * Maximum bytes allowed to accumulate in `__pendingOutput`, or `0` for
@@ -1182,22 +1192,45 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		Room in what waits to be sent for `count` more bytes, from storage the
-		runtime keeps (`StoragePool`) once that is past `KEEP`, the storage it
-		had given back; natively and on the jvm. See `Socket.__makeOutputRoom`.
+		runtime keeps (`StoragePool`) once that reaches `KEEP`, what has been
+		sent dropped from its front as it grows; natively and on the jvm. See
+		`Socket.__growOutput`.
 	**/
 	private inline function __pendingRoom(count:Int):Void {
 		#if ((cpp || jvm) && !macro)
 		var data:ByteArrayData = __pendingOutput;
 		var needed:Int = data.position + count;
-		if (needed > @:privateAccess data.__length && needed > KEEP && __runtime != null) {
-			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
-			var storage:Null<haxe.io.BytesData> = pool.take(needed);
-			if (storage != null) {
-				pool.give(data.__adoptStorage(storage, 0));
-			}
+		if (needed > @:privateAccess data.__length && needed >= KEEP && __runtime != null) {
+			__growPending(count);
 		}
 		#end
 	}
+
+	#if ((cpp || jvm) && !macro)
+	private function __growPending(count:Int):Void {
+		var data:ByteArrayData = __pendingOutput;
+		var sent:Int = __pendingSent;
+		var waiting:Int = data.length - sent;
+		var capacity:Int = @:privateAccess data.__length;
+		var needed:Int = waiting + count;
+		if (data.length > __pendingPeak) {
+			__pendingPeak = data.length;
+		}
+		if (sent > 0 && needed <= capacity - (capacity >> 2)) {
+			data.blit(0, data, sent, waiting);
+			__pendingOutput.length = waiting;
+			__pendingOutput.position = waiting;
+			__pendingSent = 0;
+			return;
+		}
+		var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
+		var storage:Null<haxe.io.BytesData> = pool.takeFor(needed > capacity ? needed : capacity + 1, __pendingHint);
+		if (storage != null) {
+			pool.giveGrown(data.__adoptStorage(storage, sent));
+			__pendingSent = 0;
+		}
+	}
+	#end
 
 	/**
 		What waits to be sent has all gone: as `__emptied`, but natively and
@@ -1205,8 +1238,36 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		KB of the pool's is kept for the next burst, as `Socket` does.
 	**/
 	private inline function __emptiedPending():Void {
+		#if ((cpp || jvm) && !macro)
+		__pendingHint = __hintFor(__pendingOutput, __pendingPeak, __pendingHint);
+		__pendingPeak = 0;
+		#end
 		__emptiedToPool(__pendingOutput);
 	}
+
+	/** The input has all been read: as `__emptiedPending`. **/
+	private inline function __emptiedInput():Void {
+		#if ((cpp || jvm) && !macro)
+		__inputHint = __hintFor(__input, __inputPeak, __inputHint);
+		__inputPeak = 0;
+		#end
+		__emptiedToPool(__input);
+	}
+
+	#if ((cpp || jvm) && !macro)
+	/**
+		What a buffer about to empty held at most, `peak` before it last moved
+		down, if its storage is past `KEEP` and so goes back to the pool; the
+		hint it had (`last`) if not, so small traffic between bursts leaves it.
+	**/
+	private static inline function __hintFor(buffer:ByteArray, peak:Int, last:Int):Int {
+		var data:ByteArrayData = buffer;
+		if (@:privateAccess data.__length <= KEEP) {
+			return last;
+		}
+		return data.length > peak ? data.length : peak;
+	}
+	#end
 
 	/**
 		As `__emptied`, but natively and on the jvm storage past `KEEP` goes
@@ -1228,7 +1289,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		Room at the end of the input for `count` more bytes, as
-		`Socket.__inputRoomFor` makes it: past `KEEP`, a full input moves
+		`Socket.__inputRoomFor` makes it: from `KEEP` up, a full input moves
 		what is unread down in place if that leaves a quarter of its storage
 		spare, and otherwise takes storage of the next size up from the
 		runtime's pool, what is unread carried to its front; natively and on
@@ -1237,7 +1298,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	private inline function __inputRoom(count:Int):Void {
 		#if ((cpp || jvm) && !macro)
 		var data:ByteArrayData = __input;
-		if (data.length + count > @:privateAccess data.__length && data.length - __inputPosition + count > KEEP && __runtime != null) {
+		if (data.length + count > @:privateAccess data.__length && data.length - __inputPosition + count >= KEEP && __runtime != null) {
 			__growInput(count);
 		}
 		#end
@@ -1252,18 +1313,23 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var unread:Int = data.length - from;
 		var capacity:Int = @:privateAccess data.__length;
 		var needed:Int = unread + count;
+		if (data.length > __inputPeak) {
+			__inputPeak = data.length;
+		}
 		if (from > 0 && needed <= capacity - (capacity >> 2)) {
 			data.blit(0, data, from, unread);
 			__input.length = unread;
 		} else {
+			// The next size up at least, and what it held at most in its last
+			// burst, as `Socket.__growOutput` takes.
 			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
-			var storage:Null<haxe.io.BytesData> = pool.take(needed > capacity ? needed : capacity + 1);
+			var storage:Null<haxe.io.BytesData> = pool.takeFor(needed > capacity ? needed : capacity + 1, __inputHint);
 			if (storage == null) {
 				// Past the largest size the pool keeps: grown as it would be
 				// without one.
 				return;
 			}
-			pool.give(data.__adoptStorage(storage, from));
+			pool.giveGrown(data.__adoptStorage(storage, from));
 		}
 		__input.position = __input.length;
 		__inputPosition = 0;
@@ -1502,6 +1568,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// ranges overlap, and Java's arraycopy is defined for them, so a
 			// peer reading behind a backlog makes no new buffer each time.
 			var data:ByteArrayData = __pendingOutput;
+			if (data.length > __pendingPeak) {
+				__pendingPeak = data.length;
+			}
 			data.blit(0, data, __pendingSent, remaining);
 			__pendingOutput.length = remaining;
 			__pendingOutput.position = remaining;
@@ -2298,7 +2367,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	private function __validateInputPosition():Void {
 		if (__input.bytesAvailable <= 0) {
-			__emptiedToPool(__input);
+			__emptiedInput();
 			__inputPosition = 0;
 			return;
 		}
@@ -2402,7 +2471,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		var remaining:Int = __input.length - consumed;
 		if (remaining <= 0) {
-			__emptiedToPool(__input);
+			__emptiedInput();
 			__inputPosition = 0;
 			return;
 		}
@@ -2411,6 +2480,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
+		#if ((cpp || jvm) && !macro)
+		if (__input.length > __inputPeak) {
+			__inputPeak = __input.length;
+		}
+		#end
 		var raw:Bytes = __input;
 		raw.blit(0, raw, consumed, remaining);
 		__input.length = remaining;
@@ -2505,14 +2579,27 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	#if ((cpp || jvm) && !macro)
 	/** The session's message buffer, handed out and back: its storage past `KEEP` to the runtime's pool. **/
-	private function __messageToPool(message:ByteArray):Void {
-		var data:ByteArrayData = message;
-		if (@:privateAccess data.__length > KEEP && __runtime != null) {
+	private inline function __messageToPool(message:ByteArray):Void {
+		__letGoToPool(message);
+	}
+
+	/**
+		Empties `buffer` and gives its storage past `KEEP` back to the runtime's
+		pool, keeping none: for a message handed out, and a session's buffers
+		as it closes.
+	**/
+	private function __letGoToPool(buffer:Null<ByteArray>):Void {
+		if (buffer == null || __runtime == null) {
+			return;
+		}
+		var data:ByteArrayData = buffer;
+		if (@:privateAccess data.__length > KEEP) {
 			var nothing:Null<Bytes> = __nothing;
 			if (nothing == null) {
 				nothing = __nothing = Bytes.alloc(0);
 			}
-			message.length = 0;
+			buffer.length = 0;
+			buffer.position = 0;
 			@:privateAccess __runtime.__storagePool().give(data.__adoptStorage(nothing.getData(), 0));
 		}
 	}
@@ -3379,6 +3466,15 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				__socket.close();
 				#end
 			} catch (_:Dynamic) {}
+
+			#if ((cpp || jvm) && !macro)
+			// Storage past `KEEP` back to the runtime's pool: nothing more is
+			// sent, and nothing more read is handed out.
+			__letGoToPool(__pendingOutput);
+			__pendingSent = 0;
+			__letGoToPool(__input);
+			__inputPosition = 0;
+			#end
 		}
 
 		__connected = false;

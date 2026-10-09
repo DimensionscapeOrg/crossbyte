@@ -24,9 +24,15 @@ import haxe.Timer;
 	  bytes have gone. Reports the output storage at its largest, the bytes
 	  allocated per megabyte delivered, and CPU and wall per megabyte.
 
+	`mode=slow` and `mode=ws` also report what the runtime's storage pool
+	holds at the end and, with `quiet` given, every 3 s through that many
+	seconds after it.
+
 	Arguments: mode (broadcast), connections (2000), size (1024), bursts (3),
 	quiet (12), steady (60); for slow: backlog (8388608), size (65536), read
-	(16384), total (268435456); label.
+	(16384), total (268435456), pace (ms from one backlog drained to the
+	next, 0: at once) and seconds (run this long rather than to `total`);
+	label.
 **/
 @:access(crossbyte.net.Socket)
 class TcpOutput extends HostApplication {
@@ -88,6 +94,35 @@ class TcpOutput extends HostApplication {
 			cpp.vm.Gc.enable(false);
 		}
 		#end
+	}
+
+	static function poolHeld():Float {
+		#if ((cpp || jvm) && !macro)
+		var pool = @:privateAccess crossbyte.core.CrossByte.current().__storage;
+		return pool == null ? 0 : pool.held();
+		#else
+		return 0;
+		#end
+	}
+
+	/** What the runtime's storage pool holds every 3 s through `quiet` seconds of pumping, in KB, or "-". **/
+	function quietTrace():String {
+		var quiet = Std.parseFloat(opt("quiet", "0"));
+		if (quiet <= 0) {
+			return "-";
+		}
+		var trace = [];
+		var start = Timer.stamp();
+		var next = 3.0;
+		while (Timer.stamp() - start < quiet) {
+			pump();
+			crossbyte.sys.System.sleep(1 / 60);
+			if (Timer.stamp() - start >= next) {
+				trace.push(Std.string(kb(poolHeld())));
+				next += 3;
+			}
+		}
+		return trace.join("/");
 	}
 
 	/** Output storage the server's connections hold. **/
@@ -205,6 +240,12 @@ class TcpOutput extends HostApplication {
 		var size = optInt("size", 65536);
 		var read = optInt("read", 16384);
 		var total = Std.parseFloat(opt("total", "268435456"));
+		var pace = Std.parseFloat(opt("pace", "0")) / 1000;
+		var seconds = Std.parseFloat(opt("seconds", "0"));
+		if (seconds > 0) {
+			total = 1e15;
+		}
+		var nextBurst = 0.0;
 		var message = new ByteArray();
 		message.length = size;
 
@@ -234,10 +275,16 @@ class TcpOutput extends HostApplication {
 		var l0 = large();
 		var c0 = Sys.cpuTime();
 		var t0 = Timer.stamp();
-		while (got < total) {
-			while (sent < total && s.outputBufferLength < backlog) {
-				s.writeBytes(message, 0, size);
-				sent += size;
+		while (got < total && (seconds <= 0 || Timer.stamp() - t0 < seconds)) {
+			if (pace > 0 && s.outputBufferLength == 0 && got >= sent && Timer.stamp() < nextBurst) {
+				// Paced: nothing to do until the next burst is due.
+				crossbyte.sys.System.sleep(0.001);
+			} else if (pace <= 0 || (s.outputBufferLength == 0 && got >= sent)) {
+				nextBurst = Timer.stamp() + pace;
+				while (sent < total && s.outputBufferLength < backlog) {
+					s.writeBytes(message, 0, size);
+					sent += size;
+				}
 			}
 			pump();
 			if (s.__output != lastOutput) {
@@ -258,9 +305,12 @@ class TcpOutput extends HostApplication {
 		var m1 = reserved();
 		var l1 = large();
 		gcOff(false);
-		var mb = total / 1048576;
+		var mb = got / 1048576;
+		var held = poolHeld();
+		var quiet = quietTrace();
 		Sys.println('TCPOUT label=${opt("label", "")} mode=slow backlog=$backlog size=$size read=$read total=${Math.round(mb)}MB '
-			+ 'peak=${kb(peak)}KB replaced=$replaced alloc/MB=${kb((m1 - m0) / mb)}KB large/MB=${kb((l1 - l0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms');
+			+ 'peak=${kb(peak)}KB replaced=$replaced alloc/MB=${kb((m1 - m0) / mb)}KB large/MB=${kb((l1 - l0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms '
+			+ 'pool=${kb(held)}KB quiet=$quiet');
 		reader.close();
 	}
 
@@ -325,8 +375,11 @@ class TcpOutput extends HostApplication {
 		var l1 = large();
 		gcOff(false);
 		var mb = total / 1048576;
+		var held = poolHeld();
+		var quiet = quietTrace();
 		Sys.println('TCPOUT label=${opt("label", "")} mode=ws size=$size burst=$burst total=${Math.round(mb)}MB '
-			+ 'alloc/MB=${kb((m1 - m0) / mb)}KB large/MB=${kb((l1 - l0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms');
+			+ 'alloc/MB=${kb((m1 - m0) / mb)}KB large/MB=${kb((l1 - l0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms '
+			+ 'pool=${kb(held)}KB quiet=$quiet');
 		reader.close();
 	}
 

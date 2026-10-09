@@ -21,6 +21,9 @@ import haxe.io.Bytes;
 	  until the application has read everything, and fills it again: a
 	  receiver behind a slow handler, its backlog drained now and then.
 	  `drain=0` never lets it drain: the backlog stays.
+	- `mode=fresh`: as `bulk`, but each burst on a connection of its own,
+	  connected for it and closed after it, as a server sending each client
+	  one response.
 	- `mode=ws`: a ServerWebSocket session receives `size`-byte binary
 	  messages (1 MB) from a client that upgraded by hand, one a pass, a
 	  MESSAGE listener taking each.
@@ -28,10 +31,13 @@ import haxe.io.Bytes;
 	Reports the input storage at its largest, the bytes the process
 	allocated per megabyte received (collection off, the growth of what
 	the collector reserved), CPU and wall per megabyte, and what the
-	runtime's storage pool holds after `quiet` seconds (0: not measured).
+	runtime's storage pool holds at the end and every 3 s through `quiet`
+	seconds after it (0: not measured).
 
 	Arguments: mode (bulk), burst, backlog, read, size, total (128 MB),
-	rcvbuf (4 MB, the receiving socket's system buffer), quiet, label.
+	rcvbuf (4 MB, the receiving socket's system buffer), quiet, label; for
+	bulk, pace (ms between bursts, 0) and seconds (run this long rather
+	than to `total`).
 **/
 @:access(crossbyte.net.Socket)
 class TcpInput extends HostApplication {
@@ -106,6 +112,15 @@ class TcpInput extends HostApplication {
 		return buffer == null ? 0 : @:privateAccess (buffer : ByteArrayData).__length;
 	}
 
+	static function made():Int {
+		#if ((cpp || jvm) && !macro)
+		var pool = @:privateAccess CrossByte.current().__storage;
+		return pool == null ? 0 : pool.made;
+		#else
+		return 0;
+		#end
+	}
+
 	static function poolHeld():Float {
 		#if ((cpp || jvm) && !macro)
 		var pool = @:privateAccess CrossByte.current().__storage;
@@ -119,6 +134,8 @@ class TcpInput extends HostApplication {
 		var mode = opt("mode", "bulk");
 		if (mode == "ws") {
 			webSocket();
+		} else if (mode == "fresh") {
+			fresh();
 		} else {
 			tcp(mode);
 		}
@@ -143,6 +160,12 @@ class TcpInput extends HostApplication {
 		var read = optInt("read", 65536);
 		var drain = optInt("drain", 1) != 0;
 		var total = Std.parseFloat(opt("total", "134217728"));
+		var pace = Std.parseFloat(opt("pace", "0")) / 1000;
+		var seconds = Std.parseFloat(opt("seconds", "0"));
+		if (seconds > 0) {
+			total = 1e15;
+		}
+		var nextBurst = 0.0;
 
 		var server = new ServerSocket();
 		server.receiveBufferSize = optInt("rcvbuf", 4 * 1024 * 1024);
@@ -192,9 +215,13 @@ class TcpInput extends HostApplication {
 		var t0 = Timer.stamp();
 		var filling = true;
 		var at = 0;
-		while (got < total) {
+		while (got < total && (seconds <= 0 || Timer.stamp() - t0 < seconds)) {
 			if (mode == "bulk") {
-				if (sent - got <= 0 && sent < total) {
+				if (sent - got <= 0 && Timer.stamp() < nextBurst) {
+					// Paced: nothing to do until the next burst is due.
+					crossbyte.sys.System.sleep(0.001);
+				} else if (sent - got <= 0 && sent < total) {
+					nextBurst = Timer.stamp() + pace;
 					// The next burst, once the last has all been read.
 					var left = burst;
 					while (left > 0) {
@@ -257,26 +284,99 @@ class TcpInput extends HostApplication {
 		var c1 = cpu();
 		var m1 = reserved();
 		gcOff(false);
-		var mb = total / 1048576;
-		var quiet = quietHeld();
+		var mb = got / 1048576;
+		var held = poolHeld();
+		var quiet = quietTrace();
 		Sys.println('TCPIN label=${opt("label", "")} mode=$mode burst=$burst backlog=$backlog read=$read drain=$drain total=${Math.round(mb)}MB '
 			+ 'peak=${kb(peak)}KB events=$events cycles=$cycles storages=$grown alloc/MB=${kb((m1 - m0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms '
-			+ 'pool=${kb(poolHeld())}KB quiet=${kb(quiet)}KB');
+			+ 'pool=${kb(held)}KB quiet=$quiet');
 		writer.close();
 	}
 
-	/** What the pool holds after `quiet` seconds of pumping, or -1. **/
-	function quietHeld():Float {
+	/** What the pool holds every 3 s through `quiet` seconds of pumping, in KB, or "-". **/
+	function quietTrace():String {
 		var quiet = Std.parseFloat(opt("quiet", "0"));
 		if (quiet <= 0) {
-			return -1024;
+			return "-";
 		}
-		var until = Timer.stamp() + quiet;
-		while (Timer.stamp() < until) {
+		var trace = [];
+		var start = Timer.stamp();
+		var next = 3.0;
+		while (Timer.stamp() - start < quiet) {
 			pump();
 			crossbyte.sys.System.sleep(1 / 60);
+			if (Timer.stamp() - start >= next) {
+				trace.push(Std.string(kb(poolHeld())));
+				next += 3;
+			}
 		}
-		return poolHeld();
+		return trace.join("/");
+	}
+
+	function fresh():Void {
+		var burst = optInt("burst", 1024 * 1024);
+		var total = Std.parseFloat(opt("total", "134217728"));
+		var server = new ServerSocket();
+		server.receiveBufferSize = optInt("rcvbuf", 4 * 1024 * 1024);
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> accepted.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen(16);
+		last = Timer.stamp();
+		var chunk = Bytes.alloc(1024 * 1024);
+		var sink = new ByteArray();
+		sink.length = 32 * 1024 * 1024;
+		var got = 0.0;
+		var connections = 0;
+		gcOff(true);
+		var m0 = reserved();
+		var c0 = cpu();
+		var t0 = Timer.stamp();
+		while (got < total) {
+			var writer = new sys.net.Socket();
+			writer.setFastSend(true);
+			writer.connect(new sys.net.Host("127.0.0.1"), server.localPort);
+			writer.setBlocking(false);
+			var deadline = Timer.stamp() + 10;
+			while (accepted.length < 1 && Timer.stamp() < deadline) {
+				pump();
+			}
+			var s = accepted.pop();
+			if (s == null) {
+				Sys.println("never connected");
+				Sys.exit(1);
+			}
+			var want = got + burst;
+			s.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
+				var n = s.bytesAvailable;
+				s.readBytes(sink, 0, n);
+				got += n;
+			});
+			var left = burst;
+			while (left > 0) {
+				var n = left < chunk.length ? left : chunk.length;
+				var end = offer(writer, chunk, 0, n);
+				left -= end;
+				if (end < n) {
+					pump();
+				}
+			}
+			while (got < want) {
+				pump();
+			}
+			writer.close();
+			s.close();
+			connections++;
+		}
+		var t1 = Timer.stamp();
+		var c1 = cpu();
+		var m1 = reserved();
+		gcOff(false);
+		var mb = got / 1048576;
+		var held = poolHeld();
+		var quiet = quietTrace();
+		Sys.println('TCPIN label=${opt("label", "")} mode=fresh burst=$burst connections=$connections total=${Math.round(mb)}MB made=${made()} '
+			+ 'alloc/MB=${kb((m1 - m0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms '
+			+ 'pool=${kb(held)}KB quiet=$quiet');
 	}
 
 	function webSocket():Void {
@@ -368,10 +468,11 @@ class TcpInput extends HostApplication {
 		var m1 = reserved();
 		gcOff(false);
 		var mb = total / 1048576;
-		var quiet = quietHeld();
+		var held = poolHeld();
+		var quiet = quietTrace();
 		Sys.println('TCPIN label=${opt("label", "")} mode=ws size=$size total=${Math.round(mb)}MB messages=$messages '
 			+ 'peak=${kb(peak)}KB alloc/MB=${kb((m1 - m0) / mb)}KB cpu/MB=${ms((c1 - c0) / mb)}ms wall/MB=${ms((t1 - t0) / mb)}ms '
-			+ 'pool=${kb(poolHeld())}KB quiet=${kb(quiet)}KB');
+			+ 'pool=${kb(held)}KB quiet=$quiet');
 		writer.close();
 	}
 

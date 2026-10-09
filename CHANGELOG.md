@@ -546,6 +546,14 @@ says how.
   A socket moves what it has not read down only once a quarter of its
   input has been read: an application reading 64 KB a pass behind an
   8 MB backlog spent 4.5 ms of CPU a megabyte moving it, and spends 0.37.
+- The pool's sizes are a quarter apart, four to each doubling from 64 KB
+  to 32 MB, where they were powers of two, so a buffer holds at most a
+  quarter more than it needs: a 9 MB backlog 10 MB where it held 16,
+  4.5 MB 5 MB where it held 8. A buffer takes at once the size its last
+  burst needed rather than growing through the sizes below it, and a
+  connection that closes gives its storage back. An output that grows
+  while part of it has been sent lets go of the sent part first, so a
+  slow reader's output holds its backlog rather than up to twice it.
 - The socket read buffer is 64 KB, shared per thread, and arrivals are
   appended to the input rather than rebuilding it, so a reader that falls
   behind no longer costs the square of its backlog. Draining an output
