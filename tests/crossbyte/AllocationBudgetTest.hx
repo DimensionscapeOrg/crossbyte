@@ -25,6 +25,7 @@ import crossbyte.rpc.RPCBoolReceiver;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc.RPCFailure;
 import crossbyte.rpc.RPCFloatReceiver;
+import crossbyte.rpc.RPCInt64Receiver;
 import crossbyte.rpc.RPCIntReceiver;
 import crossbyte.rpc.RPCStringReceiver;
 import crossbyte.rpc.RPCHandler;
@@ -128,6 +129,7 @@ class AllocationBudgetTest extends utest.Test {
 	// 24 B for each of the two sends, as the one-way call's.
 	private static final RPC_INT_RECEIVER = new Budget("an RPC call answered through an RPCIntReceiver", "call", [0, 0, 48], [8, 8, 128]);
 	private static final RPC_FLOAT_RECEIVER = new Budget("an RPC call answered through an RPCFloatReceiver", "call", [0, 0, 48], [8, 8, 128]);
+	private static final RPC_INT64_RECEIVER = new Budget("an RPC call answered through an RPCInt64Receiver", "call", [0, 0, 48], [8, 8, 128]);
 	private static final RPC_BOOL_RECEIVER = new Budget("an RPC call answered through an RPCBoolReceiver", "call", [0, 0, 48], [8, 8, 128]);
 	// The answer's own string, 12 characters, and nothing else.
 	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 112], [96, 96, 208]);
@@ -788,6 +790,21 @@ class AllocationBudgetTest extends utest.Test {
 		Assert.isTrue(receiver.float > 1);
 	}
 
+	public function testAnRpcCallAnsweredThroughAnInt64Receiver():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var op = () -> {
+			var told:Int = receiver.told;
+			fixture.commands.countThen(receiver.int64, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_INT64_RECEIVER, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(receiver.int64 > haxe.Int64.make(1, 0));
+	}
+
 	public function testAnRpcCallAnsweredThroughABoolReceiver():Void {
 		var fixture = new BudgetRpc();
 		var receiver = fixture.receiver;
@@ -1396,6 +1413,8 @@ private class BudgetCommands extends RPCCommands {
 	@:rpc public function flip(on:Bool):RPCResponse<Bool> {}
 
 	@:rpc public function greet(id:Int):RPCResponse<String> {}
+
+	@:rpc public function count(n:haxe.Int64):RPCResponse<haxe.Int64> {}
 }
 
 /** A pair of sessions over the in-memory pair, and a receiver for their answers. **/
@@ -1414,12 +1433,14 @@ private class BudgetRpc {
 }
 
 /** Keeps the last answer of each kind, and counts them. **/
-private class BudgetReceiver implements RPCIntReceiver implements RPCFloatReceiver implements RPCBoolReceiver implements RPCStringReceiver {
+private class BudgetReceiver implements RPCIntReceiver implements RPCFloatReceiver implements RPCBoolReceiver implements RPCStringReceiver
+		implements RPCInt64Receiver {
 	public var told:Int = 0;
 	public var int:Int = 0;
 	public var float:Float = 1.0;
 	public var bool:Bool = false;
 	public var string:String = null;
+	public var int64:haxe.Int64 = haxe.Int64.make(1, 0);
 
 	public function new() {}
 
@@ -1440,6 +1461,11 @@ private class BudgetReceiver implements RPCIntReceiver implements RPCFloatReceiv
 
 	public function onString(call:Int, value:String):Void {
 		string = value;
+		told++;
+	}
+
+	public function onInt64(call:Int, value:haxe.Int64):Void {
+		int64 = value;
 		told++;
 	}
 
@@ -1471,6 +1497,10 @@ private class BudgetHandler extends RPCHandler {
 
 	@:rpc public function greet(id:Int):String {
 		return "hello, world";
+	}
+
+	@:rpc public function count(n:haxe.Int64):haxe.Int64 {
+		return n + 1;
 	}
 }
 #end

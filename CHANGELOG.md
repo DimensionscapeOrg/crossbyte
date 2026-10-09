@@ -349,7 +349,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 
 - Compiled-lane types: `Array<T>`, structures (a class implementing
   `crossbyte.rpc.RPCStruct`, or an anonymous structure), enums with or
-  without arguments, `Null<T>` of each, and compact numbers
+  without arguments, `Null<T>` of each, `haxe.Int64`, and compact numbers
   (`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`). An
   abstract over a carried type is carried as that type. Each is generated
   at compile time with no reflection; a type the lane cannot carry fails
@@ -364,9 +364,10 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - Calls that allocate nothing: each request method has a twin ending in
   `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
   instead of returning an `RPCResponse`: `RPCIntReceiver`,
-  `RPCFloatReceiver`, `RPCBoolReceiver`, `RPCStringReceiver` or
-  `RPCValueReceiver<T>`, with failures as an `RPCFailure`. A number or
-  `Bool` answer allocates nothing at either end, natively or on the JVM.
+  `RPCFloatReceiver`, `RPCBoolReceiver`, `RPCStringReceiver`,
+  `RPCInt64Receiver` or `RPCValueReceiver<T>`, with failures as an
+  `RPCFailure`. A number (an `Int64` among them) or `Bool` answer
+  allocates nothing at either end, natively or on the JVM.
   `RPCSession.cancelCall(id)` stops waiting for a call.
 - `RPCSession.dial(uri, ?commands, ?handler)`: a client that redials, from
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and

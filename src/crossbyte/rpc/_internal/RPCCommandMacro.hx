@@ -415,6 +415,7 @@ class RPCCommandMacro {
 		}
 		return switch (kind.token) {
 			case "i32" | "i8" | "u8" | "i16" | "u16": RInt;
+			case "i64": RInt64;
 			case "f64" | "f32": RFloat;
 			case "bool": RBool;
 			case "utf8": RString;
@@ -426,6 +427,7 @@ class RPCCommandMacro {
 	private static function receiverType(ct:ComplexType, pos:Position):ComplexType {
 		return switch (receiverOf(ct, pos)) {
 			case RInt: macro :crossbyte.rpc.RPCIntReceiver;
+			case RInt64: macro :crossbyte.rpc.RPCInt64Receiver;
 			case RFloat: macro :crossbyte.rpc.RPCFloatReceiver;
 			case RBool: macro :crossbyte.rpc.RPCBoolReceiver;
 			case RString: macro :crossbyte.rpc.RPCStringReceiver;
@@ -464,6 +466,7 @@ class RPCCommandMacro {
 		final argExprs:Array<Expr> = [macro __requestId].concat(args.map(a -> macro $i{a.name}));
 		final receiverDoc:String = switch (receiverOf(responseType, pos)) {
 			case RInt: "`onInt`";
+			case RInt64: "`onInt64`";
 			case RFloat: "`onFloat`";
 			case RBool: "`onBool`";
 			case RString: "`onString`";
@@ -549,6 +552,7 @@ class RPCCommandMacro {
 			final zero:Expr = zeroForType(type, method.pos);
 			final answer:Expr = switch (receiverOf(type, method.pos)) {
 				case RInt: macro this.__answerInt(op, requestId, (cast value : Int));
+				case RInt64: macro this.__answerInt64(op, requestId, (cast value : haxe.Int64));
 				case RFloat: macro this.__answerFloat(op, requestId, (cast value : Float));
 				case RBool: macro this.__answerBool(op, requestId, (cast value : Bool));
 				case RString: macro this.__answerString(op, requestId, (cast value : String));
@@ -710,6 +714,7 @@ class RPCCommandMacro {
 
 private enum ReceiverKind {
 	RInt;
+	RInt64;
 	RFloat;
 	RBool;
 	RString;

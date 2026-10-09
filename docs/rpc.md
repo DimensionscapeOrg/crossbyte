@@ -170,7 +170,8 @@ an answer that is a number is boxed into it. For a call made every frame, each r
 has a twin ending in `Then`, which hands the answer to a *receiver* instead.
 It makes nothing for the call, and an answer that is a number or a `Bool`
 arrives unboxed, so the call and its answer allocate nothing at either end,
-natively or on the JVM. A `String` or an object answer allocates only itself.
+natively or on the JVM, an `Int64` included (on other targets an `Int64` is
+an object). A `String` or an object answer allocates only itself.
 
 A receiver implements the interface for the type of the answer:
 
@@ -210,6 +211,7 @@ final call:Int = commands.joinThen("lobby", lobby);
 | `Float`, `Float32` | `RPCFloatReceiver` | `onFloat` |
 | `Bool` | `RPCBoolReceiver` | `onBool` |
 | `String` | `RPCStringReceiver` | `onString` |
+| `haxe.Int64` | `RPCInt64Receiver` | `onInt64` |
 | anything else, and `Null<T>` of anything | `RPCValueReceiver<T>` | `onValue` |
 
 An abstract over a number arrives as that number: an enum abstract over `Int`
@@ -243,6 +245,7 @@ on the wire:
 | Type | On the wire |
 |---|---|
 | `Int` | 4 bytes |
+| `haxe.Int64` | 8 bytes, the low word first |
 | `Float` | 8 bytes |
 | `Bool` | 1 byte |
 | `String` | a length, then UTF-8 |

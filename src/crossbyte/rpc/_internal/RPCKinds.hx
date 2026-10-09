@@ -146,6 +146,24 @@ class RPCKinds {
 		get: (data, at) -> macro crossbyte.rpc._internal.RPCBytes.getI32($data, $at)
 	};
 
+	/**
+		`haxe.Int64`: eight bytes, little-endian, the low word first. Natively
+		and on the jvm a value of its own, nothing allocated for it; elsewhere
+		`haxe.Int64` is an object, made as it is read.
+	**/
+	static final INT64:RPCKind = {
+		name: "Int64",
+		token: "i64",
+		size: 8,
+		roomOf: null,
+		zero: macro haxe.Int64.make(0, 0),
+		compound: false,
+		write: (frame, value) -> macro $frame.putInt64($value),
+		read: (input, end) -> macro crossbyte.rpc._internal.RPCWire.readI64($input),
+		put: (data, at, value) -> macro crossbyte.rpc._internal.RPCBytes.setI64($data, $at, $value),
+		get: (data, at) -> macro crossbyte.rpc._internal.RPCBytes.getI64($data, $at)
+	};
+
 	static final BOOL:RPCKind = {
 		name: "Bool",
 		token: "bool",
@@ -455,6 +473,7 @@ class RPCKinds {
 					case "crossbyte.rpc.Int16": INT16;
 					case "crossbyte.rpc.UInt16": UINT16;
 					case "Null" if (params.length == 1): ofType(params[0], pos);
+					case "haxe.Int64": INT64;
 					// An Int's bits, whichever way a target holds it: on
 					// HashLink it is a core type of its own.
 					case "UInt": abstractKind(INT, "UInt", macro :UInt, macro :Int);
