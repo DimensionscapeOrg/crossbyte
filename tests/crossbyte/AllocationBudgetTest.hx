@@ -144,8 +144,8 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_TCP_CALL = new Budget("an RPC call over TCP and its answer", "call", [152, 152, 128], [256, 256, 224]);
 	// The same over reliable UDP. A message arriving was copied for the
 	// connection's application, 336 B a call natively, until a session
-	// reading its frames borrowed it instead. Measured on 2026-10-09; Linux
-	// taken as Windows until measured.
+	// reading its frames borrowed it instead. Measured on 2026-10-09 on
+	// Windows, Linux (WSL) and the jvm.
 	private static final RPC_RUDP_RECEIVER = new Budget("an RPC call over reliable UDP answered through an RPCIntReceiver", "call", [0, 0, 0], [8, 8, 8]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
