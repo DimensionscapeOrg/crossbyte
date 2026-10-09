@@ -70,6 +70,10 @@ class RPCCommandMacro {
 				}, metaName, method.args, wrapperReturnType, method.responseType, method.op);
 				newFields.push(wrapper);
 				newFields.push(createMetaFunction(metaName, method.name, method.args, method.pos, method.op));
+				if (method.responseType != null && !isVoid(method.responseType)) {
+					requireReceiverNameFree(fields, contractMethods.map(m -> m.name), ancestors, method.name, method.pos);
+					newFields.push(createReceiverFunction(method.name, metaName, method.args, method.responseType, method.op, method.pos));
+				}
 
 				if (method.responseType != null) {
 					responseMethods.push({
@@ -101,6 +105,10 @@ class RPCCommandMacro {
 
 						field.kind = createWrapperFunction(field, metaName, method.args, retType, responseType, opCode).kind;
 						newFields.push(createMetaFunction(metaName, field.name, method.args, field.pos, opCode));
+						if (responseType != null) {
+							requireReceiverNameFree(fields, [for (other in manualRpcFields) other.name], ancestors, field.name, field.pos);
+							newFields.push(createReceiverFunction(field.name, metaName, method.args, responseType, opCode, field.pos));
+						}
 
 						if (responseType != null) {
 							responseMethods.push({
@@ -391,6 +399,98 @@ class RPCCommandMacro {
 		};
 	}
 
+	/**
+		Which receiver takes an answer of type `ct`: one for its number,
+		`Bool` or `String`, which takes it unboxed (an abstract over one of
+		them as what it abstracts), or `RPCValueReceiver<T>` for anything
+		else, and for a `Null<T>` of anything, which is an object already.
+	**/
+	private static function receiverOf(ct:ComplexType, pos:Position):ReceiverKind {
+		if (RPCContractMacroTools.isNullable(ct, pos)) {
+			return RValue;
+		}
+		final kind = RPCKinds.of(RPCKinds.unwrapNull(ct), pos);
+		if (kind == null) {
+			return RValue;
+		}
+		return switch (kind.token) {
+			case "i32" | "i8" | "u8" | "i16" | "u16": RInt;
+			case "f64" | "f32": RFloat;
+			case "bool": RBool;
+			case "utf8": RString;
+			case _: RValue;
+		}
+	}
+
+	/** The receiver interface for `ct`, written out in full. **/
+	private static function receiverType(ct:ComplexType, pos:Position):ComplexType {
+		return switch (receiverOf(ct, pos)) {
+			case RInt: macro :crossbyte.rpc.RPCIntReceiver;
+			case RFloat: macro :crossbyte.rpc.RPCFloatReceiver;
+			case RBool: macro :crossbyte.rpc.RPCBoolReceiver;
+			case RString: macro :crossbyte.rpc.RPCStringReceiver;
+			case RValue: TPath({pack: ["crossbyte", "rpc"], name: "RPCValueReceiver", params: [TPType(ct)]});
+		}
+	}
+
+	/** The suffix of the method that makes a request with a receiver: `join` and `joinThen`. **/
+	static inline final RECEIVER_SUFFIX:String = "Then";
+
+	/**
+		Refuses a build in which `method`'s receiver stub would take a name
+		something else has: a method of this class, of the contract or
+		methods it is built from, or of a commands class it extends.
+	**/
+	private static function requireReceiverNameFree(fields:Array<Field>, methods:Array<String>, ancestors:Array<ClassType>, method:String,
+			pos:Position):Void {
+		final name:String = method + RECEIVER_SUFFIX;
+		if (hasFieldNamed(fields, name) || methods.indexOf(name) >= 0 || ancestorField(ancestors, name) != null) {
+			Context.error("RPC method '" + method + "' makes a method '" + name
+				+ "', which calls it with a receiver, but something else is named that; rename one of them.", pos);
+		}
+	}
+
+	/**
+		The stub that makes the request `name` and has its answer handed to
+		a receiver: `joinThen(room, receiver)` beside `join(room)`. It frames
+		the call as `name` does, and waits in one of the calls the commands
+		keep, so nothing is allocated for it; it returns the call's id, which
+		the receiver is told with the answer.
+	**/
+	private static function createReceiverFunction(name:String, metaName:String, args:Array<FunctionArg>, responseType:ComplexType, opCode:Int,
+			pos:Position):Field {
+		final receiverName:String = Lambda.exists(args, a -> a.name == "receiver") ? "answerReceiver" : "receiver";
+		final receiver:Expr = macro $i{receiverName};
+		final argExprs:Array<Expr> = [macro __requestId].concat(args.map(a -> macro $i{a.name}));
+		final receiverDoc:String = switch (receiverOf(responseType, pos)) {
+			case RInt: "`onInt`";
+			case RFloat: "`onFloat`";
+			case RBool: "`onBool`";
+			case RString: "`onString`";
+			case RValue: "`onValue`";
+		};
+		return {
+			name: name + RECEIVER_SUFFIX,
+			doc: "Calls `" + name + "` and has its answer handed to `" + receiverName + "`, through " + receiverDoc
+				+ " or `onFailure`, rather than returning an `RPCResponse`: nothing is allocated for the call. Returns the call's id, which the receiver is told with the answer. See `crossbyte.rpc.RPCReceiver`.",
+			access: [APublic, AInline],
+			kind: FFun({
+				args: args.concat([{name: receiverName, type: receiverType(responseType, pos)}]),
+				ret: macro :Int,
+				expr: macro {
+					if ($receiver == null) {
+						throw crossbyte.rpc.RPCCommands.__noReceiver($v{name});
+					}
+					var __requestId:Int = this.__nextRequestId();
+					var __framed:crossbyte.rpc._internal.RPCFrame = $i{metaName}($a{argExprs});
+					this.__sendRequest(this.__createReceiverCall($v{opCode}, __requestId, $receiver), __framed);
+					return __requestId;
+				}
+			}),
+			pos: pos
+		};
+	}
+
 	private static function readerForType(ct:ComplexType, errPos:Position):Expr {
 		// On the type, as the handler's side decides it, and not on how
 		// `ct` is written: through a typedef, `Null<T>` read no presence byte.
@@ -428,6 +528,13 @@ class RPCCommandMacro {
 			var read = readerForType(method.responseType, method.pos);
 			final type:ComplexType = method.responseType;
 			final zero:Expr = zeroForType(type, method.pos);
+			final answer:Expr = switch (receiverOf(type, method.pos)) {
+				case RInt: macro this.__answerInt(op, requestId, (cast value : Int));
+				case RFloat: macro this.__answerFloat(op, requestId, (cast value : Float));
+				case RBool: macro this.__answerBool(op, requestId, (cast value : Bool));
+				case RString: macro this.__answerString(op, requestId, (cast value : String));
+				case RValue: macro this.__answerValue(op, requestId, value);
+			};
 			cases.push({
 				values: [macro $v{method.op}],
 				expr: macro {
@@ -445,7 +552,7 @@ class RPCCommandMacro {
 							this.__rejectUnreadableResponse(op, requestId, __error);
 							return;
 						}
-						this.__resolveResponse(op, requestId, value);
+						$answer;
 					}
 					return;
 				}
@@ -561,6 +668,14 @@ class RPCCommandMacro {
 		newFields.push(wrapper);
 		newFields.push(meta);
 	}
+}
+
+private enum ReceiverKind {
+	RInt;
+	RFloat;
+	RBool;
+	RString;
+	RValue;
 }
 
 private typedef ResponseMethod = {

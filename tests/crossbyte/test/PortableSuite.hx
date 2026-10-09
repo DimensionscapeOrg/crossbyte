@@ -316,6 +316,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCNullTypesTest());
 		runner.addCase(new crossbyte.rpc.RPCCallWriterTest());
 		runner.addCase(new crossbyte.rpc.RPCArgsTest());
+		runner.addCase(new crossbyte.rpc.RPCReceiverTest());
 		// A WebSocket's close reaching a NetConnection, which a page does not
 		// have; on Node it does.
 		#if !(js && !nodejs)

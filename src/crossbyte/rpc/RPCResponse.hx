@@ -6,6 +6,7 @@ import crossbyte.rpc._internal.RPCDeadlines;
 
 @:allow(crossbyte.rpc.RPCCommands)
 @:allow(crossbyte.rpc.RPCSession)
+@:allow(crossbyte.rpc._internal.RPCReceiverCall)
 @:access(crossbyte.rpc.RPCCommands)
 @:access(crossbyte.rpc.RPCSession)
 /**
@@ -29,10 +30,10 @@ class RPCResponse<T> extends Future<T> {
 	public static inline final ERROR:String = Future.ERROR;
 
 	/** Request identifier assigned by the originating `RPCCommands` instance. */
-	public final requestId:Int;
+	public var requestId(default, null):Int;
 
 	/** Operation code associated with the request. */
-	public final op:Int;
+	public var op(default, null):Int;
 
 	// Where the call waits for its answer, so a deadline can take it out:
 	// the commands that made it, or the session, for a runtime call. Set by
@@ -44,6 +45,10 @@ class RPCResponse<T> extends Future<T> {
 	// INVALID, its place in its session's queue of the deadlines its
 	// `callTimeout` gives (see RPCDeadlines).
 	@:noCompletion private var __deadline:Int = TimerHandle.INVALID;
+	// Whether this is one of the calls its commands keep for calls made with
+	// a receiver (RPCReceiverCall), never handed to anyone. Beside the
+	// deadline, where natively it takes no room of its own.
+	@:noCompletion private var __pooled:Bool = false;
 
 	// The responder bound now, which `respond` replaces, under the future's
 	// lock; ANSWERED once the outcome has been handed to one, after which

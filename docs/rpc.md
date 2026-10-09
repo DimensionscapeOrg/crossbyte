@@ -163,6 +163,78 @@ response.addEventListener(RPCResponse.ERROR, _ -> trace('failed: ${response.erro
 Answers arrive on the thread that runs the connection's runtime, like every
 other event of that connection.
 
+### Calls that allocate nothing
+
+Each request makes its `RPCResponse`, about 150 bytes, and an answer that is a
+number is boxed into it. For a call made every frame, each request method
+has a twin ending in `Then`, which hands the answer to a *receiver* instead.
+It makes nothing for the call, and an answer that is a number or a `Bool`
+arrives unboxed, so the call and its answer allocate nothing at either end,
+natively or on the JVM. A `String` or an object answer allocates only itself.
+
+A receiver implements the interface for the type of the answer:
+
+```haxe
+import crossbyte.rpc.RPCFailure;
+import crossbyte.rpc.RPCIntReceiver;
+
+class Lobby implements RPCIntReceiver {
+	public function new() {}
+
+	public function onInt(call:Int, count:Int):Void {
+		trace('joined, $count here');
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		switch (failure) {
+			case TimedOut:
+				trace("no answer in time");
+			case Refused(message):
+				trace('refused: $message');
+			case _:
+				trace('could not join: $failure');
+		}
+	}
+}
+```
+
+```haxe
+// Given commands:ChatCommands.
+var lobby = new Lobby();
+final call:Int = commands.joinThen("lobby", lobby);
+```
+
+| answer | receiver | told with |
+|---|---|---|
+| `Int`, `Int8`, `UInt8`, `Int16`, `UInt16`, `UInt` | `RPCIntReceiver` | `onInt` |
+| `Float`, `Float32` | `RPCFloatReceiver` | `onFloat` |
+| `Bool` | `RPCBoolReceiver` | `onBool` |
+| `String` | `RPCStringReceiver` | `onString` |
+| anything else, and `Null<T>` of anything | `RPCValueReceiver<T>` | `onValue` |
+
+An abstract over a number arrives as that number: an enum abstract over `Int`
+through `onInt`. One object can receive the answers of every method that
+answers with its type, and a class can implement several of these. The
+`...Then` method returns the call's id, which the receiver is told with the
+answer, so it can tell its calls apart.
+
+Every call is told exactly once, through its answer or through `onFailure`,
+which says why with an `RPCFailure`: `TimedOut` past the session's
+`callTimeout`, `Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)`
+for an `RPCError` from the other side, `Unsent(message)` for a call that could
+not go, or `Unreadable(message)`. A call that cannot go at all (its connection
+has ended, or it is over `maxFrameLength`) is told before its `...Then`
+method returns. A receiver that throws is logged, and nothing else is
+affected.
+
+`session.cancelCall(call)` stops waiting for a call: its receiver is told
+`Cancelled`, and its answer is dropped when it comes. It works for a future's
+`requestId` too.
+
+The receivers are interfaces rather than callbacks for a reason: natively a
+function value passes its argument as an object, so an `Int->Void` callback
+would box every answer it was given.
+
 ### What can be sent
 
 Arguments and answers are encoded by type, with no field names or type tags
