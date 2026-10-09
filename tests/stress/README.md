@@ -7,8 +7,8 @@ haxe ci/stress-tests.hxml
 export/ci-stress-tests/StressMain    # .exe on Windows
 ```
 
-Exits non-zero if any case fails. Runs in about half a second, and is part
-of the Windows native CI job.
+Exits non-zero if any case fails. Runs in a second or two, and is part of
+the Windows native CI job.
 
 ## Why this exists separately from the utest suites
 
@@ -19,6 +19,7 @@ contention. Each case here pins a race of that kind:
 | Case | What it guards |
 |---|---|
 | `MetricsStress` | Metric-name validation must not share static `EReg` instances. `EReg` carries mutable match state, so concurrent matches would corrupt each other, reject valid names, throw, and silently drop updates (1850 of 50000 in one run). |
+| `FutureAllStress` | `Future.all` over inputs completed together on several threads resolves once they have all completed. Counted down outside the joined future's lock, two completing at once lost a decrement and the join never resolved, with every input complete: 1 to 31 of 4,000 joins in each of 20 runs, natively and on the jvm. |
 | `TimerIdStress` | Two threads making timers at once must never give two timers one handle, or the second registration evicts the first: a timer that silently never fires. |
 | `ConnectionPoolStress` | The pool ceiling, exclusive checkout, and capacity accounting across the error path. A pool that leaks one connection per failure deadlocks after `maxSize` failures. |
 | `TaskPoolDrainStress` | `shutdown(drain = true)` runs every submitted job. Silently dropped work is near-impossible to diagnose from a call site. |

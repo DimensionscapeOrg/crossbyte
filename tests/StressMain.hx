@@ -32,7 +32,8 @@ class StressMain {
 			new stress.WebSocketBufferLimitStress(),
 			new stress.IdleTaskPoolGcStress(),
 			new stress.HttpConcurrentLoadStress(),
-			new stress.MultiRuntimeSocketStress()
+			new stress.MultiRuntimeSocketStress(),
+			new stress.FutureAllStress()
 		];
 
 		// Optional case-name filter. These cases share one process and one
