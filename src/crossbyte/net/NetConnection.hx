@@ -1027,6 +1027,9 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	@:noCompletion private inline function set_onData(v:ByteArrayInput->Void):ByteArrayInput->Void {
+		// A reader set now keeps what it is handed unless it says otherwise
+		// after (see `__borrowsInput`), as an RPCSession does.
+		__borrowsInput = false;
 		__onData = (v != null) ? v : __noopData;
 		return __onData;
 	}
@@ -1138,6 +1141,15 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
 		inTimestamp = __uptime();
+		if (__borrowsInput) {
+			// A reader that keeps nothing (an RPCSession) reads the message
+			// where it lies: the copy below was most of what an RPC call over
+			// reliable UDP allocated.
+			final arrived:ByteArray = event.data;
+			arrived.position = 0;
+			__onData(arrived);
+			return;
+		}
 		// A copy: the event's bytes are valid only during this call, and what
 		// `onData` is handed is the application's to keep, on every transport
 		// (a stream's own input over TCP and WebSocket, and here the message).
