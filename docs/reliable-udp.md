@@ -153,9 +153,11 @@ buffer is the smallest of 64, 128, 256, 512, 768 or 1,024 bytes that holds the m
 and the frame goes back to the pool once acknowledged. The frames in flight are found by sequence in a ring, not a
 map.
 
-A 200-byte message delivered and acknowledged allocates nothing natively, and 64 to 80 bytes on the jvm, none of it
-reliable UDP's: Java 8's selector adds each socket it finds ready to a set (32 bytes a select, at each end), and a
-`send(bytes, 0, length)` boxes its `length`, as the jvm boxes every optional `Int` argument.
+A 200-byte message delivered and acknowledged allocates nothing natively, and nothing on the jvm under Java 8, where
+CrossByte gives the selector an array to put the sockets it finds ready in, in place of the set it would add each to (as
+Netty does). What can remain there is the JDK's own: its selector boxes the descriptor of each socket it finds ready,
+16 bytes, on Windows every one (which the JIT often leaves out) and on Linux one past 127. A later Java keeps its own
+set: 32 bytes a select with anything ready, at each end.
 
 The pool keeps as many frames as were in flight at once in the last ten to twenty seconds, plus 64. A game server's
 tick sends to every session and has it all back before the next, so a thousand frames go out and come back every
