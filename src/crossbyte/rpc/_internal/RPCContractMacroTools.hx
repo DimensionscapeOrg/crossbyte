@@ -17,6 +17,67 @@ class RPCContractMacroTools {
 			|| name == "currentCall" || name == "withTimeout";
 	}
 
+	/**
+		The class being built, as a type, for a static method of its own to
+		take an instance of it; `null` for a class with type parameters,
+		whose statics cannot name them.
+	**/
+	public static function selfType():Null<ComplexType> {
+		final local = Context.getLocalClass().get();
+		if (local.params.length > 0) {
+			return null;
+		}
+		return TPath({pack: [], name: local.name});
+	}
+
+	/**
+		`body`, written for a method of the class, made the body of a static
+		one taking the instance as `__self`: on the jvm, where Haxe's backend
+		reaches every instance method of a class through one generated method
+		(`_hx_getField`) whose code grows with each and fails to load past
+		32 KB, a static one is not among them.
+	**/
+	public static function asStatic(body:Expr):Expr {
+		function swap(e:Expr):Expr {
+			return switch (e.expr) {
+				case EConst(CIdent("this")): {expr: EConst(CIdent("__self")), pos: e.pos};
+				case _: haxe.macro.ExprTools.map(e, swap);
+			}
+		}
+		return swap(body);
+	}
+
+	/**
+		The most instance methods and variables a class can hold on the jvm,
+		with room to spare: Haxe's jvm backend reaches every one of a class's
+		own through one generated method, about 45 bytes of code each, and a
+		method past 32 KB fails to load. Inherited ones are their class's.
+	**/
+	public static inline final JVM_MAX_FIELDS:Int = 640;
+
+	/**
+		Fails a jvm build whose class would not load: `what` (an RPC commands
+		class, an RPC handler) holding more than `JVM_MAX_FIELDS` methods and
+		variables of its own in `fields`.
+	**/
+	public static function requireJvmSize(fields:Array<Field>, what:String):Void {
+		if (!Context.defined("jvm")) {
+			return;
+		}
+		var count:Int = 0;
+		for (field in fields) {
+			final access = field.access != null ? field.access : [];
+			if (access.indexOf(AStatic) < 0 && access.indexOf(AExtern) < 0) {
+				count++;
+			}
+		}
+		if (count > JVM_MAX_FIELDS) {
+			Context.error("This " + what + " has " + count + " methods and variables of its own; on the jvm a class can hold about " + JVM_MAX_FIELDS
+				+ " (Haxe's jvm backend reaches them through one method, which fails to load past 32 KB). Split its contract: a contract can extend others, and an RPC commands class or handler can extend another, each holding its own part.",
+				Context.currentPos());
+		}
+	}
+
 	public static inline function reservedSystemMethodMessage(name:String):String {
 		return name == "ping" ? "RPC contract method name '" + name + "' is reserved for built-in RPC system traffic." : "RPC contract method name '"
 			+ name + "' is reserved: " + (name == "withTimeout" ? "RPCCommands" : "RPCHandler") + " declares it.";

@@ -862,6 +862,13 @@ class LobbyCommands extends PresenceCommands {
 
 Hooks overridden in a shared base handler apply to every handler built on it.
 
+Splitting a surface into parts this way is also how a very large one builds
+for the jvm, where a class can hold about 640 methods and variables of its
+own: a commands class takes two for each request method (`join` and
+`joinThen`) and one for each one-way method, and a handler one for each
+method. Past that, the build fails saying so; split the contract, and its
+commands classes and handlers extend each other a part each.
+
 ### What names a call
 
 Each call is named on the wire by its *op*, a 32-bit hash (FNV-1a, as

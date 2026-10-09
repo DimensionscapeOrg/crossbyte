@@ -55,6 +55,15 @@ import haxe.io.Bytes;
 	the check the build makes is the one the tests exercise.
 **/
 class RPCOps {
+	/** The integers in `text`, decimal and separated by commas: a generated table, as the jvm reads it. **/
+	@:noCompletion public static function intsOf(text:String):Array<Int> {
+		final values:Array<Int> = [];
+		for (part in text.split(",")) {
+			values.push(Std.parseInt(part));
+		}
+		return values;
+	}
+
 	/** The op of `text`, a method's signature or `ping`: its FNV-1a hash. **/
 	public static inline function opOf(text:String):Int {
 		return Hash.fnv1a32(Bytes.ofString(text));

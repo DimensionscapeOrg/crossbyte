@@ -1137,6 +1137,16 @@ Fixes to code new in this release are not listed.
   more than about sixty requests, builds and loads: its generated dispatch
   or reader passed the 32 KB of bytecode the JVM backend can branch across,
   failing the build (`IO.Overflow`) or the class at load (`VerifyError`).
+  Then past about 160 methods, the method through which the JVM backend
+  reaches a class's fields did the same: a commands class or handler now
+  loads with some 300 methods (the generated helpers are static or inlined
+  away), and one past what the JVM can load fails the build, saying how to
+  split its contract.
+- Natively, a handler of some 300 methods ended the process at its first
+  call: every method's decoder was inlined into its dispatch, whose frame
+  grew past the stack. Past 32 methods each is a call of its own, which is
+  also quicker there (a one-way call to a handler of 70 methods 58-68 ns,
+  where it took 70-83).
 - `RPCResponse.respond()` replaces the responder, as documented.
   (Upgrading)
 - A contract extending another carries the parent's methods; a handler
