@@ -2,6 +2,7 @@ package crossbyte._internal.http.h2;
 
 #if !js
 import sys.thread.Mutex;
+import sys.thread.Thread;
 
 /**
  * Live HTTP/2 sessions, keyed by origin.
@@ -46,6 +47,13 @@ class H2ConnectionPool {
 	// asked for), and who waits on each.
 	private static final __connecting:Map<String, Array<PendingConnect>> = new Map();
 	private static final __lock:Mutex = new Mutex();
+
+	/** Seconds between the reaper's sweeps, the socket registry's quiet sweep. Tests shorten it. */
+	@:noCompletion public static var __reapInterval:Float = 5.0;
+
+	// Whether the reaper thread is running. It runs only while the pool holds
+	// a session. Under the lock.
+	private static var __reaping:Bool = false;
 
 	/**
 	 * A session for `origin` with room for another stream, opening one through
@@ -155,10 +163,39 @@ class H2ConnectionPool {
 		}
 		var waiters:Array<H2Wake> = pending.waiters;
 		pending.waiters = [];
+		var startReaper:Bool = session != null && !__reaping;
+		if (startReaper) {
+			__reaping = true;
+		}
 		__lock.release();
 
+		if (startReaper) {
+			Thread.create(__reapLoop);
+		}
 		for (waiter in waiters) {
 			waiter.release();
+		}
+	}
+
+	/**
+		Sweeps the pool every `__reapInterval` seconds while it holds a session, and
+		ends once it holds none. A program that stops making requests has
+		nobody else to close what it left pooled, and those sessions would
+		keep a socket and two threads each for as long as it runs.
+	**/
+	private static function __reapLoop():Void {
+		while (true) {
+			crossbyte._internal.system.Sleep.sleep(__reapInterval);
+			reapIdle();
+			__lock.acquire();
+			var empty:Bool = !__sessions.keys().hasNext();
+			if (empty) {
+				__reaping = false;
+			}
+			__lock.release();
+			if (empty) {
+				return;
+			}
 		}
 	}
 
@@ -308,10 +345,10 @@ class H2ConnectionPool {
 	 * Closes every session idle past `idleTimeoutSeconds`, returning how many
 	 * went.
 	 *
-	 * `acquire` already reaps what it walks past, which is enough for a
-	 * program that keeps making requests. This is for one that stops: nothing
-	 * else would ever look again, and the sockets would outlive the interest
-	 * in them.
+	 * `acquire` reaps what it walks past, and the pool's own reaper calls this
+	 * every few seconds while it holds a session, so a program that stops
+	 * making requests still lets its connections go. Called directly, it
+	 * sweeps now.
 	 */
 	public static function reapIdle():Int {
 		if (idleTimeoutSeconds < 0) {
