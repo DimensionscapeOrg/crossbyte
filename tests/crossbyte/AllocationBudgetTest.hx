@@ -13,6 +13,9 @@ import crossbyte.http.HTTPServer;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.io.ByteArray;
 import crossbyte.net.DatagramSocket;
+import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
+import crossbyte.net.NetHost;
 import crossbyte.net.ReliableDatagramServerSocket;
 import crossbyte.net.ReliableDatagramSocket;
 import crossbyte.net.ServerSocket;
@@ -133,6 +136,13 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_BOOL_RECEIVER = new Budget("an RPC call answered through an RPCBoolReceiver", "call", [0, 0, 48], [8, 8, 128]);
 	// The answer's own string, 12 characters, and nothing else.
 	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 112], [96, 96, 208]);
+	// The same over a TCP NetConnection to a NetHost, both ends on this
+	// thread's runtime: what RPC costs on a real transport. Measured later than
+	// MEASURED_ON; Linux taken as Windows until measured. Alone the jvm reads 0
+	// and 96; its figures allow the 32 B the TCP line reads in the full suite
+	// (the JDK's Windows selector boxing what it finds ready).
+	private static final RPC_TCP_RECEIVER = new Budget("an RPC call over TCP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
+	private static final RPC_TCP_CALL = new Budget("an RPC call over TCP and its answer", "call", [152, 152, 128], [256, 256, 224]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 24], [8, 8, 96]);
 
 	/**
@@ -855,6 +865,54 @@ class AllocationBudgetTest extends utest.Test {
 		var under:AllocationReading = AllocationMeter.measure(op, 20000);
 		__report("an RPC call answered through an RPCIntReceiver, under callTimeout", under);
 		__within(RPC_INT_RECEIVER, under);
+	}
+
+	public function testAnRpcCallOverTcp():Void {
+		var runtime = __start();
+		var handler = new BudgetHandler();
+		var accepted:Array<RPCSession<Dynamic, Dynamic>> = [];
+		var host:NetHost = null;
+		var session:RPCSession<BudgetCommands> = null;
+		try {
+			host = new NetHost("tcp://127.0.0.1:0", (connection:INetConnection) -> {
+				accepted.push(new RPCSession(connection, null, handler));
+			});
+			host.listen();
+			__pumpUntil(() -> host.localPort != 0);
+			var commands = new BudgetCommands();
+			var connection = new NetConnection("tcp://127.0.0.1:" + host.localPort);
+			session = new RPCSession<BudgetCommands>(connection, commands);
+			__pumpUntil(() -> session.up && accepted.length > 0);
+			var receiver = new BudgetReceiver();
+			var told:Int = 0;
+			var answered:Void->Bool = () -> receiver.told == told;
+			var byReceiver = function():Void {
+				told = receiver.told + 1;
+				commands.addThen(receiver.int, 1, receiver);
+				__pumpUntil(answered);
+			};
+			__warm(byReceiver, WARM);
+			__within(RPC_TCP_RECEIVER, AllocationMeter.measure(byReceiver, 2000));
+
+			var last:RPCResponse<Int> = null;
+			var completed:Void->Bool = () -> last.completed;
+			var byFuture = function():Void {
+				last = commands.add(receiver.int, 1);
+				__pumpUntil(completed);
+				receiver.int = last.result;
+			};
+			__warm(byFuture, WARM);
+			__within(RPC_TCP_CALL, AllocationMeter.measure(byFuture, 2000));
+			Assert.isTrue(receiver.int > 0);
+		} catch (error:Dynamic) {
+			try session.close() catch (_:Dynamic) {}
+			try host.close() catch (_:Dynamic) {}
+			__finish();
+			throw error;
+		}
+		try session.close() catch (_:Dynamic) {}
+		try host.close() catch (_:Dynamic) {}
+		__finish();
 	}
 
 	public function testAOneWayRpcCall():Void {
