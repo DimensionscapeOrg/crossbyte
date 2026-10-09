@@ -68,7 +68,7 @@ class NetHostUriTest extends utest.Test {
 		var refused:Bool = false;
 		try {
 			new NetConnection("tcp://127.0.0.1:0");
-		} catch (_:String) {
+		} catch (_:crossbyte.errors.ArgumentError) {
 			refused = true;
 		}
 		Assert.isTrue(refused, "a connection to port 0 was attempted");

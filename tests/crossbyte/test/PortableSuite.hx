@@ -141,6 +141,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// How a NetConnection ends, told once, the same over each transport.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// A URI a connection cannot use, said with what would work; ws:// in a page.
+		runner.addCase(new crossbyte.net.NetConnectionSchemeTest());
 		// Whose clock a NetConnection's stamps are, in a child runtime.
 		runner.addCase(new crossbyte.net.NetConnectionClockTest());
 		// Whose timers a child runtime's sessions arm in a socket's callback.

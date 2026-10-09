@@ -52,7 +52,7 @@ class NetConnectionTest extends utest.Test {
 	}
 
 	public function testUdpProtocolIsRejectedByNetConnectionConstructor():Void {
-		Assert.raises(() -> new NetConnection("udp://127.0.0.1:9000"), String);
+		Assert.raises(() -> new NetConnection("udp://127.0.0.1:9000"), crossbyte.errors.ArgumentError);
 	}
 
 	public function testWebSocketConnectionAdaptsReadyDataAndCloseEvents():Void {

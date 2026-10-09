@@ -47,6 +47,16 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 }
 
 @:noCompletion function __parseURL(input:String, defaultProtocol:Protocol, endpoint:Null<Endpoint>, listening:Bool):Endpoint {
+	// What is wrong is said as a short phrase below; the caller is told it
+	// with the URL it gave, as an ArgumentError.
+	try {
+		return __readURL(input, defaultProtocol, endpoint, listening);
+	} catch (problem:String) {
+		throw new crossbyte.errors.ArgumentError('Cannot use "$input" as an address: $problem.');
+	}
+}
+
+@:noCompletion private function __readURL(input:String, defaultProtocol:Protocol, endpoint:Null<Endpoint>, listening:Bool):Endpoint {
 	if (input == null) {
 		throw "empty url";
 	}
@@ -81,7 +91,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 				proto = Protocol.WEBSOCKET;
 				wasWss = true;
 			default:
-				throw 'unsupported scheme: $scheme';
+				throw 'unknown scheme "$scheme" (tcp, ws, wss, rudp and local are known)';
 		}
 	}
 
@@ -151,7 +161,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 	if (proto == Protocol.WEBSOCKET) {
 		resource = __parseWebSocketResource(tail);
 	} else if (tail.length > 0) {
-		throw "path/query not supported for tcp/udp/rudp";
+		throw "a path or query is taken only by ws:// and wss://";
 	}
 
 	if (proto == Protocol.WEBSOCKET) {
@@ -164,7 +174,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		}
 	} else {
 		if (port < 0) {
-			throw "port required for tcp/udp/rudp";
+			throw "a port is required for tcp://, udp:// and rudp://";
 		}
 
 		if (port == 0 && !listening) {

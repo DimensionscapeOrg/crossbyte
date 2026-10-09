@@ -1,6 +1,6 @@
 package crossbyte.net;
 
-// Not built for the browser. It wraps the Transport union across every transport CrossByte offers, most of which a page does not have; browser code connects with crossbyte.net.Socket directly.
+// Built for the browser too, where tcp://, ws:// and wss:// are each a crossbyte.net.Socket, which a page makes as its own WebSocket.
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
@@ -80,7 +80,11 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	/**
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
-	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
+	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`
+	 * (natively only). In a browser, `ws://` and `wss://` (and `tcp://`, since a
+	 * page's `Socket` is a WebSocket) connect to a WebSocket server, as a
+	 * `NetHost` made from a `ws://` or `wss://` URI is. Any other scheme throws an
+	 * `ArgumentError` naming the ones this target takes.
 	 *
 	 * A `wss://` connection verifies the server's certificate against the
 	 * system's trust store. To trust a private CA, or a development server's
@@ -160,10 +164,35 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
 			#end
+			#if (js && !nodejs)
+			// In a page a Socket is the page's own WebSocket, so a ws:// or
+			// wss:// URL is a Socket dialled with that scheme.
+			case WEBSOCKET:
+				var socket:Socket = new Socket();
+				var nc:TCPConnection = new TCPConnection(socket);
+				nc.onData = onData;
+				nc.onClose = onClose;
+				nc.onReady = onReady;
+				nc.onError = onError;
+				nc.readEnabled = readEnabled;
+
+				socket.secure = endpoint.secure;
+				socket.connect(endpoint.address + endpoint.resource, endpoint.port);
+				nc;
+			#end
 			default:
-				throw('Protocol error');
-				null;
+				throw new crossbyte.errors.ArgumentError(__unsupported(uri));
 		}
+	}
+
+	@:noCompletion private static function __unsupported(uri:String):String {
+		#if (js && !nodejs)
+		return 'NetConnection cannot connect to $uri: in a browser it takes tcp://, ws:// and wss:// (each a WebSocket to the server).';
+		#elseif js
+		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss:// and rudp:// (local:// is native only).';
+		#else
+		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss://, rudp:// and local://' + (LocalConnection.isSupported ? '.' : ' (local:// native only).');
+		#end
 	}
 
 	@:to public inline function toINetConnection():INetConnection {
