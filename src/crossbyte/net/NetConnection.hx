@@ -767,6 +767,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	@:noCompletion private function new(socket:Socket) {
 		protocol = TCP;
+		__holdsOutput = true;
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -786,6 +787,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		twenty calls a tick, spends 0.5 µs a call this way against 7.0 µs,
 		nearly all of it in the kernel, with a write each.
 	**/
+	override public function __bytesPending():Int {
+		return __socket.bytesPending;
+	}
+
 	public function send(data:ByteArray):Void {
 		this.__writeBytes(data, 0, 0);
 		if (__passFlushQueued) {
@@ -1333,6 +1338,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	private function new(socket:WebSocket) {
+		__holdsOutput = true;
 		protocol = WEBSOCKET;
 		this.__socket = socket;
 		__prepareLifecycle();
@@ -1344,6 +1350,10 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	public inline function toSocket<T>():T {
 		return cast __socket;
+	}
+
+	override public function __bytesPending():Int {
+		return __socket.bytesPending;
 	}
 
 	public function send(data:ByteArray):Void {

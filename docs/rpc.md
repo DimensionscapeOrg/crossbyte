@@ -1082,6 +1082,12 @@ with an `IllegalOperationError`. A one-way call on a connection that has ended
 is dropped, as a one-way call's fate always is; one through commands with no
 session throws.
 
+A peer that sends calls and never reads their answers would make this side
+hold every answer. Over TCP and WebSocket, once more than the session's
+`maxOutputPending` (16 MiB unless set) waits unsent for its peer, the session
+takes the peer to have stopped reading and closes the connection, its reason
+saying so; reliable UDP and local IPC bound what waits themselves.
+
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller
 can tell a peer that has gone from a peer that said no. Over a WebSocket the

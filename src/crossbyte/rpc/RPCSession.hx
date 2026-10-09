@@ -178,6 +178,24 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	public var maxFrameLength:Int = RPCHandler.MAX_FRAME_LEN;
 
+	/** Default for `maxOutputPending`: 16 MiB, two of the largest frames `maxFrameLength` lets go by default. **/
+	public static inline final DEFAULT_MAX_OUTPUT_PENDING:Int = 16 * 1024 * 1024;
+
+	/**
+		The most bytes this session lets wait unsent for its peer, over a TCP
+		or WebSocket connection, before it takes the peer to have stopped
+		reading: then the connection is closed, every call waiting fails with
+		the reason as its cause, and `onDown` hears it. Without it, a peer that
+		sends calls and never reads their answers (by fault or on purpose)
+		makes this side hold every answer, without end.
+
+		Checked as each frame is sent, against what was still waiting before
+		it, so one frame as large as `maxFrameLength` never trips it.
+		Reliable UDP and local IPC bound what waits themselves. `0` removes
+		the limit.
+	**/
+	public var maxOutputPending:Int = DEFAULT_MAX_OUTPUT_PENDING;
+
 	// What a call waiting is failed with when the session stops, when it is
 	// cancelled, and the start of what it fails with when its send throws:
 	// a receiver is told each as an `RPCFailure` of its own.
@@ -1681,6 +1699,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/** Sends `frame` and gives it back, whether the send returns or throws. **/
 	@:noCompletion private inline function __sendFrame(frame:RPCFrame):Void {
+		if (maxOutputPending > 0 && (__connection : NetConnectionBase).__holdsOutput && !__peerReads()) {
+			__sent(frame);
+			return;
+		}
 		try {
 			__connection.send(frame);
 		} catch (error:Dynamic) {
@@ -1728,6 +1750,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		var message:Null<String> = null;
 		var cause:Dynamic = null;
+		if (maxOutputPending > 0 && (__connection : NetConnectionBase).__holdsOutput) {
+			// A peer not reading ends the connection here, and the call fails
+			// below with the reason it ended.
+			__peerReads();
+		}
 		if (__oversized(framed)) {
 			message = __oversizedMessage("RPC call", framed);
 			cause = new ArgumentError(message);
@@ -1772,6 +1799,31 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} else {
 			__sendFrame(framed);
 		}
+	}
+
+	/**
+		Whether the peer is still taking what this session sends: what waits
+		unsent is within `maxOutputPending`. When it is not, the connection is
+		ended here, saying so, and `false` is answered: the frame about to go
+		goes nowhere.
+	**/
+	@:noCompletion private function __peerReads():Bool {
+		if (__ended) {
+			return true;
+		}
+		final pending:Int = (__connection : NetConnectionBase).__bytesPending();
+		if (pending <= maxOutputPending) {
+			return true;
+		}
+		final reason:Reason = Reason.Error("RPC peer is not reading: " + pending + " bytes wait unsent for it, past maxOutputPending ("
+			+ maxOutputPending + ")");
+		__terminateProtocol(reason);
+		// A connection whose close says nothing at once has ended all the
+		// same: nothing more is sent to it.
+		if (!__ended) {
+			__connectionEnded(reason);
+		}
+		return false;
 	}
 
 	/** Whether `framed`, finished, holds more than `maxFrameLength` after its 4-byte length. **/

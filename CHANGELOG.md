@@ -400,6 +400,10 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `peerAnswersFingerprint` and `onHello`.
 - `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
+- `RPCSession.maxOutputPending` (16 MiB): over TCP or WebSocket, a peer that
+  sends calls and never reads their answers is closed once that much waits
+  unsent for it, where every answer waited in memory without end (one such
+  client took a server past 2 GB in twelve seconds).
 - A typed `session` in handlers: `extends RPCHandler<ListenerCommands, Player>`
   makes `session` an `RPCSession<ListenerCommands, Player>`, so a handler
   calls its client back through typed stubs and reads `session.data` as a

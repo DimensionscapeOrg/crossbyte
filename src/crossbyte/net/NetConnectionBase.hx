@@ -42,6 +42,19 @@ abstract class NetConnectionBase implements CloseObservable {
 	**/
 	@:noCompletion public var __borrowsInput:Bool = false;
 
+	/**
+		The bytes written to this connection that wait unsent, where its
+		transport keeps them itself (TCP and WebSocket): what a peer that has
+		stopped reading makes this side hold. 0 where a transport bounds them
+		itself (reliable UDP, local IPC) or cannot say.
+	**/
+	@:noCompletion public function __bytesPending():Int {
+		return 0;
+	}
+
+	/** Whether `__bytesPending` can say anything but 0, so a sender that asks only asks those that can. **/
+	@:noCompletion public var __holdsOutput:Bool = false;
+
 	// Told as the connection ends, and as it becomes ready, before the
 	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
