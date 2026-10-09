@@ -82,11 +82,11 @@ class AllocationBudgetTest extends utest.Test {
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
 	// The HTTP lines and the streamed line were measured later than
 	// MEASURED_ON, on Oracle 8 and Temurin 8 alike for the jvm.
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [232, 232, 648], [360, 360, 880]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4952, 4952, 5696], [6256, 6256, 7184]);
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [152, 152, 240], [256, 256, 368]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4608, 4608, 4648], [5824, 5824, 5880]);
 	private static final STREAM_TEXT = new Budget("a line of text written to a streamed response", "line", [0, 0, 16], [8, 8, 88]);
 	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3400, 3384, 2048], [4320, 4296, 2624]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [232, 232, 7376], [360, 360, 9288]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [152, 152, 6968], [256, 256, 8776]);
 	// The jvm's figure measured later than MEASURED_ON: the full suite on
 	// Windows (alone 248, Temurin 8 on Linux 253). Nearly all of it is the
 	// text the listener asks for.
