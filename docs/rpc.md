@@ -112,6 +112,42 @@ The session takes over the connection's `onData`; leave it to the session.
 Both ends can have both: a session with commands and a handler calls the
 other side and answers it on one connection.
 
+## Over each transport
+
+A session works the same over every transport; only how the connection is
+made differs:
+
+| Transport | A client | A server |
+|---|---|---|
+| TCP | `new NetConnection("tcp://host:4000")` | `new NetHost("tcp://0.0.0.0:4000", ...)` |
+| TLS over TCP | a `Socket` with `secure` set, connected, then `NetConnection.fromSocket(socket)` | `new ServerSocket(true)` with `setCertificate`, then `NetHost.fromServerSocket(server, ...)` |
+| WebSocket | `"ws://host:8080/rpc"`, or `"wss://..."` | `new NetHost("ws://0.0.0.0:8080", ...)`, or `"wss://..."` with its `cert` |
+| reliable UDP | `"rudp://host:7777"` | `new NetHost("rudp://0.0.0.0:7777", ...)` |
+| reliable UDP, encrypted | a `ReliableDatagramSocket` with its `encryptionKey`, then `NetConnection.fromReliableDatagramSocket` | a `ReliableDatagramServerSocket` with `encryptionKeyFor`, then `NetHost.fromReliableDatagramServerSocket` |
+| local IPC (native only) | `"local://name"` | a `LocalConnection` that listens on the name, then `NetConnection.fromLocalConnection` |
+
+In a browser a connection is the page's own WebSocket, so a page dials
+`ws://` or `wss://` (a `NetHost` made from one of those is its server) and
+cannot listen. Over reliable UDP every frame goes as one reliable, ordered
+message, split over datagrams when it is larger than one. A `NetConnection`
+or `NetHost` given a URI it cannot use throws an `ArgumentError` naming the
+URI and the schemes it takes.
+
+A local IPC listener serves one peer at a time on its name, and takes the
+next once that one has gone, so one session over it answers each in turn
+(its hello is said again to each). Peers that must be served at once need a
+name each.
+
+```haxe
+import crossbyte.ipc.LocalConnection;
+
+function serveLocally(name:String, handler:ChatHandler):RPCSession<Dynamic> {
+	var listener = new LocalConnection();
+	listener.listen(name);
+	return new RPCSession(NetConnection.fromLocalConnection(listener), null, handler);
+}
+```
+
 ## One handler, many clients
 
 A handler can serve any number of sessions, and usually should: a server's
@@ -121,9 +157,56 @@ on. While a method runs, the handler's `session` is the session whose call
 it is, so a method can tell its callers apart:
 
 - `session.data` holds whatever the application keeps per client (a
-  player, a login), set when the session is made;
+  player, a login): a field of the session's, set when it is made or later;
 - `session.commands` calls that client back, if the session has commands;
 - `session.connection` is its connection.
+
+`session` is an `RPCSession<Dynamic, Dynamic>`, since one handler serves
+sessions of any kind, so a call through `session.commands` is not checked
+and goes through `Dynamic`. A server that calls its clients keeps their
+sessions typed itself, and drops each as its connection closes:
+
+```haxe
+interface ListenerContract {
+	function said(room:String, text:String):Void;
+}
+
+@:rpcContract(ListenerContract)
+class ListenerCommands extends RPCCommands {
+	public function new() {}
+}
+
+class RoomServer extends RPCHandler implements ChatContract {
+	final clients:Array<RPCSession<ListenerCommands, String>> = [];
+
+	public function new() {}
+
+	// Given to a NetHost as what it does with each connection it accepts.
+	public function accept(connection:crossbyte.net.NetConnection):Void {
+		final client = new RPCSession<ListenerCommands, String>(connection, new ListenerCommands(), this);
+		client.data = "guest";
+		clients.push(client);
+		connection.onClose = _ -> clients.remove(client);
+	}
+
+	public function say(room:String, text:String):Void {
+		// The caller's session, typed: the one this call came in on.
+		final caller:RPCSession<ListenerCommands, String> = cast session;
+		for (client in clients) {
+			if (client != caller) {
+				client.commands.said(room, '${caller.data}: $text');
+			}
+		}
+	}
+
+	public function join(room:String):Int {
+		return clients.length;
+	}
+}
+```
+
+Each of those calls is framed for its own connection. A `NetHost` also
+says which connection went, through its `onDisconnect`.
 
 Between calls `session` is `null`. A method that answers later, with a
 `Future` (below), is answered on its caller's connection whenever that
@@ -510,8 +593,7 @@ class RoomHandler extends RPCHandler {
 ```
 
 The caller's `RPCResponse` then fails with `"A room needs a name."`. Anything
-else a handler throws (a null access, a database error, a bug) is the
-handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
+else a handler throws (a database error, a bug) is the handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
 stack trace or a file path never crosses to whoever made the call. The error
 itself goes to the session's `onHandlerError`, which logs it unless you
 replace it. It arrives as a `haxe.Exception`: what was thrown, if it was one,
@@ -527,6 +609,12 @@ session.onHandlerError = (op, method, error) -> {
 
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
+
+A null access is a throw on the JVM, Node, the interpreter, HashLink and neko,
+but natively it is not: a native build reads through the null and the process
+stops, unless it was built with `-D HXCPP_CHECK_POINTER`, which makes it a
+throw like any other at some cost to every field access. A native handler
+checks for null itself.
 
 A call this side cannot take is answered or passed over, and the connection
 carries on. A request for a method its handler has not got (from a peer
