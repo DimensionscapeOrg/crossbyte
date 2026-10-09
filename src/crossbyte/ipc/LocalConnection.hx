@@ -119,7 +119,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	// the first after something happened to the longest, in seconds. It
 	// looked every millisecond, busy or not: a thousand wakes a second for
 	// each connection doing nothing. On Linux and macOS the wait ends early
-	// when the socket has something to read or room to write.
+	// when the socket has something to read or room to write, and on Windows
+	// when the peer rings the pipe's doorbell.
 	@:noCompletion private static inline var POLL_MIN:Float = 0.001;
 	@:noCompletion private static inline var POLL_MAX:Float = 0.010;
 
@@ -788,7 +789,9 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 			}
 			// Ready, and yet nothing came of it: once, and then a plain wait,
 			// so a socket that says it is ready and lets nothing through
-			// cannot spin this thread.
+			// cannot spin this thread. (A Windows pipe's doorbell rings once
+			// each time it is rung, and is rung for room made as well as for
+			// data, so its wait never says it woke for work.)
 			if (wokeForWork && !busy) {
 				waitOn = -1;
 			}
@@ -1443,9 +1446,9 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 			+ 'of this user\'s with mode 0700)');
 	}
 
-	/** The descriptor the reader waits on for `pipe`: on Linux and macOS its socket's; -1 elsewhere. Under __handleLock. **/
+	/** What the reader waits on for `pipe`: on Linux and macOS its socket, on Windows its doorbell; -1 for nothing. Under __handleLock. **/
 	@:noCompletion private static function __descriptorOf(pipe:LocalConnectionHandle):Int {
-		#if (cpp && !windows)
+		#if cpp
 		return NativeLocalConnection.__descriptorOf(pipe);
 		#else
 		return -1;
@@ -1454,11 +1457,12 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 	/**
 		Waits up to `seconds` for `fd` to be readable (`read`) or writable
-		(`write`), on Linux and macOS: whether it woke for that. Elsewhere,
-		and for `fd` -1, a plain wait: a Windows pipe has nothing to wait on.
+		(`write`), on Linux and macOS, and on Windows for the pipe's doorbell
+		to ring, which its peer rings as it writes, makes room or goes:
+		whether it woke for that. For `fd` -1, a plain wait.
 	**/
 	@:noCompletion private static function __waitForWork(fd:Int, read:Bool, write:Bool, seconds:Float):Bool {
-		#if (cpp && !windows)
+		#if cpp
 		return NativeLocalConnection.__waitForWork(fd, read, write, Math.ceil(seconds * 1000));
 		#else
 		crossbyte._internal.system.Sleep.sleep(seconds);

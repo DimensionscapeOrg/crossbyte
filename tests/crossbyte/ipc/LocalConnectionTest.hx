@@ -76,6 +76,60 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
+		A message wakes the reader at the other end as it arrives, rather than
+		at the reader's next look: on Windows a pipe has nothing to wait on,
+		and its reader slept 1 to 10 ms between looks, so a message to an idle
+		connection waited for the rest of the sleep (an RPC round trip took
+		some 3 ms). Now the writer rings the reader's doorbell. Each message
+		goes to a connection idle long enough for its reader to be at its
+		longest sleep, and the time to its arrival is the time to deliver it.
+	**/
+	public function testAMessageWakesItsReaderAsItArrives():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("wake");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Int = 0;
+		var readyCount = 0;
+		try {
+			server.onReady = () -> readyCount++;
+			server.onData = input -> received++;
+			server.readEnabled = true;
+			server.listen(name);
+			client.onReady = () -> readyCount++;
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
+
+			var runtime = CrossByte.current();
+			var waits:Array<Float> = [];
+			for (i in 0...25) {
+				// Long enough for the reader to be at its longest sleep.
+				crossbyte.sys.System.sleep(0.03);
+				runtime.pump(0, 0);
+				var before:Int = received;
+				var sent:Float = haxe.Timer.stamp();
+				client.send(bytesOf("ring"));
+				while (received == before && haxe.Timer.stamp() - sent < 1.0) {
+					runtime.pump(0, 0);
+				}
+				waits.push((haxe.Timer.stamp() - sent) * 1000);
+			}
+			waits.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+			var median:Float = waits[Std.int(waits.length / 2)];
+			Assert.isTrue(median < 1.0, 'a message to an idle connection took $median ms (median) to arrive: ' + waits);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+		closeQuietly(client);
+		closeQuietly(server);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		What `send` is handed is the caller's again once it returns: a pass's
 		sends go out together when the pass ends, and what arrives is each
 		buffer as it was at its call, though the caller wrote over it at once,
