@@ -1180,6 +1180,43 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 
 	/**
+		Room in what waits to be sent for `count` more bytes, from storage the
+		runtime keeps (`StoragePool`) once that is past `KEEP`, the storage it
+		had given back; natively and on the jvm. See `Socket.__makeOutputRoom`.
+	**/
+	private inline function __pendingRoom(count:Int):Void {
+		#if ((cpp || jvm) && !macro)
+		var data:ByteArrayData = __pendingOutput;
+		var needed:Int = data.position + count;
+		if (needed > @:privateAccess data.__length && needed > KEEP && __runtime != null) {
+			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
+			var storage:Null<haxe.io.BytesData> = pool.take(needed);
+			if (storage != null) {
+				pool.give(data.__adoptStorage(storage));
+			}
+		}
+		#end
+	}
+
+	/**
+		What waits to be sent has all gone: as `__emptied`, but natively and
+		on the jvm storage past `KEEP` goes back to the runtime's pool, and 64
+		KB of the pool's is kept for the next burst, as `Socket` does.
+	**/
+	private inline function __emptiedPending():Void {
+		#if ((cpp || jvm) && !macro)
+		var data:ByteArrayData = __pendingOutput;
+		if (@:privateAccess data.__length > KEEP && __runtime != null) {
+			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
+			__pendingOutput.clear();
+			pool.give(data.__adoptStorage(pool.take(KEEP)));
+			return;
+		}
+		#end
+		__emptied(__pendingOutput);
+	}
+
+	/**
 	 * Appends `bytes` to the pending buffer, to go to the socket when the
 	 * runtime's pass ends.
 	 *
@@ -1207,6 +1244,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			// nothing does not cost a refused write and an exception per frame.
 			if (__writeQueued && pending > 0) {
 				__pendingOutput.position = __pendingOutput.length;
+				__pendingRoom(length);
 				__pendingOutput.writeBytes(data, 0, length);
 				var waiting:Int = pending + length;
 				if (maxOutputBufferSize > 0 && waiting > maxOutputBufferSize) {
@@ -1229,12 +1267,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 				__pendingOutput.clear();
 				__pendingSent = 0;
+				__pendingRoom(length - accepted);
 				__pendingOutput.writeBytes(data, accepted, length - accepted);
 				__afterPartialWrite();
 				return;
 			}
 			#end
 			__pendingOutput.position = __pendingOutput.length;
+			__pendingRoom(length);
 			__pendingOutput.writeBytes(data, 0, length);
 			if (pending + length < PASS_BATCH && __holdForPass()) {
 				return;
@@ -1340,7 +1380,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 		bytesSent += pending;
-		__emptied(__pendingOutput);
+		__emptiedPending();
 		__pendingSent = 0;
 
 		// So a peer that is not reading shows in Node's own queue, and the
@@ -1367,7 +1407,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		if (accepted >= pending) {
 			// Emptied, and past KEEP its storage let go, so what a backlog grew
 			// it to is not kept for the rest of the session.
-			__emptied(__pendingOutput);
+			__emptiedPending();
 			__pendingSent = 0;
 
 			// A close that was waiting for this to go.
@@ -1385,12 +1425,22 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__pendingSent += accepted;
 		var remaining:Int = pending - accepted;
 		if (__pendingSent >= OUTPUT_COMPACT_THRESHOLD && __pendingSent >= remaining) {
-			// Allocated and swapped rather than moved within the buffer: an
-			// overlapping blit has no defined behaviour across targets.
+			#if ((cpp || jvm) && !macro)
+			// Moved down within the buffer: hxcpp's blit is a memmove where the
+			// ranges overlap, and Java's arraycopy is defined for them, so a
+			// peer reading behind a backlog makes no new buffer each time.
+			var data:ByteArrayData = __pendingOutput;
+			data.blit(0, data, __pendingSent, remaining);
+			__pendingOutput.length = remaining;
+			__pendingOutput.position = remaining;
+			#else
+			// Elsewhere copied into a new buffer: a blit whose source and
+			// destination overlap is not defined on every target.
 			var carried:ByteArray = new ByteArray();
 			carried.endian = BIG_ENDIAN;
 			carried.writeBytes(__pendingOutput, __pendingSent, remaining);
 			__pendingOutput = carried;
+			#end
 			__pendingSent = 0;
 		}
 		__afterPartialWrite();

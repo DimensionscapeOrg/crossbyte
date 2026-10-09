@@ -1483,6 +1483,31 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		length = cacheLength;
 	}
 
+	#if ((cpp || jvm) && !macro)
+	/**
+		Takes `storage` for its own in place of what it has, and answers the
+		storage it had: the readable bytes are copied across, and the length
+		and position kept. `storage` must hold at least `length` bytes; what
+		lies past them is never read before it is written or zeroed, as
+		`__resize` exposes it. For storage kept in a pool (see
+		`crossbyte._internal.socket.StoragePool`).
+	**/
+	@:noCompletion public function __adoptStorage(storage:haxe.io.BytesData):haxe.io.BytesData {
+		var old:haxe.io.BytesData = getData();
+		var count:Int = length;
+		if (count > 0) {
+			#if cpp
+			untyped storage.blit(0, old, 0, count);
+			#else
+			java.lang.System.arraycopy(old, 0, storage, 0, count);
+			#end
+		}
+		untyped this.b = storage;
+		__length = storage.length;
+		return old;
+	}
+	#end
+
 	/**
 		Writes `length` bytes of `bytes` from `offset` at the position, as
 		`writeBytes` does, from a plain `Bytes` with no ByteArray made around

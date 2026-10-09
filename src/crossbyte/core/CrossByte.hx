@@ -530,6 +530,11 @@ final class CrossByte extends EventDispatcher {
 	// made when one first sends; see DatagramChunks.
 	@:noCompletion private var __chunks:crossbyte._internal.net.DatagramChunks = null;
 	#end
+	#if ((cpp || jvm) && !macro)
+	// Storage for this runtime's large socket buffers, made when one first
+	// grows that far; see StoragePool.
+	@:noCompletion private var __storage:crossbyte._internal.socket.StoragePool = null;
+	#end
 
 	// What another thread handed this runtime to run on its own; see __post.
 	// The flag is read each tick without the lock: a stale false costs one
@@ -1218,6 +1223,17 @@ final class CrossByte extends EventDispatcher {
 			chunks = __chunks = new crossbyte._internal.net.DatagramChunks(__socketRegistry);
 		}
 		return chunks;
+	}
+	#end
+
+	#if ((cpp || jvm) && !macro)
+	/** The pool this runtime's sockets keep the storage of their large buffers in. **/
+	@:noCompletion public function __storagePool():crossbyte._internal.socket.StoragePool {
+		var pool = __storage;
+		if (pool == null) {
+			pool = __storage = new crossbyte._internal.socket.StoragePool(__socketRegistry);
+		}
+		return pool;
 	}
 	#end
 
