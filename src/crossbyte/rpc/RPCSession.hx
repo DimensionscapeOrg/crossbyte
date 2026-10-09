@@ -703,7 +703,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * holding what was thrown in its `value`, its `stack` there to read.
 	 */
 	public dynamic function onHandlerError(op:Int, method:Null<String>, error:haxe.Exception):Void {
-		Logger.error('RPC handler ' + (method != null ? method : 'for op $op') + ' threw: ' + Std.string(error));
+		final who:String = 'RPC handler ' + (method != null ? method : 'for op $op');
+		// A handler that ran out of time (its `handlerTimeout`, or a call it
+		// was waiting on) threw nothing; saying it threw sends a reader looking
+		// for an exception.
+		if (Std.isOfType(error, RPCTimeoutError)) {
+			Logger.error(who + ' did not answer in time: ' + error.message);
+		} else {
+			Logger.error(who + ' threw: ' + Std.string(error));
+		}
 	}
 
 	/**
