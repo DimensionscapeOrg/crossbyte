@@ -81,7 +81,69 @@ class RPCTransportTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A large answer goes in pieces between the frames sent after it, so a
+		small call made just after a large one is answered first, and the
+		large one arrives whole. Before, the small answer waited behind every
+		byte of the large one; and over a WebSocket an answer past the
+		session's 1 MiB `maxMessageSize` did not arrive at all.
+	**/
+	public function testALargeAnswerOverTcpDoesNotHoldUpASmallOne():Void {
+		largeThenSmallOver("tcp");
+	}
+
+	public function testALargeAnswerOverAWebSocketDoesNotHoldUpASmallOne():Void {
+		#if (cpp || jvm || java)
+		largeThenSmallOver("ws");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testALargeAnswerOverReliableUdpDoesNotHoldUpASmallOne():Void {
+		if (!crossbyte.net.DatagramSocket.isSupported) {
+			Assert.pass();
+			return;
+		}
+		largeThenSmallOver("rudp");
+	}
+
 	// ------------------------------------------------------------------
+
+	private static function largeThenSmallOver(scheme:String):Void {
+		var handler = new BurstHandler();
+		var host:NetHost = null;
+		var session:RPCSession<BurstCommands> = null;
+		var accepted:Int = 0;
+		try {
+			host = new NetHost(scheme + "://127.0.0.1:0", (connection:INetConnection) -> {
+				final answering = new RPCSession(connection, null, handler);
+				accepted++;
+			});
+			host.listen();
+			pumpUntil(() -> host.localPort != 0, 2.0);
+			var commands = new BurstCommands();
+			var connection = new NetConnection(scheme + "://127.0.0.1:" + host.localPort + (scheme == "ws" ? "/" : ""));
+			session = new RPCSession<BurstCommands>(connection, commands);
+			pumpUntil(() -> session.up && accepted > 0 && session.peerVersion > 0, 5.0);
+			Assert.isTrue(session.up, '$scheme: the session never came up');
+			final size:Int = 4 * 1024 * 1024;
+			final done:Array<String> = [];
+			final large = commands.large(size);
+			large.then(_ -> done.push("large"), _ -> done.push("large failed"));
+			final small = commands.small(9);
+			small.then(_ -> done.push("small"), _ -> done.push("small failed"));
+			pumpUntil(() -> large.completed && small.completed, 20.0);
+			Assert.same(["small", "large"], done, '$scheme: the answers came as ' + done + " " + large.error);
+			Assert.isTrue(large.succeeded && large.result.length == size && large.result.get(size - 1) == ((size - 1) * 13) & 0xFF,
+				'$scheme: the large answer did not arrive whole');
+			Assert.equals(9, small.result);
+		} catch (e:Dynamic) {
+			closeQuietly(session, host);
+			throw e;
+		}
+		closeQuietly(session, host);
+	}
 
 	private static function burstOver(scheme:String):Void {
 		var handler = new BurstHandler();
@@ -178,6 +240,10 @@ private class BurstCommands extends RPCCommands {
 	@:rpc public function store(id:Int, blob:Bytes):Void {}
 
 	@:rpc public function echo(id:Int, blob:Bytes):RPCResponse<Bytes> {}
+
+	@:rpc public function large(size:Int):RPCResponse<Bytes> {}
+
+	@:rpc public function small(value:Int):RPCResponse<Int> {}
 }
 
 private class BurstHandler extends RPCHandler {
@@ -191,5 +257,17 @@ private class BurstHandler extends RPCHandler {
 
 	@:rpc public function echo(id:Int, blob:Bytes):Bytes {
 		return blob;
+	}
+
+	@:rpc public function large(size:Int):Bytes {
+		final bytes = Bytes.alloc(size);
+		for (i in 0...size) {
+			bytes.set(i, (i * 13) & 0xFF);
+		}
+		return bytes;
+	}
+
+	@:rpc public function small(value:Int):Int {
+		return value;
 	}
 }

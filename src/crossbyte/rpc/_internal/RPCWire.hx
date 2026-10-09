@@ -31,6 +31,42 @@ class RPCWire {
 		deadline and each call it need no longer answer.
 	**/
 	public static inline final CAPABILITY_CALL_CONTROL:Int = 0x01;
+
+	/**
+		A frame of its own carrying a piece of an answer too long to send at
+		once, so that the frames sent while it goes are not held up behind
+		it, as HTTP/2's DATA frames are:
+
+		```
+		u32      length        5 + the rest
+		u8       flags         FLAG_CHUNK, with FLAG_CHUNK_END on the last piece
+		i32      stream        which answer it is a piece of, in the op's place
+		varuint  total         on the first piece only: the answer's frame
+		                       length, what its own length would have said
+		...      the piece     the answer's frame after its length, in order
+		```
+
+		The pieces of one answer, joined, are its frame after its length: the
+		first carries its flags and op, and the rest follow, `total` bytes in
+		all. A reader holds them until the last, then reads the frame as if
+		it had come whole. At most
+		`MAX_CHUNK_STREAMS` answers go in pieces at once, and each counts
+		toward `RPCSession.maxFrameLength`. Only answers are sent so, and only
+		to a peer whose hello declared `CAPABILITY_CHUNKS`.
+	**/
+	public static inline final FLAG_CHUNK:Int = 0x40;
+
+	/** On the last piece of a `FLAG_CHUNK` stream. **/
+	public static inline final FLAG_CHUNK_END:Int = 0x80;
+
+	/** The bytes before a piece's own: its length, flags and stream. **/
+	public static inline final CHUNK_HEAD:Int = 9;
+
+	/** The most answers that go in pieces at once, one way on a connection; the rest wait their turn. **/
+	public static inline final MAX_CHUNK_STREAMS:Int = 4;
+
+	/** The capability, in a hello, of reading `FLAG_CHUNK` frames. **/
+	public static inline final CAPABILITY_CHUNKS:Int = 0x02;
 	public static inline final MIN_PAYLOAD_LEN:Int = 5;
 
 	// What refused a call, after an error answer's message: a varuint, left
@@ -131,13 +167,13 @@ class RPCWire {
 
 	/**
 		The capabilities a session of this build declares in its hello, a bit
-		each: in 1.0, `CAPABILITY_CALL_CONTROL`. A release that adds a flag, a
+		each: in 1.0, `CAPABILITY_CALL_CONTROL` and `CAPABILITY_CHUNKS`. A release that adds a flag, a
 		kind of frame, a kind of runtime value or compression gives it a bit,
 		sets the bit in its own hello, and uses the feature towards a peer
 		only once that peer's hello has set it; a peer that sent no hello has
 		none.
 	**/
-	public static inline final CAPABILITIES:Int = CAPABILITY_CALL_CONTROL;
+	public static inline final CAPABILITIES:Int = CAPABILITY_CALL_CONTROL | CAPABILITY_CHUNKS;
 
 	/** Where a frame being read ends when nothing has said: nowhere. **/
 	public static inline final NO_FRAME_END:Int = 0x7FFFFFFF;

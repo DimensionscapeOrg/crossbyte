@@ -405,6 +405,21 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `peerAnswersFingerprint` and `onHello`.
 - `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
+- Large answers in pieces: an answer longer than `RPCSession.chunkLength`
+  (64 KiB) goes in pieces between the frames sent while it goes, as HTTP/2's
+  DATA frames do, so a small call behind a large answer is not held up for
+  the whole of it. Natively over loopback TCP, with a 64 MB answer in flight
+  a small call took 3 ms (p50) and 15 ms (p99) where it took 56 and 98, the
+  large answer going as fast; over reliable UDP, behind an 8 MB answer,
+  2.7 ms where it took 22. Over a WebSocket an answer past its 1 MiB
+  `maxMessageSize` now arrives, where it closed the connection, and over
+  reliable UDP one past its 256 KB `maxOutputBufferSize`, where it ended
+  the session. Up to four answers go at once; what waits
+  counts toward `maxOutputPending`, and each answer toward the reader's
+  `maxFrameLength`. Negotiated in the hello, so a peer without it gets whole
+  answers. Calls keep their order; an answer in pieces can complete after a
+  frame sent later, and `chunkLength = 0` sends every answer whole. The
+  guide's "On the wire" describes every frame.
 - `RPCSession.maxOutputPending` (16 MiB): over TCP or WebSocket, a peer that
   sends calls and never reads their answers is closed once that much waits
   unsent for it, where every answer waited in memory without end (one such

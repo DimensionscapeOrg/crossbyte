@@ -55,6 +55,56 @@ abstract class NetConnectionBase implements CloseObservable {
 	/** Whether `__bytesPending` can say anything but 0, so a sender that asks only asks those that can. **/
 	@:noCompletion public var __holdsOutput:Bool = false;
 
+	/**
+		Whether `__bytesQueued` says how much of what was sent waits to go
+		(TCP, WebSocket and reliable UDP), so that a sender with more to send
+		than it should hand over at once can pace itself by it: an `RPCSession`
+		sending a large answer in chunks.
+	**/
+	@:noCompletion public var __paces:Bool = false;
+
+	/**
+		The bytes sent on this connection that have not gone out yet: unsent
+		in its buffer, or held back by a congestion window. 0 where it cannot
+		say; see `__paces`.
+	**/
+	@:noCompletion public function __bytesQueued():Int {
+		return __bytesPending();
+	}
+
+	/**
+		The most `__bytesQueued` may reach before the transport's own
+		`outputOverflowPolicy` acts (a reliable UDP session's
+		`maxOutputBufferSize`), so a sender pacing itself stays under it; 0
+		for none.
+	**/
+	@:noCompletion public function __queueLimit():Int {
+		return 0;
+	}
+
+	/**
+		Has `room` called once, on the connection's thread, when what waits
+		unsent (`__bytesQueued`) has gone under `below`: a paced sender that
+		has stopped told when to go on, rather than asking at every tick.
+		`false` where the transport cannot tell, and the sender asks.
+	**/
+	@:noCompletion public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		return false;
+	}
+
+	/**
+		Sends `length` bytes of `data` from `offset`, as `send` sends the
+		whole of a `ByteArray`, and copied as `send` copies: a sender sending
+		part of a buffer in place. Copied here into one of its own for a
+		connection that has nothing better.
+	**/
+	@:noCompletion public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		final part = new ByteArray();
+		part.writeBytes(data, offset, length);
+		part.position = 0;
+		send(part);
+	}
+
 	// Told as the connection ends, and as it becomes ready, before the
 	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
