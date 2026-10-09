@@ -155,6 +155,51 @@ class HTTPServerSpreadTest extends utest.Test {
 	}
 
 	/**
+		A runtime that exits gives back the places its connections held under
+		`maxConnections`: they will never be served again, and kept counted
+		they would refuse connections for as long as the server ran.
+	**/
+	@:timeout(30000)
+	public function testARuntimeThatExitsGivesBackItsConnectionsPlaces():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var seen:Deque<Arrival> = new Deque();
+
+		var server:HTTPServer = SpreadSupport.on(acceptor, () -> {
+			var config = __config(seen);
+			config.maxConnections = 3;
+			config.runtimes = [first, second];
+			return new HTTPServer(config);
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		var onFirst:Int = 0;
+		for (i in 0...3) {
+			var client = SpreadSupport.connect(server.localPort);
+			clients.push(client);
+			Assert.equals(200, HttpWire.get(client, '/n$i').status);
+			var arrival:Null<Arrival> = SpreadSupport.pop(seen, WAIT);
+			if (arrival != null && arrival.runtime == first) {
+				onFirst++;
+			}
+		}
+		Assert.isTrue(onFirst > 0, "no connection landed on the runtime that exits");
+		Assert.equals(3, server.__spread.connections);
+
+		SpreadSupport.stop([first]);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.connections == 3 - onFirst, WAIT),
+			'a runtime that exited kept its places: ${server.__spread.connections} counted, $onFirst were on it');
+		var again = SpreadSupport.connect(server.localPort);
+		clients.push(again);
+		Assert.equals(200, HttpWire.get(again, "/again").status, "a place given back by a runtime that exited was not taken");
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, second]);
+	}
+
+	/**
 		The rate limiter keeps one budget per client across every runtime:
 		a client whose connections land on two runtimes gets the budget
 		once, not once per runtime.

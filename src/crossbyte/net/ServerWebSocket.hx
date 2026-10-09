@@ -253,8 +253,9 @@ class ServerWebSocket extends ServerSocket {
 	/** The default `maxPendingHandshakesPerAddress`: 16. **/
 	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = ServerSocket.DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
 
-	// Sessions open, or opening, counted against maxConnections where the
-	// server is on one runtime; a spread server counts in its ServerSpread.
+	// Sessions open, or opening, counted against maxConnections. A spread
+	// server's limit is checked in its ServerSpread, and each replica keeps
+	// its own share here, to give back if its runtime exits.
 	@:noCompletion private var __sessionsCounted:Int = 0;
 
 	// The address `admit` was last asked about and agreed to.
@@ -739,7 +740,11 @@ class ServerWebSocket extends ServerSocket {
 		var limit:Int = maxConnections > 0 ? maxConnections : 0x7FFFFFFF;
 		#if (target.threaded && !js)
 		if (__shared != null) {
-			return __shared.claimConnection(limit);
+			if (!__shared.claimConnection(limit)) {
+				return false;
+			}
+			__sessionsCounted++;
+			return true;
 		}
 		#end
 		if (__sessionsCounted >= limit) {
@@ -751,16 +756,31 @@ class ServerWebSocket extends ServerSocket {
 
 	/** A session counted by `__claimSession` has closed, or did not open. **/
 	@:noCompletion private function __releaseSession():Void {
+		if (__sessionsCounted <= 0) {
+			return;
+		}
+		__sessionsCounted--;
 		#if (target.threaded && !js)
 		if (__shared != null) {
 			__shared.releaseConnections(1);
-			return;
 		}
 		#end
-		if (__sessionsCounted > 0) {
-			__sessionsCounted--;
-		}
 	}
+
+	#if (target.threaded && !js)
+	/**
+		On a replica, as its runtime exits: besides what `ServerSocket` settles,
+		the places its sessions hold under the server's `maxConnections` are
+		given back, since they will never be served again.
+	**/
+	@:noCompletion override public function __runtimeExited():Void {
+		super.__runtimeExited();
+		if (__shared != null && __sessionsCounted > 0) {
+			__shared.releaseConnections(__sessionsCounted);
+		}
+		__sessionsCounted = 0;
+	}
+	#end
 
 	/**
 		When a session accepted at `since` is given up on: `handshakeTimeout`

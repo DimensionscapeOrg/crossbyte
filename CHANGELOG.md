@@ -151,7 +151,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - One server on several cores: `ServerSocket.runtimes`, `runtimeCount` and
   `selectRuntime` hand each accepted connection to a runtime, and
   `reusePort` gives each runtime its own listener on Linux. Natively, on
-  the jvm, hl, neko and the interpreter.
+  the jvm, hl, neko and the interpreter. A runtime that exits gives back
+  the places its connections held under `maxConnections`, on a
+  `ServerSocket`, an `HTTPServer` or a `ServerWebSocket`.
 - `IOErrorEvent.TIMEOUT_ERROR_ID` marks a connect that timed out, and a
   `NetConnection` reports it as `Reason.Timeout`.
 - `userData` on `Socket`, `ReliableDatagramSocket`, `DataChannel` and

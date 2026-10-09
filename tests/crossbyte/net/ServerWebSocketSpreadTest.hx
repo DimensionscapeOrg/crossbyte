@@ -330,6 +330,54 @@ class ServerWebSocketSpreadTest extends utest.Test {
 	}
 
 	/**
+		A runtime that exits gives back the places its sessions held under
+		`maxConnections`: they will never be served again, and kept counted
+		they would refuse sessions for as long as the server ran.
+	**/
+	@:timeout(30000)
+	public function testARuntimeThatExitsGivesBackItsSessionsPlaces():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+
+		var server:ServerWebSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerWebSocket();
+			server.runtimes = [first, second];
+			server.maxConnections = 3;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(_) {});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		for (i in 0...3) {
+			var client = WebSocketWire.open(server.localPort);
+			Assert.notNull(client, 'session $i was refused under the limit');
+			if (client != null) {
+				clients.push(client);
+			}
+		}
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 3, WAIT), 'clientCount is ${server.clientCount}, not 3');
+		var onFirst:Int = SpreadSupport.on(first, () -> (cast server.__spread.replicas[0] : ServerWebSocket).__clients.length);
+		Assert.isTrue(onFirst > 0, "no session opened on the runtime that exits");
+		Assert.equals(3, server.__spread.connections);
+
+		SpreadSupport.stop([first]);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.connections == 3 - onFirst, WAIT),
+			'a runtime that exited kept its places: ${server.__spread.connections} counted, $onFirst were on it');
+		var next = WebSocketWire.open(server.localPort);
+		Assert.notNull(next, "a place given back by a runtime that exited was not taken");
+		if (next != null) {
+			clients.push(next);
+		}
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, second]);
+	}
+
+	/**
 		`maxPendingHandshakesPerAddress` counts an address's connections
 		upgrading on every runtime together: one silent address takes half
 		the places and no more, and the rest of its connections are closed

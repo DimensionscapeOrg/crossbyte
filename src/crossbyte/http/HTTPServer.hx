@@ -543,6 +543,21 @@ class HTTPServer extends ServerSocket {
 		#end
 	}
 
+	#if (target.threaded && !js)
+	/**
+		On a replica, as its runtime exits: besides what `ServerSocket` settles,
+		the places its connections hold under the server's `maxConnections`
+		are given back, since they will never be served again.
+	**/
+	@:noCompletion override public function __runtimeExited():Void {
+		super.__runtimeExited();
+		if (__shared != null && __connections > 0) {
+			__shared.releaseConnections(__connections);
+		}
+		__connections = 0;
+	}
+	#end
+
 	/**
 	 * Hands a connection to the frame layer.
 	 *
