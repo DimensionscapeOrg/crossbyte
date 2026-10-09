@@ -42,7 +42,7 @@ class RPCEdgesTest extends utest.Test {
 	public function testAHandlerThrowingIsAnInternalErrorToItsCaller():Void {
 		final edge = new Edge();
 		final response = edge.commands.boom();
-		Assert.isTrue(Type.enumEq(RPCFailure.Refused(RPCError.INTERNAL_MESSAGE), response.failure));
+		Assert.isTrue(Type.enumEq(RPCFailure.HandlerFailed, response.failure));
 		Assert.equals(1, edge.reported.length, "the throw was not reported where it happened");
 		Assert.stringContains("boom", edge.reported[0]);
 		edge.stillAnswers();
@@ -52,8 +52,8 @@ class RPCEdgesTest extends utest.Test {
 		final edge = new Edge();
 		final response = edge.commands.missing();
 		edge.commands.missingThen(edge.told);
-		Assert.isTrue(Type.enumEq(RPCFailure.Refused(RPCError.UNKNOWN_METHOD_MESSAGE), response.failure));
-		Assert.isTrue(Type.enumEq(RPCFailure.Refused(RPCError.UNKNOWN_METHOD_MESSAGE), edge.told.failures[0]));
+		Assert.isTrue(Type.enumEq(RPCFailure.UnknownMethod, response.failure));
+		Assert.isTrue(Type.enumEq(RPCFailure.UnknownMethod, edge.told.failures[0]));
 		edge.stillAnswers();
 	}
 
@@ -128,7 +128,7 @@ class RPCEdgesTest extends utest.Test {
 		call.writeVarUInt(requestId);
 		call.writeByte(7);
 		edge.link.client.send(frameOf(call));
-		Assert.isTrue(Type.enumEq(RPCFailure.Refused(RPCError.UNREADABLE_MESSAGE), (cast waiting : RPCResponse<Int>).failure));
+		Assert.isTrue(Type.enumEq(RPCFailure.UnreadableArguments, (cast waiting : RPCResponse<Int>).failure));
 		edge.stillAnswers();
 	}
 

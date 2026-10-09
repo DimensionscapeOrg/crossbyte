@@ -38,10 +38,11 @@ class RPCResponse<T> extends Future<T> {
 
 	/**
 		Why the call failed, typed as a receiver is told it: `TimedOut`,
-		`Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)` for
-		an `RPCError` from the other side (one of its messages, such as
-		`RPCError.UNKNOWN_METHOD_MESSAGE`, or its handler's own), `Unsent` or
-		`Unreadable`. `null` while it waits and once it has succeeded.
+		`Cancelled`, `Stopped`, `Disconnected(reason)`, `Unsent` or
+		`Unreadable`; and for a call the other side refused, what refused it:
+		`Refused(message)` for its handler's own `RPCError`, `UnknownMethod`,
+		`UnreadableArguments`, `Busy`, `NoHandler`, `HandlerTimedOut` or
+		`HandlerFailed`. `null` while it waits and once it has succeeded.
 
 		Worked out from `error` and `cause` as it is read, so a call that never
 		asks pays nothing for it.

@@ -135,6 +135,19 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		Logger.error("An RPC receiver threw and was contained: " + Std.string(error));
 	}
 
+	/** The failure of a call the other side refused with `message`, as `code` (`RPCWire.REFUSED_*`) says. **/
+	public static function refusal(code:Int, message:String):RPCFailure {
+		return switch (code) {
+			case RPCWire.REFUSED_HANDLER_FAILED: HandlerFailed;
+			case RPCWire.REFUSED_UNKNOWN_METHOD: UnknownMethod;
+			case RPCWire.REFUSED_UNREADABLE: UnreadableArguments;
+			case RPCWire.REFUSED_BUSY: Busy;
+			case RPCWire.REFUSED_NO_HANDLER: NoHandler;
+			case RPCWire.REFUSED_HANDLER_TIMEOUT: HandlerTimedOut;
+			case _: Refused(message);
+		}
+	}
+
 	/**
 		The failure a receiver is told of, from what an `RPCResponse` would
 		have failed with.
@@ -156,7 +169,8 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 			return TimedOut;
 		}
 		if (Std.isOfType(cause, RPCError)) {
-			return Refused(message);
+			final passed:Null<RPCRefusal> = Std.downcast(cause, RPCRefusal);
+			return passed != null ? refusal(passed.code, message) : Refused(message);
 		}
 		if (Std.isOfType(cause, ArgumentError) || Std.isOfType(cause, IllegalOperationError)
 			|| StringTools.startsWith(message, RPCSession.UNSENT_PREFIX)) {

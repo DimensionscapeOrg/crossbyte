@@ -402,24 +402,47 @@ abstract class RPCCommands {
 	}
 
 	/**
-		Fails a waiting call with the error the other side answered it with.
-		Its handler meant this caller to see it, so the failure's cause is an
-		`RPCError`: a handler here answering with this response (forwarding
-		it) passes the message on, as it would one it threw.
+		An error answer to the call `requestId`, from the generated reader,
+		`input` at its message: the call fails with it, typed by the code of
+		what refused it. A refusal the other side's session made is told with
+		its message as this side has it, so no string is read for one. One
+		that does not read fails its call, and the connection carries on.
 	**/
-	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
+	@:noCompletion private function __rejectFrom(op:Int, requestId:Int, input:ByteArrayInput):Void {
+		var message:String = null;
+		var code:Int = RPCWire.REFUSED_BY_HANDLER;
+		try {
+			code = RPCWire.refusalCode(input, __frameEnd);
+			message = code != RPCWire.REFUSED_BY_HANDLER ? RPCWire.refusalMessage(code) : input.readVarUTF();
+			RPCWire.requireWithin(input, __frameEnd);
+		} catch (error:Dynamic) {
+			__rejectUnreadableResponse(op, requestId, error);
+			return;
+		}
+		__rejectResponse(op, requestId, message, code);
+	}
+
+	/**
+		Fails a waiting call with the error the other side answered it with,
+		`message`, refused as `code` says (`RPCWire.REFUSED_*`). The other
+		side meant this caller to see it, so the failure's cause is an
+		`RPCError`: a handler here answering with this response (forwarding
+		it) passes the refusal on, as it would one it threw.
+	**/
+	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String, code:Int):Void {
 		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
 		}
 		if (response.__pooled) {
-			// Told with the message, and no RPCError made to carry it.
+			// Told with the failure, and no RPCError made to carry it: a
+			// refusal the session made is a single value.
 			final call:RPCReceiverCall = cast response;
 			final id:Int = call.requestId;
-			RPCReceiverCall.tell(call.finish(), id, RPCFailure.Refused(message));
+			RPCReceiverCall.tell(call.finish(), id, RPCReceiverCall.refusal(code, message));
 			return;
 		}
-		response.__fail(message, new RPCError(message));
+		response.__fail(message, RPCSession.__refusalError(message, code));
 	}
 
 	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {

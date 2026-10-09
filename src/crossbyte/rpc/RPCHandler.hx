@@ -228,7 +228,7 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 			return true;
 		}
 		if (requestId != 0) {
-			session.__sendCompiledError(op, requestId, RPCError.BUSY_MESSAGE);
+			session.__sendCompiledError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY);
 		}
 		return false;
 	}
@@ -301,7 +301,8 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 	/** Answers a request `beforeCall` refused; a refused one-way call has nobody to tell. **/
 	@:noCompletion private function __rpc_refuse(op:Int, requestId:Int, refusal:RPCError):Void {
 		if (requestId != 0 && this_session != null) {
-			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
+			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE,
+				RPCSession.__refusalOf(refusal, refusal.message));
 		}
 	}
 
