@@ -1346,6 +1346,168 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		One pass of datagrams of every size up to the largest UDP carries,
+		mixed, and more of them than the runtime's pool of chunks holds:
+		natively each lies whole in one chunk, every chunk but the pass's last
+		is filled as far as the next datagram allows, and once the pass has
+		gone its chunks are back in the pool. Every datagram arrives whole
+		and in order.
+	**/
+	public function testAPassOfEverySizeGoesWholeFromItsChunks():Void {
+		#if (cpp || jvm)
+		if (!requireDatagramSupport()) return;
+
+		var sender = new DatagramSocket();
+		var receiver = new DatagramSocket();
+		var got:Array<String> = [];
+		var wrong:Array<String> = [];
+		try {
+			if (DatagramSocket.bufferSizeSupported) {
+				receiver.receiveBufferSize = 8 * 1024 * 1024;
+				// The largest datagram needs it on macOS.
+				sender.sendBufferSize = 128 * 1024;
+			}
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				var index:Int = indexOf(e.data);
+				var problem:Null<String> = wrongIn(e.data, index);
+				if (problem != null) {
+					wrong.push(problem);
+				}
+				got.push(index + "/" + e.data.length);
+			});
+			receiver.receive();
+			sender.bind(0, "127.0.0.1");
+			var target = sender.__resolveTarget("127.0.0.1", receiver.localPort);
+
+			// Every size from 4 (the index) to 65,507, the largest over IPv4,
+			// small and large in turn, so chunks end on every kind of remainder.
+			var sizes:Array<Int> = [4, 65507, 5, 65000, 1200, 32769, 32768, 64 * 1024 - 1000, 999, 65507, 65507, 1];
+			var step:Int = 4;
+			while (step < 65507) {
+				sizes.push(step);
+				step = step * 3 + 1;
+			}
+			for (i in 0...40) {
+				sizes.push(1 + (i * 7919) % 65507);
+			}
+			var expected:Array<String> = [];
+			var total:Int = 0;
+			for (i in 0...sizes.length) {
+				var length:Int = sizes[i] < 4 ? 4 : sizes[i];
+				var bytes:haxe.io.Bytes = numbered(i, length);
+				sender.__sendInPass(bytes, 0, length, target, null);
+				expected.push(i + "/" + length);
+				total += length;
+			}
+
+			#if cpp
+			var pool = CrossByte.current().__datagramChunks();
+			var chunks:Int = sender.__outChunks.length;
+			Assert.isTrue(chunks > crossbyte._internal.net.DatagramChunks.SPARE, 'a pass of $total bytes took $chunks chunks, no more than the pool keeps');
+			Assert.isTrue(chunks * crossbyte._internal.net.DatagramChunks.CHUNK_SIZE >= total, 'a pass of $total bytes in $chunks chunks');
+			Assert.equals(chunks, pool.inUse, "the chunks the pass holds are not those the pool has out");
+			var spans:Array<Int> = sender.__outSpans;
+			var lastChunk:Int = 0;
+			for (k in 0...sizes.length) {
+				var chunk:Int = spans[3 * k];
+				var at:Int = spans[3 * k + 1];
+				var length:Int = spans[3 * k + 2];
+				if (at + length > crossbyte._internal.net.DatagramChunks.CHUNK_SIZE) {
+					wrong.push('datagram $k runs past its chunk: $at + $length');
+				}
+				if (chunk != lastChunk && chunk != lastChunk + 1) {
+					wrong.push('datagram $k skipped from chunk $lastChunk to $chunk');
+				}
+				if (chunk == lastChunk + 1 && k > 0) {
+					// A new chunk only when the datagram did not fit the last.
+					var end:Int = spans[3 * (k - 1) + 1] + spans[3 * (k - 1) + 2];
+					if (end + length <= crossbyte._internal.net.DatagramChunks.CHUNK_SIZE) {
+						wrong.push('datagram $k went to a new chunk with room in the last');
+					}
+				}
+				lastChunk = chunk;
+			}
+			var idleBefore:Int = pool.idle;
+			@:privateAccess CrossByte.current().__flushHeld();
+			Assert.equals(0, sender.__outChunks.length, "the pass kept its chunks after it was sent");
+			Assert.equals(0, pool.inUse, "chunks were still out of the pool once the pass had gone");
+			Assert.equals(idleBefore + chunks, pool.idle, "the pass's chunks did not go back to the pool");
+			#end
+
+			pumpUntil(() -> got.length >= expected.length, 5.0);
+			Assert.same(expected, got, 'what arrived: ${got.length} of ${expected.length}');
+			Assert.same([], wrong, "datagrams were not as sent");
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(receiver);
+			throw e;
+		}
+		closeQuietly(sender);
+		closeQuietly(receiver);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		The pool keeps every chunk while chunks are being taken, up to the
+		most a pass held since it was last asked, so a server broadcasting
+		every frame takes nothing new; once a whole interval passes with none
+		taken, it keeps one. Asked by the registry every few seconds; asked
+		directly here.
+	**/
+	public function testThePoolOfChunksKeepsABurstWhileBusyAndLetsItGoWhenQuiet():Void {
+		#if cpp
+		var pool = new crossbyte._internal.net.DatagramChunks(null);
+		function pass(count:Int):Array<haxe.io.Bytes> {
+			var taken = [for (_ in 0...count) pool.take()];
+			for (chunk in taken) {
+				pool.give(chunk);
+			}
+			return taken;
+		}
+
+		var first = pass(20);
+		Assert.equals(20, pool.idle, "a pass's chunks were not kept for the next");
+		var second = pass(20);
+		var reused:Int = 0;
+		for (chunk in second) {
+			if (first.indexOf(chunk) >= 0) {
+				reused++;
+			}
+		}
+		Assert.equals(20, reused, "a second pass as large as the first made chunks of its own");
+
+		// Busy: a pass since the last ask keeps the most it needed.
+		pass(5);
+		Assert.isTrue(pool.__releaseIfQuiet(), "a busy pool stopped being asked");
+		Assert.equals(20, pool.idle, "a busy pool let go of what its largest pass needed");
+
+		// Smaller passes since: the next ask keeps what they needed.
+		pass(5);
+		Assert.isTrue(pool.__releaseIfQuiet());
+		Assert.equals(5, pool.idle, "a pool kept a burst past the interval after it");
+
+		// Quiet: nothing taken for a whole interval.
+		Assert.isFalse(pool.__releaseIfQuiet(), "a quiet pool holding its spare went on being asked");
+		Assert.equals(crossbyte._internal.net.DatagramChunks.SPARE, pool.idle, "a quiet pool kept more than its spare");
+
+		// Chunks out when asked are not counted against the pool.
+		var out = [for (_ in 0...3) pool.take()];
+		Assert.isFalse(pool.__releaseIfQuiet());
+		Assert.equals(3, pool.inUse);
+		for (chunk in out) {
+			pool.give(chunk);
+		}
+		Assert.equals(3, pool.idle);
+		Assert.equals(0, pool.inUse);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		Datagrams from two peers in turn, each reported as from its own: the
 		source a datagram names is kept from one to the next, and must not be
 		kept past a change of sender.

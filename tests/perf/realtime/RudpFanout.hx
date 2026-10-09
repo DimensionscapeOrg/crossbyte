@@ -97,6 +97,16 @@ class RudpFanout extends HostApplication {
 	}
 	#end
 
+	/** Chunks the runtime's datagram sockets hold, in use or kept. **/
+	static function chunksKept():Int {
+		#if (cpp && !rt_before)
+		var pool = @:privateAccess crossbyte.core.CrossByte.current().__datagramChunks();
+		return pool.idle + pool.inUse;
+		#else
+		return 0;
+		#end
+	}
+
 	function allAcknowledged():Bool {
 		for (s in accepted) {
 			if ((s.__windowBase : Int) != (s.__outSequence : Int)) {
@@ -172,6 +182,7 @@ class RudpFanout extends HostApplication {
 		function round(measureHeld:Bool, messages:Int):Float {
 			var want = got + sessions * messages;
 			var before:Float = measureHeld ? heap() : 0;
+			var chunksBefore:Int = chunksKept();
 			var t0 = Timer.stamp();
 			for (_ in 0...messages) {
 				if (mode == "prepared") {
@@ -199,7 +210,9 @@ class RudpFanout extends HostApplication {
 				#if cpp
 				@:privateAccess server.__socket.__flushPass();
 				#end
-				held = (heap() - before) / messages;
+				// Less the chunks the pass's datagrams took from the runtime's
+				// pool, which it keeps for the next pass, not for the sessions.
+				held = (heap() - before - (chunksKept() - chunksBefore) * 65536.0) / messages;
 			}
 			calls.push((t1 - t0) / messages);
 			var limit = Timer.stamp() + 30;
@@ -213,12 +226,6 @@ class RudpFanout extends HostApplication {
 			return held;
 		}
 
-		// The socket batches a pass's datagrams in a buffer it grows to twice
-		// the largest pass and keeps: grown now, so the ten messages' pass does
-		// not count it as held by the sessions.
-		#if cpp
-		@:privateAccess server.__socket.__outBytes = haxe.io.Bytes.alloc(sessions * (size + 64) * 10 * 2 + 65536);
-		#end
 		var held = round(true, 10);
 		calls = [];
 		rounds = [];

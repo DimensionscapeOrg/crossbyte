@@ -653,11 +653,11 @@ static bool crossbyte_gso_refused(int error) {
 }
 
 // How many datagrams from `first` form a run worth cutting from one send:
-// to one peer, lying end to end, each as long as the first but the last,
-// which may be shorter. At most 64 of them and 65,000 bytes, which every
-// kernel that cuts at all accepts.
+// to one peer, lying end to end in one chunk, each as long as the first but
+// the last, which may be shorter. At most 64 of them and 65,000 bytes, which
+// every kernel that cuts at all accepts.
 static int crossbyte_gso_run(Array<int> spans, Array<Dynamic> targets, int first, int count, int& total) {
-	int segment = spans[2 * first + 1];
+	int segment = spans[3 * first + 2];
 	total = segment;
 	if (segment <= 0) {
 		return 1;
@@ -665,8 +665,9 @@ static int crossbyte_gso_run(Array<int> spans, Array<Dynamic> targets, int first
 	int run = 1;
 	while (first + run < count && run < 64) {
 		int k = first + run;
-		int length = spans[2 * k + 1];
-		if (targets[k].mPtr != targets[first].mPtr || spans[2 * k] != spans[2 * first] + total
+		int length = spans[3 * k + 2];
+		if (targets[k].mPtr != targets[first].mPtr || spans[3 * k] != spans[3 * first]
+				|| spans[3 * k + 1] != spans[3 * first + 1] + total
 				|| length <= 0 || length > segment || total + length > 65000) {
 			break;
 		}
@@ -681,32 +682,47 @@ static int crossbyte_gso_run(Array<int> spans, Array<Dynamic> targets, int first
 }
 #endif
 
+// Where datagram `k` of a batch starts: in chunk `spans[3k]`, at
+// `spans[3k + 1]` (checked by crossbyte_socket_send_batch first).
+static inline const char* crossbyte_batch_data(Array<Dynamic>& chunks, Array<int>& spans, int k) {
+	Array<unsigned char> chunk = chunks[spans[3 * k]];
+	return (const char*)chunk->GetBase() + spans[3 * k + 1];
+}
+
 /**
 	Sends datagrams `first` to `count` of a batch: datagram i is
-	`spans[2i + 1]` bytes of `buffer` from `spans[2i]`, to `targets[i]`, a
-	sys.net.Address. Answers how many went, from `first`, before one did not;
-	that one is for the caller to send alone, which raises what stopped it.
+	`spans[3i + 2]` bytes of chunk `spans[3i]` (one of `chunks`, each a
+	BytesData) from `spans[3i + 1]`, to `targets[i]`, a sys.net.Address.
+	Each datagram lies whole in one chunk, so the chunks need not follow one
+	another: each datagram's iovec points into its own. Answers how many
+	went, from `first`, before one did not; that one is for the caller to
+	send alone, which raises what stopped it.
 
-	On Linux a run to one peer (end to end, each the same length but the
-	last) goes as one send the kernel cuts up (UDP_SEGMENT): over loopback,
-	a seventh of the CPU a datagram that sending them one at a time costs.
-	The rest go 64 to a call with sendmmsg. Elsewhere each is a sendto.
+	On Linux a run to one peer (end to end in one chunk, each the same length
+	but the last) goes as one send the kernel cuts up (UDP_SEGMENT): over
+	loopback, a seventh of the CPU a datagram that sending them one at a time
+	costs. The rest go 64 to a call with sendmmsg. Elsewhere each is a sendto.
 **/
-int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Array<int> spans, Array<Dynamic> targets, int first, int count) {
+int crossbyte_socket_send_batch(Dynamic socket, Array<Dynamic> chunks, Array<int> spans, Array<Dynamic> targets, int first, int count) {
 	SOCKET nativeSocket = crossbyte_val_sock(socket);
-	int bufferLength = buffer->length;
-	if (first < 0 || count < first || count > targets->length || count > spans->length / 2) {
+	if (first < 0 || count < first || count > targets->length || count > spans->length / 3) {
 		hx::Throw(HX_CSTRING("Invalid batch"));
 	}
+	int chunkCount = chunks->length;
 	for (int i = first; i < count; ++i) {
-		int position = spans[2 * i];
-		int length = spans[2 * i + 1];
-		if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
+		int index = spans[3 * i];
+		int position = spans[3 * i + 1];
+		int length = spans[3 * i + 2];
+		if (index < 0 || index >= chunkCount) {
+			hx::Throw(HX_CSTRING("Invalid data position"));
+		}
+		Array<unsigned char> chunk = chunks[index];
+		int chunkLength = chunk.mPtr ? chunk->length : 0;
+		if (chunkLength <= 0 || position < 0 || length < 0 || position > chunkLength || length > chunkLength - position) {
 			hx::Throw(HX_CSTRING("Invalid data position"));
 		}
 	}
 
-	const char* data = bufferLength > 0 ? (const char*)&buffer[0] : "";
 	int sent = 0;
 	int i = first;
 
@@ -728,7 +744,7 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 				char control[CMSG_SPACE(sizeof(unsigned short))];
 				memset(control, 0, sizeof(control));
 				struct iovec whole;
-				whole.iov_base = (void*)(data + spans[2 * i]);
+				whole.iov_base = (void*)crossbyte_batch_data(chunks, spans, i);
 				whole.iov_len = total;
 				struct msghdr message;
 				memset(&message, 0, sizeof(message));
@@ -742,7 +758,7 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 				header->cmsg_level = SOL_UDP;
 				header->cmsg_type = UDP_SEGMENT;
 				header->cmsg_len = CMSG_LEN(sizeof(unsigned short));
-				*(unsigned short*)CMSG_DATA(header) = (unsigned short)spans[2 * i + 1];
+				*(unsigned short*)CMSG_DATA(header) = (unsigned short)spans[3 * i + 2];
 
 				hx::EnterGCFreeZone();
 				ssize_t result;
@@ -775,8 +791,8 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 					break;
 				}
 			}
-			pieces[n].iov_base = (void*)(data + spans[2 * k]);
-			pieces[n].iov_len = spans[2 * k + 1];
+			pieces[n].iov_base = (void*)crossbyte_batch_data(chunks, spans, k);
+			pieces[n].iov_len = spans[3 * k + 2];
 			SocketLen nameLength = 0;
 			crossbyte_dynamic_to_sockaddr(targets[k], names[n], nameLength);
 			memset(&messages[n], 0, sizeof(messages[n]));
@@ -809,16 +825,18 @@ int crossbyte_socket_send_batch(Dynamic socket, Array<unsigned char> buffer, Arr
 		sockaddr_storage name;
 		SocketLen nameLength = 0;
 		crossbyte_dynamic_to_sockaddr(targets[i], name, nameLength);
+		const char* data = crossbyte_batch_data(chunks, spans, i);
+		int length = spans[3 * i + 2];
 		hx::EnterGCFreeZone();
 		int result;
 #if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
-		result = sendto(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
+		result = sendto(nativeSocket, data, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
 #else
 		do {
-			result = sendto(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
+			result = sendto(nativeSocket, data, length, MSG_NOSIGNAL, reinterpret_cast<sockaddr*>(&name), nameLength);
 			// Connected: no address, as crossbyte_socket_send_to says.
 			if (result == SOCKET_ERROR && errno == EISCONN) {
-				result = send(nativeSocket, data + spans[2 * i], spans[2 * i + 1], MSG_NOSIGNAL);
+				result = send(nativeSocket, data, length, MSG_NOSIGNAL);
 			}
 		} while (result == SOCKET_ERROR && errno == EINTR);
 #endif

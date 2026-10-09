@@ -288,9 +288,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __arrivalOut:Bool = false;
 	#if cpp
 	// What senders handed this socket during the pass, gathered for one call
-	// when the pass ends; see __sendInPass. Kept between passes, emptied.
-	@:noCompletion private var __outBytes:Bytes = null;
-	@:noCompletion private var __outLength:Int = 0;
+	// when the pass ends; see __sendInPass. The datagrams lie in chunks of
+	// the runtime's pool (DatagramChunks), given back once they have gone:
+	// the chunks, the same as BytesData for the batch call, how much of the
+	// last is used, and the pool they came from. Per datagram, its chunk,
+	// position and length.
+	@:noCompletion private var __outChunks:Array<Bytes> = [];
+	@:noCompletion private var __outChunkData:Array<Dynamic> = [];
+	@:noCompletion private var __outFill:Int = 0;
+	@:noCompletion private var __outPool:crossbyte._internal.net.DatagramChunks = null;
 	@:noCompletion private var __outSpans:Array<Int> = [];
 	@:noCompletion private var __outTargets:Array<Dynamic> = [];
 	@:noCompletion private var __outSenders:Array<crossbyte._internal.net.DatagramSender> = [];
@@ -1796,7 +1802,10 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		this socket in the pass: on Linux in as few system calls as the
 		kernel allows (a run to one peer cut up by the kernel from a single
 		send, the rest 64 to a call), and elsewhere one send each.
-		`sender` is told if this one could not go.
+		`sender` is told if this one could not go. The bytes are copied into a
+		64 KB chunk of the runtime's pool (`DatagramChunks`) until then, so the
+		caller's buffer is its own again at once, and what a pass held goes
+		back to the pool when it has been sent.
 
 		A system call per datagram is most of what a server sending reliable
 		UDP spends: 5.9 us a 1,200-byte datagram on Windows, against 6.2 for
@@ -1817,21 +1826,27 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				runtime = CrossByte.current();
 			} catch (_:Dynamic) {}
 		}
-		if (runtime != null && !runtime.__didExit && __socket != null) {
-			var end:Int = __outLength + length;
-			if (__outBytes == null || __outBytes.length < end) {
-				var grown:Bytes = Bytes.alloc(end > 32768 ? end * 2 : 65536);
-				if (__outLength > 0) {
-					grown.blit(0, __outBytes, 0, __outLength);
+		// Past a chunk is past any datagram: sent at once, to fail as it would.
+		if (runtime != null && !runtime.__didExit && __socket != null && length <= crossbyte._internal.net.DatagramChunks.CHUNK_SIZE) {
+			var chunks:Array<Bytes> = __outChunks;
+			var last:Int = chunks.length - 1;
+			if (last < 0 || __outFill + length > crossbyte._internal.net.DatagramChunks.CHUNK_SIZE) {
+				if (last < 0) {
+					__outPool = runtime.__datagramChunks();
 				}
-				__outBytes = grown;
+				var chunk:Bytes = __outPool.take();
+				chunks.push(chunk);
+				__outChunkData.push(chunk.getData());
+				last++;
+				__outFill = 0;
 			}
-			__outBytes.blit(__outLength, bytes, offset, length);
-			__outSpans.push(__outLength);
+			chunks[last].blit(__outFill, bytes, offset, length);
+			__outSpans.push(last);
+			__outSpans.push(__outFill);
 			__outSpans.push(length);
 			__outTargets.push(target);
 			__outSenders.push(sender);
-			__outLength = end;
+			__outFill += length;
 			if (!__outQueued) {
 				__outQueued = true;
 				runtime.__queuePassFlush(this);
@@ -1885,7 +1900,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var failures:Array<String> = null;
 		var first:Int = 0;
 		while (first < count && __socket != null) {
-			first += crossbyte._internal.net.NativeSocketAddress.sendBatch(__socket, __outBytes.getData(), __outSpans, __outTargets, first, count);
+			first += crossbyte._internal.net.NativeSocketAddress.sendBatch(__socket, __outChunkData, __outSpans, __outTargets, first, count);
 			if (first >= count) {
 				break;
 			}
@@ -1894,7 +1909,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				var target:Address = __outTargets[stopped];
 				// A full send buffer: it and what follows are dropped.
-				if (@:privateAccess __socket.__trySendTo(__outBytes, __outSpans[2 * stopped], __outSpans[2 * stopped + 1], target) < 0) {
+				if (@:privateAccess __socket.__trySendTo(__outChunks[__outSpans[3 * stopped]], __outSpans[3 * stopped + 1], __outSpans[3 * stopped + 2],
+						target) < 0) {
 					break;
 				}
 			} catch (e:Dynamic) {
@@ -1906,12 +1922,18 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 					failures = [];
 				}
 				failed.push(stopped);
-				failures.push(__sendFailure(e, __outSpans[2 * stopped + 1]));
+				failures.push(__sendFailure(e, __outSpans[3 * stopped + 2]));
 			}
 		}
 
 		var senders:Array<crossbyte._internal.net.DatagramSender> = failed == null ? null : [for (i in failed) __outSenders[i]];
-		__outLength = 0;
+		var pool:crossbyte._internal.net.DatagramChunks = __outPool;
+		for (chunk in __outChunks) {
+			pool.give(chunk);
+		}
+		__outChunks.resize(0);
+		__outChunkData.resize(0);
+		__outFill = 0;
 		__outSpans.resize(0);
 		__outTargets.resize(0);
 		__outSenders.resize(0);
