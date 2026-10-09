@@ -775,6 +775,11 @@ says how.
 
 #### RPC
 
+- An RPC session over reliable UDP no longer copies each message that
+  arrives: the connection hands a reader that keeps nothing (a session
+  reading its frames) the message itself. An RPC call there and its answer
+  allocate nothing natively or on the JVM, where they allocated 344 and
+  168 bytes.
 - A `NetConnection` wrapping an `INetConnection` of your own stamps
   `outTimestamp` with its runtime's clock as it sends, as CrossByte's own
   transports do, rather than reading the wrapped connection's: on the jvm

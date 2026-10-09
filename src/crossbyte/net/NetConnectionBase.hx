@@ -33,6 +33,15 @@ abstract class NetConnectionBase implements CloseObservable {
 	/** Timestamp of the most recent outbound payload, in uptime seconds. */
 	public var outTimestamp:Float = 0.0;
 
+	/**
+		Set by a reader that reads all it is handed during the call and keeps
+		none of it, as an `RPCSession` reads its frames: a transport that
+		copies each arrival so its application may keep it (a reliable UDP
+		message) hands such a reader the arrival itself instead, valid only
+		during the call.
+	**/
+	@:noCompletion public var __borrowsInput:Bool = false;
+
 	// Told as the connection ends, and as it becomes ready, before the
 	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;

@@ -621,6 +621,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		old.__observeReady(null);
 		if (__readState == READ_ON) {
 			try {
+				(__connection : NetConnectionBase).__borrowsInput = false;
 				__connection.onData = __noData;
 				__connection.readEnabled = false;
 			} catch (_:Dynamic) {}
@@ -1105,6 +1106,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__connection.onData = __noData;
 			__connection.readEnabled = false;
 		}
+		// The session reads every frame it is handed during the call and
+		// keeps none of it, so a transport need not copy what arrives for it.
+		// Said after onData is set, which takes it back for any other reader.
+		(__connection : NetConnectionBase).__borrowsInput = read;
 	}
 
 	@:noCompletion private static function __noData(input:ByteArrayInput):Void {}
