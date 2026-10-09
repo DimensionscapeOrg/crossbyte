@@ -534,6 +534,10 @@ says how.
 
 #### TCP
 
+- A URI that `NetConnection`, `NetHost` or `parseURL` cannot use throws an
+  `ArgumentError` naming it, with what is wrong or the schemes that would
+  work, where it threw a bare string such as "Protocol error" or
+  "missing host". (Upgrading)
 - On the jvm under Java 8 a select allocates nothing: the selector puts
   the sockets it finds ready in an array CrossByte gives it, as Netty
   does, where it added each to a set. A TCP echo, a datagram and a
@@ -996,6 +1000,8 @@ Fixes to code new in this release are not listed.
 
 #### WebSocket
 
+- In a browser `NetConnection` takes `ws://` and `wss://`, so a page reaches
+  an RPC server at the URI it listens on; both threw "Protocol error".
 - A server receives a client's first message: the handshake's bytes stayed
   in the buffer and every session closed with 1002.
 - The last message before a disconnect is delivered, and a full send buffer
@@ -1349,6 +1355,8 @@ an API added in this release has is not listed here.
 
 #### TCP
 
+- Code that caught a `String` from `new NetConnection(uri)`, `new
+  NetHost(uri)` or `parseURL` catches a `crossbyte.errors.ArgumentError`.
 - `ServerSocket.listen()`, and `ServerWebSocket.listen()`, throw an
   `IOError` for a server never bound, where Linux and macOS listened on a
   port of the system's choosing: bind first, to port 0 for one the system

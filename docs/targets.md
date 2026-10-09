@@ -29,6 +29,14 @@ Needs `hxnodejs`. Every runtime shares Node's one thread, so a server spread ove
 processes instead (Node's `cluster`). `Argon2id` needs Node 24.7 or later. There are no database clients, since a
 blocking driver cannot run there. A socket keeps its buffers' storage when idle.
 
+## Browsers
+
+A plain `--js` build, without `hxnodejs`, runs in a page. Make the application with `Application`, as on any other
+target; the runtime runs on the page's own event loop. A page connects and cannot listen: a `Socket` is the page's
+WebSocket, so `NetConnection` takes `ws://` and `wss://` (and `tcp://`, the same thing), and its server is a
+`ServerWebSocket` or a `NetHost` made from a `ws://` or `wss://` URI. RPC, timers and events work as
+elsewhere. Files, UDP, reliable UDP, IPC, threads and databases are not there.
+
 ## The interpreter
 
 Runtimes take turns rather than run at once, so a spread server is served correctly and no faster. There is no UDP

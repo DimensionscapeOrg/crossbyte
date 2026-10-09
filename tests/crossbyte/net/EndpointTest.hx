@@ -80,8 +80,9 @@ class EndpointTest extends utest.Test {
 		try {
 			fn();
 			return false;
-		} catch (_:String) {
-			return true;
+		} catch (error:crossbyte.errors.ArgumentError) {
+			// Said with the URI it was given.
+			return StringTools.startsWith(error.message, 'Cannot use "');
 		} catch (_:Dynamic) {
 			return false;
 		}
