@@ -305,7 +305,7 @@ class RPCCommandMacro {
 				final room:Expr = RPCKinds.room(kind, optional, name);
 				sized = sized == null ? room : macro $sized + $room;
 			}
-			writes.push(RPCKinds.write(kind, optional, macro framed, name));
+			writes.push(RPCKinds.write(kind, optional, macro __framed, name));
 			compound = compound || kind.compound;
 		}
 		final room:Expr = sized == null ? macro $v{fixed} : macro $v{fixed} + $sized;
@@ -313,14 +313,16 @@ class RPCCommandMacro {
 		// The frame, which the stub hands to RPCCommands to send: one place
 		// decides what becomes of a call that cannot go. It is its session's,
 		// written over by its next frame once this one is sent.
-		final statements:Array<Expr> = [macro var framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, requestId)];
+		// Its own names start with two underscores, so an argument may be
+		// called anything else (`requestId`, `framed`) without taking them.
+		final statements:Array<Expr> = [macro var __framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, __requestId)];
 		if (compound) {
 			// An array or a structure can hold a null where a value has to be,
 			// found only as it is written: the frame goes back to its session
 			// before the error goes on, or every later frame would be a fresh
 			// one.
 			statements.push(macro try $b{writes} catch (__error:Dynamic) {
-				this.__dropFrame(framed);
+				this.__dropFrame(__framed);
 				throw __error;
 			});
 		} else {
@@ -328,7 +330,7 @@ class RPCCommandMacro {
 				statements.push(write);
 			}
 		}
-		statements.push(macro return framed.finish());
+		statements.push(macro return __framed.finish());
 
 		return {
 			name: metaName,
@@ -336,7 +338,7 @@ class RPCCommandMacro {
 			access: [APrivate, AInline],
 			kind: FFun({
 				args: [
-					{name: "requestId", type: macro :Int}
+					{name: "__requestId", type: macro :Int}
 				].concat(args),
 				expr: macro $b{statements},
 				ret: macro :crossbyte.rpc._internal.RPCFrame

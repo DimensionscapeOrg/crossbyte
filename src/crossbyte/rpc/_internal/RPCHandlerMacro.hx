@@ -382,7 +382,9 @@ class RPCHandlerMacro {
 		// argument read past its end came from the frame after it.
 		reads.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
 
-		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
+		// Through `this`: a method named as one of the decoder's own
+		// parameters (`input`, `requestId`) would otherwise be that parameter.
+		var callTarget:Expr = {expr: EField({expr: EConst(CIdent("this")), pos: m.pos}, m.name), pos: m.pos};
 		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
 		var callStmts:Array<Expr> = [];
 		final op:Expr = macro $v{m.op};
