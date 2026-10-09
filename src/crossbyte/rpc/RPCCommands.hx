@@ -269,7 +269,7 @@ abstract class RPCCommands {
 		}
 	}
 
-	@:noCompletion private function __answerFloat(op:Int, requestId:Int, value:Float):Void {
+	@:noCompletion private function __answerFloat(op:Int, requestId:Int, value:Float, single:Bool):Void {
 		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
@@ -284,6 +284,14 @@ abstract class RPCCommands {
 				RPCReceiverCall.contained(error);
 			}
 		} else {
+			#if hl
+			// HashLink keeps a Single apart from a Float, boxed or not: a
+			// Float32 future given a Float would read its bits as a Single.
+			if (single) {
+				(cast response : RPCResponse<Single>).__resolve((value : Single));
+				return;
+			}
+			#end
 			(cast response : RPCResponse<Float>).__resolve(value);
 		}
 	}
