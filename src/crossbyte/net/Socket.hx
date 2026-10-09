@@ -643,7 +643,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 	 * Storage past which a buffer lets go as soon as it empties, rather than
 	 * once the connection has gone quiet: what a large message made it grow
-	 * to is not kept for the small ones that follow. Below it the storage is
+	 * to is not kept for the small ones that follow. An output's goes to its
+	 * runtime's `StoragePool` natively and on the jvm, which the next output
+	 * to grow that far takes it from. Below it the storage is
 	 * kept while the connection is busy, so a message read or written
 	 * allocates nothing, and let go of once it has been quiet for a sweep of
 	 * its registry (see `__releaseIfQuiet`).
@@ -696,15 +698,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
-		// Allocate and swap rather than move within the buffer: a ByteArray
-		// blit whose source and destination overlap has no defined behaviour
-		// across targets.
 		var remaining:Int = __input.length - consumed;
+		#if ((cpp || jvm) && !macro)
+		// Moved down within the buffer: hxcpp's blit is a memmove where the
+		// ranges overlap, and Java's arraycopy is defined for them, so a reader
+		// behind a backlog makes no new buffer each time the front is let go.
+		var data:ByteArrayData = __input;
+		data.blit(0, data, consumed, remaining);
+		__input.length = remaining;
+		__input.position = 0;
+		#else
+		// Elsewhere copied into a new buffer: a blit whose source and
+		// destination overlap is not defined on every target.
 		var carried:ByteArray = new ByteArray();
 		carried.writeBytes(__input, consumed, remaining);
 		carried.position = 0;
 		carried.endian = __endian;
 		__input = carried;
+		#end
 	}
 
 	@:noCompletion private static function __scratch():Bytes {
@@ -1856,9 +1867,38 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
+		#if ((cpp || jvm) && !macro)
+		__makeOutputRoom(length == 0 ? (bytes : ByteArrayData).length - offset : length);
+		#end
 		__output.writeBytes(bytes, offset, length);
 		__queueWrite();
 	}
+
+	#if ((cpp || jvm) && !macro)
+	/**
+		Room in the output for `count` more bytes, from storage the runtime
+		keeps (`StoragePool`) once that is past what a buffer keeps while busy,
+		the storage the output had given back: a connection sending a large
+		burst a pass grew its output from nothing past the burst each time it
+		drained, allocating about three times what it sent.
+	**/
+	@:noCompletion private inline function __makeOutputRoom(count:Int):Void {
+		var data:ByteArrayData = __output;
+		var needed:Int = data.position + count;
+		if (needed > @:privateAccess data.__length && needed > KEEP_WHILE_BUSY && __cbInstance != null) {
+			__growOutput(needed);
+		}
+	}
+
+	@:noCompletion private function __growOutput(needed:Int):Void {
+		var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+		var storage:Null<haxe.io.BytesData> = pool.take(needed);
+		if (storage == null) {
+			return;
+		}
+		pool.give((__output : ByteArrayData).__adoptStorage(storage));
+	}
+	#end
 
 	/**
 		Writes `length` bytes of `bytes` from `offset`, as `writeBytes` does,
@@ -1875,6 +1915,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new RangeError("The supplied index is out of bounds.");
 		}
 
+		#if ((cpp || jvm) && !macro)
+		__makeOutputRoom(length);
+		#end
 		@:privateAccess (__output : ByteArrayData).__writeRange(bytes, offset, length);
 		__queueWrite();
 	}
@@ -2031,6 +2074,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		#if ((cpp || jvm) && !macro)
+		__makeOutputRoom(value.length);
+		#end
 		__output.writeUTFBytes(value);
 		__queueWrite();
 	}
@@ -2271,7 +2317,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (bytesWritten >= pendingLength) {
 			__isDirty = false;
 			if (@:privateAccess (__output : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+				#if ((cpp || jvm) && !macro)
+				// Its storage back to the runtime's pool for the next burst, and
+				// 64 KB of the pool's for this one's, as a buffer keeps while busy.
+				if (__cbInstance != null) {
+					var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+					__output.clear();
+					pool.give((__output : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY)));
+				} else {
+					__output = __emptyBuffer();
+				}
+				#else
 				__output = __emptyBuffer();
+				#end
 			} else {
 				__output.clear();
 			}
@@ -2284,13 +2342,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 			var remaining:Int = pendingLength - bytesWritten;
 			if (__outputSent >= OUTPUT_COMPACT_THRESHOLD && __outputSent >= remaining) {
-				// Allocated and swapped rather than moved within the buffer,
-				// as __compactInput does: an overlapping blit has no defined
-				// behaviour across targets.
+				// As __compactInput does: moved down in place natively and on
+				// the jvm, copied into a new buffer elsewhere.
+				#if ((cpp || jvm) && !macro)
+				var data:ByteArrayData = __output;
+				data.blit(0, data, __outputSent, remaining);
+				__output.length = remaining;
+				__output.position = remaining;
+				#else
 				var carried = new ByteArray();
 				carried.endian = __endian;
 				carried.writeBytes(__output, __outputSent, remaining);
 				__output = carried;
+				#end
 				__outputSent = 0;
 			}
 		}

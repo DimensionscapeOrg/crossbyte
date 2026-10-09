@@ -121,6 +121,76 @@ class SocketMemoryTest extends utest.Test {
 		});
 	}
 
+	/**
+		Natively and on the jvm a buffer grown past 64 KB takes its storage
+		from the runtime's pool and gives it back when it empties, so a
+		connection sending a large burst each pass takes the same storage
+		again rather than growing anew; the bytes already waiting are carried
+		into the larger storage; and the pool lets go of what it keeps once a
+		whole sweep passes with nothing taken.
+	**/
+	public function testALargeOutputTakesItsStorageFromTheRuntimesPool():Void {
+		#if (cpp || jvm)
+		__pair(function(server:ServerSocket, client:Socket, accepted:Socket):Void {
+			var pool = CrossByte.current().__storagePool();
+			var size:Int = 150 * 1024;
+			var received = new ByteArray();
+			accepted.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+				accepted.readBytes(received, received.length, accepted.bytesAvailable);
+			});
+			function burst(seed:Int):haxe.io.BytesData {
+				// Two writes, the second past 64 KB with the first still waiting:
+				// what waits is carried into the pool's storage.
+				for (half in 0...2) {
+					var part = new ByteArray();
+					for (i in 0...size) {
+						part.writeByte((seed + half * size + i) * 31);
+					}
+					client.writeBytes(part);
+				}
+				var storage = (client.__output : crossbyte.io.ByteArray.ByteArrayData).getData();
+				client.flush();
+				return storage;
+			}
+			function check(seed:Int):Void {
+				__pumpUntil(() -> received.length >= 2 * size, 10.0);
+				Assert.equals(2 * size, received.length, "what arrived");
+				var wrong:Int = -1;
+				for (i in 0...2 * size) {
+					if (received[i] != (((seed + i) * 31) & 0xFF)) {
+						wrong = i;
+						break;
+					}
+				}
+				Assert.equals(-1, wrong, "the bytes arrived as sent, first wrong at " + wrong);
+				received.clear();
+			}
+
+			var first = burst(1);
+			check(1);
+			__pumpUntil(() -> client.__output.length == 0, 5.0);
+			Assert.isTrue(__storage(client.__output) <= 64 * 1024, "the drained output kept " + __storage(client.__output) + " bytes");
+			Assert.isTrue(pool.held() >= 2 * size, "its storage did not go back to the pool, which holds " + pool.held());
+
+			var second = burst(2);
+			Assert.isTrue(first == second, "the second burst grew storage of its own rather than taking the pool's");
+			check(2);
+			__pumpUntil(() -> client.__output.length == 0, 5.0);
+
+			// Busy since the last ask: kept. One interval with none taken: kept
+			// as spare. A second: gone.
+			pool.__releaseIfQuiet();
+			Assert.isTrue(pool.held() > 0, "a pool in use let go at once");
+			pool.__releaseIfQuiet();
+			Assert.isTrue(pool.held() > 0, "a pool let go after one quiet interval");
+			pool.__releaseIfQuiet();
+			Assert.equals(0.0, pool.held(), "a pool quiet for two intervals kept storage");
+		});
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function __exchange(client:Socket, accepted:Socket, size:Int):Void {
 		var message = new ByteArray();
 		message.length = size;

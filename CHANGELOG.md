@@ -528,6 +528,12 @@ says how.
 - Natively a TCP message allocates nothing once a connection is under way,
   and an idle connection lets go of its buffers' storage after five quiet
   seconds: 1.7 KB where it kept 51 KB after a 16 KB message each way.
+- Natively and on the jvm a socket or WebSocket output grown past 64 KB
+  takes its storage from a pool its runtime keeps, by size, and gives it
+  back when it empties, where it grew anew for each burst: a connection
+  sent 1 MB bursts allocates 16 KB for each megabyte where it took
+  2.4 MB, at a third of the CPU or less. A backlog is moved down in place
+  rather than into a new buffer.
 - The socket read buffer is 64 KB, shared per thread, and arrivals are
   appended to the input rather than rebuilding it, so a reader that falls
   behind no longer costs the square of its backlog. Draining an output

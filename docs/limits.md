@@ -88,7 +88,11 @@ about 2 KB), plus the listeners the application adds (two cost about 450 bytes) 
 keep their storage while the connection is busy, so a message read or written allocates nothing, and let it go once
 the connection has read and written nothing for one of its runtime's sweeps, every five seconds: after one 16 KB
 message each way, a connection holds 1.7 KB once quiet. A buffer grown past 64 KB lets go as soon
-as it empties. On Node a socket keeps its buffers' storage.
+as it empties: natively and on the jvm its storage goes to a pool its runtime keeps, by size, which the next buffer
+to grow that far takes from, so a connection sending a large burst each pass reuses the same storage rather than
+growing anew (bursts of 1 MB allocated 2.4 MB for every megabyte sent, and now nearly nothing, at a third of the
+CPU); the pool lets go of what nobody has taken for ten to fifteen seconds. A WebSocket session's output does the
+same. On Node a socket keeps its buffers' storage.
 
 ### Many connections, mostly idle
 
