@@ -1310,6 +1310,9 @@ class WebSocket extends Socket {
 		__compactInput();
 
 		var arrived:Int = newData.length;
+		#if ((cpp || jvm) && !macro)
+		__input.position = __inputRoomFor(__input.position, arrived);
+		#end
 		newData.readBytes(__input, __input.length);
 
 		// What has just arrived, as a plain socket reports it on every

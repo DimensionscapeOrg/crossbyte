@@ -6,10 +6,11 @@ import haxe.io.BytesData;
 /**
 	Storage for a runtime's large socket buffers, by size: what a buffer
 	grown past 64 KB had, given back when it empties, and taken again by the
-	next buffer that grows that far. A connection sending a megabyte a pass
-	grew its output from nothing to past a megabyte every time it drained,
-	allocating about three times what it sent; with the pool it takes the
-	storage it gave back.
+	next buffer that grows that far. A connection sending or receiving a
+	megabyte a pass grew its output or input from nothing to past a megabyte
+	every time it drained, allocating about three times what it carried;
+	with the pool it takes the storage it gave back. Socket and WebSocket
+	output and input take from it, and a WebSocket session's message buffer.
 
 	Sizes are powers of two from 64 KB to 32 MB; a buffer larger than that
 	grows as before. A buffer that gives back what it grew to takes 64 KB of
@@ -46,6 +47,9 @@ class StoragePool implements QuietRelease {
 	@:noCompletion private var __watched:Bool = false;
 	@:noCompletion private var __registry:Null<#if cpp NativeSocketRegistry #else SocketRegistry #end>;
 
+	/** How many pieces of storage the pool has made, rather than handed out again. **/
+	public var made(default, null):Int = 0;
+
 	public function new(registry:Null<#if cpp NativeSocketRegistry #else SocketRegistry #end>) {
 		__registry = registry;
 	}
@@ -75,6 +79,7 @@ class StoragePool implements QuietRelease {
 		}
 		if (data == null) {
 			data = haxe.io.Bytes.alloc(SMALLEST << k).getData();
+			made++;
 		}
 		var out:Int = ++__out[k];
 		if (out > __peak[k]) {

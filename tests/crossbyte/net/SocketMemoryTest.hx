@@ -134,6 +134,9 @@ class SocketMemoryTest extends utest.Test {
 		__pair(function(server:ServerSocket, client:Socket, accepted:Socket):Void {
 			var pool = CrossByte.current().__storagePool();
 			var size:Int = 150 * 1024;
+			// The receiver's input held under 64 KB, so it takes nothing from
+			// the pool and leaves its storage to the output.
+			accepted.maxInputBufferSize = 32 * 1024;
 			var received = new ByteArray();
 			accepted.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 				accepted.readBytes(received, received.length, accepted.bytesAvailable);
@@ -185,6 +188,78 @@ class SocketMemoryTest extends utest.Test {
 			Assert.isTrue(pool.held() > 0, "a pool let go after one quiet interval");
 			pool.__releaseIfQuiet();
 			Assert.equals(0.0, pool.held(), "a pool quiet for two intervals kept storage");
+		});
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Natively and on the jvm a large input takes its storage from the
+		runtime's pool as it grows and gives it back once read: the bytes not
+		yet read are carried across each growth and each move down, in order,
+		and a second burst of the same size grows into the storage the first
+		gave back rather than storage of its own.
+	**/
+	public function testALargeInputTakesItsStorageFromTheRuntimesPool():Void {
+		#if (cpp || jvm)
+		__pair(function(server:ServerSocket, client:Socket, accepted:Socket):Void {
+			var pool = CrossByte.current().__storagePool();
+			var sent:Int = 0;
+			var read:Int = 0;
+			function send(count:Int):Void {
+				// In pieces each sent before the next, so the sender's output
+				// stays under 64 KB and takes nothing from the pool itself.
+				var left:Int = count;
+				while (left > 0) {
+					var piece:Int = left < 16 * 1024 ? left : 16 * 1024;
+					var part = new ByteArray();
+					for (i in 0...piece) {
+						part.writeByte((sent + i) * 31);
+					}
+					sent += piece;
+					left -= piece;
+					client.writeBytes(part);
+					client.flush();
+					__pumpUntil(() -> client.outputBufferLength == 0, 10.0);
+				}
+				// Nothing read until all of it has arrived, so the input holds it.
+				__pumpUntil(() -> read + accepted.bytesAvailable >= sent, 10.0);
+				Assert.equals(sent - read, Std.int(accepted.bytesAvailable), "what arrived");
+			}
+			function take(count:Int):Void {
+				var got = new ByteArray();
+				accepted.readBytes(got, 0, count);
+				var wrong:Int = -1;
+				for (i in 0...count) {
+					if (got[i] != (((read + i) * 31) & 0xFF)) {
+						wrong = read + i;
+						break;
+					}
+				}
+				Assert.equals(-1, wrong, "the bytes were read as sent, first wrong at " + wrong);
+				read += count;
+			}
+			function burst():Void {
+				// Grown past 64 KB with nothing read; read in part, then grown
+				// again with what was not read carried across.
+				send(200 * 1024);
+				take(150 * 1024);
+				send(400 * 1024);
+				Assert.isTrue(__storage(accepted.__input) >= 450 * 1024, "the input held " + __storage(accepted.__input));
+				take(sent - read);
+				// The next arrival finds it read, and gives its storage back.
+				send(1);
+				take(1);
+				Assert.isTrue(__storage(accepted.__input) <= 64 * 1024, "the drained input kept " + __storage(accepted.__input) + " bytes");
+			}
+
+			burst();
+			Assert.isTrue(pool.held() >= 450 * 1024, "its storage did not go back to the pool, which holds " + pool.held());
+			var made:Int = pool.made;
+			Assert.isTrue(made > 0, "the input took nothing from the pool");
+			burst();
+			Assert.equals(made, pool.made, "the second burst made storage of its own rather than taking the pool's");
 		});
 		#else
 		Assert.pass();

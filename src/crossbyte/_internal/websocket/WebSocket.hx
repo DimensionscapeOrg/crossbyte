@@ -994,6 +994,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					break;
 				}
 				totalBytes += nBytes;
+				__inputRoom(nBytes);
 				// As Bytes, as Socket's read does: writeBytes takes a ByteArray,
 				// which would have to be made around the scratch every read.
 				@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, nBytes);
@@ -1192,7 +1193,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
 			var storage:Null<haxe.io.BytesData> = pool.take(needed);
 			if (storage != null) {
-				pool.give(data.__adoptStorage(storage));
+				pool.give(data.__adoptStorage(storage, 0));
 			}
 		}
 		#end
@@ -1204,17 +1205,88 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		KB of the pool's is kept for the next burst, as `Socket` does.
 	**/
 	private inline function __emptiedPending():Void {
+		__emptiedToPool(__pendingOutput);
+	}
+
+	/**
+		As `__emptied`, but natively and on the jvm storage past `KEEP` goes
+		back to the runtime's pool, and 64 KB of the pool's is kept for the
+		next burst.
+	**/
+	private inline function __emptiedToPool(buffer:ByteArray):Void {
 		#if ((cpp || jvm) && !macro)
-		var data:ByteArrayData = __pendingOutput;
+		var data:ByteArrayData = buffer;
 		if (@:privateAccess data.__length > KEEP && __runtime != null) {
 			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
-			__pendingOutput.clear();
-			pool.give(data.__adoptStorage(pool.take(KEEP)));
+			buffer.clear();
+			pool.give(data.__adoptStorage(pool.take(KEEP), 0));
 			return;
 		}
 		#end
-		__emptied(__pendingOutput);
+		__emptied(buffer);
 	}
+
+	/**
+		Room at the end of the input for `count` more bytes, as
+		`Socket.__inputRoomFor` makes it: past `KEEP`, a full input moves
+		what is unread down in place if that leaves a quarter of its storage
+		spare, and otherwise takes storage of the next size up from the
+		runtime's pool, what is unread carried to its front; natively and on
+		the jvm. The input's position is left where the next byte goes.
+	**/
+	private inline function __inputRoom(count:Int):Void {
+		#if ((cpp || jvm) && !macro)
+		var data:ByteArrayData = __input;
+		if (data.length + count > @:privateAccess data.__length && data.length - __inputPosition + count > KEEP && __runtime != null) {
+			__growInput(count);
+		}
+		#end
+	}
+
+	#if ((cpp || jvm) && !macro)
+	private function __growInput(count:Int):Void {
+		var data:ByteArrayData = __input;
+		// The opening handshake's head is searched by where its bytes lie, so
+		// nothing is moved under it.
+		var from:Int = readyState == CONNECTING ? 0 : __inputPosition;
+		var unread:Int = data.length - from;
+		var capacity:Int = @:privateAccess data.__length;
+		var needed:Int = unread + count;
+		if (from > 0 && needed <= capacity - (capacity >> 2)) {
+			data.blit(0, data, from, unread);
+			__input.length = unread;
+		} else {
+			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
+			var storage:Null<haxe.io.BytesData> = pool.take(needed > capacity ? needed : capacity + 1);
+			if (storage == null) {
+				// Past the largest size the pool keeps: grown as it would be
+				// without one.
+				return;
+			}
+			pool.give(data.__adoptStorage(storage, from));
+		}
+		__input.position = __input.length;
+		__inputPosition = 0;
+	}
+
+	/**
+		Room in the session's own message buffer for `length` bytes in all,
+		past `KEEP` from the runtime's pool, what it holds carried across; as
+		`Arrivals.room` otherwise. The storage goes back once the message has
+		been handed out (`__delivered`).
+	**/
+	private inline function __messageRoom(message:ByteArray, length:Int, last:Bool):Void {
+		var data:ByteArrayData = message;
+		if (length > KEEP && length > @:privateAccess data.__length && message == __messageKept && __runtime != null) {
+			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
+			var storage:Null<haxe.io.BytesData> = pool.take(length);
+			if (storage != null) {
+				pool.give(data.__adoptStorage(storage, 0));
+			}
+		}
+		Arrivals.room(message, length, last);
+	}
+	#end
 
 	/**
 	 * Appends `bytes` to the pending buffer, to go to the socket when the
@@ -1800,7 +1872,11 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				var message:ByteArray = __incomingMessageBuffer;
 				var at:Int = message.length;
 				if (payloadLength > 0) {
+					#if ((cpp || jvm) && !macro)
+					__messageRoom(message, at + payloadLength, isFinal);
+					#else
 					Arrivals.room(message, at + payloadLength, isFinal);
+					#end
 					__input.readBytes(message, at, payloadLength);
 					if (isMasked) {
 						__applyMask(message, payloadLength, __input, keyAt, at);
@@ -2222,7 +2298,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	private function __validateInputPosition():Void {
 		if (__input.bytesAvailable <= 0) {
-			__emptied(__input);
+			__emptiedToPool(__input);
 			__inputPosition = 0;
 			return;
 		}
@@ -2326,7 +2402,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		var remaining:Int = __input.length - consumed;
 		if (remaining <= 0) {
-			__emptied(__input);
+			__emptiedToPool(__input);
 			__inputPosition = 0;
 			return;
 		}
@@ -2417,12 +2493,30 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	private inline function __delivered(message:ByteArray, kept:Bool):Void {
 		if (kept) {
+			#if ((cpp || jvm) && !macro)
+			__messageToPool(message);
+			#end
 			Arrivals.release(message);
 			__messageOut = false;
 		} else {
 			Arrivals.done(message);
 		}
 	}
+
+	#if ((cpp || jvm) && !macro)
+	/** The session's message buffer, handed out and back: its storage past `KEEP` to the runtime's pool. **/
+	private function __messageToPool(message:ByteArray):Void {
+		var data:ByteArrayData = message;
+		if (@:privateAccess data.__length > KEEP && __runtime != null) {
+			var nothing:Null<Bytes> = __nothing;
+			if (nothing == null) {
+				nothing = __nothing = Bytes.alloc(0);
+			}
+			message.length = 0;
+			@:privateAccess __runtime.__storagePool().give(data.__adoptStorage(nothing.getData(), 0));
+		}
+	}
+	#end
 
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
 		var lines:Array<String> = [

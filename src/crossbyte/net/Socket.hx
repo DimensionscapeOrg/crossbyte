@@ -631,11 +631,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 	 * Consumed bytes tolerated at the front of `__input` before the unread
-	 * tail is moved down. Compacting on every arrival costs a copy of the
-	 * whole unread backlog each time, so a consumer that reads slower than
-	 * the peer writes would pay for its backlog again on every event: 50x
-	 * the arriving bytes after 200 events, and rising, because the cost is
-	 * quadratic in the number of arrivals.
+	 * tail is moved down, and not before they are a quarter of its storage.
+	 * Compacting on every arrival costs a copy of the whole unread backlog
+	 * each time, so a consumer that reads slower than the peer writes would
+	 * pay for its backlog again on every event: 50x the arriving bytes after
+	 * 200 events, and rising, because the cost is quadratic in the number of
+	 * arrivals. Waiting for a quarter moves at most three bytes for each one
+	 * read, however large the backlog; a reader taking 64 KB a pass behind
+	 * an 8 MB backlog spent 4.5 ms of CPU a megabyte on the moves at a fixed
+	 * 64 KB, 0.37 ms at a quarter.
 	 */
 	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 	@:noCompletion private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
@@ -643,8 +647,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 	 * Storage past which a buffer lets go as soon as it empties, rather than
 	 * once the connection has gone quiet: what a large message made it grow
-	 * to is not kept for the small ones that follow. An output's goes to its
-	 * runtime's `StoragePool` natively and on the jvm, which the next output
+	 * to is not kept for the small ones that follow. Its storage goes to its
+	 * runtime's `StoragePool` natively and on the jvm, which the next buffer
 	 * to grow that far takes it from. Below it the storage is
 	 * kept while the connection is busy, so a message read or written
 	 * allocates nothing, and let go of once it has been quiet for a sweep of
@@ -686,6 +690,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (consumed >= __input.length) {
 			if (@:privateAccess (__input : ByteArrayData).__length > KEEP_WHILE_BUSY) {
+				#if ((cpp || jvm) && !macro)
+				if (__cbInstance != null) {
+					// Its storage back to the runtime's pool for the next burst,
+					// and 64 KB of the pool's for this one's, as output does.
+					var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+					__input.clear();
+					pool.give((__input : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY), 0));
+					return;
+				}
+				#end
 				__input = __emptyBuffer();
 			} else {
 				__input.clear();
@@ -694,7 +708,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
-		if (consumed < INPUT_COMPACT_THRESHOLD) {
+		if (consumed < INPUT_COMPACT_THRESHOLD || consumed < (@:privateAccess (__input : ByteArrayData).__length >> 2)) {
 			return;
 		}
 
@@ -1896,7 +1910,49 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (storage == null) {
 			return;
 		}
-		pool.give((__output : ByteArrayData).__adoptStorage(storage));
+		pool.give((__output : ByteArrayData).__adoptStorage(storage, 0));
+	}
+
+	/**
+		Room at the end of the input for `count` more bytes, its unread bytes
+		starting at `readFrom`: where they start once it has made room. Past
+		what a buffer keeps while busy, a full input moves its unread bytes
+		down in place if that leaves a quarter of its storage spare, and
+		otherwise takes storage of the next size up from the runtime's pool
+		(`StoragePool`), the unread bytes carried to its front and its own
+		given back: a connection receiving a large burst a pass grew its input
+		from nothing past the burst each time it drained, allocating about
+		three times what it received. Whatever it does, the input's position
+		is left where the next byte goes.
+	**/
+	@:noCompletion private inline function __inputRoomFor(readFrom:Int, count:Int):Int {
+		var data:ByteArrayData = __input;
+		if (data.length + count > @:privateAccess data.__length && data.length - readFrom + count > KEEP_WHILE_BUSY && __cbInstance != null) {
+			readFrom = __growInput(readFrom, count);
+		}
+		return readFrom;
+	}
+
+	@:noCompletion private function __growInput(readFrom:Int, count:Int):Int {
+		var data:ByteArrayData = __input;
+		var unread:Int = data.length - readFrom;
+		var capacity:Int = @:privateAccess data.__length;
+		var needed:Int = unread + count;
+		if (needed <= capacity - (capacity >> 2)) {
+			data.blit(0, data, readFrom, unread);
+			__input.length = unread;
+			__input.position = unread;
+			return 0;
+		}
+		var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
+		var storage:Null<haxe.io.BytesData> = pool.take(needed > capacity ? needed : capacity + 1);
+		if (storage == null) {
+			// Past the largest size the pool keeps: grown as it would be without one.
+			return readFrom;
+		}
+		pool.give(data.__adoptStorage(storage, readFrom));
+		data.position = data.length;
+		return 0;
 	}
 	#end
 
@@ -2323,7 +2379,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				if (__cbInstance != null) {
 					var pool:crossbyte._internal.socket.StoragePool = __cbInstance.__storagePool();
 					__output.clear();
-					pool.give((__output : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY)));
+					pool.give((__output : ByteArrayData).__adoptStorage(pool.take(KEEP_WHILE_BUSY), 0));
 				} else {
 					__output = __emptyBuffer();
 				}
@@ -2932,6 +2988,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					}
 
 					if (l > 0) {
+						#if ((cpp || jvm) && !macro)
+						readPos = __inputRoomFor(readPos, l);
+						#end
 						// As Bytes: writeBytes takes a ByteArray, which would be
 						// made around the scratch for every read.
 						@:privateAccess (__input : ByteArrayData).__writeRange(scratch, 0, l);
