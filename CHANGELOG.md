@@ -516,7 +516,8 @@ says how.
   and writes JSON fields in a fixed order. (Upgrading)
 - `Vector` is an abstract that works on every target, with typed callbacks
   (`VectorCallback`), `sort` taking a comparator and `concat` taking
-  vectors. (Upgrading)
+  vectors, and `map` giving a vector of what its callback returns.
+  (Upgrading)
 - `SlotHandle` carries 20 index bits and 11 generation bits, and `SlotMap`
   and `PackedSlotMap` reuse the slot freed longest ago, so a stale handle
   no longer comes to name a new entity within seconds. (Upgrading)
@@ -1341,6 +1342,10 @@ an API added in this release has is not listed here.
 - A `TaskPool.submit` task's result is `Any`: cast it to read from it.
 - `Vector.sort` takes a comparator or nothing; `Vector.concat` takes
   vectors: wrap an array or an item in a `Vector` first.
+- `Vector.map` is typed by what its callback returns. A result assigned to
+  the original element type, where the callback returns another, no longer
+  compiles: it held the other type all along. Type the result as the
+  callback's return.
 - `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
   `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
   classes, so code that builds one from another anonymous type, rather than
