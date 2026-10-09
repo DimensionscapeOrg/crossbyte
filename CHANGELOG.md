@@ -677,11 +677,11 @@ says how.
   file: 345 to 125 µs of CPU), header lines are parsed where they lie, the
   `Date` header is formatted once a second, and the access log is written
   by a thread of its own under the category `http.access`.
-- A kept-alive HTTP/1.1 GET allocates 232 B natively where it allocated
-  1,344, and 760 B on the jvm where it took 3,728: the head and a text
+- A kept-alive HTTP/1.1 GET allocates 152 B natively where it allocated
+  1,344, and 208 B on the jvm where it took 3,728: the head and a text
   body are written into bytes the thread keeps, which the socket copies,
-  rather than into strings and bytes of their own, and the request line
-  is read where it lies.
+  rather than into strings and bytes of their own, and the request and
+  header lines are read where they lie.
   `HTTPResponseStream.writeText` allocates nothing for ASCII text
   natively, where a line of server-sent events took 584 B.
 - Large responses: static files over 256 KB stream in 64 KB slices, a

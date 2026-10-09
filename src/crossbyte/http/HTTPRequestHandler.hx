@@ -753,8 +753,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var rawTarget:String = __lineTarget;
-		__lineTarget = null;
+		var rawTarget:String = __lineValue;
+		__lineValue = null;
 
 		if (!HttpSyntax.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
@@ -800,62 +800,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var repeats:Null<Map<String, Array<String>>> = null;
 
 		while (true) {
-			var headerLine:Null<String> = __readLine(__incomingBuffer);
-			if (headerLine == null) {
+			var key:Null<String> = __readFieldLine(__incomingBuffer);
+			if (key == null) {
 				return;
 			}
-
-			// Read before trimming, because trimming is what hid it. A line
-			// opening with SP or HTAB is an obs-fold: a continuation of the
-			// header above it rather than a header of its own. RFC 9112 5.2
-			// requires a server to reject the message or replace the fold with
-			// spaces, and reading it as a fresh header is how a framing header
-			// written on a folded line takes effect here and nowhere upstream.
-			var lead:Int = headerLine.charCodeAt(0);
-			if (lead == 32 || lead == 9) {
+			if (key == FIELD_MALFORMED) {
 				__sendErrorResponse(400, "Bad Request");
 				return;
 			}
-
-			// The line's bounds found by index, and one string cut for the name
-			// and one for the value, rather than trimming, splitting and
-			// lowercasing into five or six strings a field.
-			var lineEnd:Int = headerLine.length;
-			while (lineEnd > 0 && StringTools.isSpace(headerLine, lineEnd - 1)) {
-				lineEnd--;
-			}
-			var lineStart:Int = 0;
-			while (lineStart < lineEnd && StringTools.isSpace(headerLine, lineStart)) {
-				lineStart++;
-			}
-			if (lineStart == lineEnd) {
+			if (key == FIELD_BLOCK_END) {
 				break;
 			}
-
-			var sep:Int = headerLine.indexOf(":", lineStart);
-			if (sep <= lineStart || sep >= lineEnd) {
-				// No field name at all. Skipping the line left this server and
-				// anything in front of it disagreeing about what the message
-				// contained, which is the same desync by a quieter route.
-				__sendErrorResponse(400, "Bad Request");
-				return;
-			}
-
-			// RFC 9112 5.1: no whitespace sits between a field name and its
-			// colon, and a server MUST answer 400 rather than trim it away.
-			// Accepting `Content-Length : 5` where a proxy rejects it is the
-			// same disagreement that obs-fold produces.
-			if (StringTools.isSpace(headerLine, sep - 1)) {
-				__sendErrorResponse(400, "Bad Request");
-				return;
-			}
-
-			var key:String = HttpSyntax.lowerAscii(headerLine.substring(lineStart, sep));
-			var valueStart:Int = sep + 1;
-			while (valueStart < lineEnd && StringTools.isSpace(headerLine, valueStart)) {
-				valueStart++;
-			}
-			var value:String = headerLine.substring(valueStart, lineEnd);
+			var value:String = __lineValue;
+			__lineValue = null;
 
 			var first:Null<String> = __headers.get(key);
 			if (first == null) {
@@ -3480,13 +3437,130 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return false;
 	}
 
-	// The target __readRequestLine read, until __parseRequest takes it.
-	@:noCompletion private var __lineTarget:Null<String> = null;
+	// The target __readRequestLine read, or the value __readFieldLine read,
+	// until __parseRequest takes it. One field for both: an HTTP/2 stream
+	// makes a handler of its own, and pays for each.
+	@:noCompletion private var __lineValue:Null<String> = null;
+
+	// What __readFieldLine answers in place of a name: the line that ends the
+	// block, and a line to answer 400. Neither can be a name, which holds
+	// neither a colon nor a line feed.
+	@:noCompletion private static inline var FIELD_BLOCK_END:String = "\n";
+	@:noCompletion private static inline var FIELD_MALFORMED:String = ":";
+
+	/**
+		A header line, read where its bytes lie: its name lower-cased, which it
+		answers, and its value into `__lineValue`, both trimmed as
+		`StringTools.trim` trims. A name every client sends ("host",
+		"user-agent", "accept"...) is the same string each time, and no string
+		is made of the line. Null when no whole line is there,
+		`FIELD_BLOCK_END` for the empty line that ends the block,
+		`FIELD_MALFORMED` for a line the server must answer 400 (below).
+	**/
+	@:noCompletion private function __readFieldLine(buffer:ByteArray):Null<String> {
+		var data:ByteArrayData = buffer;
+		var from:Int = data.position;
+		var end:Int = data.length;
+		var eol:Int = from;
+		while (eol < end && data.get(eol) != 10) {
+			eol++;
+		}
+		if (eol >= end) {
+			return null;
+		}
+		data.position = eol + 1;
+
+		// Read before trimming, because trimming is what hid it. A line
+		// opening with SP or HTAB is an obs-fold: a continuation of the
+		// header above it rather than a header of its own. RFC 9112 5.2
+		// requires a server to reject the message or replace the fold with
+		// spaces, and reading it as a fresh header is how a framing header
+		// written on a folded line takes effect here and nowhere upstream.
+		var lead:Int = data.get(from);
+		if (lead == 32 || lead == 9) {
+			return FIELD_MALFORMED;
+		}
+
+		var lineEnd:Int = eol + 1;
+		while (lineEnd > from && __isTrimmed(data.get(lineEnd - 1))) {
+			lineEnd--;
+		}
+		var lineStart:Int = from;
+		while (lineStart < lineEnd && __isTrimmed(data.get(lineStart))) {
+			lineStart++;
+		}
+		if (lineStart == lineEnd) {
+			return FIELD_BLOCK_END;
+		}
+
+		var sep:Int = lineStart;
+		while (sep < lineEnd && data.get(sep) != 58) {
+			sep++;
+		}
+		if (sep <= lineStart || sep >= lineEnd) {
+			// No field name at all. Skipping the line left this server and
+			// anything in front of it disagreeing about what the message
+			// contained, which is the same desync by a quieter route.
+			return FIELD_MALFORMED;
+		}
+
+		// RFC 9112 5.1: no whitespace sits between a field name and its
+		// colon, and a server MUST answer 400 rather than trim it away.
+		// Accepting `Content-Length : 5` where a proxy rejects it is the
+		// same disagreement that obs-fold produces.
+		if (__isTrimmed(data.get(sep - 1))) {
+			return FIELD_MALFORMED;
+		}
+
+		var name:Null<String> = __knownFieldName(data, lineStart, sep);
+		if (name == null) {
+			name = HttpSyntax.lowerAscii(__lineText(data, lineStart, sep));
+		}
+		var valueStart:Int = sep + 1;
+		while (valueStart < lineEnd && __isTrimmed(data.get(valueStart))) {
+			valueStart++;
+		}
+		__lineValue = __lineText(data, valueStart, lineEnd);
+		return name;
+	}
+
+	/** The name, in any case, when it is one of those clients send most, as the one lower-case string of it; null for any other. **/
+	@:noCompletion private static function __knownFieldName(data:ByteArrayData, from:Int, to:Int):Null<String> {
+		var length:Int = to - from;
+		for (name in __KNOWN_FIELDS) {
+			if (name.length != length) {
+				continue;
+			}
+			var same:Bool = true;
+			for (i in 0...length) {
+				var code:Int = data.get(from + i);
+				// Upper-case ASCII letters read as lower-case.
+				if (code >= 65 && code <= 90) {
+					code += 32;
+				}
+				if (code != StringTools.fastCodeAt(name, i)) {
+					same = false;
+					break;
+				}
+			}
+			if (same) {
+				return name;
+			}
+		}
+		return null;
+	}
+
+	@:noCompletion private static final __KNOWN_FIELDS:Array<String> = [
+		"host", "user-agent", "accept", "accept-encoding", "accept-language", "connection", "content-length", "content-type", "cookie",
+		"authorization", "cache-control", "origin", "referer", "upgrade", "expect", "transfer-encoding", "if-none-match",
+		"if-modified-since", "range", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-protocol",
+		"x-forwarded-for", "pragma", "te"
+	];
 
 	/**
 		The request line, read where its bytes lie, as `__readLine` then
 		`StringTools.trim` and `split(" ")` would read it: the method
-		upper-cased into `__method`, the target into `__lineTarget`, the
+		upper-cased into `__method`, the target into `__lineValue`, the
 		version into `__httpVersion`, and anything past a third space left
 		out. No string is made of the line, nor of a method or a version every
 		request names ("GET", "HTTP/1.1"), which are the same strings each
@@ -3526,7 +3600,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__method == null) {
 			__method = __lineText(data, a, first).toUpperCase();
 		}
-		__lineTarget = __lineText(data, first + 1, second);
+		__lineValue = __lineText(data, first + 1, second);
 		__httpVersion = __matches(data, second + 1, versionEnd, "HTTP/1.1") ? "HTTP/1.1" : (__matches(data, second + 1, versionEnd,
 			"HTTP/1.0") ? "HTTP/1.0" : __lineText(data, second + 1, versionEnd));
 		return 1;
@@ -4701,6 +4775,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static function __parseContentLength(header:String):Int {
 		if (header == null) {
 			return -1;
+		}
+
+		// One value, as nearly every request sends: read as it is, rather than
+		// split into an array of one.
+		if (header.indexOf(",") < 0) {
+			var single:Int = IntParse.decimal(StringTools.trim(header));
+			return single < 0 ? -1 : single;
 		}
 
 		var parsed:Int = -1;
