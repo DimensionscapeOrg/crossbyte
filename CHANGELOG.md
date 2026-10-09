@@ -1039,6 +1039,11 @@ Fixes to code new in this release are not listed.
 - A session is no longer closed when its socket's send buffer is
   momentarily full.
 - A `NetConnection` over reliable UDP reports deadlines as `Reason.Timeout`.
+- A `NetConnection` over a reliable UDP session in `STREAM` mode hands
+  `onData` the stream's own input, as one over TCP does, so what a reader
+  leaves unread is there at the next arrival. Each arrival was handed over
+  in a buffer of its own, and the unread part went with it: an RPC call
+  larger than a datagram ended the connection as one whose framing was lost.
 - Closing a session from its own `DATA` handler no longer reports an error.
 - On neko, hl and the interpreter a session's clock never runs backwards.
 

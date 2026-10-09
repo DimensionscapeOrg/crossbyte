@@ -1167,15 +1167,20 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		__onData(message);
 	}
 
+	/**
+		The stream's own input, as a TCP connection hands its socket's: what
+		the reader leaves unread stays there for the next arrival, so a frame
+		split across arrivals (an RPC call larger than a datagram) is read
+		whole once the rest is in. Each arrival handed over in a buffer of its
+		own took the unread part with it.
+	**/
 	@:noCompletion private function socket_onStreamData(_event:ProgressEvent):Void {
 		inTimestamp = __uptime();
-		var bytes = new ByteArray();
-		var available = __socket.bytesAvailable;
-		if (available > 0) {
-			__socket.readBytes(bytes, 0, available);
+		final input:ByteArray = @:privateAccess __socket.__input;
+		if (input == null) {
+			return;
 		}
-		bytes.position = 0;
-		__onData(bytes);
+		__onData(input);
 	}
 
 	@:noCompletion private inline function socket_onClose(_e:Event):Void {
