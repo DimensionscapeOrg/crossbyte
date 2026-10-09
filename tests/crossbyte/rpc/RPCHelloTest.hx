@@ -35,7 +35,7 @@ class RPCHelloTest extends utest.Test {
 
 		Assert.same(["server heard 1", "client heard 1"], heard);
 		Assert.equals(RPCSession.PROTOCOL_VERSION, client.peerVersion);
-		Assert.equals(0, client.peerCapabilities, "a capability declared in 1.0, which defines none");
+		Assert.equals(RPCWire.CAPABILITY_CALL_CONTROL, client.peerCapabilities, "not the capabilities 1.0 declares: deadlines and cancels");
 	}
 
 	public function testAConnectionThatBecomesReadyIsGreetedThen():Void {
@@ -88,7 +88,7 @@ class RPCHelloTest extends utest.Test {
 			Assert.equals(RPCWire.HELLO_OP, hello.readInt());
 			Assert.equals(0, hello.readVarUInt(), "answers a call");
 			Assert.equals(1, hello.readVarUInt(), "not version 1");
-			Assert.equals(0, hello.readVarUInt(), "declares a capability");
+			Assert.equals(RPCWire.CAPABILITY_CALL_CONTROL, hello.readVarUInt(), "declares capabilities other than 1.0's");
 			Assert.equals(0, hello.readInt(), "a server calls nothing");
 			Assert.equals(server.answersFingerprint, hello.readInt());
 		}

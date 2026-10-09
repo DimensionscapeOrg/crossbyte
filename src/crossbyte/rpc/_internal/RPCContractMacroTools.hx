@@ -13,12 +13,13 @@ using haxe.macro.Tools;
 
 class RPCContractMacroTools {
 	public static inline function isReservedSystemMethod(name:String):Bool {
-		return name == "ping" || name == "beforeCall" || name == "afterCall" || name == "dispatch" || name == "session";
+		return name == "ping" || name == "beforeCall" || name == "afterCall" || name == "dispatch" || name == "session"
+			|| name == "currentCall" || name == "withTimeout";
 	}
 
 	public static inline function reservedSystemMethodMessage(name:String):String {
 		return name == "ping" ? "RPC contract method name '" + name + "' is reserved for built-in RPC system traffic." : "RPC contract method name '"
-			+ name + "' is reserved: RPCHandler declares it.";
+			+ name + "' is reserved: " + (name == "withTimeout" ? "RPCCommands" : "RPCHandler") + " declares it.";
 	}
 
 	public static function getContractMethods(metaName:String):Null<Array<ContractMethod>> {

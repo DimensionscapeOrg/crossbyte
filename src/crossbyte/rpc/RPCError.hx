@@ -37,6 +37,13 @@ class RPCError extends Error {
 	public static inline final TIMEOUT_MESSAGE:String = "The call timed out";
 
 	/**
+		The message of the error a handler's `afterCall` sees for a call its
+		caller cancelled, which the caller is not answered: it has stopped
+		waiting. See `RPCCall`.
+	**/
+	public static inline final CANCELLED_MESSAGE:String = "The caller cancelled the call";
+
+	/**
 		What a caller is told when its call reaches a session with no handler
 		to answer it: one with commands only, or only runtime handlers.
 	**/

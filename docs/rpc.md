@@ -1071,7 +1071,8 @@ connection ended with no code known.
 Every session says hello as its connection starts (at once on a connection
 that is up already, as an accepted one is, or as one becomes ready), with the
 protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
-capabilities it has (none are defined in 1.0), and a fingerprint of the
+capabilities it has (in 1.0, reading a call's deadline and a cancel; see
+"The handler's side of a deadline"), and a fingerprint of the
 methods its commands call and one of those its handler answers. The hello goes
 out ahead of the session's calls and nothing waits for it, so it costs no
 round trip. The peer's sets `peerVersion`, `peerCapabilities`,
@@ -1093,9 +1094,11 @@ session.onHello = () -> {
 };
 ```
 
-A feature added after 1.0 (a new kind of frame or of value, compression)
-is used towards a peer only once its hello has declared it, so that a 1.0
-session and a later one keep understanding each other.
+A feature (a new kind of frame or of value, compression) is used towards a
+peer only once its hello has declared it, so that a 1.0 session and a later
+one keep understanding each other. Calls made before the peer's hello has
+arrived go without what it has not yet declared: a client's first calls,
+made as its connection comes up, carry no deadline to the server.
 
 ## A client that comes back
 
@@ -1180,3 +1183,58 @@ session.handlerTimeout = 10000;
 An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
 timed out (as the hub above answers with an instance host's answer) tells
 its own caller that it timed out, and reports it on its side too.
+
+### The handler's side of a deadline
+
+A call's deadline, given before it goes (`callTimeout`, or `withTimeout`),
+goes with it, and a call its caller stops waiting for (cancelled with
+`cancelCall`, or past a deadline given with `timeout` after it went) is
+cancelled on the other side as well, as gRPC's are. A handler sees both
+through `currentCall`, an `RPCCall`: its `deadline` and `timeLeft`, and,
+for a call it answers later, `cancelled`, `reason` and `onCancel`:
+
+```haxe
+import crossbyte.rpc.RPCCall;
+
+class ReportHandler extends RPCHandler {
+	public function new() {}
+
+	@:rpc public function report(days:Int):Future<String> {
+		final call:RPCCall = currentCall;
+		final done = new Completer<String>();
+		// Work in steps, and stop once the caller has stopped waiting.
+		var step = 0;
+		var timer = 0;
+		timer = crossbyte.Timer.setInterval(0.01, 0.01, () -> {
+			if (call.cancelled || ++step == days) {
+				crossbyte.Timer.clear(timer);
+				done.complete('$step days');
+			}
+		});
+		call.onCancel = () -> trace('report stopped: ${call.reason}');
+		return done.future;
+	}
+}
+```
+
+A call answered later ends early when its caller cancels it or its
+caller's deadline passes (nothing is answered, since nobody waits, and
+nothing is reported), when `handlerTimeout` passes first (its caller is
+answered `RPCError.TIMEOUT_MESSAGE`, as above), or when its connection ends.
+Then `cancelled` is `true`, `onCancel` is called once, the call stops counting
+against `maxCallsWaiting`, `afterCall` is told (with
+`RPCError.CANCELLED_MESSAGE` or an `RPCTimeoutError`; not for a connection
+ending, where it is told as the future completes, as before), and the future's
+answer goes nowhere. A runtime handler reads `session.currentCall`.
+
+`currentCall` is made the first time it is read in a call: a handler that
+never reads it costs nothing for it, and a deadline costs the call a few
+bytes on the wire and nothing else. A call answered later whose handler never
+read `currentCall`, with no deadline of its caller's and no `handlerTimeout`,
+has nothing to end it early, and waits for its future alone, as cheaply as
+before: a cancel for it finds nothing to stop, and its answer, sent, is
+dropped by its caller. A deadline given with `timeout` after a
+call has gone stays on the caller's side: its handler does not see it, and
+is told only once it passes. One that went with the call binds the handler
+as it was sent, so a longer one given with `timeout` afterwards waits for an
+answer that, past the first, does not come.

@@ -8,6 +8,29 @@ class RPCWire {
 	public static inline final FLAG_RESPONSE:Int = 0x02;
 	public static inline final FLAG_ERROR:Int = 0x04;
 	public static inline final FLAG_RUNTIME:Int = 0x08;
+
+	/**
+		On a request: the caller's deadline follows the request id, a varuint
+		of the milliseconds the caller will wait from when it sent the call.
+		Sent only to a peer whose hello declared `CAPABILITY_CALL_CONTROL`.
+	**/
+	public static inline final FLAG_DEADLINE:Int = 0x10;
+
+	/**
+		A frame of its own, with the op and the varuint request id of a call
+		the caller has stopped waiting for: it cancelled it, or its deadline
+		passed. With `FLAG_RUNTIME` for a runtime-lane call. Sent only to a
+		peer whose hello declared `CAPABILITY_CALL_CONTROL`; a peer without
+		it would pass it over.
+	**/
+	public static inline final FLAG_CANCEL:Int = 0x20;
+
+	/**
+		The capability, in a hello, of reading `FLAG_DEADLINE` on a request
+		and `FLAG_CANCEL` frames: a peer that declares it is told each call's
+		deadline and each call it need no longer answer.
+	**/
+	public static inline final CAPABILITY_CALL_CONTROL:Int = 0x01;
 	public static inline final MIN_PAYLOAD_LEN:Int = 5;
 
 	/**
@@ -45,13 +68,13 @@ class RPCWire {
 
 	/**
 		The capabilities a session of this build declares in its hello, a bit
-		each: none, in 1.0. A later release that adds a flag, a kind of frame,
-		a kind of runtime value or compression gives it a bit, sets the bit in
-		its own hello, and uses the feature towards a peer only once that
-		peer's hello has set it; a peer that sent no hello, from before 1.0,
-		has none.
+		each: in 1.0, `CAPABILITY_CALL_CONTROL`. A release that adds a flag, a
+		kind of frame, a kind of runtime value or compression gives it a bit,
+		sets the bit in its own hello, and uses the feature towards a peer
+		only once that peer's hello has set it; a peer that sent no hello has
+		none.
 	**/
-	public static inline final CAPABILITIES:Int = 0;
+	public static inline final CAPABILITIES:Int = CAPABILITY_CALL_CONTROL;
 
 	/** Where a frame being read ends when nothing has said: nowhere. **/
 	public static inline final NO_FRAME_END:Int = 0x7FFFFFFF;

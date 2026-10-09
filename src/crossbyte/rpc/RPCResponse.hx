@@ -49,6 +49,9 @@ class RPCResponse<T> extends Future<T> {
 	// a receiver (RPCReceiverCall), never handed to anyone. Beside the
 	// deadline, where natively it takes no room of its own.
 	@:noCompletion private var __pooled:Bool = false;
+	// Whether the deadline it waits under went with it, so its handler's
+	// side ends the call itself when it passes, and needs no cancel.
+	@:noCompletion private var __deadlineSent:Bool = false;
 
 	// The responder bound now, which `respond` replaces, under the future's
 	// lock; ANSWERED once the outcome has been handed to one, after which
@@ -145,9 +148,10 @@ class RPCResponse<T> extends Future<T> {
 		allocating nothing. A call already complete is left as it is.
 
 		Given here, after the call has gone, the deadline stays on this side:
-		when it passes, a peer of 1.0 or later is told the call is cancelled.
-		One given before the call goes (`RPCSession.callTimeout`, or the
-		commands' `withTimeout`) travels with it, so its handler can read it.
+		when it passes, the peer is told the call is cancelled. One given
+		before the call goes (`RPCSession.callTimeout`, or the commands'
+		`withTimeout`) travels with it, so its handler can read it; see
+		`RPCCall`.
 
 		```haxe
 		commands.join("lobby").timeout(2000).then(count -> trace(count), message -> trace(message));
@@ -161,6 +165,8 @@ class RPCResponse<T> extends Future<T> {
 	/** Sets this call's deadline to `milliseconds` from now, replacing any; `0` clears it. **/
 	@:noCompletion private function __arm(milliseconds:Int):Void {
 		__disarm();
+		// Another deadline than the one that went with the call, if one did.
+		__deadlineSent = false;
 		if (milliseconds <= 0 || completed) {
 			return;
 		}
@@ -207,6 +213,21 @@ class RPCResponse<T> extends Future<T> {
 		}
 		final message:String = "RPC call timed out after " + milliseconds + " ms";
 		__fail(message, new RPCTimeoutError(message));
+		if (!__deadlineSent) {
+			__cancelOnPeer();
+		}
+	}
+
+	/** Tells the peer this call is no longer waited for, if it can be told. **/
+	@:noCompletion private function __cancelOnPeer():Void {
+		if (__commands != null) {
+			final session = __commands.__session;
+			if (session != null) {
+				session.__sendCancel(op, requestId, false);
+			}
+		} else if (__session != null) {
+			__session.__sendCancel(op, requestId, true);
+		}
 	}
 
 	override function __resolve(value:T):Bool {
