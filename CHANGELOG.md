@@ -361,6 +361,11 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
 - Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
   `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+  `withTimeout(ms)` on a commands class gives the next call a deadline of
+  its own, a call made with a receiver included
+  (`commands.withTimeout(2000).joinThen(room, receiver)`). Every deadline
+  waits in one heap a session, under one timer, so a call's deadline
+  allocates nothing, whatever its length.
 - Calls that allocate nothing: each request method has a twin ending in
   `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
   instead of returning an `RPCResponse`: `RPCIntReceiver`,

@@ -10,7 +10,10 @@ import crossbyte.net.Reason;
 	telling a receiver of one allocates nothing.
 **/
 enum RPCFailure {
-	/** No answer came within the session's `RPCSession.callTimeout`. **/
+	/**
+		No answer came by the call's deadline: the session's
+		`RPCSession.callTimeout`, or one of its own from `RPCCommands.withTimeout`.
+	**/
 	TimedOut;
 
 	/** The call was cancelled with `RPCSession.cancelCall`. **/

@@ -871,6 +871,73 @@ class AllocationBudgetTest extends utest.Test {
 		__within(RPC_INT_RECEIVER, under);
 	}
 
+	/**
+		A call given a deadline of its own, with `RPCResponse.timeout` after it
+		is made or `withTimeout` before, costs nothing more than one without:
+		it waits in the session's heap of deadlines, whatever its length. Each
+		such call held a timer of its own, a closure and a timer node, before
+		that heap took deadlines of any length.
+	**/
+	public function testACallsOwnDeadlineAllocatesNothing():Void {
+		var fixture = new BudgetRpc();
+		var receiver = fixture.receiver;
+		var commands = fixture.commands;
+		var flip:Bool = false;
+		var without = () -> {
+			var told:Int = receiver.told;
+			commands.addThen(receiver.int, 1, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		var receiverOwn = () -> {
+			var told:Int = receiver.told;
+			flip = !flip;
+			commands.withTimeout(flip ? 20000 : 30000).addThen(receiver.int, 1, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		// A future's answer held back until its deadline has been given, as
+		// one from a real peer is: given to a call answered already,
+		// `timeout` does nothing. Both are held, so both pay for the holding.
+		var answered:Int = 0;
+		var link = fixture.link;
+		var futureWithout = function():Void {
+			link.client.bufferInbound = true;
+			var response = commands.add(answered, 1);
+			link.client.bufferInbound = false;
+			link.client.flushBufferedReads();
+			if (!response.completed) {
+				throw "the call was not answered";
+			}
+			answered = response.result;
+		};
+		var futureOwn = function():Void {
+			flip = !flip;
+			link.client.bufferInbound = true;
+			var response = commands.add(answered, 1).timeout(flip ? 20000 : 30000);
+			link.client.bufferInbound = false;
+			link.client.flushBufferedReads();
+			if (!response.completed) {
+				throw "the call was not answered";
+			}
+			answered = response.result;
+		};
+		for (op in [without, receiverOwn, futureWithout, futureOwn]) {
+			__warm(op, WARM_CHEAP);
+		}
+		var readings = [for (op in [without, receiverOwn, futureWithout, futureOwn]) AllocationMeter.measure(op, 20000)];
+		__report("an RPC call through a receiver, without a deadline", readings[0]);
+		__report("an RPC call through a receiver, under withTimeout", readings[1]);
+		__report("an RPC call with a future, without a deadline", readings[2]);
+		__report("an RPC call with a future, under timeout()", readings[3]);
+		Assert.isTrue(readings[1].perOperation - readings[0].perOperation <= 16,
+			"a receiver call under withTimeout allocated " + readings[1] + ", where one without allocated " + readings[0]);
+		Assert.isTrue(readings[3].perOperation - readings[2].perOperation <= 16,
+			"a call given timeout() allocated " + readings[3] + ", where one without allocated " + readings[2]);
+	}
+
 	public function testAnRpcCallOverTcp():Void {
 		var runtime = __start();
 		var handler = new BudgetHandler();
