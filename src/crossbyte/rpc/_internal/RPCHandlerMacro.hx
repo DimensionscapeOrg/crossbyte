@@ -40,6 +40,11 @@ class RPCHandlerMacro {
 		// would be a field redefined without `override`.
 		final needsPing = findField(fields, "ping") == null && ancestorField(ancestors, "ping") == null;
 
+		// The kind of session it serves, checked as a session takes it.
+		for (field in kindFields()) {
+			fields.push(field);
+		}
+
 		if (usesManualDispatch) {
 			if (contractMethods != null) {
 				Context.error("Do not mix @:rpcContract with a hand-written dispatch() implementation in the same RPC handler.", dispatchField.pos);
@@ -336,6 +341,66 @@ class RPCHandlerMacro {
 		newFields.push(RPCCommandMacro.fingerprintField([for (method in methods) if (method.name != "ping") method.op]));
 
 		return fields.concat(newFields);
+	}
+
+	/**
+		For a handler that names the commands of the sessions it serves
+		(`extends RPCHandler<ListenerCommands, Player>`), what tells a session
+		whether its commands are of that class: its `session` is cast to
+		that kind, so a session with other commands would hand it a stub that
+		is not there. Nothing for a handler that names none, or names a type
+		parameter of its own, which serves any.
+
+		Read from the class this one extends directly; a handler further down
+		inherits the check. Resolving the parameter's class types nothing.
+	**/
+	static function kindFields():Array<Field> {
+		final superClass = Context.getLocalClass().get().superClass;
+		if (superClass == null) {
+			return [];
+		}
+		final parent = superClass.t.get();
+		if (parent.pack.join(".") != "crossbyte.rpc" || parent.name != "RPCHandler" || superClass.params.length == 0) {
+			return [];
+		}
+		final commands:ClassType = switch (superClass.params[0]) {
+			case TInst(ref, _):
+				final type = ref.get();
+				switch (type.kind) {
+					case KTypeParameter(_): return [];
+					case _: type;
+				}
+			case _:
+				return [];
+		};
+		final module:Array<String> = commands.module.split(".");
+		final path:Array<String> = commands.isPrivate ? [commands.name] : (module[module.length - 1] == commands.name ? module : module.concat([commands.name]));
+		final name:String = commands.pack.concat([commands.name]).join(".");
+		final pos = Context.currentPos();
+		return [
+			{
+				name: "__rpc_serves",
+				access: [APublic, AOverride],
+				meta: [{name: ":noCompletion", params: [], pos: pos}],
+				kind: FFun({
+					args: [{name: "commands", type: macro :crossbyte.rpc.RPCCommands}],
+					ret: macro :Bool,
+					expr: macro return Std.isOfType(commands, $p{path})
+				}),
+				pos: pos
+			},
+			{
+				name: "__rpc_servesName",
+				access: [APublic, AOverride],
+				meta: [{name: ":noCompletion", params: [], pos: pos}],
+				kind: FFun({
+					args: [],
+					ret: macro :String,
+					expr: macro return $v{name}
+				}),
+				pos: pos
+			}
+		];
 	}
 
 	static function makeIntArray(name:String, data:Array<Int>):Field {

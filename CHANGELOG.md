@@ -383,6 +383,11 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `peerAnswersFingerprint` and `onHello`.
 - `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
+- A typed `session` in handlers: `extends RPCHandler<ListenerCommands, Player>`
+  makes `session` an `RPCSession<ListenerCommands, Player>`, so a handler
+  calls its client back through typed stubs and reads `session.data` as a
+  `Player`. A session whose commands are of another class refuses such a
+  handler with an `ArgumentError`. (Upgrading)
 - RPC on Node and in a browser.
 - An RPC guide, `docs/rpc.md`.
 
@@ -1607,6 +1612,31 @@ an API added in this release has is not listed here.
   build fails; undeclared, it was taken for `Void` and never answered. A
   contract can no longer name a method `beforeCall`, `afterCall`,
   `dispatch` or `session`, which `RPCHandler` declares.
+- A handler that calls its clients back names the sessions it serves, and
+  its `session` is typed; a cast of `session`, or a call through
+  `session.commands` that went through `Dynamic`, is no longer needed.
+  `extends RPCHandler` with no parameters still serves any session.
+
+  Before:
+
+  ```haxe
+  class RoomServer extends RPCHandler implements ChatContract {
+  	public function say(room:String, text:String):Void {
+  		final caller:RPCSession<ListenerCommands, String> = cast session;
+  		caller.commands.said(room, text);
+  	}
+  }
+  ```
+
+  After:
+
+  ```haxe
+  class RoomServer extends RPCHandler<ListenerCommands, String> implements ChatContract {
+  	public function say(room:String, text:String):Void {
+  		session.commands.said(room, '${session.data}: $text');
+  	}
+  }
+  ```
 
 #### Data
 

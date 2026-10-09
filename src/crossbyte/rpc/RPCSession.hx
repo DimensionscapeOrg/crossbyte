@@ -65,8 +65,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public final sessionId:Int = __getSessionId();
 	/** Underlying transport connection used by this session. */
 	public var connection(get, never):NetConnection;
-	/** Optional server-side handler for inbound RPC calls. */
-	public var handler(get, set):RPCHandler;
+	/**
+		What answers the calls this session receives, if anything does. A
+		handler that names the commands of the sessions it serves
+		(`RPCHandler<ListenerCommands, Player>`) reads its `session` as that
+		kind, so a session whose commands are of another class refuses it,
+		as it is set or as the commands are, with an `ArgumentError`. One that
+		names none serves any session.
+	**/
+	public var handler(get, set):RPCHandler<Dynamic, Dynamic>;
 	/** Optional client-side command surface for outbound RPC calls and responses. */
 	public var commands(get, set):C;
 	/** Heartbeat interval in milliseconds. */
@@ -77,7 +84,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var data:D;
 
 	@:noCompletion private var __connection:NetConnection;
-	@:noCompletion private var __handler:RPCHandler;
+	@:noCompletion private var __handler:RPCHandler<Dynamic, Dynamic>;
 	@:noCompletion private var __commands:C;
 	// TimerHandle.INVALID when no heartbeat is scheduled. Not 0: that is a real
 	// handle, the first timer a scheduler hands out.
@@ -270,6 +277,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		#end
 
 		if (!same) {
+			__requireKind(__handler, commands);
 			var old = __commands;
 			__commands = commands;
 
@@ -292,18 +300,33 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		and is bound to each only while that one's calls run. See
 		`__safeHandlerOnData`.
 	**/
-	@:noCompletion private inline function set_handler(handler:RPCHandler):RPCHandler {
+	@:noCompletion private inline function set_handler(handler:RPCHandler<Dynamic, Dynamic>):RPCHandler<Dynamic, Dynamic> {
+		__requireKind(handler, __commands);
 		__handler = handler;
 		__syncOnDataBinding();
 
 		return handler;
 	}
 
+	/**
+		Throws unless `handler` serves sessions with `commands`: a handler
+		typed for a kind of session (`RPCHandler<ListenerCommands, Player>`)
+		reads its `session` as that kind.
+
+		@throws ArgumentError When it names commands of another class.
+	**/
+	@:noCompletion private static function __requireKind(handler:Null<RPCHandler<Dynamic, Dynamic>>, commands:Null<RPCCommands>):Void {
+		if (handler != null && commands != null && !handler.__rpc_serves(commands)) {
+			throw new ArgumentError("This RPC handler serves sessions whose commands are " + handler.__rpc_servesName() + ", and was given one whose commands are "
+				+ Type.getClassName(Type.getClass(commands)));
+		}
+	}
+
 	@:noCompletion private inline function get_connection():NetConnection {
 		return __connection;
 	}
 
-	@:noCompletion private inline function get_handler():RPCHandler {
+	@:noCompletion private inline function get_handler():RPCHandler<Dynamic, Dynamic> {
 		return __handler;
 	}
 
@@ -311,7 +334,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return __commands;
 	}
 
-	public function new(connection:NetConnection, ?commands:C, ?handler:RPCHandler) {
+	public function new(connection:NetConnection, ?commands:C, ?handler:RPCHandler<Dynamic, Dynamic>) {
 		super();
 		__connection = connection;
 		__isUp = connection.connected;
@@ -519,7 +542,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		heartbeat runs on each connection while it is up. Made on the thread
 		whose runtime will run it, which dials from its own timers.
 	**/
-	public static function dial<C:RPCCommands>(uri:String, ?commands:C, ?handler:RPCHandler):RPCSession<C, Dynamic> {
+	public static function dial<C:RPCCommands>(uri:String, ?commands:C, ?handler:RPCHandler<Dynamic, Dynamic>):RPCSession<C, Dynamic> {
 		final session = new RPCSession<C, Dynamic>(new Unconnected(uri), commands, handler);
 		session.__dialUri = uri;
 		session.__ended = true;

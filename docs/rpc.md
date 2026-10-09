@@ -161,10 +161,12 @@ it is, so a method can tell its callers apart:
 - `session.commands` calls that client back, if the session has commands;
 - `session.connection` is its connection.
 
-`session` is an `RPCSession<Dynamic, Dynamic>`, since one handler serves
-sessions of any kind, so a call through `session.commands` is not checked
-and goes through `Dynamic`. A server that calls its clients keeps their
-sessions typed itself, and drops each as its connection closes:
+A handler that calls its clients back names the kind of session it serves,
+`RPCHandler<C, D>`, with the class of their commands and the type of their
+`data`; its `session` is then typed, so `session.commands` calls the client
+through its checked stubs and `session.data` is the application's own type.
+A server keeps the sessions it calls, and drops each as its connection
+closes:
 
 ```haxe
 interface ListenerContract {
@@ -176,7 +178,7 @@ class ListenerCommands extends RPCCommands {
 	public function new() {}
 }
 
-class RoomServer extends RPCHandler implements ChatContract {
+class RoomServer extends RPCHandler<ListenerCommands, String> implements ChatContract {
 	final clients:Array<RPCSession<ListenerCommands, String>> = [];
 
 	public function new() {}
@@ -191,10 +193,9 @@ class RoomServer extends RPCHandler implements ChatContract {
 
 	public function say(room:String, text:String):Void {
 		// The caller's session, typed: the one this call came in on.
-		final caller:RPCSession<ListenerCommands, String> = cast session;
 		for (client in clients) {
-			if (client != caller) {
-				client.commands.said(room, '${caller.data}: $text');
+			if (client != session) {
+				client.commands.said(room, '${session.data}: $text');
 			}
 		}
 	}
@@ -204,6 +205,11 @@ class RoomServer extends RPCHandler implements ChatContract {
 	}
 }
 ```
+
+A session whose commands are of another class refuses such a handler with
+an `ArgumentError`, as it is given it. A handler that names no kind,
+`extends RPCHandler`, serves sessions of any kind, and its `session` is an
+`RPCSession<Dynamic, Dynamic>`, through which a call is not checked.
 
 Each of those calls is framed for its own connection. A `NetHost` also
 says which connection went, through its `onDisconnect`.
