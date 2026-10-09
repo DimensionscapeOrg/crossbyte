@@ -1090,6 +1090,9 @@ Fixes to code new in this release are not listed.
 
 #### RPC
 
+- `onHandlerError`'s default report says a handler that ran out of time
+  (its `handlerTimeout`, or a call it forwarded) did not answer in time,
+  where it said the handler threw.
 - A frame that names a count or length larger than itself is refused before
   anything is allocated, and a frame too short for what it carries no longer
   reads into the next frame.

@@ -121,6 +121,31 @@ class RPCDeadlineTest extends utest.Test {
 		Assert.equals(1, fixture.handler.afterCalls.length);
 	}
 
+	public function testTheDefaultReportOfAHandlerOutOfTimeSaysSoRatherThanThatItThrew():Void {
+		var link = LinkedConnection.pair();
+		var commands = new DeadlineCommands();
+		var client = new RPCSession<DeadlineCommands>(link.client, commands);
+		var server = new RPCSession(link.server, null, new DeadlineHandler());
+		server.handlerTimeout = 1000;
+		var logged:Array<String> = [];
+		crossbyte.utils.Logger.sink = line -> logged.push(line);
+		try {
+			commands.slow("t");
+			pump(1.25);
+		} catch (error:Dynamic) {
+			crossbyte.utils.Logger.sink = null;
+			throw error;
+		}
+		crossbyte.utils.Logger.sink = null;
+		var lines = logged.filter(line -> line.indexOf("RPC handler slow") >= 0);
+		Assert.equals(1, lines.length, "the handler running out of time was not reported once: " + logged.join(" | "));
+		if (lines.length == 1) {
+			Assert.isTrue(lines[0].indexOf("threw") < 0, 'reported as a throw: ${lines[0]}');
+			Assert.isTrue(lines[0].indexOf("did not answer in time") >= 0, 'not said to be out of time: ${lines[0]}');
+		}
+		client.close();
+	}
+
 	public function testARuntimeHandlerThatDoesNotAnswerInTimeIsAnsweredFor():Void {
 		var fixture = new Fixture();
 		fixture.server.handlerTimeout = 1000;
