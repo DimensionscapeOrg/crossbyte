@@ -1706,7 +1706,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 						__input.readBytes(control, 0, payloadLength);
 					}
 					if (isMasked) {
-						__applyMask(control, payloadLength, __input, keyAt);
+						__applyMask(control, payloadLength, __input, keyAt, 0);
 					}
 					control.position = 0;
 					__handleControlFrame(opCode, control);
@@ -2036,7 +2036,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * (Word `i` is counted from `dataAt`, so this holds wherever the frame
 	 * starts.)
 	 */
-	private static function __applyMask(data:Bytes, length:Int, mask:Bytes, maskAt:Int = 0, dataAt:Int = 0):Void {
+	private static function __applyMask(data:Bytes, length:Int, mask:Bytes, maskAt:Int, dataAt:Int):Void {
 		if (length <= 0) {
 			return;
 		}
@@ -3687,9 +3687,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		if (__isClient == false) {
 			__writePayloadLength(length);
-			if (length > 0) {
-				__output.writeBytes(payload, offset, length);
-			}
+			// Every argument given: an optional one is an object on the jvm.
+			(__output : ByteArrayData).__writeRange(payload, offset, length);
 		} else {
 			__writePayloadLength(length, WebSocketHeaderMask.MASK);
 			// Four bytes of this thread's pool, used for this frame alone.
@@ -3705,12 +3704,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			masked.position = 0;
 			if (length > 0) {
 				(masked : Bytes).blit(0, payload, offset, length);
-				__applyMask(masked, length, key, keyAt);
+				__applyMask(masked, length, key, keyAt, 0);
 			}
 
 			// Write the masked payload
-			__output.writeBytes(key, keyAt, 4);
-			__output.writeBytes(masked);
+			(__output : ByteArrayData).__writeRange(key, keyAt, 4);
+			(__output : ByteArrayData).__writeRange(masked, 0, length);
 		}
 		// Hand the frame to the pending buffer rather than writing it
 		// directly: a momentarily full socket is a normal condition, not a
