@@ -165,8 +165,8 @@ other event of that connection.
 
 ### Calls that allocate nothing
 
-Each request makes its `RPCResponse`, about 150 bytes, and an answer that is a
-number is boxed into it. For a call made every frame, each request method
+Each request makes its `RPCResponse` (128 bytes natively, 80 on the JVM), and
+an answer that is a number is boxed into it. For a call made every frame, each request method
 has a twin ending in `Then`, which hands the answer to a *receiver* instead.
 It makes nothing for the call, and an answer that is a number or a `Bool`
 arrives unboxed, so the call and its answer allocate nothing at either end,

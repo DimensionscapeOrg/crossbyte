@@ -763,6 +763,11 @@ says how.
 - Faster calls: frames are written into one buffer each session keeps, and
   natively a request and its answer take 133 ns where they took 233, and a
   round trip with a `Future` answer 405 ns where it took 928.
+- Lighter requests: an `RPCResponse` takes 128 bytes natively and 80 on the
+  JVM, where it took 152 on both, and a request with its answer allocates
+  152 and 96 where it allocated 176 on both. Every `Future` is smaller:
+  88 bytes natively and 48 on the JVM, where it was 112 and 120, since on
+  the JVM it no longer makes a lock of its own.
 - A handler's `@:rpc` method is no longer held to eight arguments.
 
 #### Data

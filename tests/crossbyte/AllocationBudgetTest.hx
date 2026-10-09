@@ -110,11 +110,12 @@ class AllocationBudgetTest extends utest.Test {
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 16], [8, 8, 88]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
-	// RPCResponse (152 B natively) and the answer boxed into it (24 B); a frame
+	// RPCResponse (128 B natively, 80 on the jvm) and the answer boxed into it
+	// (24 B, 16 on the jvm); a frame
 	// costs nothing. Measured later than MEASURED_ON. On the jvm 24 B a send is
 	// the test double's: NetConnection reads its outTimestamp through
 	// reflection, a boxed Double.
-	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [176, 176, 216], [288, 288, 336]);
+	private static final RPC_CALL = new Budget("an RPC call and its answer", "call", [152, 152, 144], [256, 256, 248]);
 	private static final RPC_ONE_WAY = new Budget("a one-way RPC call", "call", [0, 0, 24], [8, 8, 96]);
 	// The array and the string the handler is given are most of it.
 	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 159], [256, 248, 264]);
