@@ -1089,6 +1089,10 @@ Fixes to code new in this release are not listed.
   waiting, and a frame over `maxFrameLength` is refused before it is sent.
 - A session on a listening `LocalConnection` answers every client, not only
   the first.
+- On the JVM a handler of more than about twenty methods, or commands of
+  more than about sixty requests, builds and loads: its generated dispatch
+  or reader passed the 32 KB of bytecode the JVM backend can branch across,
+  failing the build (`IO.Overflow`) or the class at load (`VerifyError`).
 - `RPCResponse.respond()` replaces the responder, as documented.
   (Upgrading)
 - A contract extending another carries the parent's methods; a handler
