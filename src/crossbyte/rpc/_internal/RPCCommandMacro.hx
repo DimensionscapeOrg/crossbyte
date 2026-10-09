@@ -509,6 +509,25 @@ class RPCCommandMacro {
 		return kind == null ? macro null : RPCKinds.zero(kind, RPCContractMacroTools.isNullable(ct, pos));
 	}
 
+	/**
+		Whether each response is read in a method of its own, called from the
+		reader's switch, rather than in the switch. On the jvm: there a case
+		is about half a kilobyte of bytecode, and Haxe's jvm backend writes a
+		method's branches with 16-bit offsets, so a reader past 32 KB (some 60
+		request methods) would fail to load with a VerifyError.
+	**/
+	static var SPLIT_READER(get, never):Bool;
+
+	static inline function get_SPLIT_READER():Bool {
+		return Context.defined("jvm");
+	}
+
+	/** A name for this class, unique among the classes it extends, for the methods it makes. **/
+	static function classTag():String {
+		final type = Context.getLocalClass().get();
+		return type.pack.concat([type.name]).join("_");
+	}
+
 	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
 		// An error answer's message, read whole and within its frame; one that
 		// does not read fails its call, and the connection carries on.
@@ -535,28 +554,47 @@ class RPCCommandMacro {
 				case RString: macro this.__answerString(op, requestId, (cast value : String));
 				case RValue: macro this.__answerValue(op, requestId, value);
 			};
-			cases.push({
-				values: [macro $v{method.op}],
-				expr: macro {
-					// Read whole and within the frame before the caller is
-					// answered with it: an answer that does not read fails its
-					// call, and the connection carries on.
-					if (failed) {
-						$readMessage;
-					} else {
-						var value:$type = $zero;
-						try {
-							value = $read;
-							crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						} catch (__error:Dynamic) {
-							this.__rejectUnreadableResponse(op, requestId, __error);
-							return;
-						}
-						$answer;
+			// Read whole and within the frame before the caller is answered
+			// with it: an answer that does not read fails its call, and the
+			// connection carries on.
+			final body:Expr = macro {
+				if (failed) {
+					$readMessage;
+				} else {
+					var value:$type = $zero;
+					try {
+						value = $read;
+						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+					} catch (__error:Dynamic) {
+						this.__rejectUnreadableResponse(op, requestId, __error);
+						return;
 					}
-					return;
+					$answer;
 				}
-			});
+				return;
+			};
+			if (SPLIT_READER) {
+				final name:String = "__rpc_read_" + classTag() + "_" + method.name;
+				newFields.push({
+					name: name,
+					access: [APrivate],
+					meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+					kind: FFun({
+						args: [
+							{name: "op", type: macro :Int},
+							{name: "requestId", type: macro :Int},
+							{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+							{name: "failed", type: macro :Bool}
+						],
+						ret: macro :Void,
+						expr: body
+					}),
+					pos: method.pos
+				});
+				cases.push({values: [macro $v{method.op}], expr: macro this.$name(op, requestId, input, failed)});
+			} else {
+				cases.push({values: [macro $v{method.op}], expr: body});
+			}
 		}
 
 		var defaultExpr:Expr = macro {
