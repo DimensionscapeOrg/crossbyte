@@ -25,6 +25,7 @@ import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.rpc._internal.RPCDeadlines;
+import crossbyte.rpc._internal.RPCReceiverCall;
 import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCPendingCalls;
 import crossbyte.rpc._internal.RPCWire;
@@ -168,6 +169,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		every call waiting on it. `0` removes the limit.
 	**/
 	public var maxFrameLength:Int = RPCHandler.MAX_FRAME_LEN;
+
+	// What a call waiting is failed with when the session stops, when it is
+	// cancelled, and the start of what it fails with when its send throws:
+	// a receiver is told each as an `RPCFailure` of its own.
+	@:noCompletion private static inline final STOPPED_MESSAGE:String = "RPC session stopped";
+	@:noCompletion private static inline final CANCELLED_MESSAGE:String = "RPC call cancelled";
+	@:noCompletion private static inline final UNSENT_PREFIX:String = "RPC call could not be sent: ";
 
 	@:noCompletion private var __callsWaiting:Int = 0;
 	// Whether the connection's onData is this session's reader: READ_ON,
@@ -886,6 +894,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		if (!queue.add(response, milliseconds, Timer.getTime())) {
 			response.__arm(milliseconds);
+		} else if (response.__pooled) {
+			// The queue it leaves, should its commands be bound to another
+			// session before it is answered.
+			(cast response : RPCReceiverCall).queuedIn = cast this;
 		}
 	}
 
@@ -1477,7 +1489,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			try {
 				__connection.send(framed);
 			} catch (error:Dynamic) {
-				message = "RPC call could not be sent: " + Std.string(error);
+				message = UNSENT_PREFIX + Std.string(error);
 				cause = error;
 			}
 		}
@@ -1917,7 +1929,32 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__active = false;
 		__stopHeartbeat();
 		__syncOnDataBinding();
-		__failAllPending("RPC session stopped");
+		__failAllPending(STOPPED_MESSAGE);
+	}
+
+	/**
+		Stops waiting for the answer to the call `call`, made through this
+		session's commands: the id a `...Then` method returned, or an
+		`RPCResponse`'s `requestId`. A call made with a receiver is told
+		`RPCFailure.Cancelled`; an `RPCResponse` fails with "RPC call
+		cancelled". The answer, if it comes, is dropped.
+
+		Nothing is sent: the other side still runs the call. `false` when no
+		call of that id is waiting (answered, failed, or cancelled already).
+	**/
+	public function cancelCall(call:Int):Bool {
+		final commands = __commands;
+		if (commands == null) {
+			return false;
+		}
+		final response = commands.__takeResponse(call);
+		if (response == null) {
+			return false;
+		}
+		// Asked for, so not a failure nobody heard of.
+		response.__failureObserved = true;
+		response.__fail(CANCELLED_MESSAGE, null);
+		return true;
 	}
 
 	/**

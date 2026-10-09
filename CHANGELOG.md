@@ -27,7 +27,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   several cores.
 - **Typed RPC.** Compiled contracts carry arrays, structures, enums,
   `Null<T>` and compact numbers, generated with no reflection; the runtime
-  lane has typed calls; calls get deadlines, handlers can answer later,
+  lane has typed calls; a request can hand its answer to a receiver and
+  allocate nothing; calls get deadlines, handlers can answer later,
   clients redial, and a hello versions the protocol.
 - **Databases.** MongoDB over its wire protocol, with BSON; a native MySQL
   client with TLS and MySQL 8 logins; Postgres parameter binding,
@@ -360,6 +361,13 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
 - Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
   `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+- Calls that allocate nothing: each request method has a twin ending in
+  `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
+  instead of returning an `RPCResponse`: `RPCIntReceiver`,
+  `RPCFloatReceiver`, `RPCBoolReceiver`, `RPCStringReceiver` or
+  `RPCValueReceiver<T>`, with failures as an `RPCFailure`. A number or
+  `Bool` answer allocates nothing at either end, natively or on the JVM.
+  `RPCSession.cancelCall(id)` stops waiting for a call.
 - `RPCSession.dial(uri, ?commands, ?handler)`: a client that redials, from
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
   `up`.
