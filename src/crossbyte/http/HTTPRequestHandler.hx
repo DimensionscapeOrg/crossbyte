@@ -41,6 +41,8 @@ import crossbyte._internal.http.RewriteEngine;
 import crossbyte._internal.http.FileFacts;
 import crossbyte._internal.http.HTTP1ResponseWriter;
 import crossbyte._internal.http.HTTPResponseWriter;
+import crossbyte._internal.http.HTTPResponseHead;
+import crossbyte._internal.http.TextBody;
 
 /**
  * Incrementally parses and responds to HTTP requests over a `Socket`.
@@ -740,22 +742,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var headerStart:Int = __incomingBuffer.position;
-		var requestLine:Null<String> = __readLine(__incomingBuffer);
-		if (requestLine == null) {
+		var lineRead:Int = __readRequestLine(__incomingBuffer);
+		if (lineRead < 0) {
 			return;
 		}
 		__headers.clear();
 
-		requestLine = StringTools.trim(requestLine);
-		var parts:Array<String> = requestLine.split(" ");
-		if (parts.length < 3) {
+		if (lineRead == 0) {
 			__sendErrorResponse(400, "Bad Request");
 			return;
 		}
 
-		__method = parts[0].toUpperCase();
-		var rawTarget:String = parts[1];
-		__httpVersion = parts[2];
+		var rawTarget:String = __lineTarget;
+		__lineTarget = null;
 
 		if (!HttpSyntax.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
@@ -934,7 +933,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// through, so a request a route answers pays for no filesystem
 		// lookups on the runtime's own thread.
 		if (__config.middleware != null && __config.middleware.length > 0) {
-			__runMiddleware(0, __serveUnrouted);
+			var serve:Void->Void = __serveUnroutedCall;
+			if (serve == null) {
+				serve = __serveUnroutedCall = __serveUnrouted;
+			}
+			__runMiddleware(0, serve);
 			return;
 		}
 
@@ -1135,6 +1138,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return true;
 	}
 
+	// Which middleware of the chain may call next() now; see __runMiddleware.
+	@:noCompletion private var __middlewareAt:Int = -1;
+	// __serveUnrouted as a function, made once.
+	@:noCompletion private var __serveUnroutedCall:Null<Void->Void> = null;
+
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
 		if (index >= __config.middleware.length) {
 			// Behind the catch a middleware is called behind. Reached from the
@@ -1150,18 +1158,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var alreadyCalled:Bool = false;
 		// The slot this continuation belongs to. A middleware that breaks
 		// the respond-xor-next contract and still calls next() after its
 		// response finished the slot finds the generation moved on and is
 		// ignored, including the asynchronous case, where the __responded
 		// guard alone cannot help because a later slot has already opened.
+		// And a next() called again finds the chain moved past its
+		// middleware: the handler keeps where the chain is, so the
+		// continuation carries no flag of its own to set.
 		var slot:Int = __requestGeneration;
+		__middlewareAt = index;
 		var next = function(?error:Any):Void {
-			if (alreadyCalled || slot != __requestGeneration) {
+			if (slot != __requestGeneration || __middlewareAt != index) {
 				return;
 			}
-			alreadyCalled = true;
+			__middlewareAt = index + 1;
 
 			if (error == null) {
 				__runMiddleware(index + 1, onComplete);
@@ -2256,14 +2267,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__headOut = true;
-		__writer.writeHead({
-			statusCode: statusCode,
-			statusMessage: statusMessage,
-			headers: fields,
-			contentLength: length,
-			keepAlive: __responseKeepAlive,
-			chunked: chunked
-		});
+		// This connection's, filled anew: the writer is done with it when
+		// writeHead returns.
+		var head:Null<HTTPResponseHead> = __head;
+		if (head == null) {
+			head = __head = {
+				statusCode: statusCode,
+				statusMessage: statusMessage,
+				headers: fields,
+				contentLength: length,
+				keepAlive: __responseKeepAlive,
+				chunked: chunked
+			};
+		} else {
+			head.statusCode = statusCode;
+			head.statusMessage = statusMessage;
+			head.headers = fields;
+			head.contentLength = length;
+			head.keepAlive = __responseKeepAlive;
+			head.chunked = chunked;
+		}
+		__writer.writeHead(head);
+		head.headers = null;
+		head.statusMessage = null;
 		if (!handedOut) {
 			// Written: the caller's fields in it are let go of until the next.
 			fields.resize(0);
@@ -2721,6 +2747,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// for a String body too. The encoded text is the body, rather than
 		// copied into a new ByteArray.
 		var hasText:Bool = content != null && content.length > 0;
+		if (!headOnly && hasText && !__writer.ownsConnection) {
+			// Under HTTP/1.x the socket copies the body in as it is written,
+			// so the text is encoded into a buffer the thread keeps (see
+			// TextBody) rather than into bytes of its own and a ByteArray
+			// around them, and passed as the caller's: a body too large to
+			// write at once is copied before it is streamed.
+			var text:ByteArray = TextBody.take();
+			text.writeUTFBytes(content);
+			try {
+				__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, text, false, null, false, true, true);
+			} catch (error:Dynamic) {
+				TextBody.give(text);
+				throw error;
+			}
+			TextBody.give(text);
+			return;
+		}
 		var bodyBytes:ByteArray = (!headOnly && hasText) ? ByteArray.fromBytes(crossbyte._internal.Utf8.bytesOf(content)) : new ByteArray();
 
 		// A HEAD says what the GET would: its length, not the empty body it
@@ -3266,6 +3309,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	// The response fields this connection keeps; see __dispatchResponseBytes.
 	@:noCompletion private var __keptFields:Null<Array<URLRequestHeader>> = null;
+	@:noCompletion private var __head:Null<HTTPResponseHead> = null;
 	@:noCompletion private var __keptDate:Null<URLRequestHeader> = null;
 	@:noCompletion private var __keptType:Null<URLRequestHeader> = null;
 	// The same for every response, and read only: shared.
@@ -3434,6 +3478,111 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		return false;
+	}
+
+	// The target __readRequestLine read, until __parseRequest takes it.
+	@:noCompletion private var __lineTarget:Null<String> = null;
+
+	/**
+		The request line, read where its bytes lie, as `__readLine` then
+		`StringTools.trim` and `split(" ")` would read it: the method
+		upper-cased into `__method`, the target into `__lineTarget`, the
+		version into `__httpVersion`, and anything past a third space left
+		out. No string is made of the line, nor of a method or a version every
+		request names ("GET", "HTTP/1.1"), which are the same strings each
+		time. -1 when no whole line is waiting, 0 for a line of fewer than
+		three parts, 1 once read.
+	**/
+	@:noCompletion private function __readRequestLine(buffer:ByteArray):Int {
+		var data:ByteArrayData = buffer;
+		var from:Int = data.position;
+		var end:Int = data.length;
+		var eol:Int = from;
+		while (eol < end && data.get(eol) != 10) {
+			eol++;
+		}
+		if (eol >= end) {
+			return -1;
+		}
+		data.position = eol + 1;
+
+		var a:Int = from;
+		var b:Int = eol + 1;
+		while (a < b && __isTrimmed(data.get(a))) {
+			a++;
+		}
+		while (b > a && __isTrimmed(data.get(b - 1))) {
+			b--;
+		}
+		var first:Int = __spaceIn(data, a, b);
+		var second:Int = first < 0 ? -1 : __spaceIn(data, first + 1, b);
+		if (second < 0) {
+			return 0;
+		}
+		var third:Int = __spaceIn(data, second + 1, b);
+		var versionEnd:Int = third < 0 ? b : third;
+
+		__method = __knownMethod(data, a, first);
+		if (__method == null) {
+			__method = __lineText(data, a, first).toUpperCase();
+		}
+		__lineTarget = __lineText(data, first + 1, second);
+		__httpVersion = __matches(data, second + 1, versionEnd, "HTTP/1.1") ? "HTTP/1.1" : (__matches(data, second + 1, versionEnd,
+			"HTTP/1.0") ? "HTTP/1.0" : __lineText(data, second + 1, versionEnd));
+		return 1;
+	}
+
+	/** What `StringTools.trim` takes off a line's ends: tab to carriage return, and space. **/
+	@:noCompletion private static inline function __isTrimmed(code:Int):Bool {
+		return (code > 8 && code < 14) || code == 32;
+	}
+
+	@:noCompletion private static function __spaceIn(data:ByteArrayData, from:Int, to:Int):Int {
+		for (i in from...to) {
+			if (data.get(i) == 32) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	/** Whether the bytes from `from` to `to` are `text`, which is ASCII. **/
+	@:noCompletion private static function __matches(data:ByteArrayData, from:Int, to:Int, text:String):Bool {
+		if (to - from != text.length) {
+			return false;
+		}
+		for (i in 0...text.length) {
+			if (data.get(from + i) != StringTools.fastCodeAt(text, i)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** The method a request names when it is one of those every server sees, as the one string of it; null for any other. **/
+	@:noCompletion private static function __knownMethod(data:ByteArrayData, from:Int, to:Int):Null<String> {
+		for (method in __KNOWN_METHODS) {
+			if (__matches(data, from, to, method)) {
+				return method;
+			}
+		}
+		return null;
+	}
+
+	@:noCompletion private static final __KNOWN_METHODS:Array<String> = ["GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "PATCH"];
+
+	/** The bytes from `from` to `to` as `__readLine` reads them: ASCII as itself, and any other byte as the code point of its value. **/
+	@:noCompletion private static function __lineText(data:ByteArrayData, from:Int, to:Int):String {
+		for (i in from...to) {
+			if (data.get(i) >= 0x80) {
+				var text:StringBuf = new StringBuf();
+				for (k in from...to) {
+					text.addChar(data.get(k));
+				}
+				return text.toString();
+			}
+		}
+		return crossbyte._internal.Utf8.stringOf(data, from, to - from);
 	}
 
 	@:noCompletion private function __readLine(buffer:ByteArray):Null<String> {

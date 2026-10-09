@@ -80,10 +80,13 @@ class AllocationBudgetTest extends utest.Test {
 	private static final PAUSE = new Budget("a timer paused and resumed", "pause", [0, 0, 0], [8, 8, 8]);
 	private static final POST = new Budget("a callback posted to the runtime and run", "post", [0, 0, 0], [8, 8, 8]);
 	private static final IDLE_TICK = new Budget("a runtime frame with nothing to do", "frame", [0, 0, 0], [8, 8, 8]);
-	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [1344, 1344, 3936], [1744, 1744, 4984]);
-	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [6056, 6056, 8928], [7640, 7640, 11224]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3448, 3432, 2392], [4376, 4360, 3056]);
-	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [1344, 1344, 10472], [1744, 1744, 13160]);
+	// The HTTP lines and the streamed line were measured later than
+	// MEASURED_ON, on Oracle 8 and Temurin 8 alike for the jvm.
+	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [232, 232, 760], [360, 360, 1016]);
+	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4952, 4952, 5704], [6256, 6256, 7200]);
+	private static final STREAM_TEXT = new Budget("a line of text written to a streamed response", "line", [0, 0, 72], [8, 8, 160]);
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3400, 3384, 2168], [4320, 4296, 2776]);
+	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [232, 232, 7488], [360, 360, 9424]);
 	// The jvm's figure measured later than MEASURED_ON: Temurin 8 on Linux
 	// (Oracle 8 on Windows: 396).
 	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 401], [216, 216, 568]);
@@ -343,6 +346,66 @@ class AllocationBudgetTest extends utest.Test {
 			return;
 		}
 		__httpRequest(TLS_GET, true, "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", null);
+	}
+
+	/**
+		A line of server-sent events written to a streamed response with
+		`writeText` and read by the client: the text is encoded into a
+		buffer the thread keeps, and a chunk's size is written as digits.
+	**/
+	public function testAStreamedResponsesTextWritten():Void {
+		var runtime = __start();
+		var config = __serverConfig();
+		var stream:Null<crossbyte.http.HTTPResponseStream> = null;
+		config.middleware.unshift(function(handler, next):Void {
+			if (handler.requestPath == "/events") {
+				stream = handler.beginResponse(200, "text/event-stream");
+				return;
+			}
+			next();
+		});
+		__quietAccessLog(true);
+		var server = new HTTPServer(config);
+		var client = new Socket();
+		var inbox = new ByteArray();
+		var received:Int = 0;
+		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_:ProgressEvent):Void {
+			var count:Int = client.bytesAvailable;
+			client.readBytes(inbox, 0, count);
+			inbox.length = 0;
+			received += count;
+		});
+		var connected:Bool = false;
+		client.addEventListener(Event.CONNECT, _ -> connected = true);
+		var text:String = "data: tick\n\n";
+		var expected:Int = 0;
+		var arrived:Void->Bool = () -> received >= expected;
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			__pumpUntil(() -> connected);
+			client.writeUTFBytes("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+			client.flush();
+			__pumpUntil(() -> stream != null && received > 0);
+			// A chunk: its size in hex, CRLF, the text, CRLF.
+			var perLine:Int = StringTools.hex(text.length).length + 2 + text.length + 2;
+			var op = () -> {
+				expected = received + perLine;
+				stream.writeText(text);
+				__pumpUntil(arrived);
+			};
+			__warm(op, WARM);
+			__within(STREAM_TEXT, AllocationMeter.measure(op, 2000));
+		} catch (error:Dynamic) {
+			try client.close() catch (_:Dynamic) {}
+			server.close();
+			__quietAccessLog(false);
+			__finish();
+			throw error;
+		}
+		try client.close() catch (_:Dynamic) {}
+		server.close();
+		__quietAccessLog(false);
+		__finish();
 	}
 
 	public function testAnHttp2Get():Void {

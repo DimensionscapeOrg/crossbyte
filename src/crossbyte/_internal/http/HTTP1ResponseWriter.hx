@@ -83,37 +83,64 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	private static final CLOSE_LINE:String = "\r\nConnection: " + Connection.CLOSE + "\r\n";
 
 	public function writeHead(head:HTTPResponseHead):Void {
-		// One buffer, one string: `+=` would make a new string of everything so
-		// far for every piece, some thirty a response.
-		var response:HeadText = HeadText.begin();
-		response.add("HTTP/1.1 ");
-		response.addInt(head.statusCode);
-		response.add(" ");
-		response.add(head.statusMessage);
-		response.add(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
+		// Put together in bytes the thread keeps and handed to the socket in
+		// one write, which copies them: joined into a string and that string
+		// encoded into bytes of its own, a head was most of what a response
+		// allocated.
+		var text:ByteArray = HeadBytes.take();
+		text.writeUTFBytes("HTTP/1.1 ");
+		__writeDecimal(text, head.statusCode);
+		text.writeUTFBytes(" ");
+		text.writeUTFBytes(head.statusMessage);
+		text.writeUTFBytes(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
 
 		for (header in head.headers) {
 			var safeName:String = HttpSyntax.sanitizeHeaderName(header.name);
 			if (safeName.length == 0) {
 				continue;
 			}
-			response.add(safeName);
-			response.add(": ");
-			response.add(HttpSyntax.sanitizeHeaderValue(header.value));
-			response.add("\r\n");
+			text.writeUTFBytes(safeName);
+			text.writeUTFBytes(": ");
+			text.writeUTFBytes(HttpSyntax.sanitizeHeaderValue(header.value));
+			text.writeUTFBytes("\r\n");
 		}
 
 		__chunked = head.chunked;
 		if (__chunked) {
-			response.add("Transfer-Encoding: chunked\r\n");
+			text.writeUTFBytes("Transfer-Encoding: chunked\r\n");
 		} else if (head.contentLength != null) {
-			response.add("Content-Length: ");
-			response.addInt(head.contentLength);
-			response.add("\r\n");
+			text.writeUTFBytes("Content-Length: ");
+			__writeDecimal(text, head.contentLength);
+			text.writeUTFBytes("\r\n");
 		}
 
-		response.add("\r\n");
-		__socket.writeUTFBytes(response.end());
+		text.writeUTFBytes("\r\n");
+		__writeTaken(text);
+	}
+
+	/** `text` written to the socket, and given back to the thread whatever the write does. **/
+	private function __writeTaken(text:ByteArray):Void {
+		try {
+			__socket.writeBytes(text, 0, text.length);
+		} catch (error:Dynamic) {
+			HeadBytes.give(text);
+			throw error;
+		}
+		HeadBytes.give(text);
+	}
+
+	/** `value`, not negative, in decimal digits, with no string made of it. **/
+	private static function __writeDecimal(out:ByteArray, value:Int):Void {
+		var unit:Int = 1;
+		while (unit <= Std.int(value / 10)) {
+			unit *= 10;
+		}
+		while (unit > 0) {
+			var digit:Int = Std.int(value / unit);
+			out.writeByte(48 + digit);
+			value -= digit * unit;
+			unit = Std.int(unit / 10);
+		}
 	}
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
@@ -126,9 +153,25 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 			return;
 		}
 
-		__socket.writeUTFBytes(StringTools.hex(length) + "\r\n");
+		var size:ByteArray = HeadBytes.take();
+		__writeHex(size, length);
+		size.writeUTFBytes("\r\n");
+		__writeTaken(size);
 		__socket.writeBytes(data, offset, length);
 		__socket.writeUTFBytes("\r\n");
+	}
+
+	/** A chunk's size, not negative, in upper-case hexadecimal digits, as `StringTools.hex` writes it. **/
+	private static function __writeHex(out:ByteArray, value:Int):Void {
+		var shift:Int = 28;
+		while (shift > 0 && ((value >>> shift) & 0xF) == 0) {
+			shift -= 4;
+		}
+		while (shift >= 0) {
+			var digit:Int = (value >>> shift) & 0xF;
+			out.writeByte(digit < 10 ? 48 + digit : 55 + digit);
+			shift -= 4;
+		}
 	}
 
 	// The socket copies what it is given into its own buffer either way.
@@ -158,65 +201,44 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 }
 
 /**
-	A response head's text as it is put together.
-
-	Natively an array of its pieces, kept from one head to the next and
-	joined once. A StringBuf there is an array of pieces of its own, which a
-	head grows seven times: 1.6 KB allocated for a head of about 150 bytes.
-	The array is one a thread, since a server spread over runtimes writes
-	heads on several at once, and nothing that puts a head together can
-	begin another before it ends.
-
-	Elsewhere a StringBuf: the jvm's appends a number without making a
-	string of it, and gains nothing from the array.
+	The bytes a head, or a chunk's size line, is put together in before the
+	socket copies them, kept a thread at a time: nothing that writes a head
+	begins another before it is written. One taken while another is out is
+	made anew, and one grown past 16 KB is not kept.
 **/
-private abstract HeadText(#if cpp Array<String> #else StringBuf #end) {
-	#if cpp
-	private static final __pieces:sys.thread.Tls<Array<String>> = new sys.thread.Tls();
+private class HeadBytes {
+	static inline var KEEP:Int = 16 * 1024;
+
+	#if target.threaded
+	static final __spare:sys.thread.Tls<ByteArray> = new sys.thread.Tls();
+	#else
+	static var __spareOnly:Null<ByteArray> = null;
 	#end
 
-	private inline function new(text:#if cpp Array<String> #else StringBuf #end) {
-		this = text;
-	}
-
-	public static inline function begin():HeadText {
-		#if cpp
-		var pieces:Null<Array<String>> = __pieces.value;
-		if (pieces == null) {
-			pieces = [];
-			__pieces.value = pieces;
+	public static function take():ByteArray {
+		#if target.threaded
+		var spare:Null<ByteArray> = __spare.value;
+		__spare.value = null;
+		#else
+		var spare:Null<ByteArray> = __spareOnly;
+		__spareOnly = null;
+		#end
+		if (spare == null) {
+			return new ByteArray();
 		}
-		pieces.resize(0);
-		return new HeadText(pieces);
-		#else
-		return new HeadText(new StringBuf());
-		#end
+		spare.length = 0;
+		spare.position = 0;
+		return spare;
 	}
 
-	public inline function add(piece:String):Void {
-		#if cpp
-		this.push(piece);
+	public static function give(bytes:ByteArray):Void {
+		if (@:privateAccess (bytes : crossbyte.io.ByteArray.ByteArrayData).__length > KEEP) {
+			return;
+		}
+		#if target.threaded
+		__spare.value = bytes;
 		#else
-		this.add(piece);
-		#end
-	}
-
-	public inline function addInt(value:Int):Void {
-		#if cpp
-		this.push(Std.string(value));
-		#else
-		this.add(value);
-		#end
-	}
-
-	/** The text, the pieces let go of. **/
-	public inline function end():String {
-		#if cpp
-		var text:String = this.join("");
-		this.resize(0);
-		return text;
-		#else
-		return this.toString();
+		__spareOnly = bytes;
 		#end
 	}
 }

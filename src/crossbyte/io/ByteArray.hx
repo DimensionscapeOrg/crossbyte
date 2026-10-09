@@ -1593,9 +1593,57 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeUTFBytes(value:String):Void {
+		#if cpp
+		// Natively a string of a byte a character is ASCII, which is its own
+		// UTF-8: copied straight in, with no Bytes made of it first.
+		if (!untyped __cpp__("{0}.isUTF16Encoded()", value)) {
+			var count:Int = value.length;
+			if (count > 0) {
+				__resize(position + count, position);
+				untyped __cpp__("memcpy((char *){0}->GetBase() + {1}, {2}.raw_ptr(), {3})", getData(), position, value, count);
+				position += count;
+			}
+			return;
+		}
+		#elseif (jvm || java)
+		if (__writeAscii(value)) {
+			return;
+		}
+		#end
 		// Through the platform's encoder on JavaScript; see Utf8.
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
+
+	#if (jvm || java)
+	/**
+		A short text that is all ASCII, written a character at a time: on the
+		jvm the platform's encoder makes an array and a Bytes for it, and a
+		loop beats it up to a few hundred characters. False, having written
+		nothing, for anything else.
+	**/
+	@:noCompletion private function __writeAscii(value:String):Bool {
+		var count:Int = value.length;
+		if (count > ASCII_DIRECT_LIMIT) {
+			return false;
+		}
+		for (i in 0...count) {
+			if (StringTools.fastCodeAt(value, i) >= 0x80) {
+				return false;
+			}
+		}
+		if (count > 0) {
+			__resize(position + count, position);
+			var at:Int = position;
+			for (i in 0...count) {
+				set(at + i, StringTools.fastCodeAt(value, i));
+			}
+			position += count;
+		}
+		return true;
+	}
+
+	private static inline var ASCII_DIRECT_LIMIT:Int = 256;
+	#end
 
 	@:keep public inline function writeVarUInt(value:Int):Void {
 		// Tested and shifted as the unsigned value it is: a signed `v > 0x7F`

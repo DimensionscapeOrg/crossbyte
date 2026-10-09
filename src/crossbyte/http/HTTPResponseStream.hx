@@ -90,13 +90,25 @@ class HTTPResponseStream {
 		return @:privateAccess handler.__writeOpenStream(this, data, offset, length);
 	}
 
-	/** `write`, with `text` as UTF-8. */
+	/**
+	 * `write`, with `text` as UTF-8. The text is encoded into a buffer the
+	 * thread keeps, since the connection copies what it is given: a call
+	 * allocates nothing for an ASCII text natively.
+	 */
 	public function writeText(text:String):Bool {
-		var bytes:ByteArray = new ByteArray();
+		var bytes:ByteArray = crossbyte._internal.http.TextBody.take();
 		if (text != null) {
 			bytes.writeUTFBytes(text);
 		}
-		return write(bytes, 0, bytes.length);
+		var room:Bool;
+		try {
+			room = write(bytes, 0, bytes.length);
+		} catch (error:Dynamic) {
+			crossbyte._internal.http.TextBody.give(bytes);
+			throw error;
+		}
+		crossbyte._internal.http.TextBody.give(bytes);
+		return room;
 	}
 
 	/**
