@@ -749,6 +749,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * Runtime handlers receive decoded arguments as an array of dynamic values. If
 	 * the incoming frame expects a response, the return value is encoded and sent
 	 * back to the caller. One-way runtime calls ignore the return value.
+	 *
+	 * The array is made for each call, and each number in it boxed; the
+	 * handler may keep it. `registerArgs` reads the same calls with no array.
 	 */
 	public function register(op:Int, handler:Array<Dynamic>->Dynamic):RPCSession<C, D> {
 		if (!__hasRuntimeHandler(op)) {
@@ -879,6 +882,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		`null`, a `Bool`, an `Int`, a `Float`, a `String` or `haxe.io.Bytes`
 		(a `ByteArray` among them, sent as its `length` bytes) and arrives
 		as the same, `Bytes` for either of the last.
+
+		The arguments' array, each number in it boxed, and the array a
+		`register` handler is given are a call's allocation (152 bytes natively
+		for one string, the string included). For a call made often,
+		`runtimeCall` writes the same frame value by value and `registerArgs`
+		reads it where it lies, allocating nothing.
 
 		@throws ArgumentError When the call is over `maxFrameLength`.
 		@throws String When an argument is of a type the runtime lane does not carry.
