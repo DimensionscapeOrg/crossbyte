@@ -12,6 +12,12 @@ using haxe.macro.Tools;
 class RPCHandlerMacro {
 	static inline final DIRECT_SWITCH_MAX_METHODS:Int = 8;
 
+	// The most methods a handler's decoders are inlined into its dispatch
+	// for; past it each is a call of its own. Natively every inlined
+	// decoder's locals and handlers take room in dispatch's own frame, and a
+	// handler of 300 methods ended the process at its first call.
+	static inline final INLINED_DECODERS_MAX:Int = 32;
+
 	// On a generated dispatch(): the signature of every method it dispatches,
 	// for a handler that extends this one to dispatch as well. Read from here,
 	// untyped, and never from the parent's fields: following a parent method's
@@ -332,7 +338,7 @@ class RPCHandlerMacro {
 		}
 
 		for (method in methods) {
-			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter));
+			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX));
 		}
 
 		newFields.push(makeDispatcher(methods, entries, usePerfectHash, tag, inheritedDispatch != null));
@@ -340,7 +346,9 @@ class RPCHandlerMacro {
 		// as a commands class calls it, `ping` aside.
 		newFields.push(RPCCommandMacro.fingerprintField([for (method in methods) if (method.name != "ping") method.op]));
 
-		return fields.concat(newFields);
+		final all = fields.concat(newFields);
+		RPCContractMacroTools.requireJvmSize(all, "RPC handler");
+		return all;
 	}
 
 	/**
@@ -404,7 +412,11 @@ class RPCHandlerMacro {
 	}
 
 	static function makeIntArray(name:String, data:Array<Int>):Field {
-		var arr:Expr = macro [$a{data.map(v -> macro $v{v})}];
+		// On the jvm read from one string as the class loads: an array
+		// literal there is some nine bytes of the class's initializer an
+		// element, which past 32 KB fails to load (a handler of some 600
+		// methods).
+		var arr:Expr = Context.defined("jvm") ? macro crossbyte.rpc._internal.RPCOps.intsOf($v{data.join(",")}) : macro [$a{data.map(v -> macro $v{v})}];
 		return {
 			name: name,
 			access: [APrivate, AStatic],
@@ -417,7 +429,7 @@ class RPCHandlerMacro {
 		return "__rpc_decode_call_" + tag + "_" + method;
 	}
 
-	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool):Field {
+	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 		final reads:Array<Expr> = [];
@@ -538,6 +550,26 @@ class RPCHandlerMacro {
 			};
 		}
 
+		final args:Array<FunctionArg> = [
+			{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+			{name: "requestId", type: macro :Int}
+		];
+		// On the jvm a static method, taking the handler, where it can be: an
+		// instance method each would make the jvm's `_hx_getField` grow with
+		// every method, and a handler of some 300 fail to load.
+		final self:Null<ComplexType> = Context.defined("jvm") ? RPCContractMacroTools.selfType() : null;
+		if (self != null) {
+			return {
+				name: decoderName(tag, m.name),
+				access: [APrivate, AStatic],
+				kind: FFun({
+					ret: macro :Void,
+					args: [({name: "__self", type: self} : FunctionArg)].concat(args),
+					expr: RPCContractMacroTools.asStatic(body)
+				}),
+				pos: m.pos
+			};
+		}
 		return {
 			name: decoderName(tag, m.name),
 			// Inlined into dispatch, the call it would cost saved, when it is
@@ -549,7 +581,7 @@ class RPCHandlerMacro {
 			// bytecode, and Haxe's jvm backend writes a method's branches with
 			// 16-bit offsets, so a dispatch past 32 KB (a handler of some 23
 			// methods) fails to load with a VerifyError.
-			access: carriesCompound(m) || Context.defined("jvm") ? [APrivate] : [APrivate, AInline],
+			access: !mayInline || carriesCompound(m) || Context.defined("jvm") ? [APrivate] : [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
 				args: [
@@ -683,6 +715,12 @@ class RPCHandlerMacro {
 		return false;
 	}
 
+	/** The call to a decoder: static on the jvm (see `makeDecoder`), where it can be. **/
+	static function decoderCall(fname:String):Expr {
+		return Context.defined("jvm") && RPCContractMacroTools.selfType() != null ? macro $i{fname}(this, input, requestId) : macro this.$fname(input,
+			requestId);
+	}
+
 	static function makeDispatcher(methods:Array<MethodInfo>, entries:Array<DispatchEntry>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
 		// Never inline: it is reached through RPCHandler's abstract dispatch()
 		// in any case, and a subclass must be able to override it.
@@ -702,7 +740,7 @@ class RPCHandlerMacro {
 				cases.push({
 					values: [for (entry in entries) if (entry.method == method) macro $v{entry.op}],
 					expr: macro {
-						this.$fname(input, requestId);
+						$e{decoderCall(fname)};
 					}
 				});
 			}
@@ -734,7 +772,7 @@ class RPCHandlerMacro {
 			cases.push({
 				values: [macro $v{i}],
 				expr: macro {
-					this.$fname(input, requestId);
+					$e{decoderCall(fname)};
 					return;
 				}
 			});

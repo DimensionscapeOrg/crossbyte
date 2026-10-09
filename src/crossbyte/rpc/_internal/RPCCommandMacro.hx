@@ -156,7 +156,9 @@ class RPCCommandMacro {
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
 		newFields.push(withTimeoutField());
 		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
-		return fields.concat(newFields);
+		final all = fields.concat(newFields);
+		RPCContractMacroTools.requireJvmSize(all, "RPC commands class");
+		return all;
 	}
 
 	/**
@@ -364,7 +366,9 @@ class RPCCommandMacro {
 		return {
 			name: metaName,
 			doc: "Auto-generated RPC meta for " + commandName,
-			access: [APrivate, AInline],
+			// Extern: only ever inlined into its stubs, so no method of its own,
+			// on the jvm one fewer for a class's `_hx_getField` to reach.
+			access: [APrivate, AInline, AExtern],
 			kind: FFun({
 				args: [
 					{name: "__requestId", type: macro :Int}
@@ -619,23 +623,30 @@ class RPCCommandMacro {
 			};
 			if (SPLIT_READER) {
 				final name:String = "__rpc_read_" + classTag() + "_" + method.name;
+				final args:Array<FunctionArg> = [
+					{name: "op", type: macro :Int},
+					{name: "requestId", type: macro :Int},
+					{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+					{name: "failed", type: macro :Bool}
+				];
+				// Static where it can be: an instance method each would make
+				// the jvm's `_hx_getField` grow with every request method.
+				final self:Null<ComplexType> = RPCContractMacroTools.selfType();
 				newFields.push({
 					name: name,
-					access: [APrivate],
+					access: self != null ? [APrivate, AStatic] : [APrivate],
 					meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
 					kind: FFun({
-						args: [
-							{name: "op", type: macro :Int},
-							{name: "requestId", type: macro :Int},
-							{name: "input", type: macro :crossbyte.io.ByteArrayInput},
-							{name: "failed", type: macro :Bool}
-						],
+						args: self != null ? [({name: "__self", type: self} : FunctionArg)].concat(args) : args,
 						ret: macro :Void,
-						expr: body
+						expr: self != null ? RPCContractMacroTools.asStatic(body) : body
 					}),
 					pos: method.pos
 				});
-				cases.push({values: [macro $v{method.op}], expr: macro this.$name(op, requestId, input, failed)});
+				cases.push({
+					values: [macro $v{method.op}],
+					expr: self != null ? macro $i{name}(this, op, requestId, input, failed) : macro this.$name(op, requestId, input, failed)
+				});
 			} else {
 				cases.push({values: [macro $v{method.op}], expr: body});
 			}
