@@ -250,6 +250,25 @@ abstract class RPCCommands {
 		}
 	}
 
+	@:noCompletion private function __answerInt64(op:Int, requestId:Int, value:haxe.Int64):Void {
+		final response = __takeAnswered(op, requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.__pooled) {
+			final call:RPCReceiverCall = cast response;
+			final id:Int = call.requestId;
+			final receiver:RPCInt64Receiver = cast call.finish();
+			try {
+				receiver.onInt64(id, value);
+			} catch (error:Dynamic) {
+				RPCReceiverCall.contained(error);
+			}
+		} else {
+			(cast response : RPCResponse<haxe.Int64>).__resolve(value);
+		}
+	}
+
 	@:noCompletion private function __answerFloat(op:Int, requestId:Int, value:Float):Void {
 		final response = __takeAnswered(op, requestId);
 		if (response == null) {

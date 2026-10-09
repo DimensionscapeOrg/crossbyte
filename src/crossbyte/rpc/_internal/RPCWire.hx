@@ -112,6 +112,14 @@ class RPCWire {
 		return RPCBytes.getI32(data, at);
 	}
 
+	public static inline function readI64(input:ByteArrayInput):haxe.Int64 {
+		final data:ByteArrayData = cast input;
+		final at:Int = data.position;
+		need(data, at, 8);
+		data.position = at + 8;
+		return RPCBytes.getI64(data, at);
+	}
+
 	public static inline function readF64(input:ByteArrayInput):Float {
 		final data:ByteArrayData = cast input;
 		final at:Int = data.position;

@@ -9,6 +9,7 @@ import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.Reason;
 import crossbyte.rpc.RPCFailure;
 import crossbyte.rpc._internal.RPCWire;
+import haxe.Int64;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -16,6 +17,12 @@ import utest.Assert;
 typedef ReceiverSpot = {
 	x:Int,
 	y:Int
+}
+
+/** A structure with an Int64 in it. **/
+typedef ReceiverStamp = {
+	at:Int64,
+	id:Int
 }
 
 /** An enum with arguments an answer can be. **/
@@ -110,6 +117,64 @@ class RPCReceiverTest extends utest.Test {
 		Assert.same([9, null], maybes.values);
 
 		Assert.same([], heard.failures);
+	}
+
+	public function testAnInt64ArrivesWholeEitherWay():Void {
+		var fixture = new Fixture();
+		var heard = new Heard();
+		var values:Array<Int64> = [
+			Int64.make(0, 0),
+			Int64.make(-1, -1),
+			Int64.make(0x7FFFFFFF, -1),
+			Int64.make(0x80000000, 0),
+			Int64.make(1, 0),
+			Int64.make(0x12345678, 0x9ABCDEF0)
+		];
+		for (value in values) {
+			var call = fixture.commands.bigThen(value, heard);
+			var expected = value + 1;
+			Assert.equals('$call int64 ${Int64.toStr(expected)}', heard.log[heard.log.length - 1]);
+			var future = fixture.commands.big(value);
+			Assert.isTrue(future.result == expected, "a future's Int64 changed: " + Int64.toStr(future.result));
+		}
+
+		var lists = new Values<Array<Int64>>();
+		fixture.commands.bigsThen(values, Int64.make(7, 8), lists);
+		fixture.commands.bigsThen([], null, lists);
+		Assert.equals(values.length + 1, lists.values[0].length);
+		for (i in 0...values.length) {
+			Assert.isTrue(lists.values[0][i] == values[i], 'element $i changed');
+		}
+		Assert.isTrue(lists.values[0][values.length] == Int64.make(7, 8));
+		Assert.equals(0, lists.values[1].length);
+
+		var stamps = new Values<ReceiverStamp>();
+		fixture.commands.stampThen(values[5], stamps);
+		Assert.isTrue(stamps.values[0].at == values[5]);
+		Assert.equals(1, stamps.values[0].id);
+		Assert.same([], heard.failures);
+	}
+
+	public function testAnInt64IsEightBytesLowWordFirst():Void {
+		// Nothing answers on the other end but this test, by hand.
+		var link = LinkedConnection.pair();
+		var commands = new ReceiverCommands();
+		var client = new RPCSession<ReceiverCommands>(link.client, commands);
+		var heard = new Heard();
+		var call = commands.bigThen(Int64.make(0, 0), heard);
+		Assert.same([], heard.log);
+		var payload = new ByteArrayOutput(32);
+		payload.writeByte(RPCWire.FLAG_RESPONSE);
+		payload.writeInt(crossbyte.rpc._internal.RPCOps.opOf("big(i64):i64"));
+		payload.writeVarUInt(call);
+		for (byte in [4, 3, 2, 1, 8, 7, 6, 5]) {
+			payload.writeByte(byte);
+		}
+		var frame = new ByteArray();
+		frame.writeInt(payload.bytesWritten);
+		frame.writeBytes(payload, 0, payload.bytesWritten);
+		link.server.send(frame);
+		Assert.same(['$call int64 ${Int64.toStr(Int64.make(0x05060708, 0x01020304))}'], heard.log);
 	}
 
 	public function testTheContractModeAndAnInheritingCommandsClassHaveThem():Void {
@@ -418,7 +483,8 @@ private class Fixture {
 }
 
 /** Every answer and failure it is told, in order. **/
-private class Heard implements RPCIntReceiver implements RPCFloatReceiver implements RPCBoolReceiver implements RPCStringReceiver {
+private class Heard implements RPCIntReceiver implements RPCFloatReceiver implements RPCBoolReceiver implements RPCStringReceiver
+		implements RPCInt64Receiver {
 	public final log:Array<String> = [];
 	public final failures:Array<RPCFailure> = [];
 	public final failureCalls:Array<Int> = [];
@@ -439,6 +505,10 @@ private class Heard implements RPCIntReceiver implements RPCFloatReceiver implem
 
 	public function onString(call:Int, value:String):Void {
 		log.push('$call string $value');
+	}
+
+	public function onInt64(call:Int, value:Int64):Void {
+		log.push('$call int64 ${Int64.toStr(value)}');
 	}
 
 	public function onFailure(call:Int, failure:RPCFailure):Void {
@@ -549,6 +619,12 @@ private class ReceiverCommands extends RPCCommands {
 
 	@:rpc public function echo(text:String):RPCResponse<String> {}
 
+	@:rpc public function big(value:Int64):RPCResponse<Int64> {}
+
+	@:rpc public function bigs(values:Array<Int64>, extra:Null<Int64>):RPCResponse<Array<Int64>> {}
+
+	@:rpc public function stamp(at:Int64):RPCResponse<ReceiverStamp> {}
+
 	public inline function breakThen(value:Int, receiver:RPCIntReceiver):Int {
 		return breakDownThen(value, receiver);
 	}
@@ -639,6 +715,22 @@ private class ReceiverHandler extends RPCHandler {
 
 	@:rpc public function echo(text:String):String {
 		return text;
+	}
+
+	@:rpc public function big(value:Int64):Int64 {
+		return value + 1;
+	}
+
+	@:rpc public function bigs(values:Array<Int64>, extra:Null<Int64>):Array<Int64> {
+		var all = values.copy();
+		if (extra != null) {
+			all.push(extra);
+		}
+		return all;
+	}
+
+	@:rpc public function stamp(at:Int64):ReceiverStamp {
+		return {at: at, id: 1};
 	}
 }
 

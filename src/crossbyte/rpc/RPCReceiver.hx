@@ -7,7 +7,8 @@ package crossbyte.rpc;
 	returns an `RPCResponse`, a `Future` made for the call. `commands.joinThen("lobby", receiver)`
 	makes the same call and has the answer handed to `receiver` instead, typed,
 	with nothing made for the call: no future, no closure, and for an answer
-	that is a number, a `Bool` or a `String`, no box. That is the way to call
+	that is a number (`haxe.Int64` among them, natively and on the jvm), a
+	`Bool` or a `String`, no box. That is the way to call
 	in a loop that runs every frame.
 
 	The receiver is an interface for the type of the answer, so one object can
@@ -19,9 +20,10 @@ package crossbyte.rpc;
 	| `Float`, `Float32` | `RPCFloatReceiver` | `onFloat` |
 	| `Bool` | `RPCBoolReceiver` | `onBool` |
 	| `String` | `RPCStringReceiver` | `onString` |
+	| `haxe.Int64` | `RPCInt64Receiver` | `onInt64` |
 	| anything else, and `Null<T>` of anything | `RPCValueReceiver<T>` | `onValue` |
 
-	An abstract over one of the first four is received as what it abstracts:
+	An abstract over one of the first five is received as what it abstracts:
 	an enum abstract over `Int` arrives through `onInt`.
 
 	Each method is told the call's id, which the `...Then` method returned,

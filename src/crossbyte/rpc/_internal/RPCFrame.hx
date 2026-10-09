@@ -148,6 +148,13 @@ class RPCFrame extends ByteArrayData {
 		position += 4;
 	}
 
+	/** Eight bytes, little-endian, the low word first. **/
+	public inline function putInt64(value:haxe.Int64):Void {
+		__fit(8);
+		RPCBytes.setI64(this, position, value);
+		position += 8;
+	}
+
 	public inline function putDouble(value:Float):Void {
 		__fit(8);
 		RPCBytes.setF64(this, position, value);

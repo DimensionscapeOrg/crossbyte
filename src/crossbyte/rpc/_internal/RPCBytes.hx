@@ -31,6 +31,16 @@ class RPCBytes {
 		#end
 	}
 
+	/** Eight bytes, the low word first. **/
+	public static inline function getI64(data:Bytes, at:Int):haxe.Int64 {
+		return haxe.Int64.make(getI32(data, at + 4), getI32(data, at));
+	}
+
+	public static inline function setI64(data:Bytes, at:Int, value:haxe.Int64):Void {
+		setI32(data, at, value.low);
+		setI32(data, at + 4, value.high);
+	}
+
 	public static inline function getF64(data:Bytes, at:Int):Float {
 		#if cpp
 		return untyped __global__.__hxcpp_memory_get_double(data.getData(), at);
