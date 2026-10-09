@@ -139,7 +139,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		The failure a receiver is told of, from what an `RPCResponse` would
 		have failed with.
 	**/
-	static function failureOf(message:String, cause:Null<Dynamic>):RPCFailure {
+	public static function failureOf(message:String, cause:Null<Dynamic>):RPCFailure {
 		if (cause == null) {
 			return switch (message) {
 				case RPCSession.STOPPED_MESSAGE: Stopped;

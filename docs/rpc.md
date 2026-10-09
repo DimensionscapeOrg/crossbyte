@@ -322,6 +322,22 @@ affected.
 `Cancelled`, and its answer is dropped when it comes. It works for a future's
 `requestId` too.
 
+A call made with a future says why it failed the same way: its `failure` is
+the `RPCFailure` a receiver would have been told, worked out as it is read
+(`null` while it waits and once it has succeeded), so a caller can tell a
+call that timed out from one that was refused, cancelled or cut off without
+reading the words of its `error`:
+
+```haxe
+// Given commands:ChatCommands.
+final joining = commands.join("lobby");
+joining.catchError(_ -> switch (joining.failure) {
+	case Disconnected(reason): trace('the server went: $reason');
+	case Refused(message): trace('refused: $message');
+	case other: trace('failed: $other');
+});
+```
+
 The receivers are interfaces rather than callbacks for a reason: natively a
 function value passes its argument as an object, so an `Int->Void` callback
 would box every answer it was given.

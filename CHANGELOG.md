@@ -387,7 +387,10 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
   `up`.
 - Errors: `crossbyte.rpc.RPCError`, whose message reaches the caller, and
-  `RPCSession.onHandlerError` and `onUnreadableFrame`.
+  `RPCSession.onHandlerError` and `onUnreadableFrame`. `RPCResponse.failure`
+  says why a future's call failed as the `RPCFailure` a receiver is told
+  (`TimedOut`, `Cancelled`, `Stopped`, `Disconnected`, `Refused`, `Unsent`,
+  `Unreadable`).
 - Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
   `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
 - Contracts, handlers and commands classes can extend others of their
