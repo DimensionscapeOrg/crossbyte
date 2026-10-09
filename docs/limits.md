@@ -90,9 +90,11 @@ the connection has read and written nothing for one of its runtime's sweeps, eve
 message each way, a connection holds 1.7 KB once quiet. A buffer grown past 64 KB lets go as soon
 as it empties: natively and on the jvm its storage goes to a pool its runtime keeps, by size, which the next buffer
 to grow that far takes from, so a connection sending or receiving a large burst each pass reuses the same storage
-rather than growing anew (bursts of 1 MB allocated 2.4 MB for every megabyte sent or received, and now nearly
-nothing, at a third of the CPU); the pool lets go of what nobody has taken for ten to fifteen seconds. A WebSocket
-session's buffers, and a message past 64 KB, do the same. On Node a socket keeps its buffers' storage.
+rather than allocating it again (1 MB bursts allocate about 17 KB for each megabyte, where growing anew took
+2.4 MB). The pool's sizes are a quarter apart (64, 80, 96, 112 and 128 KB, and so on to 32 MB), so a buffer holds
+at most a quarter more than it needs, and a buffer takes at once the size its last burst needed. The pool lets go
+of what nobody has taken for ten to fifteen seconds. A WebSocket session's buffers, and a message past 64 KB, do
+the same. On Node a socket keeps its buffers' storage.
 
 ### Many connections, mostly idle
 

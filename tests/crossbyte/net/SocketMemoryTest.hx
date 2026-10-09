@@ -198,8 +198,10 @@ class SocketMemoryTest extends utest.Test {
 		Natively and on the jvm a large input takes its storage from the
 		runtime's pool as it grows and gives it back once read: the bytes not
 		yet read are carried across each growth and each move down, in order,
-		and a second burst of the same size grows into the storage the first
-		gave back rather than storage of its own.
+		and a second burst of the same size takes the size the first held at
+		most at once, from the storage the first gave back, rather than
+		growing through the sizes below it or making storage of its own. An
+		input read whole gives its storage back when the connection closes.
 	**/
 	public function testALargeInputTakesItsStorageFromTheRuntimesPool():Void {
 		#if (cpp || jvm)
@@ -240,10 +242,15 @@ class SocketMemoryTest extends utest.Test {
 				Assert.equals(-1, wrong, "the bytes were read as sent, first wrong at " + wrong);
 				read += count;
 			}
-			function burst():Void {
+			function burst(again:Bool):Void {
 				// Grown past 64 KB with nothing read; read in part, then grown
 				// again with what was not read carried across.
 				send(200 * 1024);
+				if (again) {
+					// The size the last burst held at most, taken at once.
+					Assert.isTrue(__storage(accepted.__input) >= 450 * 1024, "a burst like the last grew to " + __storage(accepted.__input)
+						+ " rather than taking the size the last held at once");
+				}
 				take(150 * 1024);
 				send(400 * 1024);
 				Assert.isTrue(__storage(accepted.__input) >= 450 * 1024, "the input held " + __storage(accepted.__input));
@@ -254,13 +261,130 @@ class SocketMemoryTest extends utest.Test {
 				Assert.isTrue(__storage(accepted.__input) <= 64 * 1024, "the drained input kept " + __storage(accepted.__input) + " bytes");
 			}
 
-			burst();
+			burst(false);
 			Assert.isTrue(pool.held() >= 450 * 1024, "its storage did not go back to the pool, which holds " + pool.held());
 			var made:Int = pool.made;
 			Assert.isTrue(made > 0, "the input took nothing from the pool");
-			burst();
+			burst(true);
 			Assert.equals(made, pool.made, "the second burst made storage of its own rather than taking the pool's");
+
+			// Read whole, and closed before another arrival finds it read: its
+			// storage goes back as the connection closes.
+			send(300 * 1024);
+			take(sent - read);
+			var before:Float = pool.held();
+			accepted.close();
+			Assert.isTrue(pool.held() >= before + 300 * 1024, "the storage of an input read whole went with the closed connection");
 		});
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Natively and on the jvm an output that must grow while part of it has
+		been sent lets go of the sent part first: it takes storage for what
+		waits and what is written, not for those and what already went, and
+		what waits stays in order ahead of what follows it.
+	**/
+	public function testAnOutputLetsGoOfWhatWasSentAsItGrows():Void {
+		#if (cpp || jvm)
+		__pair(function(server:ServerSocket, client:Socket, accepted:Socket):Void {
+			function bytes(from:Int, count:Int):ByteArray {
+				var out = new ByteArray();
+				for (i in 0...count) {
+					out.writeByte((from + i) * 31);
+				}
+				return out;
+			}
+			client.writeBytes(bytes(0, 300 * 1024));
+			// As a slow reader leaves it: 120 KB of it sent, the rest waiting.
+			client.__retainPendingOutput(120 * 1024, 300 * 1024);
+			Assert.equals(120 * 1024, client.__outputSent, "the sent part was moved before the test could grow past it");
+			client.writeBytes(bytes(300 * 1024, 200 * 1024));
+			var held:Int = __storage(client.__output);
+			Assert.isTrue(held < crossbyte._internal.socket.StoragePool.sizeFor(500 * 1024),
+				'the output took $held bytes, room for what had been sent as well as what waits');
+			Assert.equals(0, client.__outputSent);
+			Assert.equals(380 * 1024, Std.int(client.__output.length));
+			var wrong:Int = -1;
+			for (i in 0...380 * 1024) {
+				if (client.__output[i] != (((120 * 1024 + i) * 31) & 0xFF)) {
+					wrong = i;
+					break;
+				}
+			}
+			Assert.equals(-1, wrong, "what waits was not kept in order, first wrong at " + wrong);
+		});
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		The pool's sizes are a quarter apart within each doubling, so storage
+		is never more than a quarter larger than what it was taken for: just
+		past 64 KB takes 80 KB, 1.1 MB takes 1.25 MB, 4.5 MB 5 MB and 9 MB
+		10 MB, where powers of two alone gave 128 KB, 2, 8 and 16 MB. Each
+		size is kept, and let go when quiet, on its own; what a buffer grew
+		out of only until the next ask.
+	**/
+	public function testThePoolsSizesAreAQuarterApart():Void {
+		#if (cpp || jvm)
+		var kb:Int = 1024;
+		var mb:Int = 1024 * 1024;
+		Assert.equals(64 * kb, crossbyte._internal.socket.StoragePool.sizeFor(1));
+		Assert.equals(64 * kb, crossbyte._internal.socket.StoragePool.sizeFor(64 * kb));
+		Assert.equals(80 * kb, crossbyte._internal.socket.StoragePool.sizeFor(64 * kb + 1));
+		Assert.equals(128 * kb, crossbyte._internal.socket.StoragePool.sizeFor(112 * kb + 1));
+		Assert.equals(1280 * kb, crossbyte._internal.socket.StoragePool.sizeFor(Std.int(1.1 * mb)));
+		Assert.equals(5 * mb, crossbyte._internal.socket.StoragePool.sizeFor(Std.int(4.5 * mb)));
+		Assert.equals(10 * mb, crossbyte._internal.socket.StoragePool.sizeFor(9 * mb));
+		Assert.equals(32 * mb, crossbyte._internal.socket.StoragePool.sizeFor(32 * mb));
+		Assert.equals(-1, crossbyte._internal.socket.StoragePool.sizeFor(32 * mb + 1));
+		var worst:Float = 0;
+		var wrong:Int = -1;
+		var size:Int = 64 * kb + 1;
+		while (size <= 32 * mb) {
+			var kept:Int = crossbyte._internal.socket.StoragePool.sizeFor(size);
+			if (kept < size || crossbyte._internal.socket.StoragePool.sizeFor(kept) != kept) {
+				wrong = size;
+			}
+			if (kept / size > worst) {
+				worst = kept / size;
+			}
+			size += 4093;
+		}
+		Assert.equals(-1, wrong, "a size the pool kept was short of what it was asked for, or not a size it keeps");
+		Assert.isTrue(worst <= 1.25, "storage was up to " + worst + " times what it was taken for");
+
+		var pool = new crossbyte._internal.socket.StoragePool(null);
+		var large = pool.take(9 * mb);
+		var small = pool.take(Std.int(1.1 * mb));
+		Assert.equals(10 * mb, large.length);
+		Assert.equals(1280 * kb, small.length);
+		pool.give(large);
+		pool.give(small);
+		Assert.equals(11.25 * mb, pool.held());
+		Assert.isTrue(pool.take(Std.int(9.5 * mb)) == large, "storage of the size given back was not taken again");
+		pool.give(large);
+		// Taken since the last ask: kept. Then a quiet interval: kept as
+		// spare. A second: gone, every size.
+		pool.__releaseIfQuiet();
+		Assert.equals(11.25 * mb, pool.held());
+		pool.__releaseIfQuiet();
+		Assert.equals(11.25 * mb, pool.held());
+		pool.__releaseIfQuiet();
+		Assert.equals(0.0, pool.held());
+
+		// What a buffer grew out of is kept only until the next ask.
+		var passed = pool.take(Std.int(1.1 * mb));
+		pool.giveGrown(passed);
+		Assert.equals(1280.0 * kb, pool.held());
+		Assert.isTrue(pool.take(Std.int(1.1 * mb)) == passed, "storage a buffer grew out of was not taken again");
+		pool.giveGrown(passed);
+		pool.__releaseIfQuiet();
+		Assert.equals(0.0, pool.held(), "storage a buffer grew out of was kept past the next ask");
 		#else
 		Assert.pass();
 		#end

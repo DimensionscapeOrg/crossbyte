@@ -46,7 +46,9 @@ class Arrivals {
 		server with 10,000 idle connections holds at most 160 MB for it
 		(each connection's last message just under the limit), where 64 KB
 		would let it hold 640 MB. A larger arrival is rare enough to have
-		storage of its own, let go once its call returns.
+		storage of its own, let go once its call returns; natively and on the
+		jvm a WebSocket session's message past 64 KB takes it from its
+		runtime's `StoragePool` and gives it back.
 	**/
 	public static inline var KEEP:Int = 16 * 1024;
 
