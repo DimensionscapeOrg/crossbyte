@@ -187,6 +187,73 @@ final class SecureRandom {
 		#end
 	}
 
+	/**
+	 * Fills `length` bytes of `bytes` from `offset` with bytes from the
+	 * platform CSPRNG, the same source as `getSecureRandomBytes`, without
+	 * making a buffer for them: for a caller that draws often into storage of
+	 * its own, such as a WebSocket client's pool of frame masks. `length` -1
+	 * (the default) fills from `offset` to the end. `bytes` keeps its length
+	 * and position.
+	 *
+	 * Natively and on Node nothing is allocated. On the jvm a fill of a
+	 * whole `ByteArray` whose storage is exactly its length (as
+	 * `ByteArray.fromBytes(Bytes.alloc(n))` makes) allocates nothing; any
+	 * other range is drawn into an array of its own first, since Java's
+	 * `SecureRandom` fills whole arrays only.
+	 *
+	 * ```haxe
+	 * var masks = ByteArray.fromBytes(haxe.io.Bytes.alloc(8192));
+	 * SecureRandom.fill(masks);           // all of it
+	 * SecureRandom.fill(masks, 4096, 64); // 64 bytes from 4096
+	 * ```
+	 *
+	 * @throws RangeError If `offset` or `length` reach outside `bytes`.
+	 * @throws ArgumentError If `bytes` is null.
+	 * @throws IllegalOperationError On a target without a CSPRNG (the
+	 *         interpreter, neko, HashLink), as `getSecureRandomBytes` does.
+	 */
+	public static function fill(bytes:ByteArray, offset:Int = 0, length:Int = -1):Void {
+		if (bytes == null) {
+			throw new crossbyte.errors.ArgumentError("SecureRandom.fill: bytes is null");
+		}
+		var size:Int = bytes.length;
+		if (length == -1) {
+			length = size - offset;
+		}
+		if (offset < 0 || length < 0 || offset > size || length > size - offset) {
+			throw new crossbyte.errors.RangeError('SecureRandom.fill: $length bytes from $offset reach outside the $size there are');
+		}
+		if (length == 0) {
+			return;
+		}
+		#if cpp
+		var data:Bytes = bytes;
+		var ok:Bool = untyped __cpp__('secureRandom((unsigned char *)&{0}->b[{1}], {2})', data, offset, length);
+		if (!ok) {
+			var failure:String = untyped __cpp__('::String(randomFailure())');
+			throw failure;
+		}
+		#elseif (java || jvm)
+		if (__jrng == null) {
+			__jrng = new JavaSecureRandom();
+		}
+		var data:haxe.io.BytesData = (bytes : Bytes).getData();
+		if (offset == 0 && length == data.length) {
+			__jrng.nextBytes(data);
+		} else {
+			var drawn:haxe.io.BytesData = new java.NativeArray(length);
+			__jrng.nextBytes(drawn);
+			java.lang.System.arraycopy(drawn, 0, data, offset, length);
+		}
+		#elseif nodejs
+		// A view of the bytes' own view, wherever that sits in its buffer.
+		var view:js.lib.Uint8Array = @:privateAccess (bytes : Bytes).b.subarray(offset, offset + length);
+		js.Syntax.code("{0}.randomFillSync({1})", Crypto, view);
+		#else
+		(bytes : Bytes).blit(offset, getSecureRandomBytes(length), 0, length);
+		#end
+	}
+
 	#if nodejs
 	/**
 	 * Node's `crypto.randomBytes`, which is the platform CSPRNG (OpenSSL's,

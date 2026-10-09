@@ -14,6 +14,78 @@ import utest.Assert;
 	wiped to.
 **/
 class SecureRandomTest extends utest.Test {
+	/**
+		`fill` writes random bytes into the range it is given and nowhere
+		else, leaves the ByteArray's length and position as they were, and
+		refuses a range outside it, or a null ByteArray, before touching
+		anything.
+	**/
+	public function testFillWritesOnlyTheRangeItIsGiven():Void {
+		var bytes = crossbyte.io.ByteArray.fromBytes(Bytes.alloc(4096));
+		if (!SecureRandom.isSupported) {
+			Assert.raises(() -> SecureRandom.fill(bytes));
+			return;
+		}
+
+		for (range in [[0, 4096], [0, 1], [5, 3], [100, 1000], [1024, 2048], [4095, 1], [4096, 0], [17, 4079]]) {
+			var offset:Int = range[0];
+			var length:Int = range[1];
+			var data:Bytes = bytes;
+			data.fill(0, data.length, 0xA5);
+			bytes.position = 7;
+			SecureRandom.fill(bytes, offset, length);
+			Assert.equals(4096, bytes.length, 'the length changed filling $length from $offset');
+			Assert.equals(7, bytes.position, 'the position changed filling $length from $offset');
+			var outside:Int = 0;
+			for (i in 0...data.length) {
+				if ((i < offset || i >= offset + length) && data.get(i) != 0xA5) {
+					outside++;
+				}
+			}
+			Assert.equals(0, outside, '$outside bytes outside $length from $offset were written');
+			if (length >= 64) {
+				// Random bytes keep 0xA5 at about 1 in 256 places.
+				var kept:Int = 0;
+				for (i in offset...offset + length) {
+					if (data.get(i) == 0xA5) {
+						kept++;
+					}
+				}
+				Assert.isTrue(kept < length / 32, '$kept of $length bytes from $offset were left as they were');
+			}
+		}
+
+		// All of it by default, and from an offset to the end.
+		var whole = crossbyte.io.ByteArray.fromBytes(Bytes.alloc(256));
+		SecureRandom.fill(whole);
+		var other = crossbyte.io.ByteArray.fromBytes(Bytes.alloc(256));
+		SecureRandom.fill(other);
+		Assert.notEquals((whole : Bytes).toHex(), (other : Bytes).toHex(), "two fills drew the same bytes");
+		var tail = crossbyte.io.ByteArray.fromBytes(Bytes.alloc(256));
+		SecureRandom.fill(tail, 200);
+		var zeroed:Int = 0;
+		for (i in 0...200) {
+			if ((tail : Bytes).get(i) != 0) {
+				zeroed++;
+			}
+		}
+		Assert.equals(0, zeroed, "a fill from an offset wrote before it");
+
+		for (bad in [[-1, 1], [0, 4097], [4096, 1], [10, -2], [4097, -1]]) {
+			var data:Bytes = bytes;
+			data.fill(0, data.length, 0x5A);
+			Assert.raises(() -> SecureRandom.fill(bytes, bad[0], bad[1]), crossbyte.errors.RangeError, '${bad[1]} bytes from ${bad[0]} were not refused');
+			var touched:Int = 0;
+			for (i in 0...data.length) {
+				if (data.get(i) != 0x5A) {
+					touched++;
+				}
+			}
+			Assert.equals(0, touched, 'a refused fill of ${bad[1]} from ${bad[0]} wrote $touched bytes');
+		}
+		Assert.raises(() -> SecureRandom.fill(null), crossbyte.errors.ArgumentError);
+	}
+
 	public function testDrawsAcrossThePoolAreUniqueAndUnwiped():Void {
 		if (!SecureRandom.isSupported) {
 			Assert.raises(() -> SecureRandom.getSecureRandomBytes(4));

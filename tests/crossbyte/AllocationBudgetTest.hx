@@ -89,7 +89,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [232, 232, 7488], [360, 360, 9424]);
 	// The jvm's figure measured later than MEASURED_ON: Temurin 8 on Linux
 	// (Oracle 8 on Windows: 396).
-	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [116, 116, 401], [216, 216, 568]);
+	private static final WEBSOCKET = new Budget("a 100-byte WebSocket text message echoed", "message", [112, 112, 401], [208, 208, 568]);
 	// Nothing natively: the frames each message is kept in until it is
 	// acknowledged come from a pool and go back to it (FramePool). The jvm's
 	// 80 B is CI's Temurin 8 on Linux, the largest read (Oracle 8 on Windows:
