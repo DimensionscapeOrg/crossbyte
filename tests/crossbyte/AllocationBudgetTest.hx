@@ -125,10 +125,10 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_RUNTIME_ONE_WAY = new Budget("a one-way runtime-lane RPC call of a 12-character string", "call", [152, 144, 128], [256, 248, 224]);
 	// Written with runtimeCall and read with registerArgs: no array, nothing
 	// boxed. Measured natively on Windows and on the jvm (Oracle 8), later
-	// than MEASURED_ON; Linux taken as Windows until measured.
+	// than MEASURED_ON; on Linux (WSL, the hxcpp fork) on 2026-10-09, the same.
 	// Made with a receiver (`addThen(a, b, receiver)`): no RPCResponse, and
-	// the answer handed over unboxed. Measured later than MEASURED_ON, Linux
-	// taken as Windows until measured; the jvm's on 2026-10-09, as above.
+	// the answer handed over unboxed. Measured later than MEASURED_ON; Linux's
+	// (WSL) and the jvm's on 2026-10-09, Linux's the same as Windows'.
 	private static final RPC_INT_RECEIVER = new Budget("an RPC call answered through an RPCIntReceiver", "call", [0, 0, 0], [8, 8, 8]);
 	private static final RPC_FLOAT_RECEIVER = new Budget("an RPC call answered through an RPCFloatReceiver", "call", [0, 0, 0], [8, 8, 8]);
 	private static final RPC_INT64_RECEIVER = new Budget("an RPC call answered through an RPCInt64Receiver", "call", [0, 0, 0], [8, 8, 8]);
@@ -137,7 +137,7 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_STRING_RECEIVER = new Budget("an RPC call answered with a 12-character string through an RPCStringReceiver", "call", [24, 24, 64], [96, 96, 144]);
 	// The same over a TCP NetConnection to a NetHost, both ends on this
 	// thread's runtime: what RPC costs on a real transport. Measured later than
-	// MEASURED_ON; Linux taken as Windows until measured. Alone the jvm reads 0
+	// MEASURED_ON; Linux's (WSL) on 2026-10-09, the same. Alone the jvm reads 0
 	// and 96; its figures allow the 32 B the TCP line reads in the full suite
 	// (the JDK's Windows selector boxing what it finds ready).
 	private static final RPC_TCP_RECEIVER = new Budget("an RPC call over TCP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
