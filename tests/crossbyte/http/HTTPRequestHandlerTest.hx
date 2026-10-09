@@ -138,7 +138,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testAThrowingRouteIsLoggedAndNotShownToTheClient(async:Async):Void {
-		// A route that throws leaves more than one INFO line, "Status: 500":
+		// A route that throws leaves more than one INFO line, "status=500":
 		// the error goes to the log at ERROR, with the method and path, saying
 		// why; the client still sees only the status.
 		var lines:Array<String> = [];

@@ -714,6 +714,9 @@ says how.
   file: 345 to 125 µs of CPU), header lines are parsed where they lie, the
   `Date` header is formatted once a second, and the access log is written
   by a thread of its own under the category `http.access`.
+- The access log writes each response as four fields, `method`, `path`,
+  `status` and `client`: logfmt pairs in text, members of the object in
+  JSON, and the record's fields for a `Logger.recordSink`. (Upgrading)
 - A kept-alive HTTP/1.1 GET allocates 152 B natively where it allocated
   1,344, and 208 B on the jvm where it took 3,728: the head and a text
   body are written into bytes the thread keeps, which the socket copies,
@@ -1029,6 +1032,10 @@ Fixes to code new in this release are not listed.
   is refused with 400, and a chunk size is bounded before it is parsed.
 - A URL can no longer add a header or a request: control characters are
   refused and the request target, `Host` and other headers are sanitised.
+- A request path can no longer forge a field in the access log. Its
+  decoded text went into the line unquoted, so `GET /a%20status=500`
+  answered 404 read to a logfmt collector as a status of 500. The path is
+  now a field, quoted when it holds a space, a quote or an equals sign.
 - A percent-encoded NUL in a path no longer slips past `blacklist`; with PHP
   off, `.php` source is no longer served as a static file; and on Windows a
   path naming an environment variable no longer reaches a file outside the
@@ -1540,6 +1547,13 @@ an API added in this release has is not listed here.
 - `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
   and need a CrossByte runtime on the calling thread; their callbacks run
   on that thread, after the call has returned, natively and on Node.
+- The access log's line is
+  `[INFO] [http.access] method=GET path=/ status=200 client=127.0.0.1`,
+  where it was `[INFO] [http.access] Client 127.0.0.1 GET / - Status: 200`.
+  A parser or alert keyed on `Status: <code>` reads the `status` field
+  instead, and a path with a space, a quote or an equals sign comes quoted,
+  with `"` and `\` escaped. In JSON the four are members of the object
+  (`"status":"200"`, a string like every field) and `message` is empty.
 
 #### RPC
 

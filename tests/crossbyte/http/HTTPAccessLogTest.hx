@@ -38,6 +38,114 @@ class HTTPAccessLogTest extends utest.Test {
 		AccessLog.__capOverride = 0;
 		#end
 		Logger.sink = null;
+		Logger.recordSink = null;
+		Logger.json = false;
+	}
+
+	/**
+		A path is the client's text, and decoded it can hold anything but a
+		NUL: a space, a quote, an equals sign, a line feed. Read as logfmt, as
+		a collector reads it, each line still has one `status`, the real one,
+		and the path comes back as it was asked for.
+	**/
+	public function testAPathCannotForgeAFieldOfItsOwn(async:Async):Void {
+		#if !target.threaded
+		var lines:Array<String> = [];
+		Logger.sink = line -> lines.push(line);
+		#end
+		var server:HTTPServer = __server(404);
+		// Asked for, and as each should read back.
+		var asked:Array<String> = ["/a%20status=500", "/b%22%20status=500", "/c%0Astatus=500", "/d=1"];
+		var decoded:Array<String> = ["/a status=500", '/b" status=500', "/c\nstatus=500", "/d=1"];
+		var requests:String = "";
+		for (i in 0...asked.length) {
+			requests += 'GET ${asked[i]} HTTP/1.1\r\nHost: x\r\n' + (i == asked.length - 1 ? "Connection: close\r\n" : "") + "\r\n";
+		}
+
+		HTTPTestSupport.exchangeEach(server, [requests], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+			#if target.threaded
+			var text:String = __written;
+			#else
+			var text:String = lines.join("\n");
+			#end
+			var logged:Array<String> = text.split("\n").filter(line -> line.indexOf("[http.access]") >= 0);
+			Assert.equals(asked.length, logged.length, "lines: " + text);
+			// The form HTTPServer documents, quoted and escaped as Logger quotes a field.
+			var expected:Array<String> = [
+				'[INFO] [http.access] method=GET path="/a status=500" status=404 client=',
+				'[INFO] [http.access] method=GET path="/b\\" status=500" status=404 client=',
+				'[INFO] [http.access] method=GET path="/c\\nstatus=500" status=404 client=',
+				'[INFO] [http.access] method=GET path="/d=1" status=404 client='
+			];
+			for (i in 0...logged.length) {
+				Assert.isTrue(logged[i].indexOf(expected[i]) >= 0, 'line $i: ' + logged[i]);
+			}
+			for (i in 0...logged.length) {
+				var pairs:Array<Array<String>> = __logfmt(logged[i]);
+				var statuses:Array<String> = [for (pair in pairs) if (pair[0] == "status") pair[1]];
+				Assert.same(["404"], statuses, "a path forged a status: " + logged[i]);
+				Assert.equals(decoded[i], __field(pairs, "path"), logged[i]);
+				Assert.equals("GET", __field(pairs, "method"), logged[i]);
+				var client:Null<String> = __field(pairs, "client");
+				Assert.isTrue(client != null && client.indexOf("127.0.0.1") >= 0, logged[i]);
+			}
+			async.done();
+		}, true);
+	}
+
+	/** In JSON each part of the line is a field of the object, the status among them. */
+	public function testJsonCarriesTheStatusAsAField(async:Async):Void {
+		#if !target.threaded
+		var lines:Array<String> = [];
+		Logger.sink = line -> lines.push(line);
+		#end
+		Logger.json = true;
+		var server:HTTPServer = __server(404);
+
+		HTTPTestSupport.exchangeEach(server, ["GET /a%20status=500 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"], function(_):Void {
+			try server.close() catch (_:Dynamic) {}
+			#if target.threaded
+			var text:String = __written;
+			#else
+			var text:String = lines.join("\n");
+			#end
+			var logged:Array<String> = text.split("\n").filter(line -> line.indexOf('"http.access"') >= 0);
+			Assert.equals(1, logged.length, "lines: " + text);
+			if (logged.length == 1) {
+				var record:Dynamic = haxe.Json.parse(logged[0]);
+				Assert.equals("INFO", record.level);
+				Assert.equals("http.access", record.category);
+				Assert.equals("404", record.status);
+				Assert.equals("/a status=500", record.path);
+				Assert.equals("GET", record.method);
+				Assert.isTrue(Std.string(record.client).indexOf("127.0.0.1") >= 0, logged[0]);
+			}
+			async.done();
+		}, true);
+	}
+
+	/** A record sink is handed the parts as fields, and the line as text mode writes it. */
+	public function testARecordSinkIsHandedThePartsAsFields(async:Async):Void {
+		var records:Array<crossbyte.utils.LogRecord> = [];
+		Logger.recordSink = record -> if (record.category == "http.access") records.push(record);
+		var server:HTTPServer = __server(404);
+
+		HTTPTestSupport.exchangeEach(server, ["GET /a%20status=500 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"], function(_):Void {
+			try server.close() catch (_:Dynamic) {}
+			Logger.recordSink = null;
+			Assert.equals(1, records.length);
+			if (records.length == 1) {
+				var fields:Null<Map<String, String>> = records[0].fields;
+				Assert.notNull(fields, "the record has no fields");
+				Assert.equals("404", fields == null ? null : fields.get("status"));
+				Assert.equals("/a status=500", fields == null ? null : fields.get("path"));
+				Assert.equals("GET", fields == null ? null : fields.get("method"));
+				Assert.equals(crossbyte.utils.LogLevel.INFO, records[0].level);
+				Assert.same(["404"], [for (pair in __logfmt(records[0].line)) if (pair[0] == "status") pair[1]], records[0].line);
+			}
+			async.done();
+		}, true);
 	}
 
 	/**
@@ -161,11 +269,81 @@ class HTTPAccessLogTest extends utest.Test {
 		#end
 	}
 
-	private function __server():HTTPServer {
+	private function __server(status:Int = 200):HTTPServer {
 		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
 		config.rateLimitKey = _ -> null;
-		config.middleware.push((handler, next) -> handler.respond(200, "text/plain", "ok"));
+		config.middleware.push((handler, next) -> handler.respond(status, "text/plain", "ok"));
 		return new HTTPServer(config);
+	}
+
+	/**
+		`line` read as a logfmt collector reads it (Loki's `| logfmt`, the go
+		logfmt grammar): pairs of a key and its value, in order. A key is a run
+		of anything but a space, `=` or `"`; after `=` comes a value, quoted
+		with backslash escapes or a run up to the next space. A bare word is a
+		key with no value (null).
+	**/
+	private static function __logfmt(line:String):Array<Array<String>> {
+		var pairs:Array<Array<String>> = [];
+		var i:Int = 0;
+		var length:Int = line.length;
+		while (i < length) {
+			while (i < length && line.charAt(i) == " ") {
+				i++;
+			}
+			var keyStart:Int = i;
+			while (i < length && line.charAt(i) != " " && line.charAt(i) != "=" && line.charAt(i) != '"') {
+				i++;
+			}
+			var key:String = line.substring(keyStart, i);
+			if (i < length && line.charAt(i) == "=") {
+				i++;
+				var value:StringBuf = new StringBuf();
+				if (i < length && line.charAt(i) == '"') {
+					i++;
+					while (i < length && line.charAt(i) != '"') {
+						if (line.charAt(i) == "\\" && i + 1 < length) {
+							i++;
+							switch (line.charAt(i)) {
+								case "n":
+									value.add("\n");
+								case "r":
+									value.add("\r");
+								case "t":
+									value.add("\t");
+								case other:
+									value.add(other);
+							}
+						} else {
+							value.add(line.charAt(i));
+						}
+						i++;
+					}
+					i++;
+				} else {
+					while (i < length && line.charAt(i) != " ") {
+						value.add(line.charAt(i));
+						i++;
+					}
+				}
+				pairs.push([key, value.toString()]);
+			} else if (key.length > 0) {
+				pairs.push([key, null]);
+			} else {
+				// A stray quote: skipped, as the go grammar reports and moves on.
+				i++;
+			}
+		}
+		return pairs;
+	}
+
+	private static function __field(pairs:Array<Array<String>>, key:String):Null<String> {
+		for (pair in pairs) {
+			if (pair[0] == key) {
+				return pair[1];
+			}
+		}
+		return null;
 	}
 
 	/**

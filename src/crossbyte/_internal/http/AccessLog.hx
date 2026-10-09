@@ -4,6 +4,7 @@ package crossbyte._internal.http;
 #if !(js && !nodejs)
 import crossbyte.utils.LogCategory;
 import crossbyte.utils.LogLevel;
+import crossbyte.utils.LogRecord;
 import crossbyte.utils.Logger;
 #if target.threaded
 import sys.thread.Lock;
@@ -56,20 +57,77 @@ class AccessLog {
 	private static inline var EAGER_CHARACTERS:Int = 64 * 1024;
 
 	/**
-		Records the access log line `message` for a response, if the category
-		lets it through. On the runtime's thread.
+		Records the access log line for a response, if the category lets it
+		through. On the runtime's thread.
+
+		The line is fields and no message: `method`, `path`, `status` and
+		`client`, in that order, as logfmt pairs in text mode and as members
+		of the object in JSON. A value holding a space, a quote or an equals
+		sign is quoted, as `Logger` quotes any field value: the path is the
+		client's text, decoded, and `/a%20status=500` must not read to a
+		logfmt collector as a `status` of its own. A `Logger.recordSink` is
+		handed the four as the record's fields.
 	**/
-	public static function write(message:String):Void {
+	public static function write(method:Null<String>, path:Null<String>, status:Int, client:Null<String>):Void {
 		if (!CATEGORY.isEnabled(LogLevel.INFO)) {
 			return;
 		}
+		var methodText:String = method == null ? "" : method;
+		var pathText:String = path == null ? "" : path;
+		var clientText:String = client == null ? "" : client;
+		var records:Null<LogRecord->Void> = Logger.recordSink;
+		var time:Float = (Logger.timestamps || records != null) ? @:privateAccess Logger.__now() : 0.0;
+		var line:String = __format(methodText, pathText, status, clientText, time);
+
+		if (records != null) {
+			var fields:Map<String, String> = [
+				"method" => methodText,
+				"path" => pathText,
+				"status" => Std.string(status),
+				"client" => clientText
+			];
+			records(@:privateAccess new LogRecord(LogLevel.INFO, CATEGORY.name, "", fields, time, line));
+			return;
+		}
 		#if target.threaded
-		if (Logger.sink == null && Logger.recordSink == null) {
-			__queue(__format(message));
+		if (Logger.sink == null) {
+			__queue(line);
 			return;
 		}
 		#end
-		CATEGORY.info(message);
+		@:privateAccess Logger.__emit(line);
+	}
+
+	/**
+		The line for a response, framed as `Logger` frames a record (text or
+		JSON, with or without a time). Its fields are written here, in a fixed
+		order and with no `Map`, whose order differs by target.
+	**/
+	private static function __format(method:String, path:String, status:Int, client:String, time:Float):String {
+		var buffer:StringBuf = new StringBuf();
+		if (Logger.json) {
+			@:privateAccess Logger.__jsonHead(buffer, LogLevel.INFO, CATEGORY.name, "", time);
+			buffer.add(',"method":');
+			@:privateAccess Logger.__jsonString(buffer, method);
+			buffer.add(',"path":');
+			@:privateAccess Logger.__jsonString(buffer, path);
+			buffer.add(',"status":"');
+			buffer.add(status);
+			buffer.add('","client":');
+			@:privateAccess Logger.__jsonString(buffer, client);
+			buffer.add("}");
+		} else {
+			@:privateAccess Logger.__textHead(buffer, LogLevel.INFO, CATEGORY.name, time);
+			buffer.add("method=");
+			buffer.add(@:privateAccess Logger.__quoteIfNeeded(method));
+			buffer.add(" path=");
+			buffer.add(@:privateAccess Logger.__quoteIfNeeded(path));
+			buffer.add(" status=");
+			buffer.add(status);
+			buffer.add(" client=");
+			buffer.add(@:privateAccess Logger.__quoteIfNeeded(client));
+		}
+		return buffer.toString();
 	}
 
 	/** Writes what is queued now, on the calling thread, after anything the writer is writing. */
@@ -113,12 +171,6 @@ class AccessLog {
 
 	@:noCompletion public static var __capOverride:Int = 0;
 	@:noCompletion public static var __intervalOverride:Float = 0;
-
-	private static function __format(message:String):String {
-		var time:Float = Logger.timestamps ? @:privateAccess Logger.__now() : 0.0;
-		return Logger.json ? @:privateAccess Logger.__formatJson(LogLevel.INFO, CATEGORY.name, message, null,
-			time) : @:privateAccess Logger.__formatText(LogLevel.INFO, CATEGORY.name, message, null, time);
-	}
 
 	private static function __queue(line:String):Void {
 		var cap:Int = __capOverride > 0 ? __capOverride : CAP_CHARACTERS;
