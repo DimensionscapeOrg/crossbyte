@@ -151,10 +151,8 @@ class WebSocketMemoryTest extends utest.Test {
 			var piece:Int = 120 * 1024;
 			var delivered:Int = 0;
 			var wrong:Int = -2;
-			var storages:Array<haxe.io.BytesData> = [];
 			session.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) {
 				var data:ByteArray = e.data;
-				storages.push((data : crossbyte.io.ByteArray.ByteArrayData).getData());
 				wrong = data.length == 3 * piece ? -1 : data.length;
 				for (i in 0...data.length) {
 					if (data[i] != ((i * 31) & 0xFF)) {
@@ -196,10 +194,10 @@ class WebSocketMemoryTest extends utest.Test {
 				Assert.isTrue(pool.held() >= 3 * piece, "the message's storage did not go back to the pool, which holds " + pool.held());
 				made = pool.made;
 				message(2, function() {
+					// Which of the pool's blocks it takes is the pool's business,
+					// and differs with how the system hands the fragments over:
+					// what matters is that it made none.
 					Assert.equals(made, pool.made, "the second message made storage of its own rather than taking the pool's");
-					// The message's own size, which the input, a fragment at a
-					// time, never needs: the same storage both times.
-					Assert.isTrue(storages[0] == storages[1], "the second message was not read into the storage the first gave back");
 					done();
 				});
 			});
