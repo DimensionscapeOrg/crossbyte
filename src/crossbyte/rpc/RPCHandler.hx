@@ -94,6 +94,19 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 	@:noCompletion private var this_session:RPCSession<Dynamic, Dynamic>;
 	@:noCompletion private var this_frameEnd:Int = RPCWire.NO_FRAME_END;
 
+	/**
+		The call running, while one is: when its caller stops waiting for
+		the answer, and whether it has cancelled it; see `RPCCall`. `null`
+		between calls. Made the first time it is read in a call, so a method
+		that never reads it costs nothing for it; one that answers later
+		with a `Future` keeps it, to stop work its caller no longer wants.
+	**/
+	public var currentCall(get, never):Null<RPCCall>;
+
+	@:noCompletion private inline function get_currentCall():Null<RPCCall> {
+		return this_session != null ? this_session.currentCall : null;
+	}
+
 	@:noCompletion private inline function get_session():RPCSession<C, D> {
 		// A session takes only a handler of its own kind (see
 		// `RPCSession.handler`), so the one dispatching is of this one's.
@@ -238,9 +251,12 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 			answer:(RPCSession<Dynamic, Dynamic>, T) -> Void, hooked:Bool):Void {
 		final session = this_session;
 		final epoch:Int = session.__epoch;
-		final settle = function(settled:Future<T>):Void {
+		// `byCaller` when its caller cancelled it or its deadline passed: the
+		// caller is not waiting, so nothing is answered, and nothing failed
+		// here to report.
+		final settle = function(settled:Future<T>, byCaller:Bool):Void {
 			var failure:Null<haxe.Exception> = null;
-			final answerable:Bool = requestId != 0 && session.__isCurrent(epoch);
+			final answerable:Bool = requestId != 0 && !byCaller && session.__isCurrent(epoch);
 			if (settled.succeeded) {
 				if (answerable) {
 					try {
@@ -252,7 +268,9 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 				}
 			} else {
 				failure = RPCSession.__failureOf(settled);
-				session.__callFailed(op, method, requestId, failure, answerable);
+				if (!byCaller) {
+					session.__callFailed(op, method, requestId, failure, answerable);
+				}
 			}
 			if (hooked) {
 				try {

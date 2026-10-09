@@ -49,6 +49,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 
 	/** Waits as the call `requestId` for `op`, to tell `receiver`. **/
 	public inline function begin(requestId:Int, op:Int, receiver:RPCReceiver):Void {
+		__deadlineSent = false;
 		this.requestId = requestId;
 		this.op = op;
 		this.receiver = receiver;
@@ -101,7 +102,15 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		}
 		__commands.__takeResponse(requestId);
 		final call:Int = requestId;
+		final callOp:Int = op;
+		final session = __commands.__session;
+		final sent:Bool = __deadlineSent;
 		tell(finish(), call, TimedOut);
+		// The peer need no longer answer it: told, unless its deadline went
+		// with it, by which the peer ends it itself.
+		if (session != null && !sent) {
+			session.__sendCancel(callOp, call, false);
+		}
 	}
 
 	/** Leaves the queue of the session it was queued in, whichever its commands are bound to now. **/

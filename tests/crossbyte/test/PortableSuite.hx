@@ -310,6 +310,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCSignatureTest());
 		runner.addCase(new crossbyte.rpc.RPCMethodNamesTest());
 		runner.addCase(new crossbyte.rpc.RPCTypedSessionTest());
+		runner.addCase(new crossbyte.rpc.RPCCallControlTest());
 		runner.addCase(new crossbyte.rpc.RPCHelloTest());
 		runner.addCase(new crossbyte.rpc.RPCRuntimeCodecTest());
 		runner.addCase(new crossbyte.rpc.RPCPendingCallsTest());

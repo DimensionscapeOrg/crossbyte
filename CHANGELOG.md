@@ -366,6 +366,15 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   (`commands.withTimeout(2000).joinThen(room, receiver)`). Every deadline
   waits in one heap a session, under one timer, so a call's deadline
   allocates nothing, whatever its length.
+- Deadlines and cancellation reach the handler, as gRPC's do: a call's
+  deadline goes with it, and a call its caller cancels (`cancelCall`) or
+  times out is cancelled on the other side. A handler reads its call as
+  `RPCHandler.currentCall` (`RPCSession.currentCall` for a runtime
+  handler), an `RPCCall` with `deadline`, `timeLeft`, `cancelled`, `reason`
+  and `onCancel`; one answering later stops counting against
+  `maxCallsWaiting` once its caller has stopped waiting, and is not
+  answered. Negotiated in the hello, so a peer without it is sent neither;
+  a call whose handler never reads `currentCall` costs nothing for it.
 - Calls that allocate nothing: each request method has a twin ending in
   `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
   instead of returning an `RPCResponse`: `RPCIntReceiver`,

@@ -66,6 +66,7 @@ abstract class RPCCommands {
 	// and the one the request being made waits under, read as it is framed.
 	@:noCompletion private var __nextTimeout:Int = -1;
 	@:noCompletion private var __callTimeout:Int = 0;
+	@:noCompletion private var __callTimeoutSent:Bool = false;
 
 	/**
 		Gives the next call made through these commands a deadline of its
@@ -177,6 +178,7 @@ abstract class RPCCommands {
 		if (timeout > 0 && session != null) {
 			__callTimeout = 0;
 			session.__queueDeadline(response, timeout);
+			response.__deadlineSent = __callTimeoutSent;
 		}
 	}
 
@@ -191,16 +193,31 @@ abstract class RPCCommands {
 		no session (whose call fails as it is sent), one of its own.
 	**/
 	@:noCompletion private inline function __startFrame(room:Int, op:Int, requestId:Int):RPCFrame {
+		// Inlined into every stub, so only a one-way call's usual way is
+		// here; anything more (a request, a deadline given, no session) is a
+		// call, which keeps a large commands class's methods small on the jvm.
+		final session = __session;
+		return requestId == 0 && session != null && __nextTimeout < 0 ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op,
+			requestId);
+	}
+
+	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `withTimeout`; commands with no session. **/
+	@:noCompletion private function __startOtherFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
 		// The deadline `withTimeout` gave, taken by this call, one-way or not.
-		var timeout:Int = __nextTimeout;
+		final timeout:Int = __nextTimeout;
 		if (timeout >= 0) {
 			__nextTimeout = -1;
 		}
 		if (session != null) {
 			if (requestId != 0) {
-				__callTimeout = timeout >= 0 ? timeout : session.callTimeout;
+				// Carried with the call to a peer that reads it, so its
+				// handler knows when this side stops waiting.
+				final waits:Int = timeout >= 0 ? timeout : session.callTimeout;
+				__callTimeout = waits;
+				__callTimeoutSent = waits > 0 && session.__readsCallControl();
+				return session.__takeRequestFrame(room, flags, op, requestId, waits);
 			}
 			return session.__takeFrame(room, flags, op, requestId);
 		}
