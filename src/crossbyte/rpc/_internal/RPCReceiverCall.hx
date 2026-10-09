@@ -139,6 +139,10 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 				case _: Unreadable(message);
 			}
 		}
+		// Read first: what failed to read can be any error, an ArgumentError among them.
+		if (StringTools.startsWith(message, RPCSession.UNREADABLE_PREFIX)) {
+			return Unreadable(message);
+		}
 		if (Std.isOfType(cause, RPCTimeoutError)) {
 			return TimedOut;
 		}

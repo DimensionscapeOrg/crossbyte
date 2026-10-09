@@ -176,6 +176,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static inline final STOPPED_MESSAGE:String = "RPC session stopped";
 	@:noCompletion private static inline final CANCELLED_MESSAGE:String = "RPC call cancelled";
 	@:noCompletion private static inline final UNSENT_PREFIX:String = "RPC call could not be sent: ";
+	@:noCompletion private static inline final UNREADABLE_PREFIX:String = "RPC answer could not be read: ";
 
 	@:noCompletion private var __callsWaiting:Int = 0;
 	// Whether the connection's onData is this session's reader: READ_ON,
@@ -1132,7 +1133,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		failed and not the other side refusing.
 	**/
 	@:noCompletion private function __unreadableAnswer(op:Int, requestId:Int, response:Null<RPCResponse<Dynamic>>, error:Dynamic):Void {
-		final message:String = "RPC answer could not be read: " + Std.string(error);
+		final message:String = UNREADABLE_PREFIX + Std.string(error);
 		if (response != null) {
 			response.__fail(message, error);
 		}
