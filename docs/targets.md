@@ -35,6 +35,12 @@ Runtimes take turns rather than run at once, so a spread server is served correc
 (`DatagramSocket.isSupported` is false), no secure random source, and no child processes: `NativeProcess` is not
 supported, since the interpreter's process calls hold every thread while they wait.
 
+**A `Float` that holds an `Int`.** The interpreter and Neko keep a `Float` given an `Int` (`var total:Float = 0`, or
+an `Int` passed for a `Float` argument) an `Int` at run time, and add two of them in 32 bits: two billion plus two
+billion is -294,967,296. Only a number written as a class field's initialiser (`var sent:Float = 0;`) is converted.
+Start a total from a float literal (`0.0`). `+ 0.0` and `* 1.0` convert only a value typed `Int`: on a `Float` the compiler drops them, so convert
+one with `/ 1`.
+
 ## HashLink and Neko
 
 Both build and run the test suite on Windows and Linux.

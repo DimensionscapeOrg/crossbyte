@@ -452,6 +452,40 @@ class H2ServerTest extends utest.Test {
 		Assert.equals(65535, said.initialWindowSize);
 	}
 
+	public function testTheFirstWindowFitsTheBudgetWhenStreamsWorthPass2GB():Void {
+		// 40,000 streams of 64 KB is 2.6 GB. eval and neko multiplied it in
+		// 32 bits whatever the type said, so it wrapped negative and fitted a
+		// 4 MB budget: every stream could send 64 KB unasked. It is 16 KB,
+		// and the budget is raised to hold them and one whole body.
+		var settings = new H2Settings();
+		settings.maxConcurrentStreams = 40000;
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxRequestBodySize = 1024 * 1024;
+		server.requestBodyBudget = 4 * 1024 * 1024;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var frames = Collector.parse(out.bytes());
+		var advertised = new H2Settings();
+		advertised.applyPayload(frames[0].payload);
+		Assert.equals(16384, advertised.initialWindowSize, "the first window was not made to fit the budget: " + advertised.initialWindowSize);
+		Assert.equals(H2FrameType.WINDOW_UPDATE, frames[1].type);
+		Assert.equals(1024 * 1024 + 1 + 40000 * 16384 - 65535, Budgeted.increment(frames[1]), "the budget was not raised to hold every first window: " + Budgeted.increment(frames[1]));
+	}
+
+	public function testNoWindowIsGrantedWhenEveryFirstWindowIsPastTheBudget():Void {
+		// 300,000 streams of 16 KB is 4.9 GB, past the largest budget (2 GB):
+		// what the client may yet send unasked already takes all of it, so
+		// nothing more is opened. In 32 bits, as eval and neko did it, the
+		// 4.9 GB wrapped to 0.6 GB and left 1.5 GB to grant.
+		var settings = new H2Settings();
+		settings.maxConcurrentStreams = 300000;
+		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024, settings);
+		server.open(1, 1024 * 1024);
+		server.data(1, 16384, false);
+		Assert.equals(0, server.granted(1), "a window was opened past the budget: " + server.granted(1));
+	}
+
 	public function testDataPastAStreamWindowResetsTheStream():Void {
 		// A client must keep to its windows. A content-length of 100 opens no
 		// more than the first window.

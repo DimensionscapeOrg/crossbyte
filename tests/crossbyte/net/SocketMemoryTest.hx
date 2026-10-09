@@ -385,6 +385,14 @@ class SocketMemoryTest extends utest.Test {
 		pool.giveGrown(passed);
 		pool.__releaseIfQuiet();
 		Assert.equals(0.0, pool.held(), "storage a buffer grew out of was kept past the next ask");
+
+		// 64 of the largest size is 2 GB, which counted in Int wrapped to
+		// -2 GB. One piece given back 64 times stands in for 64.
+		var largest = pool.take(32 * mb);
+		for (_ in 0...64) {
+			pool.give(largest);
+		}
+		Assert.equals(2048.0 * mb, pool.held(), "what the pool holds past 2^31 was " + pool.held());
 		#else
 		Assert.pass();
 		#end

@@ -1049,7 +1049,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__output = new ByteArray();
 		__output.endian = __endian;
 		__outputSent = 0;
-		__bytesSent = 0;
+		// 0.0, not 0: eval and neko keep a Float set from an Int an Int, and
+		// adding the Int byte counts to it wrapped bytesTotal negative at 2 GB.
+		__bytesSent = 0.0;
 		__progressOwed = false;
 
 		__input = new ByteArray();

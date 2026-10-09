@@ -408,6 +408,15 @@ class MongoCrudTest extends utest.Test {
 		result.__add(2000000000, 0, 0, 0);
 		result.__add(2000000000, 0, 0, 0);
 		Assert.equals(4000000000.0, result.inserted);
+
+		// And a caller's own total of counts that each fit 32 bits: eval and
+		// neko kept an int32 count an Int, and added two in 32 bits.
+		var total:Float = 0;
+		for (_ in 0...2) {
+			server.replyNext("count", new BsonDocument().add("n", 2000000000).add("ok", 1));
+			total += connection.count("people");
+		}
+		Assert.equals(4000000000.0, total);
 	}
 
 	public function testAnUnacknowledgedWriteIsNotWaitedFor():Void {

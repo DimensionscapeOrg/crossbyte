@@ -177,7 +177,9 @@ class StoragePool implements QuietRelease {
 	public function held():Float {
 		var total:Float = 0;
 		for (k in 0...CLASSES) {
-			total += (__idle[k].length + __spare[k].length) * __sizeOf(k) * 1.0;
+			// In Float before the product, which in Int wraps from 64 of the
+			// largest size up.
+			total += (__idle[k].length + __spare[k].length) * 1.0 * __sizeOf(k);
 		}
 		return total;
 	}

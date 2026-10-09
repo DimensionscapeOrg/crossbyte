@@ -108,11 +108,13 @@ class Counter {
 		#if cpp
 		AtomicFloats.store(__cells, 0, 0);
 		#elseif target.threaded
+		// 0.0, not 0: eval and neko keep a Float set from an Int an Int, and
+		// went on adding Int amounts to it in 32 bits, negative past 2^31.
 		__lock.acquire();
-		__value = 0;
+		__value = 0.0;
 		__lock.release();
 		#else
-		__value = 0;
+		__value = 0.0;
 		#end
 	}
 }
