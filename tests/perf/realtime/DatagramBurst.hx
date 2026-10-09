@@ -22,7 +22,9 @@ import haxe.io.Bytes;
 	run allocated and kept.
 
 	Arguments: sessions (10000), size (1024), receivers (1000), bursts (3),
-	quiet (12, seconds), steady (60), label.
+	quiet (12, seconds) or pauses (the quiet after each burst, as a list:
+	`pauses=9.5,40,9.5`), steady (60), label. `kept` is the chunks the
+	runtime's pool held before a burst.
 **/
 @:access(crossbyte.net.DatagramSocket)
 class DatagramBurst extends HostApplication {
@@ -138,16 +140,21 @@ class DatagramBurst extends HostApplication {
 		var base = heap();
 		var line = 'BURST label=${opt("label", "")} sessions=$sessions size=$size receivers=$count base=${kb(base)}KB';
 		var quiet = Std.parseFloat(opt("quiet", "12"));
-		for (b in 0...optInt("bursts", 3)) {
+		// The quiet after each burst: `quiet` each, or a list of its own.
+		var pauses:Array<Float> = opts.exists("pauses") ? [for (p in opt("pauses", "").split(",")) Std.parseFloat(p)] : [
+			for (_ in 0...optInt("bursts", 3)) quiet
+		];
+		for (b in 0...pauses.length) {
+			var kept:Int = @:privateAccess crossbyte.core.CrossByte.current().__datagramChunks().idle;
 			var allocated = broadcast();
 			var held = heap() - base;
-			var until = Timer.stamp() + quiet;
+			var until = Timer.stamp() + pauses[b];
 			while (Timer.stamp() < until) {
 				pump();
 				crossbyte.sys.System.sleep(1 / 60);
 			}
 			var heldQuiet = heap() - base;
-			line += ' b$b:gather=${ms(gathers[b])}ms,flush=${ms(flushes[b])}ms,cpu=${ms(cpus[b])}ms,alloc=${kb(allocated)}KB,held=${kb(held)}KB,heldQuiet=${kb(heldQuiet)}KB';
+			line += ' b$b:kept=$kept,gather=${ms(gathers[b])}ms,flush=${ms(flushes[b])}ms,cpu=${ms(cpus[b])}ms,alloc=${kb(allocated)}KB,held=${kb(held)}KB,heldQuiet=${kb(heldQuiet)}KB';
 		}
 
 		gathers = [];

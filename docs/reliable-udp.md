@@ -167,6 +167,7 @@ once nothing has come back for ten, all but 64 go.
 **What a pass sends.** Natively a server's socket gathers the datagrams its sessions send in a pass and sends them
 together when the pass ends (on Linux with `sendmmsg`). They wait in 64 KB chunks that every datagram socket of the
 runtime takes from one pool, each datagram whole in one chunk, and the chunks go back to the pool once sent. The
-pool keeps what the busiest pass needed while passes go on taking chunks, and all but one chunk once five to ten
-seconds pass with none taken. A 1 KB broadcast to 10,000 sessions holds 10 MB of chunks while the server keeps
-broadcasting and 0.2 MB once it is quiet.
+pool keeps what the busiest pass needed while passes go on taking chunks; what a pass no longer needs waits five
+seconds more as spare, so a server pausing between matches takes its chunks back, and once ten to fifteen seconds
+pass with none taken, all but one chunk go. A 1 KB broadcast to 10,000 sessions holds 10 MB of chunks while the
+server keeps broadcasting and 0.2 MB once it is quiet.
