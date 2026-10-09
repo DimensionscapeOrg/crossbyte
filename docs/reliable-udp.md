@@ -161,3 +161,10 @@ The pool keeps as many frames as were in flight at once in the last ten to twent
 tick sends to every session and has it all back before the next, so a thousand frames go out and come back every
 tick, and all of them are kept for the next. Once the traffic falls, what was kept for it goes within twenty seconds;
 once nothing has come back for ten, all but 64 go.
+
+**What a pass sends.** Natively a server's socket gathers the datagrams its sessions send in a pass and sends them
+together when the pass ends (on Linux with `sendmmsg`). They wait in 64 KB chunks that every datagram socket of the
+runtime takes from one pool, each datagram whole in one chunk, and the chunks go back to the pool once sent. The
+pool keeps what the busiest pass needed while passes go on taking chunks, and all but one chunk once five to ten
+seconds pass with none taken. A 1 KB broadcast to 10,000 sessions holds 10 MB of chunks while the server keeps
+broadcasting and 0.2 MB once it is quiet.

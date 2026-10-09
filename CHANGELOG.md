@@ -572,6 +572,11 @@ says how.
 - On the jvm a runtime with one socket, as a UDP server has, keeps it
   registered with its selector rather than registering it afresh every
   frame: a datagram sent and received allocates 72 B where it took 312.
+- Natively a socket gathers what a pass sends in 64 KB chunks that its
+  runtime pools and lets go of when quiet, where one buffer grew to twice
+  the largest pass and was kept for good: after a 1 KB broadcast to
+  10,000 peers, 10 MB is held while broadcasting and 0.2 MB once quiet,
+  where 17 MB was held either way.
 
 #### Reliable UDP
 

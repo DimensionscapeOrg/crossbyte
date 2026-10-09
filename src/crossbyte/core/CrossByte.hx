@@ -525,6 +525,11 @@ final class CrossByte extends EventDispatcher {
 	// Asked for from inside a pass's flush, for the next; see __queueNextPassFlush.
 	@:noCompletion private var __laterFlushes:Array<PassFlush> = [];
 	@:noCompletion private var __laterSpare:Array<PassFlush> = [];
+	#if cpp
+	// The chunks this runtime's datagram sockets gather a pass's sends in,
+	// made when one first sends; see DatagramChunks.
+	@:noCompletion private var __chunks:crossbyte._internal.net.DatagramChunks = null;
+	#end
 
 	// What another thread handed this runtime to run on its own; see __post.
 	// The flag is read each tick without the lock: a stale false costs one
@@ -1204,6 +1209,17 @@ final class CrossByte extends EventDispatcher {
 			__queuePassFlush(item);
 		}
 	}
+
+	#if cpp
+	/** The pool this runtime's datagram sockets take their pass's chunks from. **/
+	@:noCompletion public function __datagramChunks():crossbyte._internal.net.DatagramChunks {
+		var chunks = __chunks;
+		if (chunks == null) {
+			chunks = __chunks = new crossbyte._internal.net.DatagramChunks(__socketRegistry);
+		}
+		return chunks;
+	}
+	#end
 
 	/** Whether anything is queued for a pass flush the loop has not run yet. **/
 	@:noCompletion private inline function __flushesWaiting():Bool {
