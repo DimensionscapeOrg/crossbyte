@@ -2140,9 +2140,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 }
 
 /**
-	A connected socket with nothing behind it, whose first `writeBytes` (the
-	first body written after a head, under HTTP/1.1) throws. What is written
-	otherwise is kept as text.
+	A connected socket with nothing behind it, whose first `writeBytes` of a
+	body (the first written after a head, under HTTP/1.1, which goes in a
+	write of its own) throws. What is written otherwise is kept as text.
 **/
 private class BreakingBodySocket extends Socket {
 	public var written(default, null):StringBuf = new StringBuf();
@@ -2187,14 +2187,17 @@ private class BreakingBodySocket extends Socket {
 	}
 
 	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		if (!broke) {
+		var count:Int = length == 0 ? bytes.length - offset : length;
+		var text:StringBuf = new StringBuf();
+		for (i in 0...count) {
+			text.addChar(bytes[offset + i]);
+		}
+		var chars:String = text.toString();
+		if (!broke && !StringTools.startsWith(chars, "HTTP/1.1 ")) {
 			broke = true;
 			throw new crossbyte.errors.IOError("the write broke");
 		}
-		var count:Int = length == 0 ? bytes.length - offset : length;
-		for (i in 0...count) {
-			written.addChar(bytes[offset + i]);
-		}
+		written.add(chars);
 	}
 
 	override public function flush():Void {}

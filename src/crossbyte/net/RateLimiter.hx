@@ -39,7 +39,10 @@ class RateLimiter {
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __refillPerSecond:Float;
 	@:noCompletion private var __period:Float;
-	@:noCompletion private var __clock:() -> Float;
+	// The clock a test gave, or null for haxe.Timer.stamp, called directly:
+	// natively a Float returned through a function value is boxed, 16 bytes
+	// a request.
+	@:noCompletion private var __clock:Null<() -> Float>;
 	@:noCompletion private var __maxKeys:Int;
 	@:noCompletion private var __current:Map<String, Bucket>;
 	@:noCompletion private var __previous:Map<String, Bucket>;
@@ -73,14 +76,18 @@ class RateLimiter {
 		__capacity = maxRequests;
 		__refillPerSecond = maxRequests / perSeconds;
 		__period = perSeconds;
-		__clock = (clock != null) ? clock : haxe.Timer.stamp;
+		__clock = clock;
 		__maxKeys = maxKeys;
 		__current = new Map();
 		__previous = new Map();
-		var now:Float = __clock();
+		var now:Float = __now();
 		__currentUsedAt = now;
 		__previousUsedAt = now;
 		__rotateAt = now + perSeconds;
+	}
+
+	@:noCompletion private inline function __now():Float {
+		return __clock == null ? haxe.Timer.stamp() : __clock();
 	}
 
 	/**
@@ -109,7 +116,7 @@ class RateLimiter {
 			return false;
 		}
 
-		var now:Float = __clock();
+		var now:Float = __now();
 		if (now >= __rotateAt) {
 			__rotate(now);
 		}
@@ -151,7 +158,7 @@ class RateLimiter {
 			return 0;
 		}
 
-		var now:Float = __clock();
+		var now:Float = __now();
 		var tokens:Float = bucket.tokens;
 		if (now > bucket.updatedAt) {
 			tokens = Math.min(__capacity, tokens + (now - bucket.updatedAt) * __refillPerSecond);
@@ -308,7 +315,7 @@ class RateLimiter {
 			return __capacity;
 		}
 
-		__refill(bucket, __clock());
+		__refill(bucket, __now());
 		return Math.floor(bucket.tokens);
 	}
 

@@ -61,8 +61,8 @@ and are not comparable across machines. CI runs it so it keeps compiling, and ig
 ## Allocation budgets
 
 `tests/crossbyte/AllocationBudgetTest.hx` measures how many bytes each common operation allocates (an HTTP/1.1,
-HTTP/2 and TLS request, a WebSocket and a TCP echo, a reliable and a plain datagram, an RPC call, an event, a timer,
-a post and an idle frame) and fails when one passes its budget: what it measured when the budget was set, plus about
+HTTP/2 and TLS request, a line written to a streamed response, a WebSocket and a TCP echo, a reliable and a plain
+datagram, an RPC call, an event, a timer, a post and an idle frame) and fails when one passes its budget: what it measured when the budget was set, plus about
 a quarter. It runs in the native and jvm suites, the two targets with an allocation counter; `AllocationMeter` says
 how each is read.
 
