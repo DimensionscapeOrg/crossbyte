@@ -542,6 +542,9 @@ says how.
 - Arming, clearing, pausing and resuming a timer allocates nothing, and the
   heap scheduler keeps each timer's position on the timer: at 30,000
   timers, a simulated second costs 40 ms of CPU where it cost 499 ms.
+- A timer interval of zero or less is refused with an `ArgumentError` on
+  every build. A debug build threw a `String`, and any other ran the
+  timer once, as a timeout. (Upgrading)
 - Dispatching an event costs about half what it did, and adding or removing
   a listener copies the list only while a dispatch is walking it. A
   dispatcher keeps the listeners of the type it was last asked about, so
@@ -1248,6 +1251,9 @@ Fixes to code new in this release are not listed.
   reads into the next frame.
 - A call fails when its connection closes or cannot carry it, where it
   waited for good; its `cause` is the connection's `Reason`.
+- A `heartbeatInterval` of zero or less is no heartbeat. It sent one ping
+  and then stopped for good, so a peer that vanished was held, and a debug
+  build threw from `start()`.
 - The heartbeat no longer closes healthy connections: pings were never
   answered.
 - A method returning `Null<T>` answers correctly, where the first answer that
@@ -1517,6 +1523,9 @@ an API added in this release has is not listed here.
 - An `ObjectPool` keeps 10,000 free objects unless told otherwise: set
   `maxFree` to `0x7FFFFFFF` for no bound, as before. A negative `maxFree`
   throws an `ArgumentError`.
+- `crossbyte.Timer.setInterval` refuses an interval of zero or less with an
+  `ArgumentError`, where it ran the timer once: arm a timer that runs once
+  with `setTimeout`.
 - `ThreadEvent.UPDATE` is gone; nothing dispatched it.
 - `Random.seed` is no longer public: set the shared seed with
   `Random.reseed(value)`.

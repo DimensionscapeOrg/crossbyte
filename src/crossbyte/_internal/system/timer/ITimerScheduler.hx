@@ -40,7 +40,11 @@ interface ITimerScheduler {
 		Fires what is due by `time + dt`. Nothing is capped by count unless
 		`maxFires` says so; `budget`, when above zero, is the wall-clock
 		seconds the call may spend before leaving the rest for the next one.
-		A timer armed during the call waits for the next one.
+		On the heap a timer armed during the call waits for the next one. The
+		wheel walks the call's time a tick at a time, and fires one armed on
+		the way once the walk reaches its tick, never at the tick it was armed
+		in: a `setTimeout(0)` re-arming itself runs once a tick, not once a
+		call.
 	**/
 	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int;
 

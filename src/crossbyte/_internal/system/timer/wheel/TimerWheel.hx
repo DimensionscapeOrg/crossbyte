@@ -497,6 +497,10 @@ class TimerWheel implements ITimerScheduler {
 			return;
 		}
 
+		// Leaving the pass early, from the bucket at the cursor: what is left
+		// in it is finished first by the next call, as a budget leaves it,
+		// rather than when the cursor comes round again a revolution later.
+		__partial = true;
 		#if cpp
 		cpp.Lib.rethrow(error);
 		#else

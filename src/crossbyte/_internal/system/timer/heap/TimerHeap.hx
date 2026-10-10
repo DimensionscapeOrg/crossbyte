@@ -110,16 +110,26 @@ class TimerHeap implements ITimerScheduler {
 		return delay > 0 ? delay : 0.0;
 	}
 
-	/** An interval as a timer is armed with it, NaN refused; see checkDelay. **/
+	/**
+		An interval as a timer is armed with it: above zero, on every build.
+		NaN is refused as a delay is (see checkDelay), and so is zero or less,
+		which would have the timer due again as it ran, for ever. Only a debug
+		build checked that, and threw a String; any other fired the timer
+		once, as a timeout. An infinite one runs once, and its timer is held
+		until cleared.
+	**/
 	public static inline function checkInterval(interval:Float):Void {
+		if (!(interval > 0)) {
+			__refuseInterval(interval);
+		}
+	}
+
+	// Out of line, so checkInterval stays a compare where it is inlined.
+	@:noCompletion private static function __refuseInterval(interval:Float):Void {
 		if (interval != interval) {
 			throw new ArgumentError("A timer's interval is NaN. Give it a number of seconds above zero.");
 		}
-		#if debug
-		if (interval <= 0) {
-			throw "interval must be > 0";
-		}
-		#end
+		throw new ArgumentError("A timer's interval is " + interval + ". Give it a number of seconds above zero; a timer that runs once is a timeout.");
 	}
 
 	/** A time a timer is moved to, NaN refused; see checkDelay. **/
