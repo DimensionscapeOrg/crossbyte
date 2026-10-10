@@ -79,6 +79,35 @@ class HaxeTimerTest extends utest.Test {
 		timer.stop();
 	}
 
+	public function testATimerFasterThanTheFramesOwesAtMostOneRun():Void {
+		// Run once a frame, a 10ms timer falls most of a frame further behind
+		// each frame. Owed all of it, it ran at every pass once the passes
+		// came faster (a host pumping faster, a higher tick rate): ten times
+		// its rate here, for as long as the debt lasted.
+		var runtime = CrossByte.current();
+		var fired = 0;
+		var timer = new HxTimer(10);
+		timer.run = () -> fired++;
+		var global = 0;
+		var id = GlobalTimer.setInterval(() -> global++, 10);
+		for (_ in 0...24) {
+			runtime.pump(1 / 12, 0);
+		}
+
+		var timerBehind = fired;
+		var globalBehind = global;
+		for (_ in 0...100) {
+			runtime.pump(0.001, 0);
+		}
+		timer.stop();
+		GlobalTimer.clearInterval(id);
+
+		var fast = fired - timerBehind;
+		Assert.isTrue(fast >= 9 && fast <= 12, 'a 10ms haxe.Timer ran $fast times in 100ms of 1ms passes');
+		fast = global - globalBehind;
+		Assert.isTrue(fast >= 9 && fast <= 12, 'a 10ms GlobalTimer.setInterval ran $fast times in 100ms of 1ms passes');
+	}
+
 	public function testStoppingOneTimerLeavesTheOthersRunning():Void {
 		// Timers are not kept in one map by an id that wraps, where a new timer
 		// could take a live one's id and evict it.

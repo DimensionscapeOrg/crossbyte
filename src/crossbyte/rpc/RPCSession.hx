@@ -84,7 +84,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		pings, and no `heartbeatTimeout`. Read as the heartbeat starts.
 	**/
 	public var heartbeatInterval(get, set):Int;
-	/** Heartbeat timeout in milliseconds. */
+	/**
+		Heartbeat timeout in milliseconds: the connection is closed once
+		nothing has arrived for this long. Zero or less never times the peer
+		out; the pings go on.
+	**/
 	public var heartbeatTimeout(get, set):Int;
 	/** Arbitrary user data attached to the session. */
 	public var data:D;
@@ -2721,7 +2725,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final now:Float = Timer.getTime();
 		final lastIn:Float = __connection.inTimestamp;
 		final heard:Float = lastIn > __heardSince ? lastIn : __heardSince;
-		if (now - heard >= __timeoutSec) {
+		// No timeout at zero or less, where every peer would be timed out at
+		// the first beat.
+		if (__timeoutSec > 0 && now - heard >= __timeoutSec) {
 			__timedOut(now - heard);
 			return;
 		}

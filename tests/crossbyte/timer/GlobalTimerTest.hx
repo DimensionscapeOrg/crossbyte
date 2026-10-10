@@ -43,6 +43,58 @@ class GlobalTimerTest extends utest.Test {
 
 	#if target.threaded
 	/**
+		A timer runs on the runtime of the thread that set it. One still
+		waiting as that runtime exits never runs, and its id went on holding
+		it, and whatever its function held, for as long as the process ran.
+	**/
+	@:timeout(20000)
+	public function testATimerWhoseRuntimeExitsIsLetGo(async:utest.Async):Void {
+		var timeout:UInt = 0;
+		var interval:UInt = 0;
+		var child:CrossByte = CrossByte.make(DEFAULT, HEAP, configured -> {
+			configured.addEventListener(crossbyte.events.Event.INIT, _ -> {
+				timeout = GlobalTimer.setTimeout(() -> {}, 60000);
+				interval = GlobalTimer.setInterval(() -> {}, 60000);
+				configured.exit();
+			});
+		});
+		var held = () -> @:privateAccess (GlobalTimer.__timers.exists(timeout) || GlobalTimer.__timers.exists(interval));
+		crossbyte.net.NetPump.until(() -> @:privateAccess child.__didExit && timeout != 0 && !held(), 10.0, function(_) {
+			Assert.isTrue(timeout != 0 && interval != 0, "the child set no timers");
+			Assert.isFalse(held(), "a timer on a runtime that exited was kept");
+			async.done();
+		});
+	}
+
+	/**
+		From a thread with no runtime, a timer goes to the primordial runtime
+		with its function already given: `delay` and `GlobalTimer` set it
+		before the timer is handed over, where they set it after, and a
+		runtime quick enough could run the timer once with none.
+	**/
+	public function testATimerSetFromAThreadWithNoRuntimeRunsItsFunctionOnce():Void {
+		var runtime = CrossByte.current();
+		var delayed = 0;
+		var timedOut = 0;
+		var ticks = 0;
+		var interval:UInt = 0;
+		var done = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			haxe.Timer.delay(() -> delayed++, 0);
+			GlobalTimer.setTimeout(() -> timedOut++, 0);
+			interval = GlobalTimer.setInterval(() -> ticks++, 0);
+			done.release();
+		});
+		Assert.isTrue(done.wait(5.0), "the thread did not finish");
+		runtime.pump(0, 0);
+		runtime.pump(0, 0);
+		GlobalTimer.clearInterval(interval);
+		Assert.equals(1, delayed);
+		Assert.equals(1, timedOut);
+		Assert.isTrue(ticks >= 1, "the interval never ran");
+	}
+
+	/**
 		Timers set and cleared from several threads at once keep distinct ids,
 		and clearing them all leaves nothing behind.
 

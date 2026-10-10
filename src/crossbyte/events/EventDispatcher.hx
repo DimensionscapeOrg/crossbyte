@@ -99,6 +99,13 @@ class EventDispatcher implements IEventDispatcher {
 	 * the calls. Any `Int` is a priority, negative ones included, which run
 	 * after those at `0`.
 	 *
+	 * Unlike ActionScript's, a listener already added for `type` is added
+	 * again: it runs once a dispatch for each add, and each
+	 * `removeEventListener` removes one of them. Adding is not a search, so
+	 * a dispatcher holding a listener per connection costs nothing more to
+	 * build as it grows. Remove a listener before adding it again where it
+	 * could be there already.
+	 *
 	 * @param type The `EventType<T>` representing the string type of the event (e.g. `EventType.create<T>("my_event")`)
 	 * @param listener A callback of type `T -> Void` to be invoked when the event is dispatched.
 	 * @param priority Where the listener runs among the others for `type`:

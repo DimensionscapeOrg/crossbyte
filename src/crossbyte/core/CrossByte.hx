@@ -646,6 +646,9 @@ final class CrossByte extends EventDispatcher {
 	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT, hostDriven:Bool = false, timers:TimerStrategy = HEAP) {
 		__timerStrategy = timers;
 		super(this);
+		#if cpp
+		crossbyte.core._internal.Sigpipe.ignoreIfDefault();
+		#end
 		__isPrimordial = isPrimordial;
 		__loopType = loopType;
 		__usesHostLoop = hostDriven;
@@ -1927,6 +1930,8 @@ final class CrossByte extends EventDispatcher {
 		// the sockets are still there to send it.
 		__flushHeld();
 		__exitChildren();
+		// What GlobalTimer still holds here never runs now.
+		crossbyte.utils.GlobalTimer.__runtimeExited(this);
 		#if !js
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();

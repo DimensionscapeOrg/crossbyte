@@ -70,9 +70,13 @@ import sys.thread.Mutex;
 	`crossbyte.Timer` uses. Each run is due one interval after the last one
 	was due, so the rate is the one asked for, rather than each period
 	rounding up to a whole number of ticks (at the default twelve ticks a
-	second a 100ms timer would run every 167ms); a timer that has fallen
-	behind (a stall, an interval shorter than a frame) runs once a frame
-	until it catches up rather than in a burst.
+	second a 100ms timer would run every 167ms). A timer that has fallen
+	more than an interval behind (a stall, an interval shorter than a frame)
+	owes one run, not every one it missed: it runs at the next frame and
+	counts on from there. Owed them all, one shorter than a frame fell
+	further behind every frame, and ran at every pass for as long as the
+	passes then came faster than it (a host pumping faster, a higher tick
+	rate).
 
 	It runs on the runtime of the thread that made it: the primordial one on
 	the primordial thread, a child runtime on that child's thread. A timer
@@ -122,17 +126,42 @@ class Timer {
 
 	private var __interval:Float;
 
-	// The runtime this timer runs on, once it has one.
-	private var __home:CrossByte = null;
+	// The runtime this timer runs on, once it has one. These fields are set
+	// in __start, not where they are declared: a timer `__given` makes is
+	// made without its constructor.
+	private var __home:CrossByte;
 
 	// Only touched on __home's thread: the scheduler's handle, when the next
 	// run is due there, and whether it is armed.
-	private var __handle:Int = 0;
-	private var __due:Float = 0.0;
-	private var __armed:Bool = false;
-	private var __stopped:Bool = false;
+	private var __handle:Int;
+	private var __due:Float;
+	private var __armed:Bool;
+	private var __stopped:Bool;
 
 	public function new(time_ms:Int) {
+		__start(time_ms);
+	}
+
+	/**
+		A timer running `run`, given before the timer is handed to its
+		runtime. Made on a thread other than its runtime's, a timer is armed
+		there through the post queue as it is made, and a runtime quick enough
+		could run it before the caller had given it a function, once with
+		none. `delay` and `crossbyte.utils.GlobalTimer` make theirs here.
+	**/
+	@:noCompletion private static function __given(time_ms:Int, run:Timer->Void):Timer {
+		var timer:Timer = Type.createEmptyInstance(Timer);
+		timer.run = () -> run(timer);
+		timer.__start(time_ms);
+		return timer;
+	}
+
+	private function __start(time_ms:Int):Void {
+		__home = null;
+		__handle = 0;
+		__due = 0.0;
+		__armed = false;
+		__stopped = false;
 		__interval = time_ms > 0 ? time_ms / 1000 : 0.0;
 
 		var home:CrossByte = __homeForThisThread();
@@ -195,9 +224,15 @@ class Timer {
 		// asked for; and before running so a run that throws leaves the timer
 		// armed, as the runtime keeps any timer armed through a failure. Due
 		// by now already, it waits for the next pass rather than firing again
-		// in this one.
+		// in this one. Never more than an interval behind: one run owed, not
+		// every one missed.
+		var scheduler = @:privateAccess __home.__timer;
 		__due += __interval;
-		@:privateAccess __home.__timer.reschedule(handle, __due);
+		var owed:Float = scheduler.time - __interval;
+		if (__due < owed) {
+			__due = owed;
+		}
+		scheduler.reschedule(handle, __due);
 		run();
 	}
 
@@ -264,12 +299,11 @@ class Timer {
 	public dynamic function run():Void {}
 
 	public static function delay(f:Void->Void, time_ms:Int):Timer {
-		var timer = new Timer(time_ms);
-		timer.run = function() {
+		// Its function given before it is handed over; see __given.
+		return __given(time_ms, timer -> {
 			timer.stop();
 			f();
-		};
-		return timer;
+		});
 	}
 
 	public static function measure<T>(f:Void->T, ?pos:PosInfos):T {

@@ -1112,8 +1112,9 @@ else has been sent, and the connection closed if nothing arrives for
 nothing to say is still heard from, and a server that only answers calls can
 heartbeat its clients to find the ones that have vanished. A ping is not a
 call: `beforeCall` and `afterCall` never see one. `stop()` ends the heartbeat
-without closing the connection, and a `heartbeatInterval` of zero or less
-means none at all: no pings, and no timeout.
+without closing the connection. A `heartbeatInterval` of zero or less means
+no heartbeat at all, and a `heartbeatTimeout` of zero or less means pings
+that never time the peer out.
 
 Started before its connection is up, the heartbeat begins once the connection
 is ready; started again, it carries on as it was. When it times out, the calls

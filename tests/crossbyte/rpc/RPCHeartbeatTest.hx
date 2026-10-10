@@ -96,6 +96,27 @@ class RPCHeartbeatTest extends utest.Test {
 		}
 	}
 
+	public function testAHeartbeatTimeoutOfZeroOrLessNeverTimesThePeerOut():Void {
+		// The pings go on, a peer that answers none is kept. Read as a
+		// timeout, zero closed the connection at the first beat.
+		for (timeout in [0, -1000]) {
+			var link = LinkedConnection.pair();
+			var server = new RPCSession(link.server, null, new QuietHandler());
+			var closes = closesOf(server);
+			server.heartbeatInterval = 1000;
+			server.heartbeatTimeout = timeout;
+			server.start();
+			var sent:Int = link.server.sent;
+
+			pump(10);
+
+			Assert.same([], closes, 'a heartbeat timeout of $timeout timed the peer out');
+			Assert.isTrue(link.server.open);
+			Assert.isTrue(link.server.sent > sent, 'a heartbeat timeout of $timeout stopped the pings');
+			server.stop();
+		}
+	}
+
 	public function testATimeoutFailsTheCallsWaitingAndReportsTheCloseOnce():Void {
 		var link = LinkedConnection.pair();
 		// Nobody on the other end: the calls go unanswered, and so do the pings.
