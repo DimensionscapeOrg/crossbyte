@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.RangeError;
 import crossbyte.utils.Hash;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
@@ -14,15 +15,16 @@ import haxe.io.Bytes;
  * second hash is mixed out of the first.
  *
  * The bits are packed 32 to an `Int`, in a `haxe.ds.Vector`, so a
- * 10-million-bit filter holds 1.25 MB. The string's characters are hashed
- * in place, and `add` and `contains` allocate nothing.
+ * 10-million-bit filter holds 1.25 MB. A string is hashed as its UTF-8 bytes,
+ * decoded from its characters in place, and `add` and `contains` allocate
+ * nothing.
  *
  * Items are strings, `Int`s (`addInt`, `containsInt`) or bytes (`addBytes`,
  * `containsBytes`); the three kinds share one set of bits, so an `Int` and a
- * string can collide as any two items can. The positions are stepped
- * through without multiplying, so every target sets the same bits for the
- * same item: a filter's bits can be compared, or written down, across
- * targets.
+ * string can collide as any two items can; a string and its UTF-8 bytes are
+ * the same item. The positions are stepped through without multiplying, and
+ * a string is its UTF-8 bytes on every target whatever it holds its
+ * characters as, so every target sets the same bits for the same item.
  *
  * @author Christopher Speciale
  */
@@ -79,7 +81,11 @@ class BloomFilter {
 		return __test(Hash.fmix32(item));
 	}
 
-	/** Adds the bytes `item[offset...offset + length]` as one item. **/
+	/**
+		Adds the bytes `item[offset...offset + length]` as one item; a
+		`length` of -1 is to the end.
+		@throws RangeError For a range outside the bytes.
+	**/
 	public function addBytes(item:Bytes, offset:Int = 0, length:Int = -1):Void {
 		__set(__hashBytes(item, offset, length));
 	}
@@ -138,27 +144,64 @@ class BloomFilter {
 		return at >= size - step ? at - (size - step) : at + step;
 	}
 
-	// FNV-1a over the string's character codes, in place.
+	// FNV-1a over the string's UTF-8 bytes, worked out from its characters in
+	// place. Its characters are UTF-16 units on JavaScript, the jvm, hxcpp
+	// and hl, code points on eval, and the bytes themselves on neko: hashed
+	// as they came, a string past ASCII set different bits on each.
 	private static function __hashString(s:String):Int {
 		var hash:Int = 0x811C9DC5;
+		#if (neko || !target.unicode)
 		for (i in 0...s.length) {
-			var code:Int = StringTools.fastCodeAt(s, i);
-			hash ^= code & 0xFF;
-			hash = Hash.mul32(hash, 0x01000193);
-			if (code > 0xFF) {
-				hash ^= code >>> 8;
-				hash = Hash.mul32(hash, 0x01000193);
+			hash = __byte(hash, StringTools.fastCodeAt(s, i));
+		}
+		#else
+		var length:Int = s.length;
+		var i:Int = 0;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(s, i++);
+			#if target.utf16
+			if (code >= 0xD800 && code < 0xDC00 && i < length) {
+				var low:Int = StringTools.fastCodeAt(s, i);
+				if (low >= 0xDC00 && low < 0xE000) {
+					code = (((code - 0xD800) << 10) | (low - 0xDC00)) + 0x10000;
+					i++;
+				}
+			}
+			#end
+			if (code < 0x80) {
+				hash = __byte(hash, code);
+			} else if (code < 0x800) {
+				hash = __byte(hash, 0xC0 | (code >> 6));
+				hash = __byte(hash, 0x80 | (code & 0x3F));
+			} else if (code < 0x10000) {
+				hash = __byte(hash, 0xE0 | (code >> 12));
+				hash = __byte(hash, 0x80 | ((code >> 6) & 0x3F));
+				hash = __byte(hash, 0x80 | (code & 0x3F));
+			} else {
+				hash = __byte(hash, 0xF0 | (code >> 18));
+				hash = __byte(hash, 0x80 | ((code >> 12) & 0x3F));
+				hash = __byte(hash, 0x80 | ((code >> 6) & 0x3F));
+				hash = __byte(hash, 0x80 | (code & 0x3F));
 			}
 		}
+		#end
 		return Hash.fmix32(hash);
 	}
 
+	private static inline function __byte(hash:Int, byte:Int):Int {
+		return Hash.mul32(hash ^ byte, 0x01000193);
+	}
+
 	private static function __hashBytes(bytes:Bytes, offset:Int, length:Int):Int {
+		// A length below zero is to the end. Unchecked, a range before the
+		// bytes read past them, and one past them hashed as the empty item.
 		var end:Int = length < 0 ? bytes.length : offset + length;
+		if (offset < 0 || offset > bytes.length || (length >= 0 && length > bytes.length - offset) || length < -1) {
+			throw new RangeError('Bytes from $offset for $length do not fit in ${bytes.length}.');
+		}
 		var hash:Int = 0x811C9DC5;
 		for (i in offset...end) {
-			hash ^= bytes.get(i);
-			hash = Hash.mul32(hash, 0x01000193);
+			hash = __byte(hash, bytes.get(i));
 		}
 		return Hash.fmix32(hash);
 	}

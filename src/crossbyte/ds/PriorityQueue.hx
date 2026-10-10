@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
 import haxe.ds.ObjectMap;
 import haxe.ds.Vector;
 
@@ -23,10 +24,20 @@ import haxe.ds.Vector;
  *
  * Elements are objects, held once each and told apart by identity: enqueuing
  * one already held updates it. A queue of plain `Int` ids is an
- * `IntPriorityQueue`, which holds each id's priority itself.
+ * `IntPriorityQueue`, which holds each id's priority itself. A `String` is
+ * not an object for this on JavaScript, which cannot mark one as held, and
+ * `null` is refused with an `ArgumentError`.
+ *
+ * Compare priorities rather than subtract them: `a.priority - b.priority`
+ * overflows for priorities more than 2^31 apart, natively and on the jvm,
+ * and then orders them backwards.
+ *
+ * A comparator that throws leaves the queue whole: every element held is
+ * still held once, in an order the comparator may not have finished
+ * deciding, and the failure goes on to the caller.
  *
  * ```haxe
- * var tickets = new PriorityQueue<Ticket>((a, b) -> a.priority - b.priority);
+ * var tickets = new PriorityQueue<Ticket>((a, b) -> a.priority < b.priority ? -1 : (a.priority > b.priority ? 1 : 0));
  * tickets.enqueue(ticket);
  * var next = tickets.dequeue(); // the lowest priority, the oldest among equals
  * ```
@@ -129,6 +140,9 @@ final class PriorityQueue<T:{}> {
 	 * @param x The element to insert.
 	 */
 	public function enqueue(x:T):Void {
+		if (x == null) {
+			throw new ArgumentError("A PriorityQueue holds objects, not null.");
+		}
 		if (__slotOf.exists(x)) {
 			update(x);
 			return;
@@ -248,15 +262,24 @@ final class PriorityQueue<T:{}> {
 	@:noCompletion private function __siftUp(i:Int):Bool {
 		var slot:Int = __heap[i];
 		var start:Int = i;
-		while (i > 0) {
-			var p:Int = (i - 1) >> 1;
-			var parent:Int = __heap[p];
-			if (!__before(slot, parent)) {
-				break;
+		// The element carried is put down where it has got to before a
+		// comparator's failure goes on: carried, it is in no place in the heap,
+		// and the one moved down into the last place is in two.
+		try {
+			while (i > 0) {
+				var p:Int = (i - 1) >> 1;
+				var parent:Int = __heap[p];
+				if (!__before(slot, parent)) {
+					break;
+				}
+				__heap[i] = parent;
+				__position[parent] = i;
+				i = p;
 			}
-			__heap[i] = parent;
-			__position[parent] = i;
-			i = p;
+		} catch (error:Dynamic) {
+			__heap[i] = slot;
+			__position[slot] = i;
+			__rethrow(error);
 		}
 		__heap[i] = slot;
 		__position[slot] = i;
@@ -266,30 +289,45 @@ final class PriorityQueue<T:{}> {
 	@:noCompletion private function __siftDown(i:Int):Void {
 		var slot:Int = __heap[i];
 		var n:Int = __size;
-		while (true) {
-			var l:Int = (i << 1) + 1;
-			if (l >= n) {
-				break;
-			}
+		// Put down before a failure goes on; see __siftUp.
+		try {
+			while (true) {
+				var l:Int = (i << 1) + 1;
+				if (l >= n) {
+					break;
+				}
 
-			var m:Int = l;
-			var child:Int = __heap[l];
-			var r:Int = l + 1;
-			if (r < n && __before(__heap[r], child)) {
-				m = r;
-				child = __heap[r];
-			}
+				var m:Int = l;
+				var child:Int = __heap[l];
+				var r:Int = l + 1;
+				if (r < n && __before(__heap[r], child)) {
+					m = r;
+					child = __heap[r];
+				}
 
-			if (!__before(child, slot)) {
-				break;
-			}
+				if (!__before(child, slot)) {
+					break;
+				}
 
-			__heap[i] = child;
-			__position[child] = i;
-			i = m;
+				__heap[i] = child;
+				__position[child] = i;
+				i = m;
+			}
+		} catch (error:Dynamic) {
+			__heap[i] = slot;
+			__position[slot] = i;
+			__rethrow(error);
 		}
 		__heap[i] = slot;
 		__position[slot] = i;
+	}
+
+	@:noCompletion private static function __rethrow(error:Dynamic):Void {
+		#if cpp
+		cpp.Lib.rethrow(error);
+		#else
+		throw error;
+		#end
 	}
 
 	@:noCompletion private function __allocate(capacity:Int):Void {

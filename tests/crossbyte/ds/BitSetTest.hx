@@ -197,6 +197,39 @@ class BitSetTest extends utest.Test {
 		Assert.same([], [for (index in new BitSet(0)) index]);
 	}
 
+	public function testAnIndexPastTheLargestIsRefusedAndTheBitsKept():Void {
+		// Growing to it overflowed 32 bits: natively and on the jvm the set
+		// did not grow and the write went past its words (a segfault on the
+		// interpreter), and on JavaScript the length went negative and every
+		// bit was lost.
+		var bits = new BitSet(64);
+		bits.set(5, true);
+		var refused = 0;
+		for (grow in [() -> bits.set(0x7FFFFFFF, true), () -> bits.flip(0x7FFFFFFF)]) {
+			try {
+				grow();
+			} catch (e:crossbyte.errors.RangeError) {
+				refused++;
+			}
+		}
+		Assert.equals(2, refused, "an index past the largest was taken");
+		Assert.isTrue(bits.get(5));
+		Assert.equals(64, bits.length);
+		Assert.equals(1, bits.countSetBits());
+		Assert.isFalse(bits.get(0x7FFFFFFF));
+
+		// Clearing past the end has nothing to clear, and grows nothing.
+		bits.set(1000, false);
+		Assert.equals(64, bits.length, "clearing past the end grew the set");
+
+		try {
+			new BitSet(-1);
+			Assert.fail("a BitSet of -1 bits was made");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+	}
+
 	public function testASetCombinedWithItselfBehaves():Void {
 		var bits = new BitSet(40);
 		bits.set(3, true);

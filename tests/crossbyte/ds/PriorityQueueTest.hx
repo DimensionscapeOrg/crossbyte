@@ -242,6 +242,79 @@ class PriorityQueueTest extends utest.Test {
 	}
 
 	/** Clearing starts the arrival count over without mixing up the order. **/
+	public function testAComparatorThatThrowsLeavesTheQueueWhole():Void {
+		// A sift carried the element it moved and put it down only at the end:
+		// a throw on the way left another element in the heap twice and this
+		// one in none, so draining gave a null on the interpreter and threw on
+		// the jvm and JavaScript.
+		var failing = false;
+		var queue = new PriorityQueue<Ticket>((a, b) -> {
+			if (failing && ((a.id == 99 && b.id == 6) || (a.id == 6 && b.id == 99))) {
+				throw "comparator bug";
+			}
+			return a.priority < b.priority ? -1 : (a.priority > b.priority ? 1 : 0);
+		});
+		// Priorities 10 down to 4: id 6 is at the root, three levels above
+		// where the next goes in.
+		for (i in 0...7) {
+			queue.enqueue(new Ticket(i, 10 - i, i));
+		}
+		failing = true;
+		try {
+			queue.enqueue(new Ticket(99, 0, 99));
+			Assert.fail("the comparator's failure was swallowed");
+		} catch (e:String) {
+			Assert.equals("comparator bug", e);
+		}
+		failing = false;
+
+		Assert.equals(8, queue.size);
+		var drained:Array<Int> = [];
+		while (!queue.isEmpty) {
+			var ticket = queue.dequeue();
+			if (ticket == null) {
+				Assert.fail("a null came out of a queue of tickets");
+				break;
+			}
+			drained.push(ticket.id);
+		}
+		drained.sort((a, b) -> a - b);
+		Assert.equals("0,1,2,3,4,5,6,99", drained.join(","), "an element was lost or came out twice");
+	}
+
+	public function testANullElementIsRefused():Void {
+		// It reached the identity map: taken on the interpreter, where it then
+		// came out looking like an empty queue, and a null access elsewhere.
+		var queue = new PriorityQueue<Ticket>((a, b) -> a.priority < b.priority ? -1 : (a.priority > b.priority ? 1 : 0));
+		try {
+			queue.enqueue(null);
+			Assert.fail("a null was enqueued");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+		Assert.equals(0, queue.size);
+	}
+
+	public function testClearingAnIntQueueAfterASpikeLetsTheRoomGo():Void {
+		// Clearing zeroed every bucket its id table had grown to, so after a
+		// spike each clear of two ids cost what clearing the spike did.
+		var queue = new IntPriorityQueue();
+		for (id in 0...50000) {
+			queue.enqueue(id, id);
+		}
+		queue.clear();
+		queue.enqueue(1, 1);
+		queue.enqueue(2, 2);
+		queue.clear();
+		var buckets:Int = @:privateAccess queue.__slotOf.__slots.length;
+		Assert.isTrue(buckets <= 64, 'cleared with two ids held, the table kept $buckets buckets');
+		queue.enqueue(7, 3);
+		queue.enqueue(5, 1);
+		Assert.equals(5, queue.dequeue());
+		Assert.equals(7, queue.dequeue());
+		Assert.isTrue(queue.isEmpty);
+	}
+
 	public function testClearThenReuse():Void {
 		var queue = new PriorityQueue<Ticket>((a, b) -> a.priority - b.priority);
 		for (i in 0...10) {
