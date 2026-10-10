@@ -660,6 +660,164 @@ class CollectionsTest extends utest.Test {
 		and read past the new end, passing `null` to a callback typed for an
 		element.
 	**/
+	/**
+		One vector, however it is reached: by code that names its element
+		type, by code generic over it, and as a `Vector<Dynamic>`, which a
+		`Vector<Int>` passes for without a cast. What one writes, the others
+		read.
+
+		Natively, code that names the type works on an array of that type,
+		and the rest on hxcpp's dynamic array over it. Taking the typed array
+		by converting the store would copy it whenever the two disagree (an
+		`Array<Int>` read as an `Array<Dynamic>` is a copy natively), and a
+		push through the `Vector<Dynamic>` would land in the copy and be lost.
+	**/
+	public function testAVectorIsOneVectorHoweverItIsReached():Void {
+		// Made where its type is known, then written generically.
+		var ints = new Vector<Int>();
+		ints.push(1);
+		pushGenerically(ints, 300);
+		Assert.equals(2, ints.length);
+		Assert.equals(300, ints[1]);
+		ints[0] = 7;
+		Assert.equals(7, readGenerically(ints, 0));
+		writeGenerically(ints, 2, 500);
+		Assert.equals("7,300,500", ints.join(","));
+		Assert.equals(3, lengthGenerically(ints));
+
+		// Pushed to through a Vector<Dynamic>.
+		pushDynamic(ints, 400);
+		Assert.equals(4, ints.length);
+		Assert.equals(400, ints[3]);
+		Assert.equals(400, ints.pop());
+		Assert.equals(3, lengthGenerically(ints));
+
+		// Made generically, then used where its type is known.
+		var made = makeGenerically(5, 600);
+		Assert.equals(600, made[1]);
+		made.push(700);
+		made[0] = 9;
+		Assert.equals(9, readGenerically(made, 0));
+		Assert.equals(700, readGenerically(made, 2));
+		Assert.equals("9,600,700", made.join(","));
+
+		// What the callback methods make is made generically too.
+		var large = ints.filter((value:Int) -> value > 100);
+		Assert.equals("300,500", large.join(","));
+		large[1] = 501;
+		large.push(3);
+		Assert.equals(300 + 501 + 3, large[0] + large[1] + large[2]);
+		var doubled = ints.map((value:Int) -> value * 2);
+		Assert.equals(14 + 600, doubled[0] + doubled[1]);
+		Assert.equals("7,300", ints.slice(0, 2).join(","));
+		Assert.equals("300,500", ints.concat().slice(1).join(","));
+
+		// A write in a callback is seen by the loop calling it, which walks
+		// the vector generically.
+		var seen:Array<Int> = [];
+		made.forEach(function(value:Int, index:Int) {
+			seen.push(value);
+			if (index == 0) {
+				made[1] = 42;
+			}
+		});
+		Assert.equals("9,42,700", seen.join(","));
+
+		// Other element types, each kept as itself natively.
+		var floats = makeGenerically(1.0, 2.5);
+		floats.push(0.25);
+		pushGenerically(floats, 4.0);
+		Assert.equals(7.75, floats[0] + floats[1] + floats[2] + floats[3]);
+
+		var strings = makeGenerically("a", "b");
+		strings.push("c");
+		pushGenerically(strings, "d");
+		strings[0] = "A";
+		Assert.equals("A,b,c,d", strings.join(","));
+		Assert.equals("d", readGenerically(strings, 3));
+
+		var flags = new Vector<Bool>();
+		flags.push(true);
+		pushGenerically(flags, false);
+		Assert.isTrue(flags[0]);
+		Assert.isFalse(flags[1]);
+
+		var targets = new Vector<VectorCallbackTarget>();
+		var target = new VectorCallbackTarget();
+		pushGenerically(targets, target);
+		Assert.equals(target, targets[0]);
+		Assert.equals(0, targets.indexOf(target));
+
+		#if cpp
+		// Natively a Vector<Int> holds ints, as in ActionScript: a null put
+		// in through a Vector<Dynamic> reads back as 0, and the loop walking
+		// the vector reads it the same way after a callback's write has
+		// converted the elements under it.
+		var nulled = makeGenerically(1, 2);
+		pushDynamic(nulled, null);
+		var walked:Array<Int> = [];
+		nulled.forEach(function(value:Int, index:Int) {
+			walked.push(value);
+			if (index == 0) {
+				nulled[1] = 42;
+			}
+		});
+		Assert.equals("1,42,0", walked.join(","));
+		Assert.equals(0, nulled[2]);
+		#end
+	}
+
+	/**
+		A vector held as `Dynamic` still has its methods. `Vector` inlines
+		`push`, `pop` and the others where they are called, so at run time
+		they are found only because its class keeps them as well.
+	**/
+	public function testAVectorHeldAsDynamicHasItsMethods():Void {
+		var vector = new Vector<Int>();
+		var held:Dynamic = vector;
+		held.push(1);
+		held.push(2);
+		held.unshift(0);
+		held.insertAt(3, 3);
+		Assert.equals("0,1,2,3", held.join(","));
+		Assert.equals(2, held.indexOf(2, 0));
+		Assert.equals(3, held.lastIndexOf(3, 0x7fffffff));
+		Assert.equals(3, held.pop());
+		Assert.equals(0, held.shift());
+		Assert.equals(2, held.removeAt(1));
+		held.push(5);
+		Assert.equals("5,1", held.reverse().join(","));
+		Assert.equals("1", held.slice(1, 16777215).join(","));
+		Assert.equals("5,1", vector.join(","));
+	}
+
+	static function pushGenerically<T>(vector:Vector<T>, value:T):Void {
+		vector.push(value);
+	}
+
+	static function readGenerically<T>(vector:Vector<T>, index:Int):T {
+		return vector[index];
+	}
+
+	static function writeGenerically<T>(vector:Vector<T>, index:Int, value:T):Void {
+		vector[index] = value;
+	}
+
+	static function lengthGenerically<T>(vector:Vector<T>):Int {
+		return vector.length;
+	}
+
+	static function makeGenerically<T>(first:T, second:T):Vector<T> {
+		var vector = new Vector<T>();
+		vector.push(first);
+		vector.push(second);
+		return vector;
+	}
+
+	static function pushDynamic(vector:Vector<Dynamic>, value:Dynamic):Void {
+		vector.push(value);
+	}
+
 	public function testVectorIterationStopsWhenACallbackShortensIt():Void {
 		var vector = new Vector<String>();
 		for (item in ["a", "b", "c", "d"]) {
