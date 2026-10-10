@@ -543,7 +543,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			answers = input.readInt();
 			RPCWire.requireWithin(input, frameEnd);
 		} catch (error:Dynamic) {
-			__passedOver(RPCWire.HELLO_OP, 0, "a hello that could not be read: " + Std.string(error));
+			if (__hearsUnreadable()) {
+				__passedOver(RPCWire.HELLO_OP, 0, "a hello that could not be read: " + Std.string(error));
+			}
 			return;
 		}
 		peerVersion = version;
@@ -1315,7 +1317,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			} else if (flags == RPCWire.FLAG_CANCEL) {
 				__readCancel(op, input, frameEnd, false);
 			} else {
-				__passedOver(op, 0, "a frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+				if (__hearsUnreadable()) {
+					__passedOver(op, 0, "a frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+				}
 			}
 
 			input.position = frameEnd;
@@ -1377,14 +1381,37 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		length cannot be trusted ends the connection.
 
 		Does nothing unless set: a server can count them, and close a peer
-		that sends too many. What it throws is ignored.
+		that sends too many. What it throws is ignored. Until it is set,
+		`reason` is not even made, so a frame passed over costs nothing for it.
 	**/
-	public dynamic function onUnreadableFrame(op:Int, requestId:Int, reason:String):Void {}
+	public var onUnreadableFrame(get, set):(op:Int, requestId:Int, reason:String) -> Void;
+
+	@:noCompletion private var __onUnreadable:Null<(op:Int, requestId:Int, reason:String) -> Void> = null;
+
+	@:noCompletion private function get_onUnreadableFrame():(op:Int, requestId:Int, reason:String) -> Void {
+		return __onUnreadable != null ? __onUnreadable : __noUnreadable;
+	}
+
+	@:noCompletion private function set_onUnreadableFrame(listener:(op:Int, requestId:Int, reason:String) -> Void):(op:Int, requestId:Int, reason:String) -> Void {
+		__onUnreadable = listener == __noUnreadable ? null : listener;
+		return listener;
+	}
+
+	@:noCompletion private static function __noUnreadable(op:Int, requestId:Int, reason:String):Void {}
+
+	/** Whether anything listens to `onUnreadableFrame`: a reason is made only for it. **/
+	@:noCompletion private inline function __hearsUnreadable():Bool {
+		return __onUnreadable != null;
+	}
 
 	/** Tells `onUnreadableFrame` of a frame passed over. **/
 	@:noCompletion private function __passedOver(op:Int, requestId:Int, reason:String):Void {
+		final listener = __onUnreadable;
+		if (listener == null) {
+			return;
+		}
 		try {
-			onUnreadableFrame(op, requestId, reason);
+			listener(op, requestId, reason);
 		} catch (_:Dynamic) {}
 	}
 
@@ -1396,7 +1423,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (requestId != 0) {
 			__sendCompiledError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD);
 		}
-		__passedOver(op, requestId, "no method answers op 0x" + StringTools.hex(op, 8));
+		if (__hearsUnreadable()) {
+			__passedOver(op, requestId, "no method answers op 0x" + StringTools.hex(op, 8));
+		}
 	}
 
 	/**
@@ -1411,7 +1440,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__sendCompiledError(op, requestId, RPCError.UNREADABLE_MESSAGE, RPCWire.REFUSED_UNREADABLE);
 			}
 		}
-		__passedOver(op, requestId, "the call's arguments could not be read: " + Std.string(error));
+		if (__hearsUnreadable()) {
+			__passedOver(op, requestId, "the call's arguments could not be read: " + Std.string(error));
+		}
 	}
 
 	/**
@@ -1458,7 +1489,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 		if (!call && runtimeFlags != RPCWire.FLAG_RESPONSE && runtimeFlags != (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-			__passedOver(op, 0, "a runtime frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+			if (__hearsUnreadable()) {
+				__passedOver(op, 0, "a runtime frame of a kind this session does not know, flags 0x" + StringTools.hex(flags & 0xFF, 2));
+			}
 			return;
 		}
 		var requestId:Int = 0;
@@ -1596,7 +1629,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if (requestId != 0) {
 				__sendRuntimeError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD);
 			}
-			__passedOver(op, requestId, "no runtime handler is registered for op " + op);
+			if (__hearsUnreadable()) {
+				__passedOver(op, requestId, "no runtime handler is registered for op " + op);
+			}
 			return;
 		}
 		if (__atCallLimit()) {

@@ -804,6 +804,10 @@ says how.
   reading its frames) the message itself. An RPC call there and its answer
   allocate nothing natively or on the JVM, where they allocated 344 and
   168 bytes.
+- `RPCSession.onUnreadableFrame` is a property, and the reason it is told
+  is made only once it is set: a call for a method the other side has not
+  got, refused to a receiver, allocates nothing where it allocated 240 bytes
+  natively and 1,208 on the JVM.
 - A `NetConnection` wrapping an `INetConnection` of your own stamps
   `outTimestamp` with its runtime's clock as it sends, as CrossByte's own
   transports do, rather than reading the wrapped connection's: on the jvm
