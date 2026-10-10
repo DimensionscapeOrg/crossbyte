@@ -155,6 +155,12 @@ class AllocationBudgetTest extends utest.Test {
 	// told was made for every one (240 B natively, 1,208 on the jvm) though
 	// nothing listened. Measured on 2026-10-09.
 	private static final RPC_UNKNOWN_REFUSED = new Budget("an RPC call to a method the other side has not got, refused through a receiver", "call", [0, 0, 0], [8, 8, 8]);
+	// An answer of 256 KiB in pieces: the answer itself, and on the jvm 1 KB
+	// more (natively only the large objects are read; see measureLarge). The
+	// reader put it together in a buffer grown to its size and copied it out,
+	// and the writer framed it in a buffer of its own (787 KB natively and on
+	// the jvm), and took 2.8 times as long. Measured on 2026-10-09.
+	private static final RPC_LARGE_ANSWER = new Budget("a 256 KiB RPC answer of one Bytes, in pieces", "answer", [262144, 262144, 263590], [264192, 264192, 265216]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
@@ -799,6 +805,37 @@ class AllocationBudgetTest extends utest.Test {
 		__warm(op, WARM_CHEAP);
 		__within(RPC_INT_RECEIVER, AllocationMeter.measure(op, 20000));
 		Assert.isTrue(receiver.int > 0);
+	}
+
+	/**
+		An answer of one `Bytes` that comes in pieces is put together in the
+		`Bytes` its call is answered with: what its reader allocates is its
+		own size once, not a buffer grown to its size and then copied out.
+	**/
+	public function testALargeRpcAnswerOfOneBytesIsPutTogetherInPlace():Void {
+		// The server first, so the client's hello, saying it reads pieces,
+		// reaches it.
+		var link = PassingConnection.pair();
+		var server = new RPCSession(link.server, null, new BudgetHandler());
+		var commands = new BudgetCommands();
+		var client = new RPCSession<BudgetCommands>(link.client, commands);
+		Assert.isTrue((server.peerCapabilities & crossbyte.rpc._internal.RPCWire.CAPABILITY_CHUNKS) != 0, "the server does not know the client reads pieces");
+		var size:Int = 256 * 1024;
+		var receiver = new BytesReceiver();
+		var op = () -> {
+			var before:Float = receiver.got;
+			var sends:Int = link.server.sent;
+			commands.blobThen(size, receiver);
+			if (receiver.got != before + size) {
+				throw "the answer did not arrive whole";
+			}
+			if (link.server.sent - sends < 4) {
+				throw "the answer did not go in pieces";
+			}
+		};
+		__warm(op, #if jvm 500 #else 20 #end);
+		__within(RPC_LARGE_ANSWER, AllocationMeter.measureLarge(op, 200));
+		Assert.isTrue(receiver.got > 0);
 	}
 
 	public function testAnRpcCallToAMethodTheOtherSideHasNotGot():Void {
@@ -1636,6 +1673,21 @@ private class BudgetCommands extends RPCCommands {
 
 	// Its handler has no such method.
 	@:rpc public function absent(a:Int):RPCResponse<Int> {}
+
+	@:rpc public function blob(size:Int):RPCResponse<Bytes> {}
+}
+
+/** Counts the bytes of the answers it is told. **/
+private class BytesReceiver implements crossbyte.rpc.RPCValueReceiver<Bytes> {
+	public var got:Float = 0;
+
+	public function new() {}
+
+	public function onValue(call:Int, value:Bytes):Void {
+		got += value.length;
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {}
 }
 
 /** Counts the calls refused as UnknownMethod. **/
@@ -1657,6 +1709,151 @@ private class RefusedReceiver implements RPCIntReceiver {
 }
 
 /** A pair of sessions over the in-memory pair, and a receiver for their answers. **/
+/**
+	Two connections joined in memory that pace (an `RPCSession` sends a large
+	answer over them in pieces) and pass each send to the peer at once, read
+	from one buffer each, so a reading counts what the sessions allocate and
+	not the link.
+**/
+private class PassingConnection extends crossbyte.net.NetConnectionBase implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
+	public var onData(get, set):crossbyte.io.ByteArrayInput->Void;
+	public var onClose(get, set):crossbyte.net.Reason->Void;
+	public var onError(get, set):crossbyte.net.Reason->Void;
+	public var onReady(get, set):Void->Void;
+
+	public var peer:PassingConnection;
+	/** How many sends this has made. **/
+	public var sent:Int = 0;
+
+	final input:ByteArray = new ByteArray();
+	// What arrived before anything read it.
+	final early:Array<ByteArray> = [];
+	var reading:Bool = false;
+	var __readEnabled:Bool = false;
+	var __onData:crossbyte.io.ByteArrayInput->Void = input -> {};
+	var __onClose:crossbyte.net.Reason->Void = reason -> {};
+	var __onError:crossbyte.net.Reason->Void = reason -> {};
+	var __onReady:Void->Void = () -> {};
+
+	public static function pair():{client:PassingConnection, server:PassingConnection} {
+		final client = new PassingConnection();
+		final server = new PassingConnection();
+		client.peer = server;
+		server.peer = client;
+		return {client: client, server: server};
+	}
+
+	public function new() {
+		protocol = TCP;
+		__paces = true;
+	}
+
+	public function expose():crossbyte.net.Transport {
+		return null;
+	}
+
+	public function send(data:ByteArray):Void {
+		__sendRange(data, 0, data.length);
+	}
+
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		sent++;
+		peer.receive(data, offset, length);
+	}
+
+	function receive(data:ByteArray, offset:Int, length:Int):Void {
+		if (!__readEnabled || reading) {
+			final copy = new ByteArray();
+			copy.writeBytes(data, offset, length);
+			early.push(copy);
+			return;
+		}
+		reading = true;
+		input.clear();
+		input.writeBytes(data, offset, length);
+		input.position = 0;
+		__onData(input);
+		reading = false;
+		if (early.length > 0) {
+			final next = early.shift();
+			receive(next, 0, next.length);
+		}
+	}
+
+	public function close():Void {}
+
+	inline function get_remoteAddress():String {
+		return "127.0.0.1";
+	}
+
+	inline function get_remotePort():Int {
+		return 1;
+	}
+
+	inline function get_localAddress():String {
+		return "127.0.0.1";
+	}
+
+	inline function get_localPort():Int {
+		return 1;
+	}
+
+	inline function get_connected():Bool {
+		return true;
+	}
+
+	inline function get_readEnabled():Bool {
+		return __readEnabled;
+	}
+
+	function set_readEnabled(value:Bool):Bool {
+		__readEnabled = value;
+		if (value && early.length > 0) {
+			final next = early.shift();
+			receive(next, 0, next.length);
+		}
+		return value;
+	}
+
+	inline function get_onData():crossbyte.io.ByteArrayInput->Void {
+		return __onData;
+	}
+
+	inline function set_onData(value:crossbyte.io.ByteArrayInput->Void):crossbyte.io.ByteArrayInput->Void {
+		return __onData = value != null ? value : input -> {};
+	}
+
+	inline function get_onClose():crossbyte.net.Reason->Void {
+		return __onClose;
+	}
+
+	inline function set_onClose(value:crossbyte.net.Reason->Void):crossbyte.net.Reason->Void {
+		return __onClose = value != null ? value : reason -> {};
+	}
+
+	inline function get_onError():crossbyte.net.Reason->Void {
+		return __onError;
+	}
+
+	inline function set_onError(value:crossbyte.net.Reason->Void):crossbyte.net.Reason->Void {
+		return __onError = value != null ? value : reason -> {};
+	}
+
+	inline function get_onReady():Void->Void {
+		return __onReady;
+	}
+
+	inline function set_onReady(value:Void->Void):Void->Void {
+		return __onReady = value != null ? value : () -> {};
+	}
+}
+
 private class BudgetRpc {
 	public final link = LinkedConnection.pair();
 	public final commands = new BudgetCommands();
@@ -1736,6 +1933,15 @@ private class BudgetHandler extends RPCHandler {
 
 	@:rpc public function greet(id:Int):String {
 		return "hello, world";
+	}
+
+	var __blob:Null<Bytes> = null;
+
+	@:rpc public function blob(size:Int):Bytes {
+		if (__blob == null || __blob.length != size) {
+			__blob = Bytes.alloc(size);
+		}
+		return __blob;
 	}
 
 	@:rpc public function count(n:haxe.Int64):haxe.Int64 {

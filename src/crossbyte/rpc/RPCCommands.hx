@@ -103,6 +103,15 @@ abstract class RPCCommands {
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;
 
 	/**
+		Whether the answer to `op` is a `Bytes` and nothing else, so that one
+		arriving in pieces can be put together in the `Bytes` it is (see
+		`RPCChunks`). Generated for each commands class that has such a method.
+	**/
+	@:noCompletion public function __rpc_answersBytes(op:Int):Bool {
+		return false;
+	}
+
+	/**
 		The fingerprint of the methods these commands call, `RPCOps.fingerprint`
 		of their ops: what a session's hello says it calls. Generated.
 	**/

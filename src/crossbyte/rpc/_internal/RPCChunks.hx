@@ -8,6 +8,7 @@ import crossbyte.io.ByteArray.ByteArrayData;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnectionBase;
 import crossbyte.rpc.RPCSession;
+import haxe.io.Bytes;
 
 /**
 	A session's answers too long to send at once, sent in pieces
@@ -256,6 +257,11 @@ class RPCChunks implements PassFlush {
 		turn = 0;
 		told = false;
 		stopTicking();
+		for (answer in arriving) {
+			if (answer.direct == null) {
+				release(answer);
+			}
+		}
 		arriving.resize(0);
 	}
 
@@ -296,42 +302,207 @@ class RPCChunks implements PassFlush {
 			arriving.push(answer);
 		}
 		final count:Int = frameEnd - input.position;
-		final buffer:ByteArray = answer.buffer;
-		final held:Int = buffer.length - 4;
-		if (count > answer.total - held) {
+		if (count > answer.total - answer.held) {
 			throw "RPC answer in pieces ran past the " + answer.total + " bytes it said it was";
 		}
 		if (count > 0) {
-			// Grown as the pieces come, so a peer makes this side hold no
-			// more than a few times what it has sent: doubling, and the whole
-			// length the answer gave once a quarter of it is in, so it is
-			// copied as it grows less than once over.
-			final needed:Int = 4 + held + count;
-			final data:ByteArrayData = buffer;
-			if (needed > data.__length) {
-				var capacity:Int = data.__length * 2;
-				if (capacity < needed) {
-					capacity = needed;
-				}
-				if (capacity > 4 + answer.total || (held + count) * 4 >= answer.total) {
-					capacity = 4 + answer.total;
-				}
-				data.__reserve(capacity);
+			final direct:Null<Bytes> = answer.direct;
+			if (direct != null) {
+				direct.blit(answer.directAt, (cast input : ByteArrayData), input.position, count);
+				answer.directAt += count;
+			} else {
+				append(answer, input, count);
 			}
-			buffer.position = buffer.length;
-			buffer.writeBytes((cast input : ByteArrayData), input.position, count);
+			answer.held += count;
+			if (direct == null && !answer.decided && (answer.held >= HEAD_MOST || answer.held == answer.total)) {
+				decide(answer);
+			}
 		}
 		input.position = frameEnd;
 		if (!last) {
 			return;
 		}
 		arriving.remove(answer);
-		if (buffer.length - 4 != answer.total) {
-			throw "RPC answer in pieces ended at " + (buffer.length - 4) + " of the " + answer.total + " bytes it said it was";
+		if (answer.held != answer.total) {
+			release(answer);
+			throw "RPC answer in pieces ended at " + answer.held + " of the " + answer.total + " bytes it said it was";
 		}
+		if (answer.total > largest) {
+			largest = answer.total;
+		}
+		final whole:Null<Bytes> = answer.direct;
+		if (whole != null) {
+			// Read as its frame would be: the call it answers is answered.
+			final commands = session.__commands;
+			answer.direct = null;
+			if (commands != null) {
+				commands.__answerValue(answer.op, answer.requestId, whole);
+			}
+			return;
+		}
+		final buffer:ByteArray = answer.buffer;
 		(buffer : ByteArrayData).setInt32(0, buffer.length - 4);
 		buffer.position = 0;
-		session.__readAssembled(buffer);
+		try {
+			session.__readAssembled(buffer);
+		} catch (error:Dynamic) {
+			release(answer);
+			throw error;
+		}
+		release(answer);
+	}
+
+	// The most of an answer's head (flags, op, request id, a Bytes' count)
+	// read to tell whether it is one Bytes: 1 + 4 + 5 + 5.
+	static inline final HEAD_MOST:Int = 15;
+
+	// The largest answer of the peer's put together on this session: one up
+	// to as large is given its whole room as it begins, as a socket's input
+	// takes at once what it held in its last burst.
+	var largest:Int = 0;
+
+	/**
+		Whether `answer`'s whole room may be taken once `arrived` bytes of it
+		are in: at once up to the largest answer of the peer's put together
+		before, and past it once a quarter of the answer is in, so a peer
+		makes this side hold no more than four times what it has sent of an
+		answer larger than any before.
+	**/
+	inline function mayHold(answer:IncomingAnswer, arrived:Int):Bool {
+		return answer.total <= largest || arrived * 4 >= answer.total;
+	}
+
+	/** Appends what has arrived of `answer`'s frame to its buffer, grown as `mayHold` lets it. **/
+	function append(answer:IncomingAnswer, input:ByteArrayInput, count:Int):Void {
+		final buffer:ByteArray = answer.buffer;
+		final needed:Int = 4 + answer.held + count;
+		final data:ByteArrayData = buffer;
+		if (needed > data.__length) {
+			var capacity:Int = data.__length * 2;
+			if (capacity < needed) {
+				capacity = needed;
+			}
+			if (capacity > 4 + answer.total || mayHold(answer, answer.held + count)) {
+				capacity = 4 + answer.total;
+			}
+			reserve(buffer, capacity);
+		}
+		buffer.position = buffer.length;
+		buffer.writeBytes((cast input : ByteArrayData), input.position, count);
+	}
+
+	/** Room for `capacity` bytes in `buffer`: the runtime's kept storage where it has some, as a socket's large buffers take. **/
+	function reserve(buffer:ByteArray, capacity:Int):Void {
+		final data:ByteArrayData = buffer;
+		#if ((cpp || jvm) && !macro)
+		final runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			final pool = runtime.__storagePool();
+			final storage:Null<haxe.io.BytesData> = pool.take(capacity);
+			if (storage != null) {
+				final old:haxe.io.BytesData = data.__adoptStorage(storage, 0);
+				pool.giveGrown(old);
+				return;
+			}
+		}
+		#end
+		data.__reserve(capacity);
+	}
+
+	/**
+		`answer`'s buffer's storage back where it came from, once it is read
+		or will not be, and the buffer left holding none, so it cannot be
+		given back twice.
+	**/
+	function release(answer:IncomingAnswer):Void {
+		#if ((cpp || jvm) && !macro)
+		final data:ByteArrayData = answer.buffer;
+		if (data.__length == 0) {
+			return;
+		}
+		var none:Null<haxe.io.BytesData> = __none;
+		if (none == null) {
+			none = __none = Bytes.alloc(0).getData();
+		}
+		data.length = 0;
+		data.position = 0;
+		final storage:haxe.io.BytesData = data.__adoptStorage(none, 0);
+		final runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__storagePool().give(storage);
+		}
+		#end
+	}
+
+	#if ((cpp || jvm) && !macro)
+	static var __none:Null<haxe.io.BytesData> = null;
+	#end
+
+	/**
+		Once its head is in, whether `answer` is one `Bytes` and nothing else
+		(its commands say so of its op): then the rest of it is put together
+		in the `Bytes` itself, which its call is answered with, rather than
+		in a frame read once whole, which copied every byte of it once more.
+		Only once its whole room may be taken (see `mayHold`); until then it
+		is put together as a frame, and asked again with each piece.
+	**/
+	function decide(answer:IncomingAnswer):Void {
+		final data:ByteArrayData = answer.buffer;
+		final end:Int = 4 + answer.held;
+		if (data.get(4) != RPCWire.FLAG_RESPONSE) {
+			answer.decided = true;
+			return;
+		}
+		final commands = session.__commands;
+		final op:Int = data.getInt32(5);
+		if (commands == null || !commands.__rpc_answersBytes(op)) {
+			answer.decided = true;
+			return;
+		}
+		var at:Int = 9;
+		var requestId:Int = 0;
+		var shift:Int = 0;
+		var b:Int = 0;
+		do {
+			if (at >= end || shift > 28) {
+				answer.decided = true;
+				return;
+			}
+			b = data.get(at++);
+			requestId |= (b & 0x7F) << shift;
+			shift += 7;
+		} while ((b & 0x80) != 0);
+		var count:Int = 0;
+		shift = 0;
+		do {
+			if (at >= end || shift > 28) {
+				answer.decided = true;
+				return;
+			}
+			b = data.get(at++);
+			count |= (b & 0x7F) << shift;
+			shift += 7;
+		} while ((b & 0x80) != 0);
+		final head:Int = at - 4;
+		if (count < 0 || head + count != answer.total) {
+			answer.decided = true;
+			return;
+		}
+		if (!mayHold(answer, answer.held)) {
+			// Asked again with the next piece.
+			return;
+		}
+		answer.decided = true;
+		final direct = Bytes.alloc(count);
+		final already:Int = end - at;
+		if (already > 0) {
+			direct.blit(0, data, at, already);
+		}
+		answer.direct = direct;
+		answer.directAt = already;
+		answer.op = op;
+		answer.requestId = requestId;
+		release(answer);
 	}
 }
 
@@ -356,15 +527,26 @@ private class OutgoingAnswer {
 		frame.poison();
 		#end
 		frame.busy = false;
+		frame.letGo();
 	}
 }
 
-/** An answer of the peer's arriving in pieces: its frame so far, after four bytes kept for its length. **/
+/**
+	An answer of the peer's arriving in pieces: its frame so far, after four
+	bytes kept for its length; or, once it is known to be one `Bytes`, that
+	`Bytes`, filled as the pieces come.
+**/
 @:noCompletion
 private class IncomingAnswer {
 	public final stream:Int;
 	public final total:Int;
 	public final buffer:ByteArray = new ByteArray();
+	public var held:Int = 0;
+	public var decided:Bool = false;
+	public var direct:Null<Bytes> = null;
+	public var directAt:Int = 0;
+	public var op:Int = 0;
+	public var requestId:Int = 0;
 
 	public function new(stream:Int, total:Int) {
 		this.stream = stream;

@@ -420,7 +420,12 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `maxFrameLength`. Negotiated in the hello, so a peer without it gets whole
   answers. Calls keep their order; an answer in pieces can complete after a
   frame sent later, and `chunkLength = 0` sends every answer whole. The
-  guide's "On the wire" describes every frame.
+  guide's "On the wire" describes every frame. An answer of one `Bytes` is
+  put together in that `Bytes`, and a large frame is written in storage
+  the runtime keeps: on the jvm an 8 MB answer over TCP, both ends
+  counted, allocates its size once, where whole it allocated 3.5 times.
+  Over a WebSocket an 8 MB answer goes faster than whole (940 MB/s against
+  720 on the jvm, 1,140 against 860 natively).
 - `RPCSession.maxOutputPending` (16 MiB): over TCP or WebSocket, a peer that
   sends calls and never reads their answers is closed once that much waits
   unsent for it, where every answer waited in memory without end (one such
