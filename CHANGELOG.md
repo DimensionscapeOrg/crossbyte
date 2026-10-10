@@ -395,7 +395,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `Busy`, `NoHandler`, `HandlerTimedOut` and `HandlerFailed` for the
   session's own refusals, carried as a code after the error answer's
   message and passed on by a handler that answers with a refused call.
-  (Upgrading)
+  A handler refuses with those cases itself, as a gRPC handler answers with
+  a status code, through `RPCError.refusal(Busy, "Slow down.")`. (Upgrading)
 - Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
   `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
 - Contracts, handlers and commands classes can extend others of their

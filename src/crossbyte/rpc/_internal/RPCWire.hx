@@ -113,6 +113,39 @@ class RPCWire {
 	}
 
 	/**
+		The message of an error answer refused as `code`, `input` at it: the
+		session's own words for the code (read without a string made for them)
+		when the answer carries them, as a session's own refusal does, and
+		otherwise what it carries, as a handler refusing with a code
+		(`RPCError.refusal`) words it.
+	**/
+	public static function refusalText(input:ByteArrayInput, code:Int):String {
+		final words:Null<String> = refusalMessage(code);
+		if (words == null) {
+			return input.readVarUTF();
+		}
+		final start:Int = input.position;
+		final length:Int = input.readVarUInt();
+		var same:Bool = length == words.length && length <= input.bytesAvailable;
+		if (same) {
+			final data:ByteArrayData = cast input;
+			final at:Int = input.position;
+			for (i in 0...length) {
+				if (data.get(at + i) != StringTools.fastCodeAt(words, i)) {
+					same = false;
+					break;
+				}
+			}
+		}
+		if (same) {
+			input.position += length;
+			return words;
+		}
+		input.position = start;
+		return input.readVarUTF();
+	}
+
+	/**
 		The code of the error answer whose message `input` is at, in a frame
 		ending at `end`: what follows the message, or `REFUSED_BY_HANDLER`
 		when nothing does. `input` is left at the message, which is read only

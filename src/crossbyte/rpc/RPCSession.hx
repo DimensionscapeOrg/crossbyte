@@ -1529,7 +1529,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		try {
 			if (failed) {
 				code = RPCWire.refusalCode(input, frameEnd);
-				value = code != RPCWire.REFUSED_BY_HANDLER ? RPCWire.refusalMessage(code) : input.readVarUTF();
+				value = RPCWire.refusalText(input, code);
 			} else {
 				value = RPCRuntimeCodec.readValue(input, frameEnd);
 			}
