@@ -1845,7 +1845,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private inline function __takeFrame(room:Int, flags:Int, op:Int, requestId:Int):RPCFrame {
 		var frame:Null<RPCFrame> = __frame;
-		if (frame == null || frame.busy) {
+		if (frame == null || frame.busy || room > RPCFrame.KEEP_LIMIT) {
 			frame = __newFrame(room);
 		}
 		frame.busy = true;
@@ -1853,9 +1853,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return frame;
 	}
 
-	/** A frame for `__takeFrame` when the session's is in use or there is none; the first is kept. **/
+	/**
+		A frame for `__takeFrame` when the session's is in use, there is
+		none, or it is for more than the session keeps; the first is kept.
+	**/
 	@:noCompletion private function __newFrame(room:Int):RPCFrame {
-		final frame = new RPCFrame(room);
+		final frame = room > RPCFrame.KEEP_LIMIT ? RPCFrame.large(room) : new RPCFrame(room);
 		#if !(crossbyte_check_events || crossbyte_fresh_events)
 		if (__frame == null && frame.capacity <= RPCFrame.KEEP_LIMIT) {
 			__frame = frame;
@@ -1879,6 +1882,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (frame.capacity > RPCFrame.KEEP_LIMIT && frame == __frame) {
 			__frame = null;
 		}
+		frame.letGo();
 	}
 
 	/** Sends `frame` and gives it back, whether the send returns or throws. **/

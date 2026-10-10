@@ -78,6 +78,61 @@ class RPCFrame extends ByteArrayData {
 		super(room < MIN_CAPACITY ? MIN_CAPACITY : room);
 	}
 
+	// Whether the buffer is the runtime's kept storage, given back by letGo.
+	var __pooled:Bool = false;
+
+	#if ((cpp || jvm) && !macro)
+	static var __none:Null<haxe.io.BytesData> = null;
+	#end
+
+	/**
+		A frame for `room` bytes, past `KEEP_LIMIT`: its buffer taken from
+		the runtime's kept storage where it has some, as a socket's large
+		buffers are, and given back by `letGo` once it has been sent. A
+		large answer framed in a buffer of its own each time allocated its
+		size again for every answer.
+	**/
+	public static function large(room:Int):RPCFrame {
+		#if ((cpp || jvm) && !macro && !(crossbyte_check_events || crossbyte_fresh_events))
+		final runtime:Null<crossbyte.core.CrossByte> = crossbyte.core.CrossByte.__currentOrNull();
+		if (runtime != null) {
+			final storage:Null<haxe.io.BytesData> = runtime.__storagePool().take(room);
+			if (storage != null) {
+				final frame = new RPCFrame(0);
+				frame.__adoptStorage(storage, 0);
+				frame.__pooled = true;
+				return frame;
+			}
+		}
+		#end
+		return new RPCFrame(room);
+	}
+
+	/**
+		Gives a frame's buffer back to the runtime it came from (see
+		`large`), once the frame has been sent or will not be: `send` has
+		copied what it keeps. Nothing for any other frame, or a second time.
+	**/
+	public function letGo():Void {
+		#if ((cpp || jvm) && !macro)
+		if (!__pooled) {
+			return;
+		}
+		__pooled = false;
+		var none:Null<haxe.io.BytesData> = __none;
+		if (none == null) {
+			none = __none = haxe.io.Bytes.alloc(0).getData();
+		}
+		length = 0;
+		position = 0;
+		final storage:haxe.io.BytesData = __adoptStorage(none, 0);
+		final runtime:Null<crossbyte.core.CrossByte> = crossbyte.core.CrossByte.__currentOrNull();
+		if (runtime != null) {
+			runtime.__storagePool().give(storage);
+		}
+		#end
+	}
+
 	private inline function get_capacity():Int {
 		return __length;
 	}

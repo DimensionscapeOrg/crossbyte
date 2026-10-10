@@ -1337,13 +1337,15 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/**
 		Room in the session's own message buffer for `length` bytes in all,
-		past `KEEP` from the runtime's pool, what it holds carried across; as
-		`Arrivals.room` otherwise. The storage goes back once the message has
-		been handed out (`__delivered`).
+		past `Arrivals.KEEP` (what a released buffer keeps) from the
+		runtime's pool, what it holds carried across; as `Arrivals.room`
+		otherwise. The storage goes back once the message has been handed
+		out (`__delivered`). From 64 KB only, a message of 16 to 64 KB, as
+		each piece of a large RPC answer is, allocated its size each time.
 	**/
 	private inline function __messageRoom(message:ByteArray, length:Int, last:Bool):Void {
 		var data:ByteArrayData = message;
-		if (length > KEEP && length > @:privateAccess data.__length && message == __messageKept && __runtime != null) {
+		if (length > Arrivals.KEEP && length > @:privateAccess data.__length && message == __messageKept && __runtime != null) {
 			var pool:crossbyte._internal.socket.StoragePool = @:privateAccess __runtime.__storagePool();
 			var storage:Null<haxe.io.BytesData> = pool.take(length);
 			if (storage != null) {
@@ -2593,7 +2595,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 		var data:ByteArrayData = buffer;
-		if (@:privateAccess data.__length > KEEP) {
+		// Past what Arrivals.release keeps, which would let it go to the
+		// collector instead.
+		if (@:privateAccess data.__length > Arrivals.KEEP) {
 			var nothing:Null<Bytes> = __nothing;
 			if (nothing == null) {
 				nothing = __nothing = Bytes.alloc(0);

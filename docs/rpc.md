@@ -1175,7 +1175,8 @@ Pieces go over TCP, WebSocket and reliable UDP, to a peer whose hello says it
 reads them (every 1.0 session's does); to any other an answer goes whole.
 Each answer in pieces counts toward the reader's `maxFrameLength`, which it
 learns from the first piece, and the reader holds no more than a few times
-what has arrived of it.
+what has arrived of it. An answer that is one `Bytes` is put together in that
+`Bytes` itself, so its reader holds it once.
 
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller

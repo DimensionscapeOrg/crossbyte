@@ -652,6 +652,36 @@ class RPCCommandMacro {
 
 		// Never inline: it is reached through RPCCommands' abstract method in
 		// any case, and a subclass must be able to override it.
+		// The methods whose answer is a Bytes and nothing else.
+		final bytesOps:Array<Expr> = [];
+		for (method in methods) {
+			if (!RPCContractMacroTools.isNullable(method.responseType, method.pos)) {
+				final kind = RPCKinds.of(RPCKinds.unwrapNull(method.responseType), method.pos);
+				if (kind != null && kind.token == "bytes") {
+					bytesOps.push(macro $v{method.op});
+				}
+			}
+		}
+		if (bytesOps.length > 0) {
+			newFields.push({
+				name: "__rpc_answersBytes",
+				access: [APublic, AOverride],
+				meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+				kind: FFun({
+					args: [{name: "op", type: macro :Int}],
+					expr: {
+						expr: EReturn({
+							expr: ESwitch(macro op, [{values: bytesOps, expr: macro true}], macro super.__rpc_answersBytes(op)),
+							pos: Context.currentPos()
+						}),
+						pos: Context.currentPos()
+					},
+					ret: macro :Bool
+				}),
+				pos: Context.currentPos()
+			});
+		}
+
 		newFields.push({
 			name: "__rpc_handle_response",
 			access: overridesInherited ? [APublic, AOverride] : [APublic],
