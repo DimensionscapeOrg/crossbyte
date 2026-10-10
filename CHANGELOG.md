@@ -805,6 +805,16 @@ says how.
   reading its frames) the message itself. An RPC call there and its answer
   allocate nothing natively or on the JVM, where they allocated 344 and
   168 bytes.
+- A frame larger than its reader takes is refused and read past, and the
+  connection goes on: a call past the reader's `maxFrameLength` or past what
+  its TCP socket holds (`maxInputBufferSize`), which waited for good there,
+  fails `RPCFailure.TooLarge` at once, as does an answer past the caller's
+  limit, or past what the answering side's local IPC carries. A call over a
+  WebSocket larger than 64 KiB goes as several messages, where one past the
+  peer's 1 MiB `maxMessageSize` closed the connection; one over reliable UDP
+  past its `maxOutputBufferSize`, or over local IPC past its 8 MiB message,
+  fails `Unsent` as it is made, where it ended the session or went nowhere.
+  A frame past the reader's `maxFrameLength` ended the connection.
 - `RPCSession.onUnreadableFrame` is a property, and the reason it is told
   is made only once it is set: a call for a method the other side has not
   got, refused to a receiver, allocates nothing where it allocated 240 bytes

@@ -83,6 +83,33 @@ abstract class NetConnectionBase implements CloseObservable {
 	}
 
 	/**
+		The most bytes this connection holds unread, past which it stops
+		reading until they are read (a TCP socket's `maxInputBufferSize`), so
+		a reader waiting for more than that to arrive whole would wait for
+		good. 0 for no such limit.
+	**/
+	@:noCompletion public function __inputCapacity():Int {
+		return 0;
+	}
+
+	/**
+		The most bytes one `send` carries: past it the send ends the
+		connection (a reliable UDP session holding more than its
+		`maxOutputBufferSize` for its window) or goes nowhere (local IPC's
+		8 MiB message). 0 for no such limit.
+	**/
+	@:noCompletion public function __largestSend():Int {
+		return 0;
+	}
+
+	/**
+		Whether each `send` arrives as a message its peer may refuse past a
+		size (a WebSocket's) while the peer reads them as one stream, so a
+		large frame can go as several sends.
+	**/
+	@:noCompletion public var __sendsMessages:Bool = false;
+
+	/**
 		Has `room` called once, on the connection's thread, when what waits
 		unsent (`__bytesQueued`) has gone under `below`: a paced sender that
 		has stopped told when to go on, rather than asking at every tick.

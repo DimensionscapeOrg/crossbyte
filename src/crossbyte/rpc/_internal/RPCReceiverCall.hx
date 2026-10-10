@@ -144,6 +144,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 			case RPCWire.REFUSED_BUSY: Busy;
 			case RPCWire.REFUSED_NO_HANDLER: NoHandler;
 			case RPCWire.REFUSED_HANDLER_TIMEOUT: HandlerTimedOut;
+			case RPCWire.REFUSED_TOO_LARGE: TooLarge;
 			case _: Refused(message);
 		}
 	}
