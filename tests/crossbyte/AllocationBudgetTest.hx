@@ -153,13 +153,15 @@ class AllocationBudgetTest extends utest.Test {
 	// A call the other side has no method for, told to a receiver as
 	// UnknownMethod: nothing, where the reason `onUnreadableFrame` would be
 	// told was made for every one (240 B natively, 1,208 on the jvm) though
-	// nothing listened. Measured on 2026-10-09.
+	// nothing listened. Measured on 2026-10-09 on Windows, Linux (WSL) and
+	// the jvm.
 	private static final RPC_UNKNOWN_REFUSED = new Budget("an RPC call to a method the other side has not got, refused through a receiver", "call", [0, 0, 0], [8, 8, 8]);
 	// An answer of 256 KiB in pieces: the answer itself, and on the jvm 1 KB
 	// more (natively only the large objects are read; see measureLarge). The
 	// reader put it together in a buffer grown to its size and copied it out,
 	// and the writer framed it in a buffer of its own (787 KB natively and on
-	// the jvm), and took 2.8 times as long. Measured on 2026-10-09.
+	// the jvm), and took 2.8 times as long. Measured on 2026-10-09 on
+	// Windows, Linux (WSL) and the jvm.
 	private static final RPC_LARGE_ANSWER = new Budget("a 256 KiB RPC answer of one Bytes, in pieces", "answer", [262144, 262144, 263590], [264192, 264192, 265216]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
