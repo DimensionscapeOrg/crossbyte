@@ -32,6 +32,13 @@ import crossbyte.errors.RangeError;
  * `NaN` on JavaScript, where ActionScript would fill a numeric vector with 0.
  * Write every element before reading it. A negative length is refused on
  * every target with `RangeError`.
+ *
+ * **What an element costs natively.** The elements are kept where hxcpp
+ * erases their type, so natively each `v[i]` goes through a dynamic array and
+ * boxes the value: about 15 ns a read and 20 a write, where an `Array` or a
+ * `haxe.ds.Vector` of the same type takes under a nanosecond. On the jvm the
+ * JIT takes the difference away. For a hot loop over numbers natively, use an
+ * `Array` or a `haxe.ds.Vector`.
  */
 @:forward
 abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
@@ -56,8 +63,10 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	called directly; an untyped `Function` converts too, and is called
 	through reflection with as many arguments as it takes.
 
-	Called directly, an item costs about 17 ns, where `Reflect.callMethod`
-	with an argument array made per item costs 64.
+	Natively, called directly, an item costs about 17 ns, where
+	`Reflect.callMethod` with an argument array made per item costs about
+	70. On the jvm the two cost the same, about a nanosecond: it calls a
+	callback directly either way.
 **/
 abstract VectorCallback<T, R>(Dynamic) {
 	@:from @:noCompletion private static inline function ofNone<T, R>(f:Void->R):VectorCallback<T, R> {
