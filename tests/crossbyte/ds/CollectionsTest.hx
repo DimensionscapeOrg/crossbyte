@@ -1404,6 +1404,79 @@ class CollectionsTest extends utest.Test {
 		Assert.isTrue(all.isEmpty);
 	}
 
+	public function testAHandleWithTheSignBitSetReachesNoEntry():Void {
+		// Its generation was read masked, so the sign bit fell away and the
+		// handle read as the live one beside it: SlotHandle.INVALID (-1) is
+		// slot 1,048,575 at generation 2047 that way.
+		var slots = new SlotMap<String>(4);
+		var packed = new PackedSlotMap<String>(4);
+		var held = slots.insert("a");
+		var heldPacked = packed.insert("a");
+		var forged:SlotHandle = held.toInt() | 0x80000000;
+		var forgedPacked:SlotHandle = heldPacked.toInt() | 0x80000000;
+		Assert.isNull(slots.get(forged));
+		Assert.isFalse(slots.set(forged, "x"));
+		Assert.isFalse(slots.remove(forged));
+		Assert.isNull(packed.get(forgedPacked));
+		Assert.isFalse(packed.set(forgedPacked, "x"));
+		Assert.isFalse(packed.remove(forgedPacked));
+		Assert.isNull(slots.get(SlotHandle.INVALID));
+		Assert.isNull(packed.get(SlotHandle.INVALID));
+		Assert.equals("a", slots.get(held));
+		Assert.equals("a", packed.get(heldPacked));
+	}
+
+	public function testClearingKeepsTheSlotsFreedLongestAgoFirst():Void {
+		// A clear started the free queue again from slot 0, so the slot it had
+		// just freed went out first: cleared and filled once a tick, one slot
+		// came round to the generation a kept handle held after 2048 ticks.
+		var slots = new SlotMap<String>(16);
+		var packed = new PackedSlotMap<String>(16);
+		var kept = slots.insert("kept");
+		var keptPacked = packed.insert("kept");
+		for (tick in 0...2200) {
+			slots.clear();
+			packed.clear();
+			slots.insert("tick " + tick);
+			packed.insert("tick " + tick);
+			if (slots.get(kept) != null || packed.get(keptPacked) != null) {
+				Assert.fail('a handle from before the first clear read an entry at tick $tick');
+				return;
+			}
+		}
+		Assert.equals(1, slots.length);
+		Assert.equals(1, packed.length);
+	}
+
+	public function testADenseIndexOutsideTheEntriesIsRefused():Void {
+		// Unchecked, it threw on the interpreter, read a held slot on the jvm
+		// (and removing that handle took a live entry), and read nothing on
+		// JavaScript.
+		var packed = new PackedSlotMap<String>(4);
+		packed.insert("a");
+		packed.insert("b");
+		for (index in [2, -1, 3]) {
+			try {
+				packed.slotAtDense(index);
+				Assert.fail('slotAtDense($index) answered for two entries');
+			} catch (e:crossbyte.errors.RangeError) {
+				Assert.pass();
+			}
+		}
+		Assert.equals(2, packed.length);
+	}
+
+	public function testAMapWithALargeGrowthChunkStillGrows():Void {
+		// The new capacity was the old plus the chunk, which wrapped negative
+		// natively and on the jvm, and the map could never grow.
+		var slots = new SlotMap<Int>(1, null, 0x7FFFFFFF);
+		var first = slots.insert(1);
+		var second = slots.insert(2);
+		Assert.equals(1, slots.get(first));
+		Assert.equals(2, slots.get(second));
+		Assert.equals(slots.maxCapacity, slots.capacity);
+	}
+
 	public function testSlotMapInvalidatesStaleHandlesAndReusesSlots():Void {
 		var map = new SlotMap<String>(2, 4, 1);
 		var first = map.insert("alpha");

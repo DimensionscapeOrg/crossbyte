@@ -201,6 +201,11 @@ final class SlotMap<T> {
 	 * Clears all entries from the map and invalidates all existing handles.
 	 */
 	public function clear():Void {
+		// Each held slot goes to the back of the free queue, behind those
+		// already free, as a removal puts it: the queue starting again from
+		// slot 0 handed out the slot just cleared first, and one entity
+		// cleared and made again each tick wrapped its slot's generation in
+		// 2048 ticks.
 		for (i in 0...__capacity) {
 			if (__link[i] == HELD) {
 				// Kept inside the handle's generation field, as remove() keeps
@@ -208,13 +213,10 @@ final class SlotMap<T> {
 				// a generation no handle could carry, and every entry put in it
 				// after the clear() could never be read or removed again.
 				__gen[i] = (__gen[i] + 1) & SlotHandle.GEN_MASK;
+				__values[i] = null;
+				__queueFree(i);
 			}
-
-			__values[i] = null;
-			__link[i] = i + 1 < __capacity ? i + 1 : -1;
 		}
-		__freeHead = __capacity > 0 ? 0 : -1;
-		__freeTail = __capacity - 1;
 		length = 0;
 	}
 
@@ -233,6 +235,11 @@ final class SlotMap<T> {
 		return __values.toString();
 	}
 
+	/**
+		The values by slot: the map's own array, as long as its capacity,
+		with `null` where no entry is held. Read it; changing it changes the
+		map behind its handles' backs.
+	**/
 	public inline function getValues():Array<T> {
 		return __values;
 	}
@@ -256,10 +263,10 @@ final class SlotMap<T> {
 			return;
 		}
 
-		var newCap:Int = __capacity + additional;
-		if (newCap > maxCapacity) {
-			newCap = maxCapacity;
-		}
+		// Compared as a difference: the sum passes 2^31 for a large
+		// growthChunk, and wrapped negative natively and on the jvm, where the
+		// map could then never grow.
+		var newCap:Int = additional > maxCapacity - __capacity ? maxCapacity : __capacity + additional;
 
 		// The vectors double, so growing a chunk at a time copies each entry
 		// a bounded number of times rather than once per chunk.

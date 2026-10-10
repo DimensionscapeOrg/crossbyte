@@ -1054,6 +1054,17 @@ Fixes to code new in this release are not listed.
 - `BloomFilter` hashes a string as its UTF-8 bytes on every target, where a
   string past ASCII set different bits on each, and refuses a byte range
   outside its bytes.
+- A `SlotHandle` with the sign bit set, `SlotHandle.INVALID` among them,
+  reaches no entry of a `SlotMap` or `PackedSlotMap`, where it read, set or
+  removed the live entry its low bits named.
+- `SlotMap.clear()` and `PackedSlotMap.clear()` put the slots they free
+  behind those already free, so a slot cleared and filled each tick no
+  longer comes round to an old handle's generation after 2048 ticks;
+  `PackedSlotMap.clear()` costs what it holds rather than its capacity.
+- `PackedSlotMap.slotAtDense` refuses an index outside its entries with a
+  `RangeError`, a `SlotMap` with a `growthChunk` near 2^31 still grows, and
+  on the jvm a `PackedSlotMap` insert and remove no longer allocate 64 bytes
+  between them.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.
