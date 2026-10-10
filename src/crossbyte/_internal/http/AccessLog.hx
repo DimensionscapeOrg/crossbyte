@@ -86,7 +86,18 @@ class AccessLog {
 				"status" => Std.string(status),
 				"client" => clientText
 			];
-			records(@:privateAccess new LogRecord(LogLevel.INFO, CATEGORY.name, "", fields, time, line));
+			// Through Logger, so a record sink that throws does not throw into
+			// the response being logged. A line it did not take goes where a
+			// line goes with no sink at all: written off the runtime, as below,
+			// rather than to the console on it a line at a time.
+			if (@:privateAccess Logger.__offerRecord(records, @:privateAccess new LogRecord(LogLevel.INFO, CATEGORY.name, "", fields, time, line))) {
+				return;
+			}
+			#if target.threaded
+			__queue(line);
+			#else
+			@:privateAccess Logger.__emitDefault(line, false);
+			#end
 			return;
 		}
 		#if target.threaded

@@ -125,6 +125,38 @@ class HTTPAccessLogTest extends utest.Test {
 		}, true);
 	}
 
+	/**
+		A record sink that throws does not throw out of the access log into
+		the response being logged, as it does not out of `Logger`: the line
+		goes where a line with no sink goes, the access log's own way, and the
+		next line is offered to the sink again.
+	**/
+	public function testARecordSinkThatThrowsDoesNotThrowOutOfTheAccessLog():Void {
+		var calls:Int = 0;
+		var records:Array<crossbyte.utils.LogRecord> = [];
+		Logger.recordSink = function(record:crossbyte.utils.LogRecord) {
+			calls++;
+			if (calls == 1) {
+				throw "collector unreachable";
+			}
+			records.push(record);
+		};
+
+		AccessLog.write("GET", "/first", 200, "127.0.0.1");
+		AccessLog.write("GET", "/second", 200, "127.0.0.1");
+
+		Assert.equals(2, calls);
+		Assert.equals(1, records.length);
+		if (records.length == 1) {
+			var fields:Null<Map<String, String>> = records[0].fields;
+			Assert.equals("/second", fields == null ? null : fields.get("path"));
+		}
+		#if target.threaded
+		AccessLog.flush();
+		Assert.isTrue(__written.indexOf("path=/first") >= 0, "the line the sink refused was lost: " + __written);
+		#end
+	}
+
 	/** A record sink is handed the parts as fields, and the line as text mode writes it. */
 	public function testARecordSinkIsHandedThePartsAsFields(async:Async):Void {
 		var records:Array<crossbyte.utils.LogRecord> = [];
