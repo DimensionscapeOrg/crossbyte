@@ -1000,6 +1000,9 @@ Fixes to code new in this release are not listed.
 - `crossbyte.utils.Hash` gives the same answers on JavaScript as elsewhere,
   as does `MathUtil.nextPow2` above 2^30.
 - `Seq32` wraps at 32 bits on JavaScript and prints as unsigned on the jvm.
+- `Seq32` comparisons wrap as its arithmetic does, so on a target whose
+  `Int` does not (Python, PHP, Lua) a sequence behind another by less than
+  half the range no longer reads as ahead of it.
 - `PrimitiveValue.toInt`, `Version` and every number a peer sends are read
   the same way on every target, through `IntParse`.
 - `GlobalTimer` hands out unique ids on every threaded target.
