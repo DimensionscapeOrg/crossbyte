@@ -601,12 +601,35 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	public static var maxResetsPerSecond:Int = DEFAULT_MAX_RESETS_PER_SECOND;
 
 	/**
+		The receive buffer a server asks for unless `receiveBufferSize` is
+		set, in bytes: 7 MiB, as QUIC servers ask (quic-go's figure). Every
+		session of a server reads from its one socket, so what arrives for
+		all of them while the server is busy waits there; at 2,000 clients
+		on Linux a 1 MiB buffer dropped 369,000 datagrams in ten seconds,
+		and 4 MiB none.
+
+		Asked for, not imposed: Linux grants at most `net.core.rmem_max`
+		(208 KB on most systems, 4 MiB under WSL) and macOS at most
+		`kern.ipc.maxsockbuf`. A server granted less says so once, as it
+		binds, naming the setting to raise.
+	**/
+	public static inline var RECEIVE_BUFFER_SIZE:Int = 7 << 20;
+
+	@:noCompletion private static final LOG:crossbyte.utils.LogCategory = crossbyte.utils.Logger.category("net.rudp");
+
+	// Whether a server granted less than RECEIVE_BUFFER_SIZE has said so:
+	// once a process, as quic-go does.
+	@:noCompletion private static var __toldShortBuffer:Bool = false;
+
+	// Whether receiveBufferSize was set, which no check overrides.
+	@:noCompletion private var __receiveBufferChosen:Bool = false;
+
+	/**
 		The operating system's receive buffer, in bytes, for the one socket
 		every session of this server reads from; see
-		`DatagramSocket.receiveBufferSize`. At least
-		`ReliableDatagramSocket.WINDOW_BUFFER_SIZE` where the system grants it,
-		which is one window: a server whose peers send at once may want room
-		for several.
+		`DatagramSocket.receiveBufferSize`. `RECEIVE_BUFFER_SIZE` (7 MiB)
+		where the system grants it, unless this is set; set, it is what was
+		chosen, and the server does not say it was granted less.
 	**/
 	public var receiveBufferSize(get, set):Int;
 
@@ -621,7 +644,43 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
-		return __socket.receiveBufferSize = value;
+		__socket.receiveBufferSize = value;
+		__receiveBufferChosen = true;
+		return value;
+	}
+
+	/**
+		What the system keeps of a receive buffer that reads back as `read`:
+		Linux reports twice what it keeps, counting its own bookkeeping.
+	**/
+	@:noCompletion private static function __kept(read:Int):Int {
+		#if (sys || nodejs)
+		return Sys.systemName() == "Linux" ? read >> 1 : read;
+		#else
+		return read;
+		#end
+	}
+
+	/**
+		Says once a process that a server was granted `kept` bytes of the
+		`RECEIVE_BUFFER_SIZE` it asked for, and which setting raises it.
+		Answers whether it said so.
+	**/
+	@:noCompletion private static function __tellShortBuffer(kept:Int, port:Int):Bool {
+		if (__toldShortBuffer || kept <= 0 || kept >= RECEIVE_BUFFER_SIZE) {
+			return false;
+		}
+		__toldShortBuffer = true;
+		var system:String = #if (sys || nodejs) Sys.systemName() #else "" #end;
+		var raise:String = switch (system) {
+			case "Linux": "raise net.core.rmem_max (sysctl -w net.core.rmem_max=" + RECEIVE_BUFFER_SIZE + ")";
+			case "Mac": "raise kern.ipc.maxsockbuf";
+			default: "raise the system's limit on a socket's receive buffer";
+		};
+		LOG.warn("The reliable UDP server on port " + port + " was granted a receive buffer of " + (kept >> 10) + " KiB of the "
+			+ (RECEIVE_BUFFER_SIZE >> 10) + " KiB it asked for, so under load what arrives while it is busy can be dropped: " + raise
+			+ ", or set receiveBufferSize to choose a size and not be told.");
+		return true;
 	}
 
 	@:noCompletion private inline function get_sendBufferSize():Int {
@@ -862,6 +921,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		__pending = new StringMap();
 		__socket = new DatagramSocket();
 		ReliableDatagramSocket.__reserveWindow(__socket);
+		if (DatagramSocket.bufferSizeSupported) {
+			try {
+				ReliableDatagramSocket.__reserve(__socket, true, RECEIVE_BUFFER_SIZE);
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	/**
@@ -876,6 +940,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 
 		__socket.bind(localPort, localAddress);
+		if (!__receiveBufferChosen && DatagramSocket.bufferSizeSupported) {
+			__tellShortBuffer(__kept(__socket.receiveBufferSize), __socket.localPort);
+		}
 	}
 
 	/**

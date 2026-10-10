@@ -691,6 +691,13 @@ says how.
   (`WINDOW_BUFFER_SIZE`). Natively over loopback, 1,000-byte messages
   under 1% loss went from 0.35 to 58 MB/s, and 100-byte messages from
   45,000 to 258,000 a second.
+- A server asks for a 7 MiB receive buffer
+  (`ReliableDatagramServerSocket.RECEIVE_BUFFER_SIZE`), as QUIC servers do,
+  since every session reads from its one socket, and logs once if the
+  system grants less, naming the setting to raise (`net.core.rmem_max` on
+  Linux). On Linux at 2,000 clients a 1 MiB buffer dropped 369,000
+  datagrams in ten seconds and calls took 6.7 s at p99; with 4 MiB, none
+  and 51 ms. A `receiveBufferSize` that is set is kept.
 - A session holds an acknowledgement up to `ackDelay` (25 ms) for
   something it sends to carry it, halving a game server's datagrams.
   (Upgrading)

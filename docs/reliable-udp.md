@@ -179,3 +179,18 @@ system's buffer to be read a frame later behind everything since: natively on on
 each of 1,000 game clients sending three calls a tick, a call took 21 ms (p50) and 39 ms (p99), at
 35 ticks a second where 60 were asked for. The runtime's `loopLag` and `frameOverruns` say so. A server is
 one runtime's: to use more cores, run a server per runtime, each on a port of its own.
+
+**The receive buffer.** What arrives for every session while the server is busy waits in its socket's receive buffer,
+and past it the system drops it. A server asks for 7 MiB (`ReliableDatagramServerSocket.RECEIVE_BUFFER_SIZE`, as QUIC
+servers ask) and, as it binds, says once in the log (category `net.rudp`) if it was granted less. Linux grants at most
+`net.core.rmem_max`, 208 KB on most systems; raise it to let a server have the whole buffer:
+
+```
+sysctl -w net.core.rmem_max=7340032
+```
+
+On Linux (WSL, `rmem_max` 4 MiB) at 2,000 clients sending three calls a tick, a 1 MiB buffer dropped 369,000 datagrams
+in ten seconds and calls took 81 ms (p50) and 6.7 s (p99) while lost ones were sent again; with the 4 MiB granted,
+none were dropped and calls took 28 and 51 ms. Setting `receiveBufferSize` chooses a size, which is kept, and the server
+says nothing of it. A session that is not a server's asks for one window (`ReliableDatagramSocket.WINDOW_BUFFER_SIZE`,
+1 MiB).
