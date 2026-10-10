@@ -71,12 +71,70 @@ class VectorMacro {
 		};
 	}
 
-	/** Whether a `thisObject` was given: anything but nothing or `null`. **/
-	private static function __given(thisObject:Null<Expr>):Bool {
-		if (thisObject == null) {
+	/**
+		The call `vector.sort(compare)` becomes `__sort` given a function
+		written where it is called, `__sortCalling` given another of two
+		elements, or `__sortBy` given `compare` as it is, which reaches the
+		vector's own method.
+
+		Without a comparator, a vector of `Int`, `Float` or `String` is given
+		the one `Reflect.compare` amounts to for them, typed, so it orders as
+		before; `Int` and `String` may also be sorted as plain values. Any
+		other is left to `Reflect.compare` itself.
+	**/
+	public static function sort(vector:Expr, compare:Null<Expr>):Expr {
+		var pos:Position = Context.currentPos();
+		if (!__given(compare)) {
+			var ascending:Expr = macro (a, b) -> a == b ? 0 : (a > b ? 1 : -1);
+			return switch (__element(vector)) {
+				case "Int": macro @:pos(pos) $vector.__sortInts($ascending);
+				case "String": macro @:pos(pos) $vector.__sortStrings($ascending);
+				case "Float": macro @:pos(pos) $vector.__sort($ascending);
+				default: macro @:pos(pos) $vector.__sortBy(null);
+			}
+		}
+
+		var literal:Null<Expr> = __literal(compare);
+		if (literal != null) {
+			return switch (literal.expr) {
+				case EFunction(_, f) if (f.args.length == 2): macro @:pos(pos) $vector.__sort($compare);
+				default: macro @:pos(pos) $vector.__sortBy($compare);
+			}
+		}
+
+		if (__arity(compare) != 2) {
+			return macro @:pos(pos) $vector.__sortBy($compare);
+		}
+		return macro @:pos(pos) {
+			var _crossbyteVector = $vector;
+			var _crossbyteVectorCompare = $compare;
+			_crossbyteVector.__sortCalling(_crossbyteVectorCompare);
+		};
+	}
+
+	/** `Int`, `Float` or `String`, as `vector` holds one of those, or null. **/
+	private static function __element(vector:Expr):Null<String> {
+		var type = try Context.follow(Context.typeof(vector)) catch (e:Dynamic) null;
+		if (type == null) {
+			return null;
+		}
+		return switch (type) {
+			case TAbstract(_.get() => {pack: ["crossbyte", "ds"], name: "Vector"}, [element]):
+				switch (Context.follow(element)) {
+					case TAbstract(_.get() => {pack: [], name: name = "Int" | "Float"}, []): name;
+					case TInst(_.get() => {pack: [], name: "String"}, []): "String";
+					default: null;
+				}
+			default: null;
+		}
+	}
+
+	/** Whether an argument was given: anything but nothing or `null`. **/
+	private static function __given(argument:Null<Expr>):Bool {
+		if (argument == null) {
 			return false;
 		}
-		return switch (thisObject.expr) {
+		return switch (argument.expr) {
 			case EConst(CIdent("null")): false;
 			default: true;
 		}

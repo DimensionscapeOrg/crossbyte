@@ -28,9 +28,10 @@ import crossbyte.errors.RangeError;
  *   takes and called through reflection, as is any callback given a
  *   `thisObject`.
  *
- * Being macros, they are not values: `vector.forEach` alone does not
- * compile, where `f -> vector.forEach(f)` does. A vector held as `Dynamic`
- * has them as methods.
+ * `sort` is a macro too, and puts a comparator written where it is passed
+ * into the sort itself. Being macros, these six are not values:
+ * `vector.forEach` alone does not compile, where `f -> vector.forEach(f)`
+ * does. A vector held as `Dynamic` has them as methods.
  *
  * **A length given up front is not an initialised vector.** `new Vector<T>(n)`
  * and `length = n` grow with whatever the target fills an `Array` with, which
@@ -47,7 +48,9 @@ import crossbyte.errors.RangeError;
  * an element of a `Vector<Int>` takes about 1.2 ns to read or write, against
  * 0.6 for an `Array<Int>`, and 0.8 ns in `for (item in vector)`; a
  * `Vector<Float>` reads as fast as an `Array<Float>`. `forEach` given a
- * function written in place costs about 2 ns an element. `pop`, `shift` and
+ * function written in place costs about 2 ns an element, and `sort` given
+ * one about 60 for a thousand elements, against 155 for an `Array`; `sort()`
+ * of a `Vector<Int>` costs about 7. `pop`, `shift` and
  * `removeAt` take an element without boxing it, which an `Array`'s `pop` and
  * `shift` do, so a push and a pop together cost 8 ns, against 20 for an
  * `Array`. A function passed as a value costs about 30 ns a call natively,
@@ -62,7 +65,7 @@ import crossbyte.errors.RangeError;
  * through a `Vector<Dynamic>` or generic code reads back as `0` natively,
  * where other targets keep the `null`.
  */
-@:forward(concat, sort, splice, toLocaleString, toString)
+@:forward(concat, splice, toLocaleString, toString)
 abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	public var fixed(get, set):Bool;
 	public var length(get, set):Int;
@@ -139,6 +142,217 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	**/
 	public macro function some(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
 		return crossbyte._internal.macro.VectorMacro.call(ethis, "__some", "__someBy", callback, thisObject);
+	}
+
+	/**
+		Sorts in place by `compare`, which answers a negative number, zero or
+		a positive one as its first argument goes before, with or after its
+		second, and returns this vector. Without one, numbers and strings go
+		in ascending order and anything else in `Reflect.compare`'s.
+
+		The sort is stable: elements `compare` calls equal keep their order.
+		Like the callback methods it is a macro, so a comparator written where
+		it is passed becomes part of the sort natively. One that throws leaves
+		the vector as it was, but on JavaScript, which sorts in place.
+	**/
+	public macro function sort(ethis:haxe.macro.Expr, ?compare:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.sort(ethis, compare);
+	}
+
+	/**
+		What `sort` becomes given a comparator written where it is called, or
+		the typed one it is given for elements without one.
+
+		`Array.sort` is not stable on every target: the interpreter's is not,
+		and the jvm's is a quicksort, quadratic at worst. So JavaScript sorts
+		with its own, which is stable (ES2019); the jvm with its own TimSort,
+		on a copy written back once it is done; and every other target with
+		`__merge`, which puts the comparator in the sort itself.
+	**/
+	@:noCompletion public inline function __sort(f:(T, T) -> Int):Vector<T> {
+		#if js
+		this.__items().sort(f);
+		#elseif (jvm && !macro)
+		__sortOnJvm(f);
+		#else
+		var items:Array<T> = this.__items();
+		var count:Int = items.length;
+		if (count > 1) {
+			var sorted:Array<T> = __merge(items.copy(), items.copy(), f, 1);
+			var x:Int = 0;
+			while (x < count) {
+				items[x] = sorted[x];
+				x++;
+			}
+		}
+		#end
+		return this;
+	}
+
+	/**
+		What `sort` becomes given a comparator that is a value. Natively,
+		calling one boxes both elements every time, so each element is boxed
+		once, the boxes are sorted (runs of eight by insertion, then merged),
+		and the elements are put back from them. Elsewhere as `__sort`.
+	**/
+	@:noCompletion public inline function __sortCalling(f:(T, T) -> Int):Vector<T> {
+		#if (cpp && !cppia && !macro)
+		var items:Array<T> = this.__items();
+		var count:Int = items.length;
+		if (count > 1) {
+			var boxes:Array<Null<T>> = [];
+			boxes.resize(count);
+			var x:Int = 0;
+			while (x < count) {
+				boxes[x] = items[x];
+				x++;
+			}
+			// Each run of eight sorted by insertion first, stably, which takes
+			// fewer calls of the comparator than merging it from ones.
+			var call:(Null<T>, Null<T>) -> Int = cast f;
+			var start:Int = 0;
+			while (start < count) {
+				var end:Int = count - start > 8 ? start + 8 : count;
+				var a:Int = start + 1;
+				while (a < end) {
+					var item:Null<T> = boxes[a];
+					var b:Int = a - 1;
+					while (b >= start) {
+						var order:Int = call(boxes[b], item);
+						if (order <= 0) {
+							break;
+						}
+						boxes[b + 1] = boxes[b];
+						b--;
+					}
+					boxes[b + 1] = item;
+					a++;
+				}
+				start = end;
+			}
+			var sorted:Array<Null<T>> = __merge(boxes, boxes.copy(), call, 8);
+			// The boxes are read here, after the sort, which keeps them
+			// reachable from this frame while the comparator runs and may
+			// collect.
+			x = 0;
+			while (x < count) {
+				items[x] = sorted[x];
+				x++;
+			}
+		}
+		return this;
+		#else
+		return __sort(f);
+		#end
+	}
+
+	/**
+		`sort()` of a `Vector<Int>`. Equal ints cannot be told apart, so the
+		order of equal elements does not matter, and the target's own sort of
+		plain values does: natively and on the jvm. `ascending` is the typed
+		comparator for the rest.
+	**/
+	@:noCompletion public inline function __sortInts(ascending:(T, T) -> Int):Vector<T> {
+		#if (cpp && !cppia && !macro)
+		var items:Array<T> = this.__items();
+		var sorted:Bool = untyped __cpp__("::crossbyte_vector_sort_values({0})", items);
+		return sorted ? this : __sort(ascending);
+		#elseif (jvm && !macro)
+		var items:Array<T> = this.__items();
+		var count:Int = items.length;
+		var values:java.NativeArray<Int> = new java.NativeArray<Int>(count);
+		var x:Int = 0;
+		while (x < count) {
+			values[x] = cast items[x];
+			x++;
+		}
+		java.util.Arrays.sort(values);
+		x = 0;
+		while (x < count) {
+			items[x] = cast values[x];
+			x++;
+		}
+		return this;
+		#else
+		return __sort(ascending);
+		#end
+	}
+
+	/** `sort()` of a `Vector<String>`; see `__sortInts`. Natively only. **/
+	@:noCompletion public inline function __sortStrings(ascending:(T, T) -> Int):Vector<T> {
+		#if (cpp && !cppia && !macro)
+		var items:Array<T> = this.__items();
+		var sorted:Bool = untyped __cpp__("::crossbyte_vector_sort_values({0})", items);
+		return sorted ? this : __sort(ascending);
+		#else
+		return __sort(ascending);
+		#end
+	}
+
+	/**
+		A stable merge sort, bottom-up, of `from` by `f`, using `to` as space,
+		from runs of `width` already in order: answers whichever of the two
+		holds the result. It compares in one place only, so that a comparator
+		written where `sort` is called is put in that place rather than called
+		for every comparison.
+	**/
+	@:noCompletion private static inline function __merge<E>(from:Array<E>, to:Array<E>, f:(E, E) -> Int, width:Int):Array<E> {
+		var count:Int = from.length;
+		while (width < count) {
+			var left:Int = 0;
+			while (left < count) {
+				var middle:Int = count - left > width ? left + width : count;
+				var right:Int = count - middle > width ? middle + width : count;
+				var i:Int = left;
+				var j:Int = middle;
+				var k:Int = left;
+				while (k < right) {
+					// From the left run while it lasts, unless the right run's
+					// next goes strictly before it: so equal elements keep
+					// their order. The order is read as an Int, which a
+					// comparator called through Dynamic answers boxed.
+					var fromLeft:Bool = i < middle;
+					if (fromLeft && j < right) {
+						var order:Int = f(from[i], from[j]);
+						fromLeft = order <= 0;
+					}
+					if (fromLeft) {
+						to[k] = from[i];
+						i++;
+					} else {
+						to[k] = from[j];
+						j++;
+					}
+					k++;
+				}
+				left = right;
+			}
+			var merged:Array<E> = to;
+			to = from;
+			from = merged;
+			if (width > count - width) {
+				break;
+			}
+			width += width;
+		}
+		return from;
+	}
+
+	#if (jvm && !macro)
+	@:noCompletion private inline function __sortOnJvm(f:(T, T) -> Int):Void {
+		var items:Array<T> = this.__items();
+		var sorted:Array<T> = items.copy();
+		java.util.Arrays.sort(@:privateAccess sorted.__a, 0, sorted.length, new VectorComparator<T>(f));
+		var x:Int = 0;
+		while (x < sorted.length) {
+			items[x] = sorted[x];
+			x++;
+		}
+	}
+	#end
+
+	@:noCompletion public inline function __sortBy(compare:(T, T) -> Int):Vector<T> {
+		return this.sort(compare);
 	}
 
 	// What the five above become where they are called (see VectorMacro):
@@ -468,6 +682,26 @@ final class VectorKeyValueIterator<T> {
 	}
 }
 
+#if (jvm && !macro)
+/** What `Vector.sort` hands the jvm's own sort, a stable TimSort. **/
+@:noCompletion
+final class VectorComparator<T> implements java.util.Comparator<T> {
+	private final __compare:(T, T) -> Int;
+
+	public function new(compare:(T, T) -> Int) {
+		__compare = compare;
+	}
+
+	public function compare(a:T, b:T):Int {
+		return __compare(a, b);
+	}
+
+	public function equals(other:Dynamic):Bool {
+		return this == other;
+	}
+}
+#end
+
 /** A callback and how many arguments it takes, or -1 when that is found by asking it. **/
 @:noCompletion
 final class VectorCall {
@@ -586,6 +820,21 @@ inline ::Dynamic crossbyte_vector_take(::cpp::VirtualArray &inItems, int inIndex
 	::Dynamic value = inItems->__get(inIndex);
 	inItems->removeAt(inIndex);
 	return value;
+}
+
+// Sorts plain values ascending with std::sort, which is right for ints and
+// strings, whose equal elements cannot be told apart. Generic code, which has
+// the dynamic array, answers false and sorts another way.
+template<typename ELEM_>
+inline bool crossbyte_vector_sort_values(::Array<ELEM_> &ioItems)
+{
+	ioItems->sortAscending();
+	return true;
+}
+
+inline bool crossbyte_vector_sort_values(::cpp::VirtualArray &)
+{
+	return false;
 }
 
 // A store for the elements of a new vector: the cpp::VirtualArray it already
@@ -780,12 +1029,7 @@ class VectorImpl<T> {
 		second; by `Reflect.compare` when there is none.
 	**/
 	public function sort(?compare:(T, T) -> Int):Vector<T> {
-		if (compare == null) {
-			__items().sort(Reflect.compare);
-		} else {
-			__items().sort(compare);
-		}
-		return this;
+		return (this : Vector<T>).__sortCalling(compare == null ? Reflect.compare : compare);
 	}
 
 	public function splice(startIndex:Int, deleteCount:UInt = 2147483647, ...items:T):Vector<T> {

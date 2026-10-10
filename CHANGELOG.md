@@ -583,6 +583,13 @@ says how.
   written where it is passed into the loop itself, and call any other typed
   function directly: natively `forEach` costs 2 ns an element rather than
   34, and on the jvm 1 rather than 4. (Upgrading)
+- `Vector.sort` is stable on every target, where the interpreter's and the
+  jvm's `Array.sort` are not (the jvm's is a quicksort, quadratic at
+  worst), and a comparator that throws leaves the vector as it was, but on
+  JavaScript. Natively a comparator written in place goes into the sort
+  itself: 62 ns an element for a thousand rather than 150, and `sort()` of
+  a `Vector<Int>` 7 rather than 330; on the jvm `sort()` of one costs 13
+  rather than 88.
 - `SlotHandle` carries 20 index bits and 11 generation bits, and `SlotMap`
   and `PackedSlotMap` reuse the slot freed longest ago, so a stale handle
   no longer comes to name a new entity within seconds. (Upgrading)
@@ -1490,9 +1497,9 @@ an API added in this release has is not listed here.
   the original element type, where the callback returns another, no longer
   compiles: it held the other type all along. Type the result as the
   callback's return.
-- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` are macros, so
-  they are not values: where `vector.forEach` was passed as a function,
-  pass `f -> vector.forEach(f)`.
+- `Vector`'s `every`, `filter`, `forEach`, `map`, `some` and `sort` are
+  macros, so they are not values: where `vector.forEach` was passed as a
+  function, pass `f -> vector.forEach(f)`.
 - `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
   `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
   classes, so code that builds one from another anonymous type, rather than
