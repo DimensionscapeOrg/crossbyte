@@ -480,6 +480,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - `SecureRandom.fill(bytes, offset, length)` fills part of a `ByteArray`
   you keep, allocating nothing natively and on Node; a WebSocket client
   draws its frame masks into a pool it keeps this way.
+- `Vector` loops: `for (item in vector)` and `for (index => item in
+  vector)`, at about what an `Array`'s loop costs. `Vector.ofArray` and
+  `toArray` copy between a `Vector` and an `Array`.
 
 #### Platform
 
@@ -570,13 +573,16 @@ says how.
   (`VectorCallback`), `sort` taking a comparator and `concat` taking
   vectors, and `map` giving a vector of what its callback returns.
   (Upgrading)
-- Natively, `Vector` reads and writes about ten times faster than it did
-  where the code using it names its element type: an element of a
-  `Vector<Int>` takes about 2 ns rather than 18 to 21, where each one was
-  boxed through a dynamic array (an `Array<Int>` takes half a nanosecond).
-  `pop`, `shift` and `removeAt` take an element without boxing it or making
-  an array, so a push and a pop cost 9 ns rather than 43, and 21 for an
-  `Array`.
+- Natively, `Vector` reads and writes about fifteen times faster than it
+  did where the code using it names its element type: an element of a
+  `Vector<Int>` takes about 1.2 ns rather than 18 to 21, where each one was
+  boxed through a dynamic array (an `Array<Int>` takes 0.6). `pop`, `shift`
+  and `removeAt` take an element without boxing it or making an array, so a
+  push and a pop cost 8 ns rather than 43, and 20 for an `Array`.
+- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` put a callback
+  written where it is passed into the loop itself, and call any other typed
+  function directly: natively `forEach` costs 2 ns an element rather than
+  34, and on the jvm 1 rather than 4. (Upgrading)
 - `SlotHandle` carries 20 index bits and 11 generation bits, and `SlotMap`
   and `PackedSlotMap` reuse the slot freed longest ago, so a stale handle
   no longer comes to name a new entity within seconds. (Upgrading)
@@ -1484,6 +1490,9 @@ an API added in this release has is not listed here.
   the original element type, where the callback returns another, no longer
   compiles: it held the other type all along. Type the result as the
   callback's return.
+- `Vector`'s `every`, `filter`, `forEach`, `map` and `some` are macros, so
+  they are not values: where `vector.forEach` was passed as a function,
+  pass `f -> vector.forEach(f)`.
 - `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
   `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
   classes, so code that builds one from another anonymous type, rather than
