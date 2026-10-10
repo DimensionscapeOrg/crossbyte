@@ -491,7 +491,10 @@ says how.
   heap scheduler keeps each timer's position on the timer: at 30,000
   timers, a simulated second costs 40 ms of CPU where it cost 499 ms.
 - Dispatching an event costs about half what it did, and adding or removing
-  a listener copies the list only while a dispatch is walking it.
+  a listener copies the list only while a dispatch is walking it. A
+  dispatcher keeps the listeners of the type it was last asked about, so
+  natively it halves again: a dispatch to one listener takes 14 ns where
+  it took 31, and `hasEventListener` 3 ns where it took 14.
 - `CrossByte.current()` answers the calling thread's own runtime on every
   threaded target, and throws on a thread no runtime belongs to.
   `CrossByte.make()` no longer takes over the calling thread's timers, and a
@@ -877,6 +880,9 @@ Fixes to code new in this release are not listed.
   the runtime's age.
 - `removeEventListener(type, this.handler)` removes the listener on eval and
   the jvm, where a bound method never compared equal.
+- A listener that dispatches its event on to another dispatcher no longer
+  changes it under the listeners after it: they see their own dispatcher
+  as its `currentTarget`, where they saw the one it was sent on to.
 - A `Task` made on a thread with no runtime always calls its handlers, a
   `Worker` cancelled after its work completed ends `CANCELLED`, and a
   throwing task listener no longer stops the others.

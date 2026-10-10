@@ -241,6 +241,115 @@ class EventDispatcherTest extends utest.Test {
 		Assert.isFalse(dispatcher.hasEventListener("demo"));
 	}
 
+	/**
+		A listener that hands its event on to another dispatcher leaves the
+		dispatch it is part of as it was: the listeners after it still see the
+		event's `currentTarget` as the dispatcher they are listening to. The
+		inner dispatch set it to the other dispatcher and left it there, so a
+		wrapper forwarding its socket's events told the socket's remaining
+		listeners they were the wrapper's.
+	**/
+	public function testForwardingAnEventLeavesTheDispatchItCameFromAlone():Void {
+		var inner = new EventDispatcher();
+		var outer = new EventDispatcher();
+		var seenOnOuter:Dynamic = null;
+		var seenAfter:Array<Dynamic> = [];
+		outer.addEventListener("demo", (event:Event) -> seenOnOuter = event.currentTarget);
+		inner.addEventListener("demo", (event:Event) -> outer.dispatchEvent(event));
+		inner.addEventListener("demo", (event:Event) -> seenAfter.push(event.currentTarget));
+
+		inner.dispatchEvent(new Event("demo"));
+		Assert.equals(outer, seenOnOuter);
+		Assert.equals(1, seenAfter.length);
+		Assert.equals(inner, seenAfter[0], "a listener after the forward was told it listened to the other dispatcher");
+
+		// The same from a runtime's tick, which contains its listeners' failures.
+		var contained = new FailureRecorder();
+		seenAfter = [];
+		contained.addEventListener("demo", (event:Event) -> outer.dispatchEvent(event));
+		contained.addEventListener("demo", (event:Event) -> seenAfter.push(event.currentTarget));
+		contained.__dispatchContained(new Event("demo"));
+		Assert.equals(contained, seenAfter[0]);
+	}
+
+	/**
+		A dispatcher remembers the listeners of the type it dispatched last,
+		so a repeated dispatch skips looking them up. What it remembers is
+		forgotten by every change: the next dispatch, and `hasEventListener`,
+		see listeners added or removed since, from inside a dispatch (which
+		puts a new list in place of the one being walked) or out of one.
+	**/
+	public function testADispatchSeesEveryChangeMadeSinceTheLast():Void {
+		var dispatcher = new EventDispatcher();
+		var calls:Array<String> = [];
+		var late = (_:Event) -> calls.push("late");
+		var first = function(_:Event):Void {
+			calls.push("first");
+		};
+		dispatcher.addEventListener("demo", first);
+		dispatcher.addEventListener("demo", (_:Event) -> {
+			calls.push("second");
+			if (calls.length == 2) {
+				// Added during a walk: the list is replaced.
+				dispatcher.addEventListener("demo", late);
+			}
+		});
+
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals("first,second", calls.join(","));
+		calls = [];
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals("first,second,late", calls.join(","), "a listener added during the last dispatch was not called by the next");
+
+		// Removed during a walk: the list is replaced again.
+		calls = [];
+		dispatcher.addEventListener("demo", (_:Event) -> dispatcher.removeEventListener("demo", first), -1);
+		dispatcher.dispatchEvent(new Event("demo"));
+		calls = [];
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.isTrue(calls.indexOf("first") < 0, "a listener removed during the last dispatch was called by the next");
+
+		// Removed outside a dispatch, down to none.
+		dispatcher.removeAllListeners();
+		Assert.isFalse(dispatcher.hasEventListener("demo"));
+		calls = [];
+		Assert.isFalse(dispatcher.dispatchEvent(new Event("demo")));
+		Assert.equals(0, calls.length);
+
+		var only = (_:Event) -> calls.push("only");
+		dispatcher.addEventListener("demo", only);
+		Assert.isTrue(dispatcher.hasEventListener("demo"));
+		dispatcher.dispatchEvent(new Event("demo"));
+		dispatcher.removeEventListener("demo", only);
+		Assert.isFalse(dispatcher.hasEventListener("demo"), "the last listener's removal was not seen");
+		calls = [];
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals(0, calls.length);
+
+		// A type with the same text, made apart from the one used before.
+		dispatcher.addEventListener("demo", only);
+		var made:String = ["de", "mo"].join("");
+		dispatcher.dispatchEvent(new Event(made));
+		Assert.equals("only", calls.join(","));
+		Assert.isTrue(dispatcher.hasEventListener(made));
+		Assert.isFalse(dispatcher.hasEventListener("other"));
+		Assert.isTrue(dispatcher.hasEventListener("demo"));
+
+		// A null type, asked about after a change, is not taken for the type
+		// asked about before it. Whether a map takes a null key at all
+		// depends on the target (eval and neko throw), so only that is held.
+		dispatcher.addEventListener("other", only);
+		var unknown:String = null;
+		var answered:Null<Bool> = try dispatcher.hasEventListener(unknown) catch (_:Dynamic) null;
+		Assert.isFalse(answered == true, "a null type was answered with another type's listeners");
+		dispatcher.addEventListener("other", late);
+		calls = [];
+		try {
+			dispatcher.dispatchEvent(new Event(unknown));
+		} catch (_:Dynamic) {}
+		Assert.equals(0, calls.length, "an event of a null type reached another type's listeners");
+	}
+
 	public function testRemovingOneObjectsMethodLeavesAnothersAttached():Void {
 		var dispatcher = new EventDispatcher();
 		var first = new MethodSubscriber();
