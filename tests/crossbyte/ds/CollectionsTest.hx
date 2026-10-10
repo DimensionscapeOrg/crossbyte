@@ -140,6 +140,19 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(7, clone.get(0, 0));
 	}
 
+	public function testAStackOfNegativeSizeIsRefused():Void {
+		// Handed to Array.resize, a negative size ended the interpreter with an
+		// error nothing catches, was ignored on the jvm, and threw JavaScript's
+		// own RangeError on Node.
+		try {
+			new Stack<Int>(-3);
+			Assert.fail("a stack of -3 was made");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+		Assert.equals(0, new Stack<Int>(0).length);
+	}
+
 	public function testStackSupportsLifoIterationAndClearing():Void {
 		var stack = new Stack<String>(1);
 		Assert.isTrue(stack.isEmpty);

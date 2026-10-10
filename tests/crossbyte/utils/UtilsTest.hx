@@ -428,6 +428,16 @@ class UtilsTest extends utest.Test {
 		every one released, which would leave a whole burst behind for the
 		collector to walk at every collection from then on.
 	**/
+	public function testAPoolOfNegativeSizeIsRefused():Void {
+		// As a stack is: the size goes to one. It ended the interpreter.
+		try {
+			new ObjectPool<{id:Int}>(() -> {id: 0}, null, -2);
+			Assert.fail("a pool of -2 was made");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+	}
+
 	public function testAPoolKeepsTenThousandFreeByDefault():Void {
 		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
 		Assert.equals(10000, pool.maxFree);

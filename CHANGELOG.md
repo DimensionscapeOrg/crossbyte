@@ -1039,6 +1039,9 @@ Fixes to code new in this release are not listed.
   returns the error's own stack.
 - `ListedMap`, `DenseSet`, `OrderedMap`, `IndexedMap` and `PackedSlotMap`
   can have the entry a loop is on removed.
+- `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
+  where the interpreter ended the process, the jvm ignored it and
+  JavaScript threw its own `RangeError`.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.

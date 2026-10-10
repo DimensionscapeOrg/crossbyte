@@ -104,8 +104,12 @@ final class ObjectPool<T:{}> {
 	 * @param resetFunction Optional The function used to reset our object.
 	 * @param length Optional initial size of the pool: that many objects are
 	 *        made at once, and `maxFree` is raised to keep them if it is lower.
+	 * @throws ArgumentError When `length` is negative.
 	 */
 	public inline function new(objectFactory:Void->T, ?resetFunction:T->Void, ?length:Int) {
+		if (length != null && length < 0) {
+			throw new ArgumentError('ObjectPool length must not be negative ($length).');
+		}
 		this.objectFactory = objectFactory;
 		this.resetFunction = resetFunction;
 		__free = new Stack(length != null ? length : 0);

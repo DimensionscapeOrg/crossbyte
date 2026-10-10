@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
+
 /**
  * A generic stack implementation.
  *
@@ -38,8 +40,14 @@ final class Stack<T> {
 	 * Creates a new stack.
 	 *
 	 * @param length Optional. The initial size of the internal array used to store elements.
+	 * @throws ArgumentError When `length` is negative. Handed to
+	 *         `Array.resize`, it ended the interpreter with an error nothing
+	 *         catches, was ignored on the jvm, and threw on JavaScript.
 	 */
 	public function new(length:Int = 0) {
+		if (length < 0) {
+			throw new ArgumentError('A Stack cannot hold $length elements.');
+		}
 		__items = new Array();
 		__items.resize(length);
 		__top = 0;
