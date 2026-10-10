@@ -890,6 +890,65 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("1:4,2:4", vector.map((item:Int, index:Int, of:Vector<Int>) -> item + ":" + of.length).slice(0, 2).join(","));
 	}
 
+	/**
+		`sort` orders by the comparator however it is given, keeps equal
+		elements in their order, orders numbers and strings ascending without
+		one, and agrees with `Array.sort` on a thousand numbers.
+	**/
+	public function testVectorSortIsStableAndAgreesWithArraySort():Void {
+		var vector = Vector.ofArray([5, 3, 9, 1, 7, 2, 8]);
+		Assert.equals("1,2,3,5,7,8,9", vector.sort().join(","));
+		Assert.equals("9,8,7,5,3,2,1", vector.sort((a, b) -> b - a).join(","));
+		var ascending = function(a:Int, b:Int):Int return a - b;
+		Assert.equals("1,2,3,5,7,8,9", vector.sort(ascending).join(","));
+		Assert.equals("9,8,7,5,3,2,1", sortGenerically(vector, (a:Int, b:Int) -> b - a));
+		Assert.equals("apple,fig,pear", Vector.ofArray(["pear", "apple", "fig"]).sort().join(","));
+		Assert.equals("1.25,2,3.5", Vector.ofArray([3.5, 1.25, 2.0]).sort(null).join(","));
+		var loose:Vector<Dynamic> = Vector.ofArray(([3, 1, 2] : Array<Dynamic>));
+		Assert.equals("1,2,3", loose.sort().join(","));
+
+		// Stable: by the tens only, so each ten keeps its units in order.
+		var keyed = Vector.ofArray([31, 12, 33, 11, 32, 13]);
+		keyed.sort(function(a:Int, b:Int):Int {
+			if (Std.int(a / 10) == Std.int(b / 10)) {
+				return 0;
+			}
+			return Std.int(a / 10) - Std.int(b / 10);
+		});
+		Assert.equals("12,11,13,31,33,32", keyed.join(","));
+
+		var seed:Int = 12345;
+		var numbers:Array<Int> = [];
+		for (i in 0...1000) {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			numbers.push(seed % 500);
+		}
+		var expected:Array<Int> = numbers.copy();
+		expected.sort((a, b) -> a - b);
+		var ascending = expected.join(",");
+		Assert.equals(ascending, Vector.ofArray(numbers).sort((a, b) -> a - b).join(","));
+		var byValue = function(a:Int, b:Int):Int return a - b;
+		Assert.equals(ascending, Vector.ofArray(numbers).sort(byValue).join(","));
+		Assert.equals(ascending, Vector.ofArray(numbers).sort().join(","));
+		Assert.equals(ascending, sortGenerically(Vector.ofArray(numbers), byValue));
+		var texts:Array<String> = [for (n in numbers) "t" + n];
+		var expectedTexts:Array<String> = texts.copy();
+		expectedTexts.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+		Assert.equals(expectedTexts.join(","), Vector.ofArray(texts).sort().join(","));
+
+		#if !js
+		// The sort merges between copies, so a comparator that throws leaves
+		// the vector as it was. JavaScript sorts with its own, in place.
+		var kept = Vector.ofArray([3, 1, 2]);
+		Assert.raises(() -> kept.sort((a, b) -> throw "fail"));
+		Assert.equals("3,1,2", kept.join(","));
+		#end
+	}
+
+	static function sortGenerically<T>(vector:Vector<T>, compare:(T, T) -> Int):String {
+		return vector.sort(compare).join(",");
+	}
+
 	static function joinGenerically<T>(vector:Vector<T>):String {
 		var parts:Array<String> = [];
 		for (item in vector) {
