@@ -41,6 +41,14 @@ package crossbyte.utils;
  * **Logging and sensitive data.** A sink receives whatever a caller passes.
  * Services handling private content should log identifiers and outcomes
  * rather than payloads: field values are not redacted or size-limited.
+ *
+ * **A logging call never throws.** Logging is done from everywhere, error
+ * handlers included, so a `sink` or `recordSink` that throws (a full disk, a
+ * collector that is down) does not throw into whoever logged: the record goes
+ * to standard output instead, after one line saying the sink failed, and the
+ * next record is offered to the sink again. A record logged from inside a
+ * sink, by it or by something it calls, goes to standard output rather than
+ * into the sink a second time. Both as log4j2 and Python's `logging` do.
  */
 class Logger {
 	/**
@@ -87,6 +95,20 @@ class Logger {
 	@:noCompletion private static var __categoryCount:Int = 0;
 	@:allow(crossbyte.utils.LogCategory)
 	@:noCompletion private static var __levelsVersion:Int = 0;
+
+	// Set on a thread while it is inside `sink` or `recordSink`, so a record
+	// logged from there goes to standard output rather than recursing. One a
+	// thread: another thread's records still go to the sink meanwhile.
+	#if (target.threaded && !js)
+	@:noCompletion private static final __inSink:sys.thread.Tls<Bool> = new sys.thread.Tls();
+	#else
+	@:noCompletion private static var __inSink:Bool = false;
+	#end
+
+	// Whether the last record offered to a sink made it throw: the failure is
+	// reported once, as it starts, rather than beside every record while it
+	// lasts. Shared, and a race costs at most one notice too many or too few.
+	@:noCompletion private static var __sinkFailing:Bool = false;
 
 	@:noCompletion private static function set_level(value:LogLevel):LogLevel {
 		level = value;
@@ -218,12 +240,67 @@ class Logger {
 		var time:Float = (timestamps || records != null) ? __now() : 0.0;
 		var line:String = json ? __formatJson(recordLevel, category, message, fields, time) : __formatText(recordLevel, category, message, fields, time);
 
+		var urgent:Bool = (recordLevel : Int) >= (LogLevel.WARN : Int);
 		if (records != null) {
-			records(new LogRecord(recordLevel, category, message == null ? "" : message, fields, time, line));
+			if (__enterSink()) {
+				try {
+					records(new LogRecord(recordLevel, category, message == null ? "" : message, fields, time, line));
+					__leaveSink();
+					__sinkFailing = false;
+					return;
+				} catch (error:Dynamic) {
+					__leaveSink();
+					__sinkThrew(error);
+				}
+			}
+			__emitDefault(line, urgent);
 			return;
 		}
 
-		__emit(line, (recordLevel : Int) >= (LogLevel.WARN : Int));
+		__emit(line, urgent);
+	}
+
+	/**
+		Marks this thread as inside a sink, and answers whether it was not
+		already: `false` is a record logged from inside a sink, which goes to
+		standard output instead.
+	**/
+	@:noCompletion private static inline function __enterSink():Bool {
+		#if (target.threaded && !js)
+		if (__inSink.value == true) {
+			return false;
+		}
+		__inSink.value = true;
+		#else
+		if (__inSink) {
+			return false;
+		}
+		__inSink = true;
+		#end
+		return true;
+	}
+
+	@:noCompletion private static inline function __leaveSink():Void {
+		#if (target.threaded && !js)
+		__inSink.value = false;
+		#else
+		__inSink = false;
+		#end
+	}
+
+	/**
+		Says once, as a sink starts failing, that it has: on standard output,
+		formatted as any other record, so a reader of the output sees why the
+		records that follow are there and not where they were sent.
+	**/
+	@:noCompletion private static function __sinkThrew(error:Dynamic):Void {
+		if (__sinkFailing) {
+			return;
+		}
+		__sinkFailing = true;
+		var message:String = "The log sink threw, so records go to standard output until it takes one again: " + Std.string(error);
+		var time:Float = timestamps ? __now() : 0.0;
+		__emitDefault(json ? __formatJson(LogLevel.ERROR, null, message, null, time) : __formatText(LogLevel.ERROR, null, message, null, time), true);
 	}
 
 	#if !js
@@ -603,10 +680,23 @@ class Logger {
 	@:noCompletion private static function __emit(line:String, urgent:Bool = false):Void {
 		var target = sink;
 		if (target != null) {
-			target(line);
-			return;
+			if (__enterSink()) {
+				try {
+					target(line);
+					__leaveSink();
+					__sinkFailing = false;
+					return;
+				} catch (error:Dynamic) {
+					__leaveSink();
+					__sinkThrew(error);
+				}
+			}
 		}
+		__emitDefault(line, urgent);
+	}
 
+	/** Writes `line` where a record goes with no sink: standard output, or the console in a browser. **/
+	@:noCompletion private static function __emitDefault(line:String, urgent:Bool):Void {
 		#if (js && !nodejs)
 		// A browser has no stdout. The console is the equivalent sink, and a
 		// log line that vanished would be worse here than anywhere else:

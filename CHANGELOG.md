@@ -952,6 +952,12 @@ Fixes to code new in this release are not listed.
   `Worker` cancelled after its work completed ends `CANCELLED`, and a
   throwing task listener no longer stops the others.
 - `pump()` on a runtime that has exited no longer claims the calling thread.
+- A `Logger.sink` or `recordSink` that throws no longer throws into
+  whoever logged, error handlers included: the record goes to standard
+  output, after one line saying the sink failed, and the next record is
+  offered to the sink again. A sink that logs no longer recurses until the
+  stack runs out: a record logged from inside it goes to standard output,
+  on that thread only.
 - `CrossByte.cpuLoad` counts a `POLL` loop's socket handlers.
 - A native host loop that only calls `pump()` reaches a garbage-collection
   safe point, where it stalled every other thread.
