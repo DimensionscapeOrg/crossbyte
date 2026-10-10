@@ -145,8 +145,11 @@ class AllocationBudgetTest extends utest.Test {
 	// The same over reliable UDP. A message arriving was copied for the
 	// connection's application, 336 B a call natively, until a session
 	// reading its frames borrowed it instead. Measured on 2026-10-09 on
-	// Windows, Linux (WSL) and the jvm.
-	private static final RPC_RUDP_RECEIVER = new Budget("an RPC call over reliable UDP answered through an RPCIntReceiver", "call", [0, 0, 0], [8, 8, 8]);
+	// Windows, Linux (WSL) and the jvm. Alone the jvm reads 0; its figures
+	// allow the 32 B it reads after other reliable UDP and RPC transport
+	// cases, as the TCP line's do (the JDK's Windows selector boxing the two
+	// sockets it finds ready, which the compiler leaves out only sometimes).
+	private static final RPC_RUDP_RECEIVER = new Budget("an RPC call over reliable UDP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
