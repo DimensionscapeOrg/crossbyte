@@ -1,6 +1,6 @@
 package crossbyte.net;
 
-// Not built for the browser. It wraps the Transport union across every transport CrossByte offers, most of which a page does not have; browser code connects with crossbyte.net.Socket directly.
+// Built for the browser too, where tcp://, ws:// and wss:// are each a crossbyte.net.Socket, which a page makes as its own WebSocket.
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
@@ -17,6 +17,7 @@ import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.events._internal.Arrivals;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.io.ByteArray;
 // The two events that belong to transports a page has not got.
 #if !(js && !nodejs)
@@ -80,7 +81,11 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	/**
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
-	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
+	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`
+	 * (natively only). In a browser, `ws://` and `wss://` (and `tcp://`, since a
+	 * page's `Socket` is a WebSocket) connect to a WebSocket server, as a
+	 * `NetHost` made from a `ws://` or `wss://` URI is. Any other scheme throws an
+	 * `ArgumentError` naming the ones this target takes.
 	 *
 	 * A `wss://` connection verifies the server's certificate against the
 	 * system's trust store. To trust a private CA, or a development server's
@@ -160,10 +165,35 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
 			#end
+			#if (js && !nodejs)
+			// In a page a Socket is the page's own WebSocket, so a ws:// or
+			// wss:// URL is a Socket dialled with that scheme.
+			case WEBSOCKET:
+				var socket:Socket = new Socket();
+				var nc:TCPConnection = new TCPConnection(socket);
+				nc.onData = onData;
+				nc.onClose = onClose;
+				nc.onReady = onReady;
+				nc.onError = onError;
+				nc.readEnabled = readEnabled;
+
+				socket.secure = endpoint.secure;
+				socket.connect(endpoint.address + endpoint.resource, endpoint.port);
+				nc;
+			#end
 			default:
-				throw('Protocol error');
-				null;
+				throw new crossbyte.errors.ArgumentError(__unsupported(uri));
 		}
+	}
+
+	@:noCompletion private static function __unsupported(uri:String):String {
+		#if (js && !nodejs)
+		return 'NetConnection cannot connect to $uri: in a browser it takes tcp://, ws:// and wss:// (each a WebSocket to the server).';
+		#elseif js
+		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss:// and rudp:// (local:// is native only).';
+		#else
+		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss://, rudp:// and local://' + (LocalConnection.isSupported ? '.' : ' (local:// native only).');
+		#end
 	}
 
 	@:to public inline function toINetConnection():INetConnection {
@@ -498,6 +528,16 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		outTimestamp = connection.outTimestamp;
 	}
 
+	/** A local IPC connection's message: 8 MiB, past which its send goes nowhere. **/
+	override public function __largestSend():Int {
+		#if !js
+		if (Std.isOfType(__connection, LocalConnection)) {
+			return LocalConnection.MAX_FRAME_SIZE;
+		}
+		#end
+		return 0;
+	}
+
 	@:noCompletion private inline function get_remoteAddress():String {
 		return __connection.remoteAddress;
 	}
@@ -626,7 +666,12 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 
 	public inline function send(data:ByteArray):Void {
 		__connection.send(data);
-		outTimestamp = __connection.outTimestamp;
+		// When it sent, by its runtime's clock, as the connections CrossByte
+		// ships stamp theirs: reading the wrapped connection's outTimestamp
+		// goes through reflection on the jvm, a boxed Float, 24 bytes a send.
+		// With no runtime on this thread there is no clock but its own.
+		final now:Float = @:privateAccess crossbyte.Timer.tryGetTime();
+		outTimestamp = now >= 0.0 ? now : __connection.outTimestamp;
 	}
 
 	public inline function close():Void {
@@ -709,8 +754,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		return __onReady;
 	}
 
+	// Not once it has ended: onClose, told as this side closes and before its
+	// socket has, reads it as over, as it does when the peer closed.
 	@:noCompletion private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion inline function get_readEnabled():Bool {
@@ -733,6 +780,12 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	@:noCompletion private function new(socket:Socket) {
 		protocol = TCP;
+		__holdsOutput = true;
+		__paces = true;
+		#if (js && !nodejs)
+		// A page's Socket is a WebSocket: each send a message.
+		__sendsMessages = true;
+		#end
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -752,8 +805,56 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		twenty calls a tick, spends 0.5 µs a call this way against 7.0 µs,
 		nearly all of it in the kernel, with a write each.
 	**/
+	override public function __bytesPending():Int {
+		return __socket.bytesPending;
+	}
+
 	public function send(data:ByteArray):Void {
 		this.__writeBytes(data, 0, 0);
+		__sendWritten();
+	}
+
+	/** Part of `data` in place, sent as `send` sends. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		this.__writeBytes(data, offset, length);
+		__sendWritten();
+	}
+
+	override public function __queueLimit():Int {
+		return __socket.maxOutputBufferSize;
+	}
+
+	/** A socket stops reading at its `maxInputBufferSize` under `PAUSE`, and closes past it under `CLOSE`. **/
+	override public function __inputCapacity():Int {
+		return __socket.maxInputBufferSize > 0 ? __socket.maxInputBufferSize : 0;
+	}
+
+	// A paced sender waiting for room; see __whenQueueUnder.
+	@:noCompletion private var __roomBelow:Int = 0;
+	@:noCompletion private var __onRoom:Null<Void->Void> = null;
+
+	/** Told by the socket's OUTPUT_PROGRESS, which comes at the end of a pass that moved bytes. **/
+	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		__roomBelow = below;
+		if (__onRoom == null) {
+			__socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		}
+		__onRoom = room;
+		return true;
+	}
+
+	@:noCompletion private function socket_onProgress(_:OutputProgressEvent):Void {
+		final room = __onRoom;
+		if (room == null || __socket.bytesPending >= __roomBelow) {
+			return;
+		}
+		__onRoom = null;
+		__socket.removeEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		room();
+	}
+
+	/** What was just written goes when the pass ends, or at once; see `send`. **/
+	@:noCompletion private inline function __sendWritten():Void {
 		if (__passFlushQueued) {
 			return;
 		}
@@ -831,6 +932,12 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		#if ((cpp || jvm) && !macro)
+		// Grown from the storage the runtime keeps, as the socket's own
+		// writes grow it: a large frame, or the pieces of one a pass,
+		// allocated an output of their size each time it drained.
+		__socket.__makeOutputRoom(length == 0 ? bytes.length - offset : length);
+		#end
 		__socket.__output.writeBytes(bytes, offset, length);
 		outTimestamp = __uptime();
 	}
@@ -972,8 +1079,10 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		return __socket.localPort;
 	}
 
+	// Not once it has ended: onClose, told as this side closes and before its
+	// socket has, reads it as over, as it does when the peer closed.
 	@:noCompletion private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
@@ -993,6 +1102,9 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	}
 
 	@:noCompletion private inline function set_onData(v:ByteArrayInput->Void):ByteArrayInput->Void {
+		// A reader set now keeps what it is handed unless it says otherwise
+		// after (see `__borrowsInput`), as an RPCSession does.
+		__borrowsInput = false;
 		__onData = (v != null) ? v : __noopData;
 		return __onData;
 	}
@@ -1039,6 +1151,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	private function new(socket:ReliableDatagramSocket) {
 		protocol = RUDP;
+		__paces = true;
 		__socket = socket;
 		__prepareLifecycle();
 	}
@@ -1056,6 +1169,43 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
+	}
+
+	/** Part of `data` in place, as one message in `DATAGRAM` mode, as `send` sends the whole. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		switch (__socket.mode) {
+			case DATAGRAM:
+				__socket.send(data, offset, length);
+			case STREAM:
+				__socket.writeBytes(data, offset, length);
+				__socket.flush();
+		}
+		outTimestamp = __uptime();
+	}
+
+	/** What the congestion window holds back. **/
+	override public function __bytesQueued():Int {
+		return __socket.bufferedAmount;
+	}
+
+	override public function __queueLimit():Int {
+		return __socket.maxOutputBufferSize;
+	}
+
+	/** What the window may hold before the session ends itself, less what it holds now. **/
+	override public function __largestSend():Int {
+		final limit:Int = __socket.maxOutputBufferSize;
+		if (limit <= 0) {
+			return 0;
+		}
+		final room:Int = limit - __socket.bufferedAmount;
+		return room > 0 ? room : 1;
+	}
+
+	/** Told as the congestion window lets what waits out; see `ReliableDatagramSocket.__whenQueueUnder`. **/
+	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		@:privateAccess __socket.__whenQueueUnder(below, room);
+		return true;
 	}
 
 	/**
@@ -1104,6 +1254,15 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private function socket_onDatagramData(event:DatagramSocketDataEvent):Void {
 		inTimestamp = __uptime();
+		if (__borrowsInput) {
+			// A reader that keeps nothing (an RPCSession) reads the message
+			// where it lies: the copy below was most of what an RPC call over
+			// reliable UDP allocated.
+			final arrived:ByteArray = event.data;
+			arrived.position = 0;
+			__onData(arrived);
+			return;
+		}
 		// A copy: the event's bytes are valid only during this call, and what
 		// `onData` is handed is the application's to keep, on every transport
 		// (a stream's own input over TCP and WebSocket, and here the message).
@@ -1112,15 +1271,20 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		__onData(message);
 	}
 
+	/**
+		The stream's own input, as a TCP connection hands its socket's: what
+		the reader leaves unread stays there for the next arrival, so a frame
+		split across arrivals (an RPC call larger than a datagram) is read
+		whole once the rest is in. Each arrival handed over in a buffer of its
+		own took the unread part with it.
+	**/
 	@:noCompletion private function socket_onStreamData(_event:ProgressEvent):Void {
 		inTimestamp = __uptime();
-		var bytes = new ByteArray();
-		var available = __socket.bytesAvailable;
-		if (available > 0) {
-			__socket.readBytes(bytes, 0, available);
+		final input:ByteArray = @:privateAccess __socket.__input;
+		if (input == null) {
+			return;
 		}
-		bytes.position = 0;
-		__onData(bytes);
+		__onData(input);
 	}
 
 	@:noCompletion private inline function socket_onClose(_e:Event):Void {
@@ -1227,8 +1391,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		return __socket.localPort;
 	}
 
+	// Not once it has ended; see TCPConnection.
 	private inline function get_connected():Bool {
-		return __socket.connected;
+		return !__ended && __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
@@ -1287,6 +1452,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	private function new(socket:WebSocket) {
+		__holdsOutput = true;
+		__paces = true;
+		__sendsMessages = true;
 		protocol = WEBSOCKET;
 		this.__socket = socket;
 		__prepareLifecycle();
@@ -1300,8 +1468,50 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		return cast __socket;
 	}
 
+	// A paced sender waiting for room; see __whenQueueUnder.
+	@:noCompletion private var __roomBelow:Int = 0;
+	@:noCompletion private var __onRoom:Null<Void->Void> = null;
+
+	/**
+		Told by the socket's OUTPUT_PROGRESS, as a TCP connection's is. Asked
+		each tick instead, the pieces of a large answer waited out the rest
+		of the tick whenever the system's buffer filled: at 60 ticks a second
+		an 8 MB answer went at about 520 MB/s, where whole it went at 720 on
+		the jvm and 860 natively, and in pieces told this way at 940 and
+		1,140.
+	**/
+	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
+		__roomBelow = below;
+		if (__onRoom == null) {
+			__socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		}
+		__onRoom = room;
+		return true;
+	}
+
+	@:noCompletion private function socket_onProgress(_:OutputProgressEvent):Void {
+		final room = __onRoom;
+		if (room == null || __socket.bytesPending >= __roomBelow) {
+			return;
+		}
+		__onRoom = null;
+		__socket.removeEventListener(OutputProgressEvent.OUTPUT_PROGRESS, socket_onProgress);
+		room();
+	}
+
+	override public function __bytesPending():Int {
+		return __socket.bytesPending;
+	}
+
 	public function send(data:ByteArray):Void {
 		__socket.writeBytes(data);
+		__socket.flush();
+		outTimestamp = __uptime();
+	}
+
+	/** Part of `data` in place, as one message, as `send` sends the whole. **/
+	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
+		__socket.writeBytes(data, offset, length);
 		__socket.flush();
 		outTimestamp = __uptime();
 	}

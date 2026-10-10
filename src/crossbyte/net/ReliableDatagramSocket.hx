@@ -807,12 +807,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		default (the GitHub runner's) has half what asking grants, and would
 		be left so, since it reads as enough.
 	**/
-	@:noCompletion private static function __reserve(socket:DatagramSocket, receive:Bool):Void {
+	@:noCompletion private static function __reserve(socket:DatagramSocket, receive:Bool, size:Int = WINDOW_BUFFER_SIZE):Void {
 		var before:Int = receive ? socket.receiveBufferSize : socket.sendBufferSize;
-		if (before >= WINDOW_BUFFER_SIZE * 2) {
+		if (before >= size * 2) {
 			return;
 		}
-		__setBuffer(socket, receive, WINDOW_BUFFER_SIZE);
+		__setBuffer(socket, receive, size);
 		if ((receive ? socket.receiveBufferSize : socket.sendBufferSize) < before) {
 			// Asking lowered it: the default was more than the system grants
 			// on request. Back to it, asked for as read where that reads back
@@ -4048,6 +4048,26 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__outgoingQueue = __outgoingQueue.slice(__queueAt);
 			__queueAt = 0;
 		}
+		if (__onRoom != null && __queuedBytes < __roomBelow) {
+			final room = __onRoom;
+			__onRoom = null;
+			room();
+		}
+	}
+
+	// A sender pacing itself by `bufferedAmount` (an RPC session sending a
+	// large answer in pieces), told once the window has let enough out.
+	@:noCompletion private var __roomBelow:Int = 0;
+	@:noCompletion private var __onRoom:Null<Void->Void> = null;
+
+	/**
+		Has `room` called once `bufferedAmount` is under `below`, from the
+		pass that let it out: it should only ask to be run, not send from
+		inside the window's own accounting.
+	**/
+	@:noCompletion private function __whenQueueUnder(below:Int, room:Void->Void):Void {
+		__roomBelow = below;
+		__onRoom = room;
 	}
 
 	@:noCompletion private inline function __onConnectionFailed():Void {

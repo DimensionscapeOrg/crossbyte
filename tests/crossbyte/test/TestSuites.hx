@@ -268,6 +268,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		runner.addCase(new crossbyte.net.NetConnectionSchemeTest());
 		// Also in PortableSuite: on Node a child runtime's clock is not the
 		// application's.
 		runner.addCase(new crossbyte.net.NetConnectionClockTest());
@@ -549,6 +550,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCPeerCloseCodeTest());
 		runner.addCase(new crossbyte.rpc.RPCFrameTest());
 		runner.addCase(new crossbyte.rpc.RPCSignatureTest());
+		runner.addCase(new crossbyte.rpc.RPCMethodNamesTest());
+		runner.addCase(new crossbyte.rpc.RPCTypedSessionTest());
+		runner.addCase(new crossbyte.rpc.RPCCallControlTest());
+		runner.addCase(new crossbyte.rpc.RPCEdgesTest());
+		runner.addCase(new crossbyte.rpc.RPCRefusalTest());
+		runner.addCase(new crossbyte.rpc.RPCReliableStreamTest());
+		runner.addCase(new crossbyte.rpc.RPCChunkTest());
+		runner.addCase(new crossbyte.rpc.RPCOversizeTest());
 		runner.addCase(new crossbyte.rpc.RPCHelloTest());
 		runner.addCase(new crossbyte.rpc.RPCRuntimeCodecTest());
 		runner.addCase(new crossbyte.rpc.RPCPendingCallsTest());
@@ -561,11 +570,13 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCArgsTest());
 		runner.addCase(new crossbyte.rpc.RPCReceiverTest());
 		runner.addCase(new crossbyte.rpc.RPCLargeSurfaceTest());
+		runner.addCase(new crossbyte.rpc.RPCWideSurfaceTest());
 		// Real sockets pumped until something happens, which Node cannot do,
 		// so not in the portable suite.
 		runner.addCase(new crossbyte.rpc.RPCConnectionEndTest());
 		runner.addCase(new crossbyte.rpc.RPCDialTest());
 		runner.addCase(new crossbyte.rpc.RPCTransportTest());
+		runner.addCase(new crossbyte.rpc.RPCSlowPeerTest());
 	}
 
 	public static function addResources(runner:Runner):Void {

@@ -29,11 +29,25 @@ Needs `hxnodejs`. Every runtime shares Node's one thread, so a server spread ove
 processes instead (Node's `cluster`). `Argon2id` needs Node 24.7 or later. There are no database clients, since a
 blocking driver cannot run there. A socket keeps its buffers' storage when idle.
 
+## Browsers
+
+A plain `--js` build, without `hxnodejs`, runs in a page. Make the application with `Application`, as on any other
+target; the runtime runs on the page's own event loop. A page connects and cannot listen: a `Socket` is the page's
+WebSocket, so `NetConnection` takes `ws://` and `wss://` (and `tcp://`, the same thing), and its server is a
+`ServerWebSocket` or a `NetHost` made from a `ws://` or `wss://` URI. RPC, timers and events work as
+elsewhere. Files, UDP, reliable UDP, IPC, threads and databases are not there.
+
 ## The interpreter
 
 Runtimes take turns rather than run at once, so a spread server is served correctly and no faster. There is no UDP
 (`DatagramSocket.isSupported` is false), no secure random source, and no child processes: `NativeProcess` is not
 supported, since the interpreter's process calls hold every thread while they wait.
+
+**A `Float` that holds an `Int`.** The interpreter and Neko keep a `Float` given an `Int` (`var total:Float = 0`, or
+an `Int` passed for a `Float` argument) an `Int` at run time, and add two of them in 32 bits: two billion plus two
+billion is -294,967,296. Only a number written as a class field's initialiser (`var sent:Float = 0;`) is converted.
+Start a total from a float literal (`0.0`). `+ 0.0` and `* 1.0` convert only a value typed `Int`: on a `Float` the compiler drops them, so convert
+one with `/ 1`.
 
 ## HashLink and Neko
 

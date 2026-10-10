@@ -74,7 +74,8 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 				server.bind(endpoint.port, endpoint.address);
 				fromReliableDatagramServerSocket(server, onAccept, onDisconnect, onError);
 			default:
-				throw "Protocol error";
+				throw new crossbyte.errors.ArgumentError("NetHost cannot listen on " + uri
+					+ ": it takes tcp://, ws://, wss:// and rudp://. For local IPC, listen with a crossbyte.ipc.LocalConnection, one per peer.");
 		}
 
 		if (startListening) {

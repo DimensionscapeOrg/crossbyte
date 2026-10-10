@@ -44,6 +44,26 @@ class MetricsTest extends utest.Test {
 		Assert.equals(-2.0, connections.value());
 	}
 
+	/**
+		A counter reset, and a gauge set, from an Int still count past 2^31,
+		as byte counts do. eval and neko keep an Int put in a Float an Int,
+		and added the Int amounts to it in 32 bits: 4 GB read -294967296.
+	**/
+	public function testCountersAndGaugesCountPastTwoToTheThirtyOne():Void {
+		var step:Int = 2000000000;
+
+		var sent = metrics.counter("bytes_sent_total");
+		sent.reset();
+		sent.inc(step);
+		sent.inc(step);
+		Assert.equals(4000000000.0, sent.value());
+
+		var held = metrics.gauge("bytes_held");
+		held.set(step);
+		held.inc(step);
+		Assert.equals(4000000000.0, held.value());
+	}
+
 	public function testBoundGaugeSamplesProviderAndIgnoresWrites():Void {
 		var backing:Int = 3;
 		var poolSize = metrics.gaugeFn("db_pool_in_use", () -> backing);

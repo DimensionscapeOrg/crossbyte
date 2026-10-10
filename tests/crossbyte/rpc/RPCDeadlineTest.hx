@@ -121,6 +121,31 @@ class RPCDeadlineTest extends utest.Test {
 		Assert.equals(1, fixture.handler.afterCalls.length);
 	}
 
+	public function testTheDefaultReportOfAHandlerOutOfTimeSaysSoRatherThanThatItThrew():Void {
+		var link = LinkedConnection.pair();
+		var commands = new DeadlineCommands();
+		var client = new RPCSession<DeadlineCommands>(link.client, commands);
+		var server = new RPCSession(link.server, null, new DeadlineHandler());
+		server.handlerTimeout = 1000;
+		var logged:Array<String> = [];
+		crossbyte.utils.Logger.sink = line -> logged.push(line);
+		try {
+			commands.slow("t");
+			pump(1.25);
+		} catch (error:Dynamic) {
+			crossbyte.utils.Logger.sink = null;
+			throw error;
+		}
+		crossbyte.utils.Logger.sink = null;
+		var lines = logged.filter(line -> line.indexOf("RPC handler slow") >= 0);
+		Assert.equals(1, lines.length, "the handler running out of time was not reported once: " + logged.join(" | "));
+		if (lines.length == 1) {
+			Assert.isTrue(lines[0].indexOf("threw") < 0, 'reported as a throw: ${lines[0]}');
+			Assert.isTrue(lines[0].indexOf("did not answer in time") >= 0, 'not said to be out of time: ${lines[0]}');
+		}
+		client.close();
+	}
+
 	public function testARuntimeHandlerThatDoesNotAnswerInTimeIsAnsweredFor():Void {
 		var fixture = new Fixture();
 		fixture.server.handlerTimeout = 1000;
@@ -172,9 +197,9 @@ class RPCDeadlineTest extends utest.Test {
 		fixture.handler.pending.get("l").complete("answered");
 		Assert.isTrue(second.__deadline == crossbyte._internal.system.timer.TimerHandle.INVALID, "an answered call kept its deadline");
 		// Let go of at once, though a call made before it still waits.
-		Assert.equals(2, fixture.client.__deadlines.__live, "the queue still holds a call that was answered");
+		Assert.equals(2, fixture.client.__deadlines.length, "the queue still holds a call that was answered");
 		fixture.handler.pending.get("k").complete("answered too");
-		Assert.equals(1, fixture.client.__deadlines.__live);
+		Assert.equals(1, fixture.client.__deadlines.length);
 
 		pump(1.25);
 		Assert.equals("answered too", first.result);
@@ -268,6 +293,62 @@ class RPCDeadlineTest extends utest.Test {
 		Assert.equals(150, timedOut, "a call left waiting did not time out, or one answered did");
 	}
 
+	// ---- a deadline of a call's own, given before it goes ----
+
+	public function testWithTimeoutGivesTheNextCallADeadlineOfItsOwn():Void {
+		var fixture = new Fixture();
+		var receiver = new DeadlineReceiver();
+		var first:Int = fixture.commands.withTimeout(500).slowThen("aa", receiver);
+		var second:Int = fixture.commands.slowThen("ab", receiver);
+		var third:RPCResponse<String> = fixture.commands.withTimeout(1000).slow("ac");
+
+		pump(0.75);
+		Assert.same([first], receiver.timedOut, "a receiver call outlived the deadline withTimeout gave it, or another took it");
+		Assert.isFalse(third.completed, "a call failed before its own deadline");
+		pump(0.5);
+		Assert.isTrue(Std.isOfType(third.cause, RPCTimeoutError), "a future call outlived the deadline withTimeout gave it");
+		pump(2);
+		Assert.same([first], receiver.timedOut, "the call after one given a deadline took it too");
+		Assert.isTrue(second > first);
+	}
+
+	public function testWithTimeoutZeroLeavesTheNextCallNoDeadline():Void {
+		var fixture = new Fixture();
+		fixture.client.callTimeout = 500;
+		var none = fixture.commands.withTimeout(0).slow("ad");
+		var held = fixture.commands.slow("ae");
+
+		pump(0.75);
+		Assert.isFalse(none.completed, "a call given no deadline was held to the session's");
+		Assert.isTrue(Std.isOfType(held.cause, RPCTimeoutError));
+	}
+
+	public function testAOneWayCallTakesTheDeadlineItWasGiven():Void {
+		var fixture = new Fixture();
+		fixture.commands.withTimeout(500).note("one-way");
+		var after = fixture.commands.slow("af");
+
+		pump(0.75);
+		Assert.isFalse(after.completed, "the deadline given to a one-way call went to the call after it");
+	}
+
+	public function testDeadlinesOfEveryLengthFallDueEachAtItsOwnTime():Void {
+		var fixture = new Fixture();
+		var failed:Array<String> = [];
+		fixture.commands.withTimeout(1500).slow("ag").then(_ -> {}, _ -> failed.push("1500"));
+		fixture.commands.withTimeout(500).slow("ah").then(_ -> {}, _ -> failed.push("500"));
+		fixture.commands.slow("ai").timeout(1000).then(_ -> {}, _ -> failed.push("1000"));
+		Assert.equals(3, fixture.client.__deadlines.length, "a deadline did not wait in the session's heap");
+
+		pump(0.75);
+		Assert.same(["500"], failed);
+		pump(0.5);
+		Assert.same(["500", "1000"], failed);
+		pump(0.5);
+		Assert.same(["500", "1000", "1500"], failed);
+		Assert.equals(0, fixture.client.__deadlines.length);
+	}
+
 	// ---- and one for its handlerTimeout ----
 
 	public function testHandlerDeadlinesFallDueInOrderAndOneAnsweredLeaves():Void {
@@ -336,6 +417,22 @@ private class DeadlineCommands extends RPCCommands {
 	@:rpc public function slow(key:String):RPCResponse<String> {}
 
 	@:rpc public function quick(value:Int):RPCResponse<Int> {}
+
+	@:rpc public function note(text:String):Void {}
+}
+
+private class DeadlineReceiver implements RPCStringReceiver {
+	public final timedOut:Array<Int> = [];
+
+	public function new() {}
+
+	public function onString(call:Int, value:String):Void {}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		if (failure == TimedOut) {
+			timedOut.push(call);
+		}
+	}
 }
 
 private class DeadlineHandler extends RPCHandler {
@@ -353,6 +450,8 @@ private class DeadlineHandler extends RPCHandler {
 	@:rpc public function quick(value:Int):Int {
 		return value;
 	}
+
+	@:rpc public function note(text:String):Void {}
 
 	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
 		if (method == "slow") {

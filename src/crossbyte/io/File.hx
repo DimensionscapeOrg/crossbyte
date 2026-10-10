@@ -1139,7 +1139,8 @@ final class File extends EventDispatcher {
 		};
 		var block:Bytes = Bytes.alloc(__COPY_BLOCK);
 		var stopped:Bool = false;
-		var copied:Float = 0;
+		// 0.0: from 0, eval and neko would add the Int reads in 32 bits.
+		var copied:Float = 0.0;
 
 		try {
 			while (true) {

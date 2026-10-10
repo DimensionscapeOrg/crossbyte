@@ -79,11 +79,15 @@ class Gauge {
 		#if cpp
 		AtomicFloats.store(__cells, 0, value);
 		#elseif target.threaded
+		// Divided by 1, which eval and neko always answer in Float: they keep
+		// an Int handed in as a Float an Int, and went on adding Int amounts to
+		// it in 32 bits, negative past 2^31. `+ 0.0` does nothing here: on a
+		// Float the compiler drops it.
 		__lock.acquire();
-		__value = value;
+		__value = value / 1;
 		__lock.release();
 		#else
-		__value = value;
+		__value = value / 1;
 		#end
 	}
 

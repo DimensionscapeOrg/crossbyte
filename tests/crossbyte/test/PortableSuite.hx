@@ -141,6 +141,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// How a NetConnection ends, told once, the same over each transport.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// A URI a connection cannot use, said with what would work; ws:// in a page.
+		runner.addCase(new crossbyte.net.NetConnectionSchemeTest());
 		// Whose clock a NetConnection's stamps are, in a child runtime.
 		runner.addCase(new crossbyte.net.NetConnectionClockTest());
 		// Whose timers a child runtime's sessions arm in a socket's callback.
@@ -306,6 +308,13 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCReadyAgainTest());
 		runner.addCase(new crossbyte.rpc.RPCFrameTest());
 		runner.addCase(new crossbyte.rpc.RPCSignatureTest());
+		runner.addCase(new crossbyte.rpc.RPCMethodNamesTest());
+		runner.addCase(new crossbyte.rpc.RPCTypedSessionTest());
+		runner.addCase(new crossbyte.rpc.RPCCallControlTest());
+		runner.addCase(new crossbyte.rpc.RPCEdgesTest());
+		runner.addCase(new crossbyte.rpc.RPCRefusalTest());
+		runner.addCase(new crossbyte.rpc.RPCReliableStreamTest());
+		runner.addCase(new crossbyte.rpc.RPCChunkTest());
 		runner.addCase(new crossbyte.rpc.RPCHelloTest());
 		runner.addCase(new crossbyte.rpc.RPCRuntimeCodecTest());
 		runner.addCase(new crossbyte.rpc.RPCPendingCallsTest());
@@ -318,6 +327,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCArgsTest());
 		runner.addCase(new crossbyte.rpc.RPCReceiverTest());
 		runner.addCase(new crossbyte.rpc.RPCLargeSurfaceTest());
+		runner.addCase(new crossbyte.rpc.RPCWideSurfaceTest());
 		// A WebSocket's close reaching a NetConnection, which a page does not
 		// have; on Node it does.
 		#if !(js && !nodejs)

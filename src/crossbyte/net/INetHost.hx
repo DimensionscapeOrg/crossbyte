@@ -162,6 +162,9 @@ interface INetHost {
 
 	/** Starts accepting incoming connections. */
 	public function listen():Void;
-	/** Stops the listener and closes the host. */
+	/**
+	 * Stops the listener and closes the host. The connections it accepted stay
+	 * open: close each, as a server that is stopping does.
+	 */
 	public function close():Void;
 }

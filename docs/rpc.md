@@ -112,6 +112,42 @@ The session takes over the connection's `onData`; leave it to the session.
 Both ends can have both: a session with commands and a handler calls the
 other side and answers it on one connection.
 
+## Over each transport
+
+A session works the same over every transport; only how the connection is
+made differs:
+
+| Transport | A client | A server |
+|---|---|---|
+| TCP | `new NetConnection("tcp://host:4000")` | `new NetHost("tcp://0.0.0.0:4000", ...)` |
+| TLS over TCP | a `Socket` with `secure` set, connected, then `NetConnection.fromSocket(socket)` | `new ServerSocket(true)` with `setCertificate`, then `NetHost.fromServerSocket(server, ...)` |
+| WebSocket | `"ws://host:8080/rpc"`, or `"wss://..."` | `new NetHost("ws://0.0.0.0:8080", ...)`, or `"wss://..."` with its `cert` |
+| reliable UDP | `"rudp://host:7777"` | `new NetHost("rudp://0.0.0.0:7777", ...)` |
+| reliable UDP, encrypted | a `ReliableDatagramSocket` with its `encryptionKey`, then `NetConnection.fromReliableDatagramSocket` | a `ReliableDatagramServerSocket` with `encryptionKeyFor`, then `NetHost.fromReliableDatagramServerSocket` |
+| local IPC (native only) | `"local://name"` | a `LocalConnection` that listens on the name, then `NetConnection.fromLocalConnection` |
+
+In a browser a connection is the page's own WebSocket, so a page dials
+`ws://` or `wss://` (a `NetHost` made from one of those is its server) and
+cannot listen. Over reliable UDP every frame goes as one reliable, ordered
+message, split over datagrams when it is larger than one. A `NetConnection`
+or `NetHost` given a URI it cannot use throws an `ArgumentError` naming the
+URI and the schemes it takes.
+
+A local IPC listener serves one peer at a time on its name, and takes the
+next once that one has gone, so one session over it answers each in turn
+(its hello is said again to each). Peers that must be served at once need a
+name each.
+
+```haxe
+import crossbyte.ipc.LocalConnection;
+
+function serveLocally(name:String, handler:ChatHandler):RPCSession<Dynamic> {
+	var listener = new LocalConnection();
+	listener.listen(name);
+	return new RPCSession(NetConnection.fromLocalConnection(listener), null, handler);
+}
+```
+
 ## One handler, many clients
 
 A handler can serve any number of sessions, and usually should: a server's
@@ -121,9 +157,62 @@ on. While a method runs, the handler's `session` is the session whose call
 it is, so a method can tell its callers apart:
 
 - `session.data` holds whatever the application keeps per client (a
-  player, a login), set when the session is made;
+  player, a login): a field of the session's, set when it is made or later;
 - `session.commands` calls that client back, if the session has commands;
 - `session.connection` is its connection.
+
+A handler that calls its clients back names the kind of session it serves,
+`RPCHandler<C, D>`, with the class of their commands and the type of their
+`data`; its `session` is then typed, so `session.commands` calls the client
+through its checked stubs and `session.data` is the application's own type.
+A server keeps the sessions it calls, and drops each as its connection
+closes:
+
+```haxe
+interface ListenerContract {
+	function said(room:String, text:String):Void;
+}
+
+@:rpcContract(ListenerContract)
+class ListenerCommands extends RPCCommands {
+	public function new() {}
+}
+
+class RoomServer extends RPCHandler<ListenerCommands, String> implements ChatContract {
+	final clients:Array<RPCSession<ListenerCommands, String>> = [];
+
+	public function new() {}
+
+	// Given to a NetHost as what it does with each connection it accepts.
+	public function accept(connection:crossbyte.net.NetConnection):Void {
+		final client = new RPCSession<ListenerCommands, String>(connection, new ListenerCommands(), this);
+		client.data = "guest";
+		clients.push(client);
+		connection.onClose = _ -> clients.remove(client);
+	}
+
+	public function say(room:String, text:String):Void {
+		// The caller's session, typed: the one this call came in on.
+		for (client in clients) {
+			if (client != session) {
+				client.commands.said(room, '${session.data}: $text');
+			}
+		}
+	}
+
+	public function join(room:String):Int {
+		return clients.length;
+	}
+}
+```
+
+A session whose commands are of another class refuses such a handler with
+an `ArgumentError`, as it is given it. A handler that names no kind,
+`extends RPCHandler`, serves sessions of any kind, and its `session` is an
+`RPCSession<Dynamic, Dynamic>`, through which a call is not checked.
+
+Each of those calls is framed for its own connection. A `NetHost` also
+says which connection went, through its `onDisconnect`.
 
 Between calls `session` is `null`. A method that answers later, with a
 `Future` (below), is answered on its caller's connection whenever that
@@ -190,6 +279,8 @@ class Lobby implements RPCIntReceiver {
 		switch (failure) {
 			case TimedOut:
 				trace("no answer in time");
+			case Busy:
+				trace("the server is busy; try again later");
 			case Refused(message):
 				trace('refused: $message');
 			case _:
@@ -221,10 +312,46 @@ answers with its type, and a class can implement several of these. The
 answer, so it can tell its calls apart.
 
 Every call is told exactly once, through its answer or through `onFailure`,
-which says why with an `RPCFailure`: `TimedOut` past the session's
-`callTimeout`, `Cancelled`, `Stopped`, `Disconnected(reason)`, `Refused(message)`
-for an `RPCError` from the other side, `Unsent(message)` for a call that could
-not go, or `Unreadable(message)`. A call that cannot go at all (its connection
+which says why with an `RPCFailure`: `TimedOut` past its deadline (the
+session's `callTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`,
+`Disconnected(reason)`, `Unsent(message)` for a call that could not go, or
+`Unreadable(message)` for an answer this side could not read. When the other
+side refused the call, the failure says what refused it:
+
+| failure | the other side | its message |
+|---|---|---|
+| `Refused(message)` | its handler, with an `RPCError` | the error's, word for word |
+| `UnknownMethod` | has no method for the call | `RPCError.UNKNOWN_METHOD_MESSAGE` |
+| `UnreadableArguments` | could not read the call's arguments | `RPCError.UNREADABLE_MESSAGE` |
+| `Busy` | had `maxCallsWaiting` calls waiting | `RPCError.BUSY_MESSAGE` |
+| `NoHandler` | has nothing to answer calls | `RPCError.NO_HANDLER_MESSAGE` |
+| `HandlerTimedOut` | its handler ran past `handlerTimeout` | `RPCError.TIMEOUT_MESSAGE` |
+| `HandlerFailed` | its handler threw something else | `RPCError.INTERNAL_MESSAGE` |
+| `TooLarge` | could not take the call, or its answer, for its size | which limit (see "When a handler fails") |
+
+What refused it decides the case, not the words: a handler that throws an
+`RPCError` with the words of `RPCError.BUSY_MESSAGE` is `Refused`. A handler
+refuses with one of these cases itself, as a gRPC handler answers with a
+status code, through `RPCError.refusal`: thrown, returned from `beforeCall`, or
+failing its future.
+
+```haxe
+class LimitedChatHandler extends ChatHandler {
+	public var budget:Int = 100;
+
+	public function new() {
+		super();
+	}
+
+	override public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
+		// The caller is told Busy, its future's error "Slow down.".
+		return budget-- > 0 ? null : RPCError.refusal(Busy, "Slow down.");
+	}
+}
+```
+ A
+refusal the other side's session made is a single value, and allocates
+nothing to be told. A call that cannot go at all (its connection
 has ended, or it is over `maxFrameLength`) is told before its `...Then`
 method returns. A receiver that throws is logged, and nothing else is
 affected.
@@ -232,6 +359,27 @@ affected.
 `session.cancelCall(call)` stops waiting for a call: its receiver is told
 `Cancelled`, and its answer is dropped when it comes. It works for a future's
 `requestId` too.
+
+A call made with a future says why it failed the same way: its `failure` is
+the `RPCFailure` a receiver would have been told, worked out as it is read
+(`null` while it waits and once it has succeeded), so a caller can tell a
+call that timed out from one that was refused, cancelled or cut off without
+reading the words of its `error`:
+
+```haxe
+// Given commands:ChatCommands.
+final joining = commands.join("lobby");
+joining.catchError(_ -> switch (joining.failure) {
+	case Disconnected(reason): trace('the server went: $reason');
+	case UnknownMethod: trace('the server is of another version');
+	case Refused(message): trace('refused: $message');
+	case other: trace('failed: $other');
+});
+```
+
+A handler that answers with a call the other side refused passes the
+refusal on as it came: a hub whose backend was busy tells its own caller
+`Busy`.
 
 The receivers are interfaces rather than callbacks for a reason: natively a
 function value passes its argument as an object, so an `Int->Void` callback
@@ -509,9 +657,11 @@ class RoomHandler extends RPCHandler {
 }
 ```
 
-The caller's `RPCResponse` then fails with `"A room needs a name."`. Anything
-else a handler throws (a null access, a database error, a bug) is the
-handler failing, and the caller is told only `RPCError.INTERNAL_MESSAGE`, so a
+The caller's `RPCResponse` then fails with `"A room needs a name."`, and its
+`failure` is `Refused("A room needs a name.")`. Anything
+else a handler throws (a database error, a bug) is the handler failing, and the
+caller is told only `RPCError.INTERNAL_MESSAGE` (its `failure` is
+`HandlerFailed`), so a
 stack trace or a file path never crosses to whoever made the call. The error
 itself goes to the session's `onHandlerError`, which logs it unless you
 replace it. It arrives as a `haxe.Exception`: what was thrown, if it was one,
@@ -527,6 +677,12 @@ session.onHandlerError = (op, method, error) -> {
 
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
+
+A null access is a throw on the JVM, Node, the interpreter, HashLink and neko,
+but natively it is not: a native build reads through the null and the process
+stops, unless it was built with `-D HXCPP_CHECK_POINTER`, which makes it a
+throw like any other at some cost to every field access. A native handler
+checks for null itself.
 
 A call this side cannot take is answered or passed over, and the connection
 carries on. A request for a method its handler has not got (from a peer
@@ -551,16 +707,32 @@ session.onUnreadableFrame = (op, requestId, reason) -> {
 };
 ```
 
-What does end a connection is a frame whose length cannot be trusted: shorter
-than any frame, or longer than the session's `maxFrameLength` (8 MiB unless
-set). Nothing after it would line up, so the session closes the connection,
-and every call still waiting on it fails.
+A frame larger than this side takes (over its `maxFrameLength`, 8 MiB unless
+set, or more than its connection holds to read whole, a TCP socket's
+`maxInputBufferSize`, 16 MiB unless set) is refused as its head arrives and
+read past as the rest does, and the connection carries on: a request is
+answered `TooLarge`, with a message naming the limit; the call an answer was
+for fails `TooLarge`; a one-way call is dropped; and `onUnreadableFrame` is
+told. What does end a connection is a frame whose length cannot be trusted:
+shorter than any frame, or one too large whose head is neither a call nor an
+answer. Nothing after it would line up, so the session closes the
+connection, and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
 sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
-`cause`, a one-way call throws one, and an answer too long is not sent: its
-caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
-Both ends of a connection should agree on the limit.
+`cause` (`Unsent`), a one-way call throws one, and an answer too long is not
+sent: its caller is answered `TooLarge`, and `onHandlerError` is told. Both
+ends of a connection should agree on the limit.
+
+A frame has to fit its transport too. Over a WebSocket a large frame goes as
+messages of 64 KiB, which the other side reads as one stream, so its peer's
+`maxMessageSize` (1 MiB unless set) is no limit on it as long as it is 64 KiB
+or more. Over reliable UDP a call larger than what the session may hold for
+its window (`maxOutputBufferSize`, 256 KB unless set) fails as it is made
+(`Unsent`), and so does one over local IPC larger than its 8 MiB message,
+where either would have ended the connection or gone nowhere; an answer that
+large goes in pieces over reliable UDP (see "Large answers"), and over local
+IPC its caller is answered `TooLarge`.
 
 A request to a session with no handler to answer it (one with only commands,
 calling out) is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
@@ -768,6 +940,13 @@ class LobbyCommands extends PresenceCommands {
 
 Hooks overridden in a shared base handler apply to every handler built on it.
 
+Splitting a surface into parts this way is also how a very large one builds
+for the jvm, where a class can hold about 640 methods and variables of its
+own: a commands class takes two for each request method (`join` and
+`joinThen`) and one for each one-way method, and a handler one for each
+method. Past that, the build fails saying so; split the contract, and its
+commands classes and handlers extend each other a part each.
+
 ### What names a call
 
 Each call is named on the wire by its *op*, a 32-bit hash (FNV-1a, as
@@ -965,6 +1144,40 @@ with an `IllegalOperationError`. A one-way call on a connection that has ended
 is dropped, as a one-way call's fate always is; one through commands with no
 session throws.
 
+A peer that sends calls and never reads their answers would make this side
+hold every answer. Over TCP and WebSocket, once more than the session's
+`maxOutputPending` (16 MiB unless set) waits unsent for its peer, the session
+takes the peer to have stopped reading and closes the connection, its reason
+saying so; reliable UDP and local IPC bound what waits themselves, and the
+pieces of large answers waiting count on every transport.
+
+### Large answers
+
+An answer longer than the session's `chunkLength` (64 KiB unless set) goes in
+pieces of that length, between the frames sent while it goes, as HTTP/2's
+streams interleave: a small call made just after a large one is answered
+without waiting for the whole of it. Natively over loopback TCP, while a 64 MB
+answer was in flight a small call took 3 ms (p50) and 15 ms (p99) where it
+took 56 and 98, and the large answer itself went as fast (850 MB/s against
+700); with an 8 MB answer, 1.6 and 6.6 ms where it took 11 and 27. The pieces go as the connection takes them: what it holds unsent is
+kept under four pieces, so a frame behind a large answer waits for at most
+those, and what waits behind them is the session's, counted toward
+`maxOutputPending`. Up to four answers go at once, a piece each in turn, and
+the rest wait their turn.
+
+Calls never go in pieces, so they arrive in the order they were made. An
+answer in pieces is complete when its last piece is in, so a frame sent after
+it can arrive before it does: a notification sent after a large answer can be
+heard before that answer. An application that needs every frame in the order
+it was sent sets `chunkLength` to `0`, and every answer goes whole.
+
+Pieces go over TCP, WebSocket and reliable UDP, to a peer whose hello says it
+reads them (every 1.0 session's does); to any other an answer goes whole.
+Each answer in pieces counts toward the reader's `maxFrameLength`, which it
+learns from the first piece, and the reader holds no more than a few times
+what has arrived of it. An answer that is one `Bytes` is put together in that
+`Bytes` itself, so its reader holds it once.
+
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller
 can tell a peer that has gone from a peer that said no. Over a WebSocket the
@@ -977,7 +1190,9 @@ connection ended with no code known.
 Every session says hello as its connection starts (at once on a connection
 that is up already, as an accepted one is, or as one becomes ready), with the
 protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
-capabilities it has (none are defined in 1.0), and a fingerprint of the
+capabilities it has (in 1.0, reading a call's deadline and a cancel, see
+"The handler's side of a deadline", and reading answers in pieces, see
+"Large answers"), and a fingerprint of the
 methods its commands call and one of those its handler answers. The hello goes
 out ahead of the session's calls and nothing waits for it, so it costs no
 round trip. The peer's sets `peerVersion`, `peerCapabilities`,
@@ -999,9 +1214,11 @@ session.onHello = () -> {
 };
 ```
 
-A feature added after 1.0 (a new kind of frame or of value, compression)
-is used towards a peer only once its hello has declared it, so that a 1.0
-session and a later one keep understanding each other.
+A feature (a new kind of frame or of value, compression) is used towards a
+peer only once its hello has declared it, so that a 1.0 session and a later
+one keep understanding each other. Calls made before the peer's hello has
+arrived go without what it has not yet declared: a client's first calls,
+made as its connection comes up, carry no deadline to the server.
 
 ## A client that comes back
 
@@ -1053,14 +1270,22 @@ joining.catchError(message -> {
 });
 ```
 
-`timeout(0)` leaves a call no deadline. A call without one arms nothing and
-costs nothing for it. The calls under `callTimeout` fall due in the order they
-were made, so they wait in one queue a session, with one timer for all of them,
-and a call answered leaves it at once: a deadline costs a call no allocation,
-and no timer of its own, of which a runtime holds at most 524,288 at once. A
-call given its own with `timeout` holds a timer of its own until it is
-answered, as does one made after `callTimeout` was lowered, which would fall due
-before the calls ahead of it.
+`timeout(0)` leaves a call no deadline. A call made with a receiver has no
+`RPCResponse` to give one to, so a deadline of its own is given before it,
+through the commands: `withTimeout(ms)` gives the next call made through
+them its deadline, in place of `callTimeout` (`0` for none), and returns the
+commands, so the call follows. It works for a future's call as well.
+
+```haxe
+// Given commands:ChatCommands.
+commands.withTimeout(2000).joinThen("lobby", new Lobby());
+```
+
+A call without a deadline arms nothing and costs nothing for it. Every
+deadline a session's calls have, whatever its length, waits in one heap with
+one timer for all of them, and a call answered leaves it at once: a deadline
+costs a call no allocation, and no timer of its own, of which a runtime holds
+at most 524,288 at once.
 
 A handler can be held to one as well. `handlerTimeout` is how long a call its
 handler answers with a `Future` may wait for that future: past it the caller is
@@ -1078,3 +1303,114 @@ session.handlerTimeout = 10000;
 An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
 timed out (as the hub above answers with an instance host's answer) tells
 its own caller that it timed out, and reports it on its side too.
+
+### The handler's side of a deadline
+
+A call's deadline, given before it goes (`callTimeout`, or `withTimeout`),
+goes with it, and a call its caller stops waiting for (cancelled with
+`cancelCall`, or past a deadline given with `timeout` after it went) is
+cancelled on the other side as well, as gRPC's are. A handler sees both
+through `currentCall`, an `RPCCall`: its `deadline` and `timeLeft`, and,
+for a call it answers later, `cancelled`, `reason` and `onCancel`:
+
+```haxe
+import crossbyte.rpc.RPCCall;
+
+class ReportHandler extends RPCHandler {
+	public function new() {}
+
+	@:rpc public function report(days:Int):Future<String> {
+		final call:RPCCall = currentCall;
+		final done = new Completer<String>();
+		// Work in steps, and stop once the caller has stopped waiting.
+		var step = 0;
+		var timer = 0;
+		timer = crossbyte.Timer.setInterval(0.01, 0.01, () -> {
+			if (call.cancelled || ++step == days) {
+				crossbyte.Timer.clear(timer);
+				done.complete('$step days');
+			}
+		});
+		call.onCancel = () -> trace('report stopped: ${call.reason}');
+		return done.future;
+	}
+}
+```
+
+A call answered later ends early when its caller cancels it or its
+caller's deadline passes (nothing is answered, since nobody waits, and
+nothing is reported), when `handlerTimeout` passes first (its caller is
+answered `RPCError.TIMEOUT_MESSAGE`, as above), or when its connection ends.
+Then `cancelled` is `true`, `onCancel` is called once, the call stops counting
+against `maxCallsWaiting`, `afterCall` is told (with
+`RPCError.CANCELLED_MESSAGE` or an `RPCTimeoutError`; not for a connection
+ending, where it is told as the future completes, as before), and the future's
+answer goes nowhere. A runtime handler reads `session.currentCall`.
+
+`currentCall` is made the first time it is read in a call: a handler that
+never reads it costs nothing for it, and a deadline costs the call a few
+bytes on the wire and nothing else. A call answered later whose handler never
+read `currentCall`, with no deadline of its caller's and no `handlerTimeout`,
+has nothing to end it early, and waits for its future alone, as cheaply as
+before: a cancel for it finds nothing to stop, and its answer, sent, is
+dropped by its caller. A deadline given with `timeout` after a
+call has gone stays on the caller's side: its handler does not see it, and
+is told only once it passes. One that went with the call binds the handler
+as it was sent, so a longer one given with `timeout` afterwards waits for an
+answer that, past the first, does not come.
+
+## On the wire
+
+What a session sends, for a reader writing a peer of their own, or reading a
+capture. Every frame is its length and then that many bytes, little-endian:
+
+```
+u32      length       of what follows
+u8       flags
+i32      op           the call's op, a runtime number, or a piece's stream
+varuint  request id   on a request and an answer; none on a one-way call
+...                   the arguments, the answer, or an error's message
+```
+
+| flags | the frame |
+|---|---|
+| `0x00` | a one-way call |
+| `0x01` | a request; with `0x10`, the caller's deadline follows the request id, a varuint of milliseconds |
+| `0x02` | an answer |
+| `0x06` | an error answer: the message (a varuint length, then UTF-8), then a varuint code of what refused the call |
+| `0x08` | with any of these, the runtime lane: values carry a tag each |
+| `0x20` | a cancel: the caller has stopped waiting for the call it names (op and request id) |
+| `0x40` | a piece of an answer, `0xC0` its last; see below |
+
+The codes after an error answer's message say what refused the call, as
+`RPCFailure` does: none or `0` its handler (`Refused`), `1` its handler
+failing (`HandlerFailed`), `2` no such method (`UnknownMethod`), `3`
+arguments that did not read (`UnreadableArguments`), `4` too many calls
+waiting (`Busy`), `5` nothing to answer calls (`NoHandler`), `6` its handler
+out of time (`HandlerTimedOut`), `7` larger than its reader takes (`TooLarge`). A code a reader does not know is the
+handler's refusal, with its message.
+
+A ping is a one-way call to op `0x165DF089` with no arguments, answered with
+a pong: an answer under request id 0. The hello is an answer under request id
+0 for op `0xADD0D102`: varuints of the protocol version (1) and the
+capabilities (`1` reads a request's deadline and a cancel, `2` reads answers
+in pieces), then two `i32` fingerprints, of the methods its commands call and
+its handler answers. A reader takes what it knows of a hello and passes over
+the rest, and a frame of a kind it does not know is passed over too: every
+frame says where the next begins.
+
+A piece of an answer:
+
+```
+u32      length       5 + the rest
+u8       flags        0x40, or 0xC0 on the last piece
+i32      stream       which answer it is a piece of
+varuint  total        on the first piece only: the answer's frame length
+...      the piece    the answer's frame after its length, in order
+```
+
+The pieces of one answer, joined, are its frame after its length, `total`
+bytes in all: the first piece carries its flags and op, and the rest follow.
+At most four answers go in pieces at once, one way on a connection; more,
+pieces past `total`, an answer ending short of it, or a first piece that does
+not begin an answer, end the connection.

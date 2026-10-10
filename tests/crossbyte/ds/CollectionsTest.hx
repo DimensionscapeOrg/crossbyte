@@ -486,7 +486,7 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		A method reached through `Reflect` and given with its object as
-		`thisObject` -- ActionScript's `forEach(obj.method, obj)` -- gets the
+		`thisObject`: ActionScript's `forEach(obj.method, obj)`, gets the
 		arguments it takes, like any other callback. It is the one kind whose
 		arity cannot be read off its type.
 
@@ -579,7 +579,7 @@ class CollectionsTest extends utest.Test {
 
 	/**
 		`splice` counts a negative `startIndex` back from the end, and inserts
-		what it was given at that same place -- not at the index the removal
+		what it was given at that same place, not at the index the removal
 		left behind. ActionScript's `[a,b,c,d,e].splice(-2, 2, "X")` leaves
 		`a,b,c,X`.
 	**/

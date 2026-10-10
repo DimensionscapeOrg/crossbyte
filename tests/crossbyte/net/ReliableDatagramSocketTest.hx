@@ -17,6 +17,48 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 @:access(crossbyte.net.ReliableDatagramSocket)
 class ReliableDatagramSocketTest extends utest.Test {
+	/**
+		A server's one socket, which every session's datagrams arrive on,
+		reads a share for each session in a pass (see
+		`DatagramSocketTest.testASocketReadForManyPeersTakesAShareForEachInAPass`):
+		eight a session past the 1,024 one peer gets, following the sessions
+		as they come and go.
+	**/
+	public function testAServersSocketReadsAShareForEachSession():Void {
+		if (!requireDatagramSupport()) return;
+		var server = new ReliableDatagramServerSocket();
+		var clients:Array<ReliableDatagramSocket> = [];
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			pumpUntil(() -> server.localPort != 0, 2.0);
+			Assert.equals(1024, @:privateAccess server.__socket.__readsPerPass, "a server with no sessions");
+			for (_ in 0...200) {
+				var client = new ReliableDatagramSocket();
+				client.connect("127.0.0.1", server.localPort);
+				clients.push(client);
+			}
+			pumpUntil(() -> server.__sessionList.length == 200, 10.0);
+			Assert.equals(200, server.__sessionList.length, "not every session was taken");
+			Assert.equals(200 * 8, @:privateAccess server.__socket.__readsPerPass, "200 sessions' share");
+			for (i in 0...150) {
+				clients[i].abort();
+			}
+			pumpUntil(() -> server.__sessionList.length <= 50, 10.0);
+			Assert.equals(1024, @:privateAccess server.__socket.__readsPerPass, "50 sessions' share is under one peer's");
+		} catch (e:Dynamic) {
+			for (client in clients) {
+				closeQuietly(client);
+			}
+			server.close();
+			throw e;
+		}
+		for (client in clients) {
+			closeQuietly(client);
+		}
+		server.close();
+	}
+
 	public function testAServerLearnsWhereItIsReachable():Void {
 		if (!requireDatagramSupport()) return;
 		if (!requireDiscovery()) return;
@@ -865,6 +907,94 @@ class ReliableDatagramSocketTest extends utest.Test {
 			Assert.fail(Std.string(e));
 		}
 		socket.close();
+	}
+
+	public function testAServerAsksForAReceiveBufferForAllItsSessions():Void {
+		if (!requireDatagramSupport() || !DatagramSocket.bufferSizeSupported) {
+			Assert.pass();
+			return;
+		}
+		// 7 MiB, as QUIC servers ask: every session reads from the server's
+		// one socket. What this system grants a socket that asks for it, all
+		// of it on Windows, net.core.rmem_max's worth on Linux.
+		var wanted = 7 << 20;
+		var plain = new DatagramSocket();
+		plain.receiveBufferSize = wanted;
+		var granted = plain.receiveBufferSize;
+		plain.close();
+
+		var server = new ReliableDatagramServerSocket();
+		try {
+			Assert.isTrue(server.receiveBufferSize >= granted, 'a server read back ${server.receiveBufferSize} where $granted is granted');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		closeServerQuietly(server);
+	}
+
+	public function testAServerGrantedLessThanItAskedSaysSoOnceNamingTheLimit():Void {
+		var told:Array<crossbyte.utils.LogRecord> = [];
+		var before = crossbyte.utils.Logger.recordSink;
+		var wasTold:Bool = @:privateAccess ReliableDatagramServerSocket.__toldShortBuffer;
+		@:privateAccess ReliableDatagramServerSocket.__toldShortBuffer = false;
+		crossbyte.utils.Logger.recordSink = record -> told.push(record);
+		try {
+			var said = @:privateAccess ReliableDatagramServerSocket.__tellShortBuffer(4 << 20, 4000);
+			var again = @:privateAccess ReliableDatagramServerSocket.__tellShortBuffer(1 << 20, 4001);
+			Assert.isTrue(said, "a server granted 4 MiB of 7 did not say so");
+			Assert.isFalse(again, "a second server said so again");
+			Assert.equals(1, told.length);
+			if (told.length > 0) {
+				Assert.equals("net.rudp", told[0].category);
+				Assert.stringContains("4096 KiB", told[0].message);
+				Assert.stringContains("receiveBufferSize", told[0].message);
+				#if (sys || nodejs)
+				if (Sys.systemName() == "Linux") {
+					Assert.stringContains("net.core.rmem_max", told[0].message);
+				}
+				#end
+			}
+			// Granted all of it, or a size not known: nothing to say.
+			@:privateAccess ReliableDatagramServerSocket.__toldShortBuffer = false;
+			Assert.isFalse(@:privateAccess ReliableDatagramServerSocket.__tellShortBuffer(ReliableDatagramServerSocket.RECEIVE_BUFFER_SIZE, 4002));
+			Assert.isFalse(@:privateAccess ReliableDatagramServerSocket.__tellShortBuffer(0, 4003));
+			Assert.equals(1, told.length);
+			// Linux reads back twice what it keeps.
+			#if (sys || nodejs)
+			var kept = @:privateAccess ReliableDatagramServerSocket.__kept(8 << 20);
+			Assert.equals(Sys.systemName() == "Linux" ? 4 << 20 : 8 << 20, kept);
+			#end
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		crossbyte.utils.Logger.recordSink = before;
+		@:privateAccess ReliableDatagramServerSocket.__toldShortBuffer = wasTold;
+	}
+
+	public function testAReceiveBufferSetOnAServerIsKeptAndNotToldOf():Void {
+		if (!requireDatagramSupport() || !DatagramSocket.bufferSizeSupported) {
+			Assert.pass();
+			return;
+		}
+		var told:Array<crossbyte.utils.LogRecord> = [];
+		var before = crossbyte.utils.Logger.recordSink;
+		var wasTold:Bool = @:privateAccess ReliableDatagramServerSocket.__toldShortBuffer;
+		@:privateAccess ReliableDatagramServerSocket.__toldShortBuffer = false;
+		crossbyte.utils.Logger.recordSink = record -> told.push(record);
+		var server = new ReliableDatagramServerSocket();
+		try {
+			var smaller = 96 * 1024;
+			server.receiveBufferSize = smaller;
+			server.bind(0, "127.0.0.1");
+			var read = server.receiveBufferSize;
+			Assert.isTrue(read >= smaller && read <= smaller * 2, 'set to $smaller, read back $read once bound');
+			Assert.equals(0, told.length, "a server whose buffer was chosen said it was granted less");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		crossbyte.utils.Logger.recordSink = before;
+		@:privateAccess ReliableDatagramServerSocket.__toldShortBuffer = wasTold;
+		closeServerQuietly(server);
 	}
 
 	public function testARealSessionMeasuresItsRoundTrip():Void {

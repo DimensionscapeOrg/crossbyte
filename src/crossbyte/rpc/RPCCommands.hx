@@ -62,6 +62,37 @@ abstract class RPCCommands {
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
+	// The deadline `withTimeout` gave the next call, or -1 for none given;
+	// and the one the request being made waits under, read as it is framed.
+	@:noCompletion private var __nextTimeout:Int = -1;
+	@:noCompletion private var __callTimeout:Int = 0;
+	@:noCompletion private var __callTimeoutSent:Bool = false;
+
+	/**
+		Gives the next call made through these commands a deadline of its
+		own, `milliseconds` from when it is made, in place of its session's
+		`RPCSession.callTimeout`; `0` gives it none. Returns these commands,
+		so the call follows:
+
+		```haxe
+		// Given commands:PlayerCommands, receiver:crossbyte.rpc.RPCStringReceiver.
+		commands.withTimeout(2000).getNameThen(7, receiver);
+		commands.withTimeout(500).getName(7).then(name -> trace(name));
+		```
+
+		Past it, a call made with a receiver is told `RPCFailure.TimedOut`, and
+		an `RPCResponse` fails with an `RPCTimeoutError` as its `cause`. The
+		deadline waits with the session's others, under one timer, so it
+		allocates nothing. Only the next call takes it, one-way or not; a
+		one-way call has no answer to wait for, and drops it.
+
+		Each commands class returns its own type, so the call that follows is
+		typed.
+	**/
+	public function withTimeout(milliseconds:Int):RPCCommands {
+		__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+		return this;
+	}
 
 	/**
 		Built-in heartbeat/system ping. This stays on the commands surface and should not
@@ -70,6 +101,15 @@ abstract class RPCCommands {
 	abstract public function ping():Void;
 
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;
+
+	/**
+		Whether the answer to `op` is a `Bytes` and nothing else, so that one
+		arriving in pieces can be put together in the `Bytes` it is (see
+		`RPCChunks`). Generated for each commands class that has such a method.
+	**/
+	@:noCompletion public function __rpc_answersBytes(op:Int):Bool {
+		return false;
+	}
 
 	/**
 		The fingerprint of the methods these commands call, `RPCOps.fingerprint`
@@ -140,11 +180,14 @@ abstract class RPCCommands {
 			}
 			__pendingResponses.put(requestId, response);
 		}
-		// The session's deadline for every call, if it has one, in its queue
-		// of them; a call without one arms nothing.
+		// Its deadline, as it was framed, in its session's heap of them; a
+		// call without one arms nothing.
+		final timeout:Int = __callTimeout;
 		final session = __session;
-		if (session != null && session.callTimeout > 0) {
-			session.__queueDeadline(response, session.callTimeout);
+		if (timeout > 0 && session != null) {
+			__callTimeout = 0;
+			session.__queueDeadline(response, timeout);
+			response.__deadlineSent = __callTimeoutSent;
 		}
 	}
 
@@ -159,9 +202,32 @@ abstract class RPCCommands {
 		no session (whose call fails as it is sent), one of its own.
 	**/
 	@:noCompletion private inline function __startFrame(room:Int, op:Int, requestId:Int):RPCFrame {
+		// Inlined into every stub, so only a one-way call's usual way is
+		// here; anything more (a request, a deadline given, no session) is a
+		// call, which keeps a large commands class's methods small on the jvm.
+		final session = __session;
+		return requestId == 0 && session != null && __nextTimeout < 0 ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op,
+			requestId);
+	}
+
+	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `withTimeout`; commands with no session. **/
+	@:noCompletion private function __startOtherFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
+		// The deadline `withTimeout` gave, taken by this call, one-way or not.
+		final timeout:Int = __nextTimeout;
+		if (timeout >= 0) {
+			__nextTimeout = -1;
+		}
 		if (session != null) {
+			if (requestId != 0) {
+				// Carried with the call to a peer that reads it, so its
+				// handler knows when this side stops waiting.
+				final waits:Int = timeout >= 0 ? timeout : session.callTimeout;
+				__callTimeout = waits;
+				__callTimeoutSent = waits > 0 && session.__readsCallControl();
+				return session.__takeRequestFrame(room, flags, op, requestId, waits);
+			}
 			return session.__takeFrame(room, flags, op, requestId);
 		}
 		final frame = new RPCFrame(room);
@@ -345,24 +411,47 @@ abstract class RPCCommands {
 	}
 
 	/**
-		Fails a waiting call with the error the other side answered it with.
-		Its handler meant this caller to see it, so the failure's cause is an
-		`RPCError`: a handler here answering with this response (forwarding
-		it) passes the message on, as it would one it threw.
+		An error answer to the call `requestId`, from the generated reader,
+		`input` at its message: the call fails with it, typed by the code of
+		what refused it. A refusal the other side's session made is told with
+		its message as this side has it, so no string is read for one. One
+		that does not read fails its call, and the connection carries on.
 	**/
-	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
+	@:noCompletion private function __rejectFrom(op:Int, requestId:Int, input:ByteArrayInput):Void {
+		var message:String = null;
+		var code:Int = RPCWire.REFUSED_BY_HANDLER;
+		try {
+			code = RPCWire.refusalCode(input, __frameEnd);
+			message = RPCWire.refusalText(input, code);
+			RPCWire.requireWithin(input, __frameEnd);
+		} catch (error:Dynamic) {
+			__rejectUnreadableResponse(op, requestId, error);
+			return;
+		}
+		__rejectResponse(op, requestId, message, code);
+	}
+
+	/**
+		Fails a waiting call with the error the other side answered it with,
+		`message`, refused as `code` says (`RPCWire.REFUSED_*`). The other
+		side meant this caller to see it, so the failure's cause is an
+		`RPCError`: a handler here answering with this response (forwarding
+		it) passes the refusal on, as it would one it threw.
+	**/
+	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String, code:Int):Void {
 		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
 		}
 		if (response.__pooled) {
-			// Told with the message, and no RPCError made to carry it.
+			// Told with the failure, and no RPCError made to carry it: a
+			// refusal the session made is a single value.
 			final call:RPCReceiverCall = cast response;
 			final id:Int = call.requestId;
-			RPCReceiverCall.tell(call.finish(), id, RPCFailure.Refused(message));
+			RPCReceiverCall.tell(call.finish(), id, RPCReceiverCall.refusal(code, message));
 			return;
 		}
-		response.__fail(message, new RPCError(message));
+		response.__fail(message, RPCSession.__refusalError(message, code));
 	}
 
 	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {

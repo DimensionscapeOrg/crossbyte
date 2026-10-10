@@ -49,6 +49,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 
 	/** Waits as the call `requestId` for `op`, to tell `receiver`. **/
 	public inline function begin(requestId:Int, op:Int, receiver:RPCReceiver):Void {
+		__deadlineSent = false;
 		this.requestId = requestId;
 		this.op = op;
 		this.receiver = receiver;
@@ -101,7 +102,15 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		}
 		__commands.__takeResponse(requestId);
 		final call:Int = requestId;
+		final callOp:Int = op;
+		final session = __commands.__session;
+		final sent:Bool = __deadlineSent;
 		tell(finish(), call, TimedOut);
+		// The peer need no longer answer it: told, unless its deadline went
+		// with it, by which the peer ends it itself.
+		if (session != null && !sent) {
+			session.__sendCancel(callOp, call, false);
+		}
 	}
 
 	/** Leaves the queue of the session it was queued in, whichever its commands are bound to now. **/
@@ -126,11 +135,25 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		Logger.error("An RPC receiver threw and was contained: " + Std.string(error));
 	}
 
+	/** The failure of a call the other side refused with `message`, as `code` (`RPCWire.REFUSED_*`) says. **/
+	public static function refusal(code:Int, message:String):RPCFailure {
+		return switch (code) {
+			case RPCWire.REFUSED_HANDLER_FAILED: HandlerFailed;
+			case RPCWire.REFUSED_UNKNOWN_METHOD: UnknownMethod;
+			case RPCWire.REFUSED_UNREADABLE: UnreadableArguments;
+			case RPCWire.REFUSED_BUSY: Busy;
+			case RPCWire.REFUSED_NO_HANDLER: NoHandler;
+			case RPCWire.REFUSED_HANDLER_TIMEOUT: HandlerTimedOut;
+			case RPCWire.REFUSED_TOO_LARGE: TooLarge;
+			case _: Refused(message);
+		}
+	}
+
 	/**
 		The failure a receiver is told of, from what an `RPCResponse` would
 		have failed with.
 	**/
-	static function failureOf(message:String, cause:Null<Dynamic>):RPCFailure {
+	public static function failureOf(message:String, cause:Null<Dynamic>):RPCFailure {
 		if (cause == null) {
 			return switch (message) {
 				case RPCSession.STOPPED_MESSAGE: Stopped;
@@ -147,7 +170,8 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 			return TimedOut;
 		}
 		if (Std.isOfType(cause, RPCError)) {
-			return Refused(message);
+			final passed:Null<RPCRefusal> = Std.downcast(cause, RPCRefusal);
+			return passed != null ? refusal(passed.code, message) : Refused(message);
 		}
 		if (Std.isOfType(cause, ArgumentError) || Std.isOfType(cause, IllegalOperationError)
 			|| StringTools.startsWith(message, RPCSession.UNSENT_PREFIX)) {

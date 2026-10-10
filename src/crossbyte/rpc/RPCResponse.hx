@@ -3,6 +3,7 @@ package crossbyte.rpc;
 import crossbyte.Future;
 import crossbyte._internal.system.timer.TimerHandle;
 import crossbyte.rpc._internal.RPCDeadlines;
+import crossbyte.rpc._internal.RPCReceiverCall;
 
 @:allow(crossbyte.rpc.RPCCommands)
 @:allow(crossbyte.rpc.RPCSession)
@@ -35,6 +36,28 @@ class RPCResponse<T> extends Future<T> {
 	/** Operation code associated with the request. */
 	public var op(default, null):Int;
 
+	/**
+		Why the call failed, typed as a receiver is told it: `TimedOut`,
+		`Cancelled`, `Stopped`, `Disconnected(reason)`, `Unsent` or
+		`Unreadable`; and for a call the other side refused, what refused it:
+		`Refused(message)` for its handler's own `RPCError`, `UnknownMethod`,
+		`UnreadableArguments`, `Busy`, `NoHandler`, `HandlerTimedOut` or
+		`HandlerFailed`. `null` while it waits and once it has succeeded.
+
+		Worked out from `error` and `cause` as it is read, so a call that never
+		asks pays nothing for it.
+
+		```haxe
+		final asked = commands.join("lobby");
+		asked.catchError(_ -> switch (asked.failure) {
+			case TimedOut: trace("no answer in time");
+			case Disconnected(reason): trace('gone: $reason');
+			case other: trace('failed: $other');
+		});
+		```
+	**/
+	public var failure(get, never):Null<RPCFailure>;
+
 	// Where the call waits for its answer, so a deadline can take it out:
 	// the commands that made it, or the session, for a runtime call. Set by
 	// whichever made it.
@@ -49,6 +72,9 @@ class RPCResponse<T> extends Future<T> {
 	// a receiver (RPCReceiverCall), never handed to anyone. Beside the
 	// deadline, where natively it takes no room of its own.
 	@:noCompletion private var __pooled:Bool = false;
+	// Whether the deadline it waits under went with it, so its handler's
+	// side ends the call itself when it passes, and needs no cancel.
+	@:noCompletion private var __deadlineSent:Bool = false;
 
 	// The responder bound now, which `respond` replaces, under the future's
 	// lock; ANSWERED once the outcome has been handed to one, after which
@@ -56,6 +82,10 @@ class RPCResponse<T> extends Future<T> {
 	// responder never touches.
 	@:noCompletion private var __responder:Null<Responder<T>> = null;
 	@:noCompletion private static final ANSWERED:Responder<Dynamic> = new Responder<Dynamic>();
+
+	@:noCompletion private function get_failure():Null<RPCFailure> {
+		return completed && !succeeded ? RPCReceiverCall.failureOf(error, cause) : null;
+	}
 
 	public function new(requestId:Int, op:Int, ?responder:Responder<T>) {
 		super();
@@ -140,10 +170,15 @@ class RPCResponse<T> extends Future<T> {
 		an answer arriving after that is dropped. The connection is left as
 		it was: a slow answer is not a broken connection.
 
-		A call with no deadline costs nothing for having none. One given a
-		deadline here holds a timer, on the thread the call was made on, until
-		it is answered; the calls under a session's `callTimeout` share one
-		instead. A call already complete is left as it is.
+		A call with no deadline costs nothing for having none, and one given a
+		deadline here waits with its session's other calls under one timer,
+		allocating nothing. A call already complete is left as it is.
+
+		Given here, after the call has gone, the deadline stays on this side:
+		when it passes, the peer is told the call is cancelled. One given
+		before the call goes (`RPCSession.callTimeout`, or the commands'
+		`withTimeout`) travels with it, so its handler can read it; see
+		`RPCCall`.
 
 		```haxe
 		commands.join("lobby").timeout(2000).then(count -> trace(count), message -> trace(message));
@@ -157,7 +192,14 @@ class RPCResponse<T> extends Future<T> {
 	/** Sets this call's deadline to `milliseconds` from now, replacing any; `0` clears it. **/
 	@:noCompletion private function __arm(milliseconds:Int):Void {
 		__disarm();
+		// Another deadline than the one that went with the call, if one did.
+		__deadlineSent = false;
 		if (milliseconds <= 0 || completed) {
+			return;
+		}
+		final session:Null<RPCSession<Dynamic, Dynamic>> = __commands != null ? __commands.__session : __session;
+		if (session != null) {
+			session.__queueDeadline(this, milliseconds);
 			return;
 		}
 		__deadline = Timer.setTimeout(milliseconds / 1000, () -> __expire(milliseconds));
@@ -198,6 +240,21 @@ class RPCResponse<T> extends Future<T> {
 		}
 		final message:String = "RPC call timed out after " + milliseconds + " ms";
 		__fail(message, new RPCTimeoutError(message));
+		if (!__deadlineSent) {
+			__cancelOnPeer();
+		}
+	}
+
+	/** Tells the peer this call is no longer waited for, if it can be told. **/
+	@:noCompletion private function __cancelOnPeer():Void {
+		if (__commands != null) {
+			final session = __commands.__session;
+			if (session != null) {
+				session.__sendCancel(op, requestId, false);
+			}
+		} else if (__session != null) {
+			__session.__sendCancel(op, requestId, true);
+		}
 	}
 
 	override function __resolve(value:T):Bool {

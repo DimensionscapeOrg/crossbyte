@@ -2057,9 +2057,11 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		var number:Float = __number(value);
-		// Plus 0.0: eval keeps an int32 handed in as a Float an Int, whose
-		// sums (a result's counts, batch by batch) wrap past 2^31.
-		return Math.isNaN(number) ? 0.0 : number + 0.0;
+		// Divided by 1, which eval and neko always answer in Float: they keep
+		// an int32 handed in as a Float an Int, whose sums (a caller's total
+		// of counts) wrap past 2^31. `+ 0.0` does nothing here: on a Float
+		// the compiler drops it.
+		return Math.isNaN(number) ? 0.0 : number / 1;
 	}
 
 	@:noCompletion private static function __number(value:Dynamic):Float {

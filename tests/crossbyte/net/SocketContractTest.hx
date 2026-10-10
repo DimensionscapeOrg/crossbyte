@@ -4,6 +4,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
@@ -21,6 +22,7 @@ import utest.Async;
 	  failing every native connect at once.
 	- Bytes written and then closed straight away still go, though every
 	  write goes at the end of the pass and `close()` comes first.
+	- `OutputProgressEvent.bytesTotal` counts past 2^31 on every target.
 **/
 class SocketContractTest extends utest.Test {
 	public function testAConstructorPortOutOfRangeIsASecurityError():Void {
@@ -156,6 +158,33 @@ class SocketContractTest extends utest.Test {
 			Assert.isTrue(client.connected);
 			done();
 		}, async, 0);
+	}
+
+	/**
+		`bytesTotal` counts on past 2^31, as a connection that carries more
+		than 2 GB needs. eval and neko keep a Float set from an Int an Int, and
+		added the Int byte counts to the one `connect()` starts from in 32
+		bits: 4 bytes past 2^31 - 1 read -2147483645.
+
+		The first 2 GB are counted in, not sent: added to the count as an Int,
+		as a flush adds what the system took.
+	**/
+	@:timeout(15000)
+	public function testBytesTotalCountsPastTwoToTheThirtyOne(async:Async):Void {
+		__connected(function(client, peer, done) {
+			var earlier:Int = 0x7FFFFFFF;
+			@:privateAccess client.__bytesSent += earlier;
+			var total:Float = -1;
+			client.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) total = e.bytesTotal);
+			client.writeUTFBytes("abcd");
+			client.flush();
+
+			NetPump.until(() -> peer.heard.length >= 4 && total != -1, 5.0, function(_) {
+				Assert.equals("abcd", peer.heard);
+				Assert.equals(2147483651.0, total, "bytesTotal past 2^31 was " + total);
+				done();
+			});
+		}, async);
 	}
 	#end
 

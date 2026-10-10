@@ -10,6 +10,7 @@
 #include <Windows.h>
 #include <aclapi.h>
 #include <sddl.h>
+#include <map>
 #include <vector>
 // Vista's; older SDKs leave it out.
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
@@ -118,6 +119,128 @@ namespace
 		return std::string("\\\\.\\pipe\\crossbyte-") + user.text + "-" + (name == nullptr ? "" : name);
 	}
 
+	// Doorbells. A pipe made PIPE_NOWAIT has nothing a thread can wait on,
+	// so each end of a name has an event its reader waits on between looks
+	// at the pipe, which the other end sets when it has written to it, made
+	// room in it, connected or gone: a reader wakes as its data arrives, not
+	// at its next look, 1 to 10 ms later. One pair a name, made with the
+	// first pipe of that name and kept for the life of the process, so a
+	// reader waiting on one never waits on a handle closed under it. Where
+	// one cannot be made (another user's object under the name, or a name
+	// an event cannot have), a reader looks as it did, between sleeps.
+	struct Doorbells
+	{
+		HANDLE mine;
+		HANDLE peer;
+	};
+
+	CRITICAL_SECTION* bellLock()
+	{
+		static CRITICAL_SECTION* lock = []() {
+			CRITICAL_SECTION* made = new CRITICAL_SECTION;
+			InitializeCriticalSection(made);
+			return made;
+		}();
+		return lock;
+	}
+
+	std::map<std::string, HANDLE>& bellsByName()
+	{
+		static std::map<std::string, HANDLE>* bells = new std::map<std::string, HANDLE>();
+		return *bells;
+	}
+
+	std::map<HANDLE, Doorbells>& bellsByPipe()
+	{
+		static std::map<HANDLE, Doorbells>* bells = new std::map<HANDLE, Doorbells>();
+		return *bells;
+	}
+
+	// The event called `name`, this user's and SYSTEM's alone, made or
+	// opened; nullptr if neither. Under bellLock.
+	HANDLE bellNamed(const std::string& name)
+	{
+		std::map<std::string, HANDLE>& byName = bellsByName();
+		std::map<std::string, HANDLE>::iterator found = byName.find(name);
+		if (found != byName.end())
+		{
+			return found->second;
+		}
+		const std::string& user = processUser().text;
+		std::string sddl = "O:" + user + "D:P(A;;GA;;;" + user + ")(A;;GA;;;SY)";
+		PSECURITY_DESCRIPTOR descriptor = nullptr;
+		if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+		{
+			return nullptr;
+		}
+		SECURITY_ATTRIBUTES attributes;
+		attributes.nLength = sizeof(attributes);
+		attributes.lpSecurityDescriptor = descriptor;
+		attributes.bInheritHandle = FALSE;
+		// Auto-reset: one wait returns for each ring, and rings while nobody
+		// waits come to one.
+		HANDLE bell = CreateEventA(&attributes, FALSE, FALSE, ("Local\\" + name).c_str());
+		LocalFree(descriptor);
+		byName[name] = bell;
+		return bell;
+	}
+
+	// Gives `pipe` the doorbells of the name it was made or opened under:
+	// a listener's, or (`listener` false) a client's.
+	void attachBells(HANDLE pipe, const char* name, bool listener)
+	{
+		const ProcessUser& user = processUser();
+		if (user.text.empty() || isInvalid(pipe))
+		{
+			return;
+		}
+		std::string base = std::string("crossbyte-") + user.text + "-" + (name == nullptr ? "" : name);
+		EnterCriticalSection(bellLock());
+		HANDLE toListener = bellNamed(base + "-to-listener");
+		HANDLE toClient = bellNamed(base + "-to-client");
+		if (toListener != nullptr && toClient != nullptr)
+		{
+			Doorbells bells;
+			bells.mine = listener ? toListener : toClient;
+			bells.peer = listener ? toClient : toListener;
+			bellsByPipe()[pipe] = bells;
+		}
+		LeaveCriticalSection(bellLock());
+	}
+
+	// The doorbell `pipe`'s reader waits on, or (`peer`) the one it rings.
+	HANDLE bellOf(HANDLE pipe, bool peer)
+	{
+		HANDLE bell = nullptr;
+		EnterCriticalSection(bellLock());
+		std::map<HANDLE, Doorbells>::iterator found = bellsByPipe().find(pipe);
+		if (found != bellsByPipe().end())
+		{
+			bell = peer ? found->second.peer : found->second.mine;
+		}
+		LeaveCriticalSection(bellLock());
+		return bell;
+	}
+
+	// Wakes the reader at the other end of `pipe`.
+	void ringPeer(HANDLE pipe)
+	{
+		HANDLE bell = bellOf(pipe, true);
+		if (bell != nullptr)
+		{
+			SetEvent(bell);
+		}
+	}
+
+	// `pipe` is closing: its peer is told, and it has no doorbells now.
+	void detachBells(HANDLE pipe)
+	{
+		ringPeer(pipe);
+		EnterCriticalSection(bellLock());
+		bellsByPipe().erase(pipe);
+		LeaveCriticalSection(bellLock());
+	}
+
 	// Whether `pipe` is owned by this user. A listener sets this user as its
 	// pipe's owner, which another user cannot: one finding a pipe under its
 	// name owned by anyone else has found someone else's, put there first.
@@ -188,6 +311,7 @@ namespace
 		{
 			return nullptr;
 		}
+		attachBells(pipe, name, true);
 		lastError = LOCAL_CONNECTION_ERROR_NONE;
 		return pipe;
 	}
@@ -271,6 +395,7 @@ namespace
 		{
 			return false;
 		}
+		ringPeer(handle);
 		return DisconnectNamedPipe(handle) != FALSE;
 	}
 
@@ -321,6 +446,12 @@ namespace
 			Sleep(1);
 		}
 
+		// Room made in a pipe that may have been full: a writer waiting on it
+		// goes on now.
+		if (totalRead >= PIPE_BUFFER_SIZE / 2)
+		{
+			ringPeer(handle);
+		}
 		return 0;
 	}
 
@@ -360,6 +491,10 @@ namespace
 			totalWritten += static_cast<int>(bytesWritten);
 		}
 
+		if (totalWritten > 0)
+		{
+			ringPeer(handle);
+		}
 		return totalWritten;
 	}
 
@@ -410,6 +545,7 @@ namespace
 			return;
 		}
 
+		detachBells(handle);
 		CloseHandle(handle);
 	}
 
@@ -454,6 +590,9 @@ namespace
 				}
 				DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 				SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+				attachBells(pipe, name, false);
+				// The listener takes it at once.
+				ringPeer(pipe);
 				lastError = LOCAL_CONNECTION_ERROR_NONE;
 				return pipe;
 			}
@@ -542,16 +681,30 @@ namespace
 	{
 	}
 
-	// A pipe has no descriptor to wait on: its reader sleeps between looks.
+	// What a pipe's reader waits on: its doorbell, as a number (a handle
+	// fits in 32 bits on 64-bit Windows, which keeps them so for 32-bit
+	// code), or -1 for none.
 	extern "C" int native_descriptorOf(void* pipe)
 	{
-		return -1;
+		HANDLE bell = bellOf(static_cast<HANDLE>(pipe), false);
+		return bell == nullptr ? -1 : static_cast<int>(reinterpret_cast<intptr_t>(bell));
 	}
 
+	// Waits up to `timeoutMs` for the doorbell `fd` to ring, outside the
+	// collector's reach; a plain wait for -1. Never says it woke for work: a
+	// ring is for room made as well as for data, so one that finds nothing
+	// is no sign of a handle that stays ready, which is what the reader
+	// guards against when a wait says so.
 	extern "C" bool native_waitForWork(int fd, bool read, bool write, int timeoutMs)
 	{
 		hx::AutoGCFreeZone waiting;
-		Sleep(static_cast<DWORD>(timeoutMs));
+		if (fd == -1)
+		{
+			Sleep(static_cast<DWORD>(timeoutMs));
+			return false;
+		}
+		HANDLE bell = reinterpret_cast<HANDLE>(static_cast<intptr_t>(fd));
+		WaitForSingleObject(bell, static_cast<DWORD>(timeoutMs));
 		return false;
 	}
 #else

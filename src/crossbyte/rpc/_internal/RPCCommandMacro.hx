@@ -154,8 +154,39 @@ class RPCCommandMacro {
 			injectPing(newFields, Context.currentPos());
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
+		newFields.push(withTimeoutField());
 		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
-		return fields.concat(newFields);
+		final all = fields.concat(newFields);
+		RPCContractMacroTools.requireJvmSize(all, "RPC commands class");
+		return all;
+	}
+
+	/**
+		`withTimeout`, returning this class, so the call made through what it
+		returns is this class's: an override of `RPCCommands.withTimeout`, in
+		every commands class, each returning its own type.
+	**/
+	static function withTimeoutField():Field {
+		final local = Context.getLocalClass().get();
+		final self:ComplexType = TPath({
+			pack: [],
+			name: local.name,
+			params: [for (param in local.params) TPType(TPath({pack: [], name: param.name}))]
+		});
+		return {
+			name: "withTimeout",
+			doc: "Gives the next call made through these commands a deadline of its own; see `RPCCommands.withTimeout`.",
+			access: [APublic, AOverride],
+			kind: FFun({
+				args: [{name: "milliseconds", type: macro :Int}],
+				ret: self,
+				expr: macro {
+					this.__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+					return this;
+				}
+			}),
+			pos: Context.currentPos()
+		};
 	}
 
 	/** `__rpc_fingerprint`, answering the fingerprint of `ops`, worked out here. **/
@@ -305,7 +336,7 @@ class RPCCommandMacro {
 				final room:Expr = RPCKinds.room(kind, optional, name);
 				sized = sized == null ? room : macro $sized + $room;
 			}
-			writes.push(RPCKinds.write(kind, optional, macro framed, name));
+			writes.push(RPCKinds.write(kind, optional, macro __framed, name));
 			compound = compound || kind.compound;
 		}
 		final room:Expr = sized == null ? macro $v{fixed} : macro $v{fixed} + $sized;
@@ -313,14 +344,16 @@ class RPCCommandMacro {
 		// The frame, which the stub hands to RPCCommands to send: one place
 		// decides what becomes of a call that cannot go. It is its session's,
 		// written over by its next frame once this one is sent.
-		final statements:Array<Expr> = [macro var framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, requestId)];
+		// Its own names start with two underscores, so an argument may be
+		// called anything else (`requestId`, `framed`) without taking them.
+		final statements:Array<Expr> = [macro var __framed:crossbyte.rpc._internal.RPCFrame = this.__startFrame($room, $v{opCode}, __requestId)];
 		if (compound) {
 			// An array or a structure can hold a null where a value has to be,
 			// found only as it is written: the frame goes back to its session
 			// before the error goes on, or every later frame would be a fresh
 			// one.
 			statements.push(macro try $b{writes} catch (__error:Dynamic) {
-				this.__dropFrame(framed);
+				this.__dropFrame(__framed);
 				throw __error;
 			});
 		} else {
@@ -328,15 +361,17 @@ class RPCCommandMacro {
 				statements.push(write);
 			}
 		}
-		statements.push(macro return framed.finish());
+		statements.push(macro return __framed.finish());
 
 		return {
 			name: metaName,
 			doc: "Auto-generated RPC meta for " + commandName,
-			access: [APrivate, AInline],
+			// Extern: only ever inlined into its stubs, so no method of its own,
+			// on the jvm one fewer for a class's `_hx_getField` to reach.
+			access: [APrivate, AInline, AExtern],
 			kind: FFun({
 				args: [
-					{name: "requestId", type: macro :Int}
+					{name: "__requestId", type: macro :Int}
 				].concat(args),
 				expr: macro $b{statements},
 				ret: macro :crossbyte.rpc._internal.RPCFrame
@@ -543,17 +578,7 @@ class RPCCommandMacro {
 	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
 		// An error answer's message, read whole and within its frame; one that
 		// does not read fails its call, and the connection carries on.
-		final readMessage:Expr = macro {
-			var message:String = null;
-			try {
-				message = input.readVarUTF();
-				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-			} catch (__error:Dynamic) {
-				this.__rejectUnreadableResponse(op, requestId, __error);
-				return;
-			}
-			this.__rejectResponse(op, requestId, message);
-		};
+		final readMessage:Expr = macro this.__rejectFrom(op, requestId, input);
 		var cases:Array<Case> = [];
 		for (method in methods) {
 			var read = readerForType(method.responseType, method.pos);
@@ -588,23 +613,30 @@ class RPCCommandMacro {
 			};
 			if (SPLIT_READER) {
 				final name:String = "__rpc_read_" + classTag() + "_" + method.name;
+				final args:Array<FunctionArg> = [
+					{name: "op", type: macro :Int},
+					{name: "requestId", type: macro :Int},
+					{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+					{name: "failed", type: macro :Bool}
+				];
+				// Static where it can be: an instance method each would make
+				// the jvm's `_hx_getField` grow with every request method.
+				final self:Null<ComplexType> = RPCContractMacroTools.selfType();
 				newFields.push({
 					name: name,
-					access: [APrivate],
+					access: self != null ? [APrivate, AStatic] : [APrivate],
 					meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
 					kind: FFun({
-						args: [
-							{name: "op", type: macro :Int},
-							{name: "requestId", type: macro :Int},
-							{name: "input", type: macro :crossbyte.io.ByteArrayInput},
-							{name: "failed", type: macro :Bool}
-						],
+						args: self != null ? [({name: "__self", type: self} : FunctionArg)].concat(args) : args,
 						ret: macro :Void,
-						expr: body
+						expr: self != null ? RPCContractMacroTools.asStatic(body) : body
 					}),
 					pos: method.pos
 				});
-				cases.push({values: [macro $v{method.op}], expr: macro this.$name(op, requestId, input, failed)});
+				cases.push({
+					values: [macro $v{method.op}],
+					expr: self != null ? macro $i{name}(this, op, requestId, input, failed) : macro this.$name(op, requestId, input, failed)
+				});
 			} else {
 				cases.push({values: [macro $v{method.op}], expr: body});
 			}
@@ -620,6 +652,36 @@ class RPCCommandMacro {
 
 		// Never inline: it is reached through RPCCommands' abstract method in
 		// any case, and a subclass must be able to override it.
+		// The methods whose answer is a Bytes and nothing else.
+		final bytesOps:Array<Expr> = [];
+		for (method in methods) {
+			if (!RPCContractMacroTools.isNullable(method.responseType, method.pos)) {
+				final kind = RPCKinds.of(RPCKinds.unwrapNull(method.responseType), method.pos);
+				if (kind != null && kind.token == "bytes") {
+					bytesOps.push(macro $v{method.op});
+				}
+			}
+		}
+		if (bytesOps.length > 0) {
+			newFields.push({
+				name: "__rpc_answersBytes",
+				access: [APublic, AOverride],
+				meta: [{name: ":noCompletion", params: [], pos: Context.currentPos()}],
+				kind: FFun({
+					args: [{name: "op", type: macro :Int}],
+					expr: {
+						expr: EReturn({
+							expr: ESwitch(macro op, [{values: bytesOps, expr: macro true}], macro super.__rpc_answersBytes(op)),
+							pos: Context.currentPos()
+						}),
+						pos: Context.currentPos()
+					},
+					ret: macro :Bool
+				}),
+				pos: Context.currentPos()
+			});
+		}
+
 		newFields.push({
 			name: "__rpc_handle_response",
 			access: overridesInherited ? [APublic, AOverride] : [APublic],

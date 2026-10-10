@@ -8,7 +8,166 @@ class RPCWire {
 	public static inline final FLAG_RESPONSE:Int = 0x02;
 	public static inline final FLAG_ERROR:Int = 0x04;
 	public static inline final FLAG_RUNTIME:Int = 0x08;
+
+	/**
+		On a request: the caller's deadline follows the request id, a varuint
+		of the milliseconds the caller will wait from when it sent the call.
+		Sent only to a peer whose hello declared `CAPABILITY_CALL_CONTROL`.
+	**/
+	public static inline final FLAG_DEADLINE:Int = 0x10;
+
+	/**
+		A frame of its own, with the op and the varuint request id of a call
+		the caller has stopped waiting for: it cancelled it, or its deadline
+		passed. With `FLAG_RUNTIME` for a runtime-lane call. Sent only to a
+		peer whose hello declared `CAPABILITY_CALL_CONTROL`; a peer without
+		it would pass it over.
+	**/
+	public static inline final FLAG_CANCEL:Int = 0x20;
+
+	/**
+		The capability, in a hello, of reading `FLAG_DEADLINE` on a request
+		and `FLAG_CANCEL` frames: a peer that declares it is told each call's
+		deadline and each call it need no longer answer.
+	**/
+	public static inline final CAPABILITY_CALL_CONTROL:Int = 0x01;
+
+	/**
+		A frame of its own carrying a piece of an answer too long to send at
+		once, so that the frames sent while it goes are not held up behind
+		it, as HTTP/2's DATA frames are:
+
+		```
+		u32      length        5 + the rest
+		u8       flags         FLAG_CHUNK, with FLAG_CHUNK_END on the last piece
+		i32      stream        which answer it is a piece of, in the op's place
+		varuint  total         on the first piece only: the answer's frame
+		                       length, what its own length would have said
+		...      the piece     the answer's frame after its length, in order
+		```
+
+		The pieces of one answer, joined, are its frame after its length: the
+		first carries its flags and op, and the rest follow, `total` bytes in
+		all. A reader holds them until the last, then reads the frame as if
+		it had come whole. At most
+		`MAX_CHUNK_STREAMS` answers go in pieces at once, and each counts
+		toward `RPCSession.maxFrameLength`. Only answers are sent so, and only
+		to a peer whose hello declared `CAPABILITY_CHUNKS`.
+	**/
+	public static inline final FLAG_CHUNK:Int = 0x40;
+
+	/** On the last piece of a `FLAG_CHUNK` stream. **/
+	public static inline final FLAG_CHUNK_END:Int = 0x80;
+
+	/** The bytes before a piece's own: its length, flags and stream. **/
+	public static inline final CHUNK_HEAD:Int = 9;
+
+	/** The most answers that go in pieces at once, one way on a connection; the rest wait their turn. **/
+	public static inline final MAX_CHUNK_STREAMS:Int = 4;
+
+	/** The capability, in a hello, of reading `FLAG_CHUNK` frames. **/
+	public static inline final CAPABILITY_CHUNKS:Int = 0x02;
 	public static inline final MIN_PAYLOAD_LEN:Int = 5;
+
+	// What refused a call, after an error answer's message: a varuint, left
+	// out for REFUSED_BY_HANDLER, so a handler's refusal is framed as before.
+	// A reader takes an answer with none, as one from before 1.0 has, and one
+	// it does not know, as a later version's could be, as the handler's own.
+	//
+	//   varuint request id
+	//   varuint length, UTF-8   the message
+	//   varuint code            absent for REFUSED_BY_HANDLER
+
+	/** An `RPCError` the handler meant its caller to see: `RPCFailure.Refused`. **/
+	public static inline final REFUSED_BY_HANDLER:Int = 0;
+
+	/** The handler failed with something else: `RPCFailure.HandlerFailed`, `RPCError.INTERNAL_MESSAGE`. **/
+	public static inline final REFUSED_HANDLER_FAILED:Int = 1;
+
+	/** No method answers the call: `RPCFailure.UnknownMethod`. **/
+	public static inline final REFUSED_UNKNOWN_METHOD:Int = 2;
+
+	/** Its arguments did not read: `RPCFailure.UnreadableArguments`. **/
+	public static inline final REFUSED_UNREADABLE:Int = 3;
+
+	/** Too many calls were waiting: `RPCFailure.Busy`. **/
+	public static inline final REFUSED_BUSY:Int = 4;
+
+	/** Nothing answers calls on that session: `RPCFailure.NoHandler`. **/
+	public static inline final REFUSED_NO_HANDLER:Int = 5;
+
+	/** The handler did not answer in time: `RPCFailure.HandlerTimedOut`. **/
+	public static inline final REFUSED_HANDLER_TIMEOUT:Int = 6;
+
+	/** The frame was larger than its receiver takes: `RPCFailure.TooLarge`. **/
+	public static inline final REFUSED_TOO_LARGE:Int = 7;
+
+	/** The message a refusal of `code` is framed with, or `null` for one whose message is the handler's. **/
+	public static function refusalMessage(code:Int):Null<String> {
+		return switch (code) {
+			case REFUSED_HANDLER_FAILED: crossbyte.rpc.RPCError.INTERNAL_MESSAGE;
+			case REFUSED_UNKNOWN_METHOD: crossbyte.rpc.RPCError.UNKNOWN_METHOD_MESSAGE;
+			case REFUSED_UNREADABLE: crossbyte.rpc.RPCError.UNREADABLE_MESSAGE;
+			case REFUSED_BUSY: crossbyte.rpc.RPCError.BUSY_MESSAGE;
+			case REFUSED_NO_HANDLER: crossbyte.rpc.RPCError.NO_HANDLER_MESSAGE;
+			case REFUSED_HANDLER_TIMEOUT: crossbyte.rpc.RPCError.TIMEOUT_MESSAGE;
+			case REFUSED_TOO_LARGE: crossbyte.rpc.RPCError.TOO_LARGE_MESSAGE;
+			case _: null;
+		}
+	}
+
+	/**
+		The message of an error answer refused as `code`, `input` at it: the
+		session's own words for the code (read without a string made for them)
+		when the answer carries them, as a session's own refusal does, and
+		otherwise what it carries, as a handler refusing with a code
+		(`RPCError.refusal`) words it.
+	**/
+	public static function refusalText(input:ByteArrayInput, code:Int):String {
+		final words:Null<String> = refusalMessage(code);
+		if (words == null) {
+			return input.readVarUTF();
+		}
+		final start:Int = input.position;
+		final length:Int = input.readVarUInt();
+		var same:Bool = length == words.length && length <= input.bytesAvailable;
+		if (same) {
+			final data:ByteArrayData = cast input;
+			final at:Int = input.position;
+			for (i in 0...length) {
+				if (data.get(at + i) != StringTools.fastCodeAt(words, i)) {
+					same = false;
+					break;
+				}
+			}
+		}
+		if (same) {
+			input.position += length;
+			return words;
+		}
+		input.position = start;
+		return input.readVarUTF();
+	}
+
+	/**
+		The code of the error answer whose message `input` is at, in a frame
+		ending at `end`: what follows the message, or `REFUSED_BY_HANDLER`
+		when nothing does. `input` is left at the message, which is read only
+		when the code does not say it: a refusal the session made costs no
+		string to read.
+	**/
+	public static function refusalCode(input:ByteArrayInput, end:Int):Int {
+		final start:Int = input.position;
+		final length:Int = input.readVarUInt();
+		requireRoom(input, end, length);
+		input.position += length;
+		var code:Int = REFUSED_BY_HANDLER;
+		if (input.position < end) {
+			code = input.readVarUInt();
+		}
+		input.position = start;
+		return code > REFUSED_BY_HANDLER && code <= REFUSED_TOO_LARGE ? code : REFUSED_BY_HANDLER;
+	}
 
 	/**
 		The op of `ping`, `RPCOps.opOf("ping")`, written out so that the check
@@ -45,13 +204,13 @@ class RPCWire {
 
 	/**
 		The capabilities a session of this build declares in its hello, a bit
-		each: none, in 1.0. A later release that adds a flag, a kind of frame,
-		a kind of runtime value or compression gives it a bit, sets the bit in
-		its own hello, and uses the feature towards a peer only once that
-		peer's hello has set it; a peer that sent no hello, from before 1.0,
-		has none.
+		each: in 1.0, `CAPABILITY_CALL_CONTROL` and `CAPABILITY_CHUNKS`. A release that adds a flag, a
+		kind of frame, a kind of runtime value or compression gives it a bit,
+		sets the bit in its own hello, and uses the feature towards a peer
+		only once that peer's hello has set it; a peer that sent no hello has
+		none.
 	**/
-	public static inline final CAPABILITIES:Int = 0;
+	public static inline final CAPABILITIES:Int = CAPABILITY_CALL_CONTROL | CAPABILITY_CHUNKS;
 
 	/** Where a frame being read ends when nothing has said: nowhere. **/
 	public static inline final NO_FRAME_END:Int = 0x7FFFFFFF;

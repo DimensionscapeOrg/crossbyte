@@ -53,19 +53,29 @@ import crossbyte.io.ByteArrayInput;
 	one queue or one world makes one handler and gives it to the session of
 	every client it accepts. Each call is answered on the connection it came
 	in on, and `session` says, while a method runs, whose call it is.
+
+	A handler that calls its clients back names the sessions it serves:
+	`extends RPCHandler<ListenerCommands, Player>` makes `session` an
+	`RPCSession<ListenerCommands, Player>`, so `session.commands` calls the
+	client through its typed stubs and `session.data` is a `Player`. Given
+	no parameters, as `extends RPCHandler`, it serves sessions of any kind,
+	and `session` is an `RPCSession<Dynamic, Dynamic>`. A session only takes
+	a handler that names its own kind, or none.
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
 @:access(crossbyte.net.Socket)
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.rpc.RPCCommands)
-abstract class RPCHandler {
+abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
 
 	/**
 		The session whose call is running, while one is: a method reads it to
 		tell its callers apart: `session.data` for what the application
 		keeps per client, `session.commands` to call that client back, and
-		`session.connection` for where it is. `null` between calls.
+		`session.connection` for where it is. `null` between calls. Typed as
+		the handler's parameters say (see above): reading it costs a field
+		read, and a call through its commands is a call through their stubs.
 
 		So one handler given to several sessions answers each call on the
 		connection it came in on, rather than every call on the last session's
@@ -75,7 +85,7 @@ abstract class RPCHandler {
 		caller's connection whatever `session` says by then. Code that needs
 		the caller after its method has returned keeps `session` itself.
 	**/
-	public var session(get, never):RPCSession<Dynamic, Dynamic>;
+	public var session(get, never):RPCSession<C, D>;
 
 	// The session whose call is being dispatched, set by that session for as
 	// long as it dispatches to this handler, and where its frame ends: the
@@ -84,11 +94,40 @@ abstract class RPCHandler {
 	@:noCompletion private var this_session:RPCSession<Dynamic, Dynamic>;
 	@:noCompletion private var this_frameEnd:Int = RPCWire.NO_FRAME_END;
 
-	@:noCompletion private inline function get_session():RPCSession<Dynamic, Dynamic> {
-		return this_session;
+	/**
+		The call running, while one is: when its caller stops waiting for
+		the answer, and whether it has cancelled it; see `RPCCall`. `null`
+		between calls. Made the first time it is read in a call, so a method
+		that never reads it costs nothing for it; one that answers later
+		with a `Future` keeps it, to stop work its caller no longer wants.
+	**/
+	public var currentCall(get, never):Null<RPCCall>;
+
+	@:noCompletion private inline function get_currentCall():Null<RPCCall> {
+		return this_session != null ? this_session.currentCall : null;
+	}
+
+	@:noCompletion private inline function get_session():RPCSession<C, D> {
+		// A session takes only a handler of its own kind (see
+		// `RPCSession.handler`), so the one dispatching is of this one's.
+		return cast this_session;
 	}
 
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
+
+	/**
+		Whether this handler serves a session with `commands`: one that names
+		no kind of session serves any; one that does (generated) only those
+		whose commands are of its class.
+	**/
+	@:noCompletion public function __rpc_serves(commands:RPCCommands):Bool {
+		return true;
+	}
+
+	/** The class of commands this handler serves, for a message: generated beside `__rpc_serves`. **/
+	@:noCompletion public function __rpc_servesName():String {
+		return "any";
+	}
 
 	/**
 		The fingerprint of the methods this handler answers, `RPCOps.fingerprint`
@@ -189,7 +228,7 @@ abstract class RPCHandler {
 			return true;
 		}
 		if (requestId != 0) {
-			session.__sendCompiledError(op, requestId, RPCError.BUSY_MESSAGE);
+			session.__sendCompiledError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY);
 		}
 		return false;
 	}
@@ -212,9 +251,12 @@ abstract class RPCHandler {
 			answer:(RPCSession<Dynamic, Dynamic>, T) -> Void, hooked:Bool):Void {
 		final session = this_session;
 		final epoch:Int = session.__epoch;
-		final settle = function(settled:Future<T>):Void {
+		// `byCaller` when its caller cancelled it or its deadline passed: the
+		// caller is not waiting, so nothing is answered, and nothing failed
+		// here to report.
+		final settle = function(settled:Future<T>, byCaller:Bool):Void {
 			var failure:Null<haxe.Exception> = null;
-			final answerable:Bool = requestId != 0 && session.__isCurrent(epoch);
+			final answerable:Bool = requestId != 0 && !byCaller && session.__isCurrent(epoch);
 			if (settled.succeeded) {
 				if (answerable) {
 					try {
@@ -226,7 +268,9 @@ abstract class RPCHandler {
 				}
 			} else {
 				failure = RPCSession.__failureOf(settled);
-				session.__callFailed(op, method, requestId, failure, answerable);
+				if (!byCaller) {
+					session.__callFailed(op, method, requestId, failure, answerable);
+				}
 			}
 			if (hooked) {
 				try {
@@ -257,7 +301,8 @@ abstract class RPCHandler {
 	/** Answers a request `beforeCall` refused; a refused one-way call has nobody to tell. **/
 	@:noCompletion private function __rpc_refuse(op:Int, requestId:Int, refusal:RPCError):Void {
 		if (requestId != 0 && this_session != null) {
-			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
+			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE,
+				RPCSession.__refusalOf(refusal, refusal.message));
 		}
 	}
 

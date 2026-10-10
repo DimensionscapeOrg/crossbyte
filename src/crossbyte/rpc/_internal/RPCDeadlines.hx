@@ -5,36 +5,30 @@ import crossbyte.rpc.RPCResponse;
 import haxe.ds.Vector;
 
 /**
-	The deadlines of a session's calls made under its `callTimeout`, in the
-	order the calls were made (which, with one timeout for all of them, is
-	the order they fall due), and one timer for them all, set for the
-	first, rather than a timer for each call: a closure and a timer node a
-	call, a heap kept in order, and a slot of the 524,288 timers one runtime
-	can hold at once.
+	The deadlines of a session's calls, whatever each one is (the session's
+	`callTimeout`, one given with `withTimeout` or `RPCResponse.timeout`), in
+	a binary heap ordered by when each falls due, and one timer for all of
+	them, set for the first: rather than a timer for each call, a closure
+	and a timer node a call, and a slot of the 524,288 timers one runtime can
+	hold at once.
 
-	A call waiting here has its place in its `RPCResponse.__deadline`, below
-	`TimerHandle.INVALID` (see `deadlineOf`), so it gains no field for it.
-	One answered, failed or given a deadline of its own leaves its place
-	empty at once, letting go of the call; and the empty places at the front
-	go with it, so calls answered in the order they were made (as a peer
-	answers them) keep the queue as long as the calls in flight. Empty
-	places behind a call still waiting are closed up when the queue would
-	otherwise grow.
+	A call in the heap has its place in its `RPCResponse.__deadline`, below
+	`TimerHandle.INVALID` (see `deadlineOf`), so it gains no field for it, and
+	leaves it in a few steps when it is answered: calls under one timeout,
+	answered in the order they were made, add at the end and leave from the
+	top. Nothing is allocated once the heap has grown to the calls in flight.
 
 	The timer, when it fires, fails the calls that are due, at the time a
-	timer of their own would have fired, and is set for the next one. A
-	call whose deadline would fall before the last one queued
-	(`callTimeout` lowered between calls) is not queued, and arms its own.
+	timer of their own would have fired, and is set for the next. A call
+	that falls due before the time it is set for sets it again; one answered
+	leaves it set, to find nothing due.
 **/
 @:noCompletion
 @:access(crossbyte.rpc.RPCResponse)
 final class RPCDeadlines {
-	/** Places run modulo this: a power of two, past any length the queue reaches. **/
-	static inline final PLACES:Int = 0x40000000;
-
 	static inline final INITIAL:Int = 16;
 
-	/** The most places an empty queue keeps; past it, it starts again from `INITIAL`. **/
+	/** The most places an empty heap keeps; past it, it starts again from `INITIAL`. **/
 	static inline final KEEP:Int = 65536;
 
 	/** How much past its time the scheduler still counts a timer due: theirs, so these fall due with it. **/
@@ -43,12 +37,14 @@ final class RPCDeadlines {
 	var __calls:Vector<RPCResponse<Dynamic>>;
 	var __due:Vector<Float>;
 	var __milliseconds:Vector<Int>;
-	// The place of the first call queued; the queue runs `__count` places
-	// from it, `__live` of them holding a call.
-	var __first:Int = 0;
+	// The order each was added in: calls due at the same time fall due in
+	// the order they were made, as their own timers would have fired.
+	var __order:Vector<Int>;
+	var __added:Int = 0;
 	var __count:Int = 0;
-	var __live:Int = 0;
 	var __timer:Int = TimerHandle.INVALID;
+	// When the timer is set to fire: the first deadline when it was set.
+	var __timerDue:Float = 0.0;
 	var __firing:Bool = false;
 	final __fire:Void->Void;
 
@@ -57,103 +53,73 @@ final class RPCDeadlines {
 		__fire = __fired;
 	}
 
-	/** The `RPCResponse.__deadline` of a call queued at `place`. **/
+	/** The `RPCResponse.__deadline` of a call at `place` in the heap. **/
 	public static inline function deadlineOf(place:Int):Int {
 		return -2 - place;
 	}
 
-	/** Whether an `RPCResponse.__deadline` is a place in a queue, rather than a timer's handle or none. **/
+	/** Whether an `RPCResponse.__deadline` is a place in a heap, rather than a timer's handle or none. **/
 	public static inline function isPlace(deadline:Int):Bool {
 		return deadline < -1;
 	}
 
-	/**
-		Queues `response`'s deadline, `milliseconds` after `now`, the
-		scheduler's time. `false`, and nothing queued, when it would fall
-		before the last one queued.
-	**/
-	public function add(response:RPCResponse<Dynamic>, milliseconds:Int, now:Float):Bool {
+	/** How many calls wait here. **/
+	public var length(get, never):Int;
+
+	inline function get_length():Int {
+		return __count;
+	}
+
+	/** Gives `response` the deadline `milliseconds` after `now`, the scheduler's time. **/
+	public function add(response:RPCResponse<Dynamic>, milliseconds:Int, now:Float):Void {
 		final due:Float = now + milliseconds / 1000;
-		if (__count > 0 && due < __due[(__first + __count - 1) & (__calls.length - 1)]) {
-			return false;
-		}
 		if (__count == __calls.length) {
-			// Closed up, if at least half are empty places; else twice the size.
-			__rebuild(__live * 2 <= __calls.length ? __calls.length : __calls.length * 2);
+			__grow();
 		}
-		final place:Int = (__first + __count) & (PLACES - 1);
-		final at:Int = place & (__calls.length - 1);
+		final at:Int = __count++;
 		__calls[at] = response;
 		__due[at] = due;
 		__milliseconds[at] = milliseconds;
-		__count++;
-		__live++;
-		response.__deadline = deadlineOf(place);
-		if (__timer == TimerHandle.INVALID && !__firing) {
-			__timer = Timer.setTimeout(due - now, __fire);
+		__order[at] = __added;
+		__added = (__added + 1) | 0;
+		response.__deadline = deadlineOf(at);
+		__up(at);
+		if (!__firing && (__timer == TimerHandle.INVALID || due < __timerDue)) {
+			__arm(due, now);
 		}
-		return true;
 	}
 
 	/**
 		`response`, whose `RPCResponse.__deadline` was `deadline`, has left its
-		place: answered, failed, or given a deadline of its own.
+		place: answered, failed, or given another deadline.
 	**/
 	public function leave(response:RPCResponse<Dynamic>, deadline:Int):Void {
-		final at:Int = (-2 - deadline) & (__calls.length - 1);
-		if (__calls[at] != response) {
+		final at:Int = -2 - deadline;
+		if (at >= __count || __calls[at] != response) {
 			// Not here: queued by another session, its commands bound to this
 			// one since.
 			return;
 		}
-		__calls[at] = null;
-		__live--;
-		if (at == (__first & (__calls.length - 1))) {
-			__dropEmpty();
+		__removeAt(at);
+		// The timer is left set: it finds nothing due when it fires, and a
+		// caller making one call at a time would otherwise clear a timer and
+		// set another for every call.
+		if (__count == 0) {
+			__shrink();
 		}
 	}
 
 	/** Lets every call go, as they are failed together: the connection ended, or the session stopped. **/
 	public function clear():Void {
-		while (__count > 0) {
-			final at:Int = __first & (__calls.length - 1);
-			final response = __calls[at];
-			if (response != null) {
-				if (response.__deadline == deadlineOf(__first)) {
-					response.__deadline = TimerHandle.INVALID;
-				}
-				__calls[at] = null;
+		for (i in 0...__count) {
+			final response = __calls[i];
+			if (response.__deadline == deadlineOf(i)) {
+				response.__deadline = TimerHandle.INVALID;
 			}
-			__first = (__first + 1) & (PLACES - 1);
-			__count--;
+			__calls[i] = null;
 		}
-		__live = 0;
-		if (__timer != TimerHandle.INVALID) {
-			Timer.clear(__timer);
-			__timer = TimerHandle.INVALID;
-		}
-		__shrink();
-	}
-
-	/**
-		The empty places at the front go, and so does any call there that no
-		longer names its place (left by a way that could not find this
-		queue), so the first is a call still waiting, or there is none.
-	**/
-	function __dropEmpty():Void {
-		while (__count > 0) {
-			final at:Int = __first & (__calls.length - 1);
-			final response = __calls[at];
-			if (response != null) {
-				if (response.__deadline == deadlineOf(__first)) {
-					return;
-				}
-				__calls[at] = null;
-				__live--;
-			}
-			__first = (__first + 1) & (PLACES - 1);
-			__count--;
-		}
+		__count = 0;
+		__disarm();
 		__shrink();
 	}
 
@@ -164,23 +130,12 @@ final class RPCDeadlines {
 		final now:Float = Timer.getTime();
 		var failed:Bool = false;
 		var failure:Dynamic = null;
-		while (true) {
-			__dropEmpty();
-			if (__count == 0) {
-				break;
-			}
-			// Read again each time round: failing a call runs its handlers,
-			// which may make calls, answer them, or stop the session.
-			final at:Int = __first & (__calls.length - 1);
-			if (__due[at] > now + DUE_EPSILON) {
-				break;
-			}
-			final response = __calls[at];
-			final milliseconds:Int = __milliseconds[at];
-			__calls[at] = null;
-			__live--;
-			__first = (__first + 1) & (PLACES - 1);
-			__count--;
+		// Read again each time round: failing a call runs its handlers,
+		// which may make calls, answer them, or stop the session.
+		while (__count > 0 && __due[0] <= now + DUE_EPSILON) {
+			final response = __calls[0];
+			final milliseconds:Int = __milliseconds[0];
+			__removeAt(0);
 			response.__deadline = TimerHandle.INVALID;
 			try {
 				response.__expire(milliseconds);
@@ -195,44 +150,117 @@ final class RPCDeadlines {
 		}
 		__firing = false;
 		if (__count > 0 && __timer == TimerHandle.INVALID) {
-			__timer = Timer.setTimeout(__due[__first & (__calls.length - 1)] - Timer.getTime(), __fire);
+			__arm(__due[0], Timer.getTime());
+		} else if (__count == 0) {
+			__shrink();
 		}
 		if (failed) {
 			throw failure;
 		}
 	}
 
-	/**
-		The calls still waiting, in order and with no empty place between
-		them, in a queue of `capacity` places: each told its new place.
-	**/
-	function __rebuild(capacity:Int):Void {
+	inline function __arm(due:Float, now:Float):Void {
+		if (__timer != TimerHandle.INVALID) {
+			Timer.clear(__timer);
+		}
+		__timerDue = due;
+		__timer = Timer.setTimeout(due - now, __fire);
+	}
+
+	inline function __disarm():Void {
+		if (__timer != TimerHandle.INVALID) {
+			Timer.clear(__timer);
+			__timer = TimerHandle.INVALID;
+		}
+	}
+
+	/** Takes the call at `at` out, the last put in its place and moved to where it belongs. **/
+	function __removeAt(at:Int):Void {
+		final last:Int = --__count;
+		if (at != last) {
+			__move(last, at);
+			__calls[last] = null;
+			if (at > 0 && __before(at, (at - 1) >> 1)) {
+				__up(at);
+			} else {
+				__down(at);
+			}
+		} else {
+			__calls[last] = null;
+		}
+	}
+
+	/** Whether the call at `a` falls due before the one at `b`: sooner, or as soon and added first. **/
+	inline function __before(a:Int, b:Int):Bool {
+		return __due[a] < __due[b] || (__due[a] == __due[b] && ((__order[a] - __order[b]) | 0) < 0);
+	}
+
+	inline function __sooner(due:Float, order:Int, at:Int):Bool {
+		return due < __due[at] || (due == __due[at] && ((order - __order[at]) | 0) < 0);
+	}
+
+	function __up(at:Int):Void {
+		final response = __calls[at];
+		final due:Float = __due[at];
+		final milliseconds:Int = __milliseconds[at];
+		final order:Int = __order[at];
+		while (at > 0) {
+			final parent:Int = (at - 1) >> 1;
+			if (!__sooner(due, order, parent)) {
+				break;
+			}
+			__move(parent, at);
+			at = parent;
+		}
+		__put(at, response, due, milliseconds, order);
+	}
+
+	function __down(at:Int):Void {
+		final response = __calls[at];
+		final due:Float = __due[at];
+		final milliseconds:Int = __milliseconds[at];
+		final order:Int = __order[at];
+		final half:Int = __count >> 1;
+		while (at < half) {
+			var child:Int = 2 * at + 1;
+			final right:Int = child + 1;
+			if (right < __count && __before(right, child)) {
+				child = right;
+			}
+			if (__sooner(due, order, child)) {
+				break;
+			}
+			__move(child, at);
+			at = child;
+		}
+		__put(at, response, due, milliseconds, order);
+	}
+
+	inline function __move(from:Int, to:Int):Void {
+		__put(to, __calls[from], __due[from], __milliseconds[from], __order[from]);
+	}
+
+	inline function __put(at:Int, response:RPCResponse<Dynamic>, due:Float, milliseconds:Int, order:Int):Void {
+		__calls[at] = response;
+		__due[at] = due;
+		__milliseconds[at] = milliseconds;
+		__order[at] = order;
+		response.__deadline = deadlineOf(at);
+	}
+
+	function __grow():Void {
 		final calls = __calls;
 		final due = __due;
 		final milliseconds = __milliseconds;
-		final mask:Int = calls.length - 1;
-		__allocate(capacity);
-		final first:Int = __first;
-		var count:Int = 0;
-		for (i in 0...__count) {
-			final from:Int = (first + i) & mask;
-			final response = calls[from];
-			if (response == null || response.__deadline != deadlineOf((first + i) & (PLACES - 1))) {
-				continue;
-			}
-			final to:Int = (first + count) & (PLACES - 1);
-			final at:Int = to & (capacity - 1);
-			__calls[at] = response;
-			__due[at] = due[from];
-			__milliseconds[at] = milliseconds[from];
-			response.__deadline = deadlineOf(to);
-			count++;
-		}
-		__count = count;
-		__live = count;
+		final order = __order;
+		__allocate(calls.length * 2);
+		Vector.blit(calls, 0, __calls, 0, __count);
+		Vector.blit(due, 0, __due, 0, __count);
+		Vector.blit(milliseconds, 0, __milliseconds, 0, __count);
+		Vector.blit(order, 0, __order, 0, __count);
 	}
 
-	/** An empty queue that grew past `KEEP` starts again small. **/
+	/** An empty heap that grew past `KEEP` starts again small. **/
 	inline function __shrink():Void {
 		if (__count == 0 && __calls.length > KEEP) {
 			__allocate(INITIAL);
@@ -243,5 +271,6 @@ final class RPCDeadlines {
 		__calls = new Vector(capacity);
 		__due = new Vector(capacity);
 		__milliseconds = new Vector(capacity);
+		__order = new Vector(capacity);
 	}
 }

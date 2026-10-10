@@ -142,6 +142,52 @@ class BrowserSocketTest extends utest.Test {
 	}
 
 	/**
+		A `NetConnection` over a page's socket is not `connected` inside its
+		`onClose`, whether it closed itself or the server closed it, as
+		natively: it read `true` there.
+	**/
+	@:timeout(15000)
+	public function testANetConnectionIsNotConnectedInsideItsOnClose(async:Async):Void {
+		var port:Null<Int> = Std.parseInt(js.Browser.location.port);
+		if (port == null || port <= 0) {
+			Assert.warn("the page was not served by ci/browser/run.js, so there is no echo endpoint to reach");
+			async.done();
+			return;
+		}
+
+		var wrong:Array<String> = [];
+		var closes:Int = 0;
+		var ready:Int = 0;
+		var mine:NetConnection = null;
+		var theirs:NetConnection = null;
+		mine = new NetConnection('ws://${js.Browser.location.hostname}:$port/$ECHO_PATH', null, () -> ready++, reason -> {
+			closes++;
+			if (mine.connected) {
+				wrong.push("closed by itself, after " + reason);
+			}
+		});
+		theirs = new NetConnection('ws://${js.Browser.location.hostname}:$port/$ECHO_PATH', null, () -> ready++, reason -> {
+			closes++;
+			if (theirs.connected) {
+				wrong.push("closed by the server, after " + reason);
+			}
+		});
+
+		NetPump.until(() -> ready == 2, 5.0, function(_) {
+			mine.close();
+			var bytes = new crossbyte.io.ByteArray();
+			bytes.writeUTFBytes("close-me");
+			bytes.position = 0;
+			theirs.send(bytes);
+			NetPump.until(() -> closes == 2, 5.0, function(_) {
+				Assert.equals(2, closes, "both connections did not close");
+				Assert.same([], wrong, "a connection said it was connected inside onClose: " + wrong.join("; "));
+				async.done();
+			});
+		});
+	}
+
+	/**
 		A `socketData` event's `bytesLoaded` is what arrived for it, as it
 		is natively, not everything still unread.
 	**/

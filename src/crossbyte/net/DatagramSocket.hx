@@ -248,6 +248,28 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// a few milliseconds.
 	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 1024;
 
+	// What one pass may read: MAX_DATAGRAMS_PER_TICK, or more for a socket
+	// read for many peers at once (see __readFor).
+	@:noCompletion private var __readsPerPass:Int = MAX_DATAGRAMS_PER_TICK;
+
+	/**
+		The socket reads for `peers` peers at once, a reliable UDP server's
+		for every session it has: it may read a share for each in a pass,
+		`READS_PER_PEER`, as each TCP connection reads its own. At the cap a
+		server one runtime could not keep up with left what it had not read
+		in the system's buffer, read a frame later behind what came since, so
+		every call waited the length of the queue: 1,000 sessions at 60 ticks
+		a second waited 350 ms, where over TCP, slowing the tick instead,
+		they waited 14.
+	**/
+	@:noCompletion public function __readFor(peers:Int):Void {
+		final reads:Int = peers * READS_PER_PEER;
+		__readsPerPass = reads > MAX_DATAGRAMS_PER_TICK ? reads : MAX_DATAGRAMS_PER_TICK;
+	}
+
+	// What a pass may read for each peer of a socket read for many.
+	@:noCompletion private static inline var READS_PER_PEER:Int = 8;
+
 	// How many datagrams a batch takes in at first, and at most: a read that
 	// fills one doubles it for the next, up to the most.
 	@:noCompletion private static inline var BATCH_FIRST:Int = 8;
@@ -1437,7 +1459,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var single:Int = 0;
 		var asked:Bool = false;
 		#end
-		while (__receiving && processed < MAX_DATAGRAMS_PER_TICK) {
+		while (__receiving && processed < __readsPerPass) {
 			var bytesReady:Int = 0;
 			var pooled:Bool;
 			var payload:ByteArray;
@@ -1455,7 +1477,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 					asked = true;
 					var taken:Int;
 					try {
-						taken = __batchRead(MAX_DATAGRAMS_PER_TICK - processed);
+						taken = __batchRead(__readsPerPass - processed);
 					} catch (e:Dynamic) {
 						__onReadFailed(Std.string(HxIOError.Custom(e)));
 						return;
@@ -1585,7 +1607,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		// the rest are read before it waits rather than a frame later, which
 		// would hold a server polled once a frame to 1,024 datagrams a frame
 		// (12,288 a second at twelve ticks) however many came.
-		if (processed >= MAX_DATAGRAMS_PER_TICK && __cbInstance != null) {
+		if (processed >= __readsPerPass && __cbInstance != null) {
 			@:privateAccess __cbInstance.__noteMoreToRead();
 		}
 	}

@@ -923,6 +923,56 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A socket read for many peers at once (a reliable UDP server's, for
+		all its sessions) takes a share for each in one pass, as each TCP
+		connection takes its own: 500 peers' socket takes 3,001 datagrams in
+		one, where a socket for one takes 1,024. At 1,024 a pass a server out
+		of processor time left the rest in the system's buffer to be read a
+		frame later, behind everything since, and every call waited the
+		length of that queue.
+	**/
+	public function testASocketReadForManyPeersTakesAShareForEachInAPass():Void {
+		#if (cpp || jvm)
+		if (!requireDatagramSupport()) return;
+		for (peers in [1, 500]) {
+			var receiver = new DatagramSocket();
+			var flood = new FloodUdpSocket();
+			var received:Int = 0;
+			#if cpp
+			var batches:Bool = DatagramSocket.__batchReads;
+			DatagramSocket.__batchReads = false;
+			#end
+			try {
+				flood.setBlocking(false);
+				try receiver.__socket.close() catch (_:Dynamic) {}
+				flood.custom = receiver;
+				receiver.__socket = flood;
+				receiver.bind(0, "127.0.0.1");
+				receiver.addEventListener(DatagramSocketDataEvent.DATA, function(_) received++);
+				receiver.receive();
+				receiver.__readFor(peers);
+				flood.remaining = 3001;
+				// One pass: the share it takes, and no more.
+				receiver.registryOnReadable();
+				Assert.equals(peers == 1 ? 1024 : 3001, received, '$peers peers\' socket read $received in a pass');
+			} catch (e:Dynamic) {
+				#if cpp
+				DatagramSocket.__batchReads = batches;
+				#end
+				closeQuietly(receiver);
+				throw e;
+			}
+			#if cpp
+			DatagramSocket.__batchReads = batches;
+			#end
+			closeQuietly(receiver);
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		A burst read in batches (Linux, natively: `recvmmsg`, up to 64 a call)
 		arrives as read one at a time: every datagram whole, in the order each
 		sender sent it, named as from its sender, the largest UDP carries over

@@ -48,13 +48,29 @@ class AllocationMeter {
 		the rest reuse, and the jvm compiles it only after a few thousand.
 	**/
 	public static function measure(op:Void->Void, count:Int, rounds:Int = 3):AllocationReading {
+		return __measure(op, count, rounds, false);
+	}
+
+	/**
+		As `measure`, but natively only what `op` allocates in objects of
+		4,000 bytes or more, which the collector counts exactly: for an
+		operation whose purpose is a large buffer and whose small objects,
+		a kilobyte or so, cross a hole of a heap the suite has fragmented
+		nearly every time, so `measure` counts too few of them. On the jvm
+		the same as `measure`.
+	**/
+	public static function measureLarge(op:Void->Void, count:Int, rounds:Int = 3):AllocationReading {
+		return __measure(op, count, rounds, true);
+	}
+
+	private static function __measure(op:Void->Void, count:Int, rounds:Int, largeOnly:Bool):AllocationReading {
 		var samples:Array<Float> = [];
 		var times:Array<Float> = [];
 		var background:Float = 0.0;
 		var counted:Float = 1.0;
 
 		for (_ in 0...rounds) {
-			var run:Run = __run(op, count);
+			var run:Run = __run(op, count, largeOnly);
 			samples.push(run.perOperation);
 			times.push(run.seconds / count);
 			if (run.background > background) {
@@ -93,15 +109,18 @@ class AllocationMeter {
 		#end
 	}
 
-	private static function __run(op:Void->Void, count:Int):Run {
+	private static function __run(op:Void->Void, count:Int, largeOnly:Bool):Run {
 		#if cpp
+		if (largeOnly) {
+			return __nativeRun(op, count, true);
+		}
 		// A heap the suite has fragmented leaves small holes, which more of the
 		// operations cross: in the full suite a fifth to a third of them are
 		// counted, against nine in ten alone. Too few to trust is run again,
 		// on the holes the next collection leaves.
 		var run:Run = null;
 		for (_ in 0...5) {
-			run = __nativeRun(op, count);
+			run = __nativeRun(op, count, false);
 			if (run.counted * count >= MIN_COUNTED) {
 				return run;
 			}
@@ -138,7 +157,7 @@ class AllocationMeter {
 	/** Operations a native run counts at least, or it is run again. **/
 	private static inline var MIN_COUNTED:Int = 50;
 
-	private static function __nativeRun(op:Void->Void, count:Int):Run {
+	private static function __nativeRun(op:Void->Void, count:Int, largeOnly:Bool):Run {
 		// Collected first, so the run starts in fresh holes, and not again
 		// until it is read: a collection resets the thread's allocator and
 		// frees the large objects counted.
@@ -183,6 +202,9 @@ class AllocationMeter {
 			throw error;
 		}
 		cpp.vm.Gc.enable(true);
+		if (largeOnly) {
+			return new Run(large / count, background, 1.0, took);
+		}
 		return new Run(counted > 0 ? small / counted + large / count : 0.0, background, counted / count, took);
 	}
 

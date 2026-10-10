@@ -361,6 +361,20 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
 - Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
   `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+  `withTimeout(ms)` on a commands class gives the next call a deadline of
+  its own, a call made with a receiver included
+  (`commands.withTimeout(2000).joinThen(room, receiver)`). Every deadline
+  waits in one heap a session, under one timer, so a call's deadline
+  allocates nothing, whatever its length.
+- Deadlines and cancellation reach the handler, as gRPC's do: a call's
+  deadline goes with it, and a call its caller cancels (`cancelCall`) or
+  times out is cancelled on the other side. A handler reads its call as
+  `RPCHandler.currentCall` (`RPCSession.currentCall` for a runtime
+  handler), an `RPCCall` with `deadline`, `timeLeft`, `cancelled`, `reason`
+  and `onCancel`; one answering later stops counting against
+  `maxCallsWaiting` once its caller has stopped waiting, and is not
+  answered. Negotiated in the hello, so a peer without it is sent neither;
+  a call whose handler never reads `currentCall` costs nothing for it.
 - Calls that allocate nothing: each request method has a twin ending in
   `Then` (`joinThen(room, receiver)`) that hands its answer to a receiver
   instead of returning an `RPCResponse`: `RPCIntReceiver`,
@@ -373,7 +387,16 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
   `up`.
 - Errors: `crossbyte.rpc.RPCError`, whose message reaches the caller, and
-  `RPCSession.onHandlerError` and `onUnreadableFrame`.
+  `RPCSession.onHandlerError` and `onUnreadableFrame`. `RPCResponse.failure`
+  says why a future's call failed as the `RPCFailure` a receiver is told
+  (`TimedOut`, `Cancelled`, `Stopped`, `Disconnected`, `Unsent`,
+  `Unreadable`), and a refusal says what refused it: `Refused(message)` for
+  the handler's own `RPCError`, and `UnknownMethod`, `UnreadableArguments`,
+  `Busy`, `NoHandler`, `HandlerTimedOut` and `HandlerFailed` for the
+  session's own refusals, carried as a code after the error answer's
+  message and passed on by a handler that answers with a refused call.
+  A handler refuses with those cases itself, as a gRPC handler answers with
+  a status code, through `RPCError.refusal(Busy, "Slow down.")`. (Upgrading)
 - Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
   `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
 - Contracts, handlers and commands classes can extend others of their
@@ -383,6 +406,35 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `peerAnswersFingerprint` and `onHello`.
 - `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
+- Large answers in pieces: an answer longer than `RPCSession.chunkLength`
+  (64 KiB) goes in pieces between the frames sent while it goes, as HTTP/2's
+  DATA frames do, so a small call behind a large answer is not held up for
+  the whole of it. Natively over loopback TCP, with a 64 MB answer in flight
+  a small call took 3 ms (p50) and 15 ms (p99) where it took 56 and 98, the
+  large answer going as fast; over reliable UDP, behind an 8 MB answer,
+  2.7 ms where it took 22. Over a WebSocket an answer past its 1 MiB
+  `maxMessageSize` now arrives, where it closed the connection, and over
+  reliable UDP one past its 256 KB `maxOutputBufferSize`, where it ended
+  the session. Up to four answers go at once; what waits
+  counts toward `maxOutputPending`, and each answer toward the reader's
+  `maxFrameLength`. Negotiated in the hello, so a peer without it gets whole
+  answers. Calls keep their order; an answer in pieces can complete after a
+  frame sent later, and `chunkLength = 0` sends every answer whole. The
+  guide's "On the wire" describes every frame. An answer of one `Bytes` is
+  put together in that `Bytes`, and a large frame is written in storage
+  the runtime keeps: on the jvm an 8 MB answer over TCP, both ends
+  counted, allocates its size once, where whole it allocated 3.5 times.
+  Over a WebSocket an 8 MB answer goes faster than whole (940 MB/s against
+  720 on the jvm, 1,140 against 860 natively).
+- `RPCSession.maxOutputPending` (16 MiB): over TCP or WebSocket, a peer that
+  sends calls and never reads their answers is closed once that much waits
+  unsent for it, where every answer waited in memory without end (one such
+  client took a server past 2 GB in twelve seconds).
+- A typed `session` in handlers: `extends RPCHandler<ListenerCommands, Player>`
+  makes `session` an `RPCSession<ListenerCommands, Player>`, so a handler
+  calls its client back through typed stubs and reads `session.data` as a
+  `Player`. A session whose commands are of another class refuses such a
+  handler with an `ArgumentError`. (Upgrading)
 - RPC on Node and in a browser.
 - An RPC guide, `docs/rpc.md`.
 
@@ -558,6 +610,10 @@ says how.
 
 #### TCP
 
+- A URI that `NetConnection`, `NetHost` or `parseURL` cannot use throws an
+  `ArgumentError` naming it, with what is wrong or the schemes that would
+  work, where it threw a bare string such as "Protocol error" or
+  "missing host". (Upgrading)
 - On the jvm under Java 8 a select allocates nothing: the selector puts
   the sockets it finds ready in an array CrossByte gives it, as Netty
   does, where it added each to a set. A TCP echo, a datagram and a
@@ -659,6 +715,13 @@ says how.
   (`WINDOW_BUFFER_SIZE`). Natively over loopback, 1,000-byte messages
   under 1% loss went from 0.35 to 58 MB/s, and 100-byte messages from
   45,000 to 258,000 a second.
+- A server asks for a 7 MiB receive buffer
+  (`ReliableDatagramServerSocket.RECEIVE_BUFFER_SIZE`), as QUIC servers do,
+  since every session reads from its one socket, and logs once if the
+  system grants less, naming the setting to raise (`net.core.rmem_max` on
+  Linux). On Linux at 2,000 clients a 1 MiB buffer dropped 369,000
+  datagrams in ten seconds and calls took 6.7 s at p99; with 4 MiB, none
+  and 51 ms. A `receiveBufferSize` that is set is kept.
 - A session holds an acknowledgement up to `ackDelay` (25 ms) for
   something it sends to carry it, halving a game server's datagrams.
   (Upgrading)
@@ -773,6 +836,30 @@ says how.
 
 #### RPC
 
+- An RPC session over reliable UDP no longer copies each message that
+  arrives: the connection hands a reader that keeps nothing (a session
+  reading its frames) the message itself. An RPC call there and its answer
+  allocate nothing natively or on the JVM, where they allocated 344 and
+  168 bytes.
+- A frame larger than its reader takes is refused and read past, and the
+  connection goes on: a call past the reader's `maxFrameLength` or past what
+  its TCP socket holds (`maxInputBufferSize`), which waited for good there,
+  fails `RPCFailure.TooLarge` at once, as does an answer past the caller's
+  limit, or past what the answering side's local IPC carries. A call over a
+  WebSocket larger than 64 KiB goes as several messages, where one past the
+  peer's 1 MiB `maxMessageSize` closed the connection; one over reliable UDP
+  past its `maxOutputBufferSize`, or over local IPC past its 8 MiB message,
+  fails `Unsent` as it is made, where it ended the session or went nowhere.
+  A frame past the reader's `maxFrameLength` ended the connection.
+- `RPCSession.onUnreadableFrame` is a property, and the reason it is told
+  is made only once it is set: a call for a method the other side has not
+  got, refused to a receiver, allocates nothing where it allocated 240 bytes
+  natively and 1,208 on the JVM.
+- A `NetConnection` wrapping an `INetConnection` of your own stamps
+  `outTimestamp` with its runtime's clock as it sends, as CrossByte's own
+  transports do, rather than reading the wrapped connection's: on the jvm
+  that read was reflection, 24 bytes a send, and an RPC call over such a
+  connection now allocates nothing there.
 - A compiled call is named on the wire by a hash of its method's signature,
   not its name alone, so two builds with different signatures no longer
   read each other's bytes as their own. (Upgrading)
@@ -851,6 +938,11 @@ says how.
 - `LocalConnection` and `SharedChannel` write what a pass sent in one
   write and deliver up to 2 ms of messages a pass, where they delivered 32
   a tick: 4 KB messages went from 20 to 120 MB/s.
+- On Windows, a `LocalConnection`'s reader wakes as data arrives rather
+  than at its next look, 1 to 10 ms later: the writer rings an event the
+  reader waits on, as a Linux or macOS reader waits on its socket. An RPC
+  round trip over local IPC takes 0.1 ms (p50) where it took 2.9 (TCP over
+  loopback: 0.05), and an idle connection costs nothing more.
 - `System` asks the operating system directly rather than starting a
   process, and throws where nothing answers. (Upgrading)
 - A native Windows build no longer raises its process to
@@ -1004,6 +1096,9 @@ Fixes to code new in this release are not listed.
   the end of a connection throws `Eof`.
 - `NetConnection.close()` on a connection that has already ended does
   nothing, and a `NetConnection`'s timestamps come from its own runtime.
+- A `NetConnection` over TCP, WebSocket or reliable UDP reads `connected` as
+  `false` inside its `onClose`, in a page as natively, where one that closed
+  itself still read `true` there.
 - A URL port too large for an `Int` is refused the same way on every target.
 - IPv6 addresses are written in RFC 5952 form on every target.
 
@@ -1034,11 +1129,26 @@ Fixes to code new in this release are not listed.
 - A session is no longer closed when its socket's send buffer is
   momentarily full.
 - A `NetConnection` over reliable UDP reports deadlines as `Reason.Timeout`.
+- A reliable UDP server out of processor time slows its tick, as one over
+  TCP does, where it let what arrived wait in the system's buffer: its socket
+  read 1,024 datagrams a pass for all its sessions, so the rest were read a
+  frame later behind everything since. It now reads eight a session (1,024
+  at the least). Natively, one runtime at 60 ticks a second and 1,000 game
+  clients each sending three calls a tick: a call's round trip 21 ms (p50)
+  and 39 ms (p99) where it was 350 ms and 2.5 s; on the jvm 20 and 37 where
+  it was 342 ms and 2.6 s.
+- A `NetConnection` over a reliable UDP session in `STREAM` mode hands
+  `onData` the stream's own input, as one over TCP does, so what a reader
+  leaves unread is there at the next arrival. Each arrival was handed over
+  in a buffer of its own, and the unread part went with it: an RPC call
+  larger than a datagram ended the connection as one whose framing was lost.
 - Closing a session from its own `DATA` handler no longer reports an error.
 - On neko, hl and the interpreter a session's clock never runs backwards.
 
 #### WebSocket
 
+- In a browser `NetConnection` takes `ws://` and `wss://`, so a page reaches
+  an RPC server at the URI it listens on; both threw "Protocol error".
 - A server receives a client's first message: the handshake's bytes stayed
   in the buffer and every session closed with 1002.
 - The last message before a disconnect is delivered, and a full send buffer
@@ -1127,6 +1237,12 @@ Fixes to code new in this release are not listed.
 
 #### RPC
 
+- A contract may name a method `input` or `requestId`, and an argument
+  `requestId` or `framed`: the build failed ("ByteArrayInput cannot be
+  called", a duplicate argument, or the frame written as the argument).
+- `onHandlerError`'s default report says a handler that ran out of time
+  (its `handlerTimeout`, or a call it forwarded) did not answer in time,
+  where it said the handler threw.
 - A frame that names a count or length larger than itself is refused before
   anything is allocated, and a frame too short for what it carries no longer
   reads into the next frame.
@@ -1144,6 +1260,16 @@ Fixes to code new in this release are not listed.
   more than about sixty requests, builds and loads: its generated dispatch
   or reader passed the 32 KB of bytecode the JVM backend can branch across,
   failing the build (`IO.Overflow`) or the class at load (`VerifyError`).
+  Then past about 160 methods, the method through which the JVM backend
+  reaches a class's fields did the same: a commands class or handler now
+  loads with some 300 methods (the generated helpers are static or inlined
+  away), and one past what the JVM can load fails the build, saying how to
+  split its contract.
+- Natively, a handler of some 300 methods ended the process at its first
+  call: every method's decoder was inlined into its dispatch, whose frame
+  grew past the stack. Past 32 methods each is a call of its own, which is
+  also quicker there (a one-way call to a handler of 70 methods 58-68 ns,
+  where it took 70-83).
 - `RPCResponse.respond()` replaces the responder, as documented.
   (Upgrading)
 - A contract extending another carries the parent's methods; a handler
@@ -1226,6 +1352,11 @@ Fixes to code new in this release are not listed.
   and Node running on Windows.
 - `System.totalCpuUsage()`, `getDeviceId()`, `processorCount` on macOS and
   `memoryUsage()` past 2 GiB answer correctly.
+- On eval and neko, counts past 2^31 no longer wrap negative: a client
+  socket's `OutputProgressEvent.bytesTotal`, a `Counter` after `reset()`, a
+  `Gauge` after `set()`, a total of `MongoConnection.count()` answers, and
+  the HTTP/2 server's request-body budget with tens of thousands of
+  concurrent streams.
 - `SharedObject` opens on macOS, reads a region whole under one lock, and
   no longer replaces `data` with `{}` on a race.
 - `LocalConnection`: a peer that stops reading no longer stalls this side,
@@ -1394,6 +1525,8 @@ an API added in this release has is not listed here.
 
 #### TCP
 
+- Code that caught a `String` from `new NetConnection(uri)`, `new
+  NetHost(uri)` or `parseURL` catches a `crossbyte.errors.ArgumentError`.
 - `ServerSocket.listen()`, and `ServerWebSocket.listen()`, throw an
   `IOError` for a server never bound, where Linux and macOS listened on a
   port of the system's choosing: bind first, to port 0 for one the system
@@ -1638,6 +1771,58 @@ an API added in this release has is not listed here.
   build fails; undeclared, it was taken for `Void` and never answered. A
   contract can no longer name a method `beforeCall`, `afterCall`,
   `dispatch` or `session`, which `RPCHandler` declares.
+- A handler that calls its clients back names the sessions it serves, and
+  its `session` is typed; a cast of `session`, or a call through
+  `session.commands` that went through `Dynamic`, is no longer needed.
+  `extends RPCHandler` with no parameters still serves any session.
+
+  Before:
+
+  ```haxe
+  class RoomServer extends RPCHandler implements ChatContract {
+  	public function say(room:String, text:String):Void {
+  		final caller:RPCSession<ListenerCommands, String> = cast session;
+  		caller.commands.said(room, text);
+  	}
+  }
+  ```
+
+  After:
+
+  ```haxe
+  class RoomServer extends RPCHandler<ListenerCommands, String> implements ChatContract {
+  	public function say(room:String, text:String):Void {
+  		session.commands.said(room, '${session.data}: $text');
+  	}
+  }
+  ```
+- A call the other side's session refused fails with a case of `RPCFailure`
+  of its own (`UnknownMethod`, `UnreadableArguments`, `Busy`, `NoHandler`,
+  `HandlerTimedOut`, `HandlerFailed`), where it was `Refused` with one of
+  `RPCError`'s messages; `Refused(message)` is now only a handler's own
+  `RPCError`. A `switch` that lists every case needs the new ones, and one
+  that compared a message matches the case instead.
+
+  Before:
+
+  ```haxe
+  switch (failure) {
+  	case Refused(message) if (message == RPCError.BUSY_MESSAGE): retryLater();
+  	case Refused(message): trace('refused: $message');
+  	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
+  }
+  ```
+
+  After:
+
+  ```haxe
+  switch (failure) {
+  	case Busy: retryLater();
+  	case Refused(message): trace('refused: $message');
+  	case UnknownMethod | UnreadableArguments | NoHandler | HandlerTimedOut | HandlerFailed: giveUp();
+  	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
+  }
+  ```
 
 #### Data
 
