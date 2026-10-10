@@ -1223,6 +1223,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			__sessionList[at] = last;
 			last.__listedAt = at;
 		}
+		__shareReads();
 	}
 
 	/**
@@ -2075,6 +2076,14 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		if (socket.__listedAt < 0) {
 			socket.__listedAt = __sessionList.length;
 			__sessionList.push(socket);
+			__shareReads();
+		}
+	}
+
+	/** Its socket reads a share for each session in a pass; see `DatagramSocket.__readFor`. **/
+	@:noCompletion private inline function __shareReads():Void {
+		if (__socket != null) {
+			@:privateAccess __socket.__readFor(__sessionList.length);
 		}
 	}
 

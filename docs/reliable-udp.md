@@ -171,3 +171,11 @@ pool keeps what the busiest pass needed while passes go on taking chunks; what a
 seconds more as spare, so a server pausing between matches takes its chunks back, and once ten to fifteen seconds
 pass with none taken, all but one chunk go. A 1 KB broadcast to 10,000 sessions holds 10 MB of chunks while the
 server keeps broadcasting and 0.2 MB once it is quiet.
+
+**What a pass reads.** A server's socket reads up to eight datagrams a session in a pass (1,024 at the least), as
+each TCP connection reads its own, and what is left is read again before the loop waits. A server with more sessions
+than its runtime has processor time for slows its tick, as one over TCP does, rather than leaving what arrives in the
+system's buffer to be read a frame later behind everything since: natively on one runtime at 60 ticks a second, with
+each of 1,000 game clients sending three calls a tick, a call took 21 ms (p50) and 39 ms (p99), at
+35 ticks a second where 60 were asked for. The runtime's `loopLag` and `frameOverruns` say so. A server is
+one runtime's: to use more cores, run a server per runtime, each on a port of its own.
