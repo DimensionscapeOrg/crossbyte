@@ -1053,7 +1053,18 @@ Fixes to code new in this release are not listed.
 - Writing past the end of a `ByteArray` zeroes the gap, where it could
   expose earlier contents (on eval too).
 - A multi-byte read that cannot be satisfied throws without moving
-  `position`.
+  `position`, `readDouble` and `readUTF` included (each moved it part of
+  the way).
+- A `ByteArray` read with the position far past the end is an `EOFError`:
+  near 2^31 the check wrapped and passed, and natively the read answered 0
+  as if the bytes were there, where eval and the jvm threw errors of their
+  own. A write whose end would pass 2^31 - 1 bytes is a `RangeError`,
+  where natively it grew the buffer toward 2 GB a byte at a time. A
+  position of 2^31 or more is refused with a `RangeError`.
+- `ByteArray`'s `[]` reads 0 outside its bytes, where past `length` it
+  read what was there before the array was shortened (natively and on the
+  jvm), and a negative index written is a `RangeError`. `bytesAvailable`
+  is 0 with the position past the end, not about four billion.
 - The varint writers write every 32-bit value (bit 31 set went out as one
   byte), and the readers refuse a value past 32 bits.
 - `writeUTF` refuses a string over 65,535 bytes with a `RangeError`, where

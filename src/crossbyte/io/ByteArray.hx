@@ -166,6 +166,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Moves, or returns the current position, in bytes, of the file pointer into
 		the ByteArray object. This is the point at which the next call to a read
 		method starts reading or a write method starts writing.
+
+		It may be past the end: a read there is an EOFError, and a write
+		there zero-fills the gap. It may not be 2^31 or more, past the largest
+		ByteArray, which is a RangeError.
 	**/
 	public var position(get, set):UInt;
 
@@ -292,8 +296,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return ByteArrayData.fromBytes(Bytes.ofData(bytesData));
 	}
 
+	// Outside the bytes, 0: past `length` the buffer may still hold what
+	// was there before the ByteArray was shortened, and past the buffer
+	// each target did something of its own.
 	@:arrayAccess @:noCompletion private inline function get(index:Int):Int {
-		return this.get(index);
+		return index >= 0 && index < this.length ? this.get(index) : 0;
 	}
 
 	/**
@@ -527,6 +534,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
+		if (index < 0) {
+			throw new RangeError('A ByteArray has no index $index.');
+		}
 		this.__resize(index + 1, -1);
 		this.set(index, value);
 
@@ -821,6 +831,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:noCompletion private inline function set_position(value:UInt):UInt {
+		// From 2^31 up a UInt is a negative Int, and every read and write
+		// went wrong from there, each target its own way.
+		if ((value : Int) < 0) {
+			throw new RangeError('A ByteArray position is below 2^31, and $value is not.');
+		}
 		return this.position = value;
 	}
 }
@@ -1025,17 +1040,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readDouble():Float {
-		if (endian == LITTLE_ENDIAN) {
-			var low = readInt();
-			var high = readInt();
-
-			return FPHelper.i64ToDouble(low, high);
-		} else {
-			var high = readInt();
-			var low = readInt();
-
-			return FPHelper.i64ToDouble(low, high);
+		// All eight bytes checked first: read as two Ints, the first moved the
+		// position before the second found the stream cut short.
+		var at = position;
+		if (at > __available() - 8) {
+			throw new EOFError();
 		}
+		position = at + 8;
+		if (__endian == LITTLE_ENDIAN) {
+			return FPHelper.i64ToDouble(getInt32(at), getInt32(at + 4));
+		}
+		return FPHelper.i64ToDouble(__swap32(getInt32(at + 4)), __swap32(getInt32(at)));
 	}
 
 	public function readFloat():Float {
@@ -1045,7 +1060,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function readInt():Int {
 		var at = position;
 
-		if (at + 4 > __available()) {
+		// Against what is left, not `at + 4`, which a position near 2^31
+		// wraps negative, passing the check.
+		if (at > __available() - 4) {
 			throw new EOFError();
 		}
 
@@ -1055,7 +1072,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readInt64():Int64 {
-		if (position + 8 > length) {
+		if (position > length - 8) {
 			throw new EOFError();
 		}
 
@@ -1263,7 +1280,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function readUnsignedShort():Int {
 		var at = position;
 
-		if (at + 2 > __available()) {
+		if (at > __available() - 2) {
 			throw new EOFError();
 		}
 
@@ -1273,7 +1290,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readUTF():String {
+		// The text checked before anything moves, so a string cut short
+		// leaves the position at its length, for a reader to try again.
+		var at = position;
 		var bytesCount = readUnsignedShort();
+		if (bytesCount > __available() - position) {
+			position = at;
+			throw new EOFError();
+		}
 		return readUTFBytes(bytesCount);
 	}
 
@@ -1528,14 +1552,26 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function writeDouble(value:Float):Void {
 		var int64 = FPHelper.doubleToI64(value);
+		__writeInt32Pair(int64.low, int64.high);
+	}
 
-		if (endian == LITTLE_ENDIAN) {
-			writeInt(int64.low);
-			writeInt(int64.high);
-		} else {
-			writeInt(int64.high);
-			writeInt(int64.low);
+	/**
+		Two Ints as one 64-bit value, low word first in little-endian and high
+		first in big: room made for all eight bytes at once, so a write that
+		cannot fit leaves nothing half written.
+	**/
+	@:noCompletion private inline function __writeInt32Pair(low:Int, high:Int):Void {
+		if (!__room(8)) {
+			__resize(position + 8, position);
 		}
+		if (__endian == LITTLE_ENDIAN) {
+			setInt32(position, low);
+			setInt32(position + 4, high);
+		} else {
+			setInt32(position, __swap32(high));
+			setInt32(position + 4, __swap32(low));
+		}
+		position += 8;
 	}
 
 	public function writeFloat(value:Float):Void {
@@ -1553,13 +1589,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeInt64(value:Int64):Void {
-		if (endian == LITTLE_ENDIAN) {
-			writeUnsignedInt(value.low);
-			writeUnsignedInt(value.high);
-		} else {
-			writeUnsignedInt(value.high);
-			writeUnsignedInt(value.low);
-		}
+		__writeInt32Pair(value.low, value.high);
 	}
 
 	public function writeMultiByte(value:String, charSet:String):Void {
@@ -1746,6 +1776,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		being reused for something else must never allow.
 	**/
 	@:noCompletion private function __resize(size:Int, overwriteFrom:Int):Void {
+		// A write's end past 2^31 - 1 wraps negative, and nothing would grow:
+		// natively the bytes then asked the buffer to grow itself to 2 GB, a
+		// byte at a time, and the jvm threw an index error of its own.
+		if (size < 0) {
+			throw new RangeError("A ByteArray holds at most 2^31 - 1 bytes.");
+		}
+
 		// The logical end before anything moves: everything above this is
 		// either capacity nobody has been shown or bytes already given back.
 		var exposedFrom:Int = length;
@@ -1812,7 +1849,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	// Get & Set Methods
 	@:noCompletion private inline function get_bytesAvailable():Int {
-		return length - position;
+		// None with the position past the end, not a negative count a UInt
+		// shows as about four billion.
+		var available:Int = length - position;
+		return available > 0 ? available : 0;
 	}
 
 	@:noCompletion private inline static function get_defaultEndian():Endian {
