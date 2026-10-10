@@ -440,7 +440,10 @@ class LocalConnectionTest extends utest.Test {
 
 		closeQuietly(client);
 		LocalConnection.__close(peer);
-		Assert.isTrue(slowest < 0.25, 'a send waited ${slowest}s for a peer that was not reading');
+		// A send held by the peer waits five seconds on Windows and for good
+		// elsewhere; a second tells that apart from a slow machine, where a
+		// macOS runner has taken 0.26 s for a megabyte.
+		Assert.isTrue(slowest < 1.0, 'a send waited ${slowest}s for a peer that was not reading');
 		Assert.isFalse(client.connected, 'still connected after $sends sends of 1 MB that nobody read');
 		Assert.isTrue(closed, "the connection was not closed");
 		Assert.isTrue(closedWith != null && closedWith.indexOf("not reading") >= 0, 'it was closed with $closedWith');
