@@ -224,8 +224,14 @@ class VectorImpl<T> {
 		return __array.lastIndexOf(searchElement, fromIndex);
 	}
 
-	public function map(callback:VectorCallback<T, Dynamic>, thisObject:Object = null):Vector<T> {
-		var out:Array<T> = [];
+	/**
+		A new vector of what `callback` returns for each item, in order. Typed
+		by what the callback returns: an `Int` vector mapped to text is a
+		`Vector<String>`. ActionScript's `map` keeps the element type, which a
+		callback returning that type still does here.
+	**/
+	public function map<R>(callback:VectorCallback<T, R>, thisObject:Object = null):Vector<R> {
+		var out:Array<R> = [];
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
 		var count:Int = __array.length;
