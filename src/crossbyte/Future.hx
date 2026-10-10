@@ -325,7 +325,15 @@ class Future<T> implements IEventDispatcher {
 			}
 
 			future.then(function(value:T):Void {
+				// Under the joined future's lock: each input's handler runs on
+				// the thread that completes it, so two can run at once, and a
+				// count kept outside it lost decrements and never reached zero.
+				// Holding it also makes every value written here visible to
+				// whichever thread resolves. Let go before resolving, which
+				// takes the same lock and is not re-entrant.
+				joined.__acquire();
 				if (joined.completed) {
+					joined.__release();
 					return;
 				}
 
@@ -333,8 +341,10 @@ class Future<T> implements IEventDispatcher {
 				// they can match their inputs against.
 				values[index] = value;
 				remaining--;
+				var last:Bool = remaining == 0;
+				joined.__release();
 
-				if (remaining == 0) {
+				if (last) {
 					joined.__resolve(values);
 				}
 			}, (message:String) -> joined.__fail(message, future.cause));
