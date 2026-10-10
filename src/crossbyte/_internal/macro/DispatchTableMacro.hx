@@ -1,4 +1,4 @@
-package crossbyte.ds;
+package crossbyte._internal.macro;
 
 #if macro
 import haxe.macro.Context;
@@ -6,118 +6,20 @@ import haxe.macro.Expr;
 import haxe.macro.ExprTools;
 import haxe.macro.Type;
 import haxe.macro.TypeTools;
-#end
 
 /**
-	Links ids to the functions that handle them, as a `switch` a macro builds:
-	no lookup, no map, nothing allocated at a dispatch.
-
-	Every handler takes the same arguments, and every key is a constant of
-	one type: an `Int`, a `String`, or an enum abstract over either. So a
-	dispatch is typed where it is written, and a handler that takes other
-	arguments, a key of another type, a key that is not a constant, or two
-	keys of one value are compile errors, not surprises at run time.
-
-	## A table of methods
-
-	The fastest form, and the one to reach for. A class built by
-	`SwitchTable.build()` whose methods carry `@:case` gets `call`, `exists`,
-	`get`, `keys` and `size`, and `call` is inlined where it is written: a
-	dispatch is a `switch` there, calling the method directly, as fast as the
-	same `switch` written out by hand. It is faster than an `Array` of
-	functions, which pays a call through a function value at every dispatch.
-
-	```hx
-	enum abstract Opcode(Int) {
-		var PING = 1;
-		var LOGIN = 2;
-		var RELOGIN = 3;
-		var QUIT = 4;
-	}
-
-	@:build(crossbyte.ds.SwitchTable.build())
-	class Opcodes {
-		public var pings:Int = 0;
-		public var players:Array<String> = [];
-
-		public function new() {}
-
-		@:case(Opcode.PING) function ping(name:String):Void {
-			pings++;
-		}
-
-		@:case(Opcode.LOGIN, Opcode.RELOGIN) function login(name:String):Void {
-			players.push(name);
-		}
-
-		@:default function unknown(op:Opcode, name:String):Void {
-			trace('$name sent $op, which nothing handles');
-		}
-	}
-	```
-
-	```hx
-	var opcodes = new Opcodes();
-	opcodes.call(Opcode.LOGIN, "ada");
-	opcodes.call(Opcode.QUIT, "ada"); // unknown(QUIT, "ada")
-	trace(opcodes.exists(Opcode.PING)); // true
-	trace(Opcodes.keys.length + " keys"); // 3 keys
-	```
-
-	The cases are all instance methods, as here, with the table's state in
-	its fields, or all static, for `Opcodes.call(...)`. A method takes one or
-	more keys. Without `@:default`, a key no case names throws an
-	`ArgumentError` naming it. The generated members are:
-
-	- `call(key, ...args)`: the case's method, or the default.
-	- `exists(key)`: whether a case names `key`.
-	- `get(key)`: the case's method as a function value, or null.
-	- `keys`: every key, in the order written, and `size`, how many.
-
-	## A table made in place
-
-	`make` builds the same `switch` into a function, from handlers written
-	where it is made, which can use the variables around them. A handler
-	written as a function is copied into its case rather than called.
-
-	```hx
-	var total:Int = 0;
-	var dispatch = SwitchTable.make([
-		{key: "ADD", handler: (amount:Int) -> total += amount},
-		{key: "TAKE", handler: (amount:Int) -> total -= amount}
-	], (op:String, amount:Int) -> trace('no case for $op'));
-
-	dispatch("ADD", 5);
-	dispatch("TAKE", 2); // total is 3
-	```
-
-	It is a function value, so each dispatch is a call through one: on the
-	jvm and HashLink that costs about what a table of methods does, and
-	natively and on Node two to three times as much (natively, such a call
-	boxes its `Int` arguments). Reach for a table of methods where a
-	dispatch is in a hot loop.
-
-	A handler returns nothing unless it declares what it returns
-	(`function(v:Int):Int return v * 2`): an arrow function's body is an
-	expression, and `(v) -> total += v` would otherwise make every handler
-	answer an `Int` nobody asked for, which natively is boxed.
+	`DispatchTable` and `Dispatch.make`: each builds a `switch` from cases
+	whose keys are constants of one type and whose handlers take the same
+	arguments, checked as it is compiled.
 **/
-class SwitchTable {
-	/**
-		A function dispatching each key to its case's handler: `(key, ...args)`,
-		typed by the handlers.
-
-		@param cases `{key, handler}` for each case. The handlers take the same
-		       arguments; the keys are constants of one type.
-		@param otherwise Takes the key and the arguments when no case names the
-		       key. Without one, such a key throws an `ArgumentError`.
-	**/
-	public static macro function make(cases:ExprOf<Array<SwitchCase>>, ?otherwise:Expr):Expr {
+class DispatchTableMacro {
+	/** `Dispatch.make`: a function holding the switch. **/
+	public static function make(cases:Expr, otherwise:Null<Expr>):Expr {
 		var keys:Array<Expr> = [];
 		var handlers:Array<Expr> = [];
 		var entries:Array<Expr> = switch (cases.expr) {
 			case EArrayDecl(values): values;
-			default: Context.error("SwitchTable.make takes an array of { key, handler }", cases.pos);
+			default: Context.error("Dispatch.make takes an array of { key, handler }", cases.pos);
 		}
 		for (entry in entries) {
 			switch (entry.expr) {
@@ -144,7 +46,7 @@ class SwitchTable {
 			}
 		}
 		if (keys.length == 0) {
-			Context.error("A SwitchTable needs at least one case", cases.pos);
+			Context.error("A DispatchTable needs at least one case", cases.pos);
 		}
 		var hasOtherwise:Bool = otherwise != null && switch (otherwise.expr) {
 			case EConst(CIdent("null")): false;
@@ -153,21 +55,21 @@ class SwitchTable {
 
 		var keyType:Type = __keyType(keys);
 		var signature:Signature = __handlerSignature(handlers);
-		var args:Array<Expr> = [for (i in 0...signature.args.length) macro $i{"__switchTableArg" + i}];
+		var args:Array<Expr> = [for (i in 0...signature.args.length) macro $i{"__dispatchArg" + i}];
 
 		var statements:Array<Expr> = [];
 		var switchCases:Array<Case> = [];
 		for (i in 0...handlers.length) {
-			switchCases.push({values: [keys[i]], expr: __handle(handlers[i], "__switchTableHandler" + i, [], args, signature, statements)});
+			switchCases.push({values: [keys[i]], expr: __handle(handlers[i], "__dispatchHandler" + i, [], args, signature, statements)});
 		}
-		var missing:Expr = hasOtherwise ? __handle(otherwise, "__switchTableOtherwise", [macro __switchTableKey], args,
-			__otherwiseSignature(otherwise, keyType, signature), statements) : __refuse(macro __switchTableKey);
+		var missing:Expr = hasOtherwise ? __handle(otherwise, "__dispatchOtherwise", [macro __dispatchKey], args,
+			__otherwiseSignature(otherwise, keyType, signature), statements) : __refuse(macro __dispatchKey);
 
-		var params:Array<FunctionArg> = [{name: "__switchTableKey", type: TypeTools.toComplexType(keyType)}];
+		var params:Array<FunctionArg> = [{name: "__dispatchKey", type: TypeTools.toComplexType(keyType)}];
 		for (i in 0...signature.args.length) {
-			params.push({name: "__switchTableArg" + i, type: TypeTools.toComplexType(signature.args[i].t), opt: signature.args[i].opt});
+			params.push({name: "__dispatchArg" + i, type: TypeTools.toComplexType(signature.args[i].t), opt: signature.args[i].opt});
 		}
-		var lookup:Expr = {expr: ESwitch(macro __switchTableKey, switchCases, missing), pos: Context.currentPos()};
+		var lookup:Expr = {expr: ESwitch(macro __dispatchKey, switchCases, missing), pos: Context.currentPos()};
 		var dispatcher:Expr = {
 			expr: EFunction(FAnonymous, {args: params, ret: TypeTools.toComplexType(signature.ret), expr: macro {
 				$lookup;
@@ -179,15 +81,14 @@ class SwitchTable {
 		var dispatchType:ComplexType = TFunction([TypeTools.toComplexType(keyType)].concat([
 			for (arg in signature.args) arg.opt ? TOptional(TypeTools.toComplexType(arg.t)) : TypeTools.toComplexType(arg.t)
 		]), TypeTools.toComplexType(signature.ret));
-		statements.push(macro var __switchTableDispatcher:$dispatchType = $dispatcher);
-		statements.push(macro __switchTableDispatcher);
+		statements.push(macro var __dispatchDispatcher:$dispatchType = $dispatcher);
+		statements.push(macro __dispatchDispatcher);
 		return {expr: EBlock(statements), pos: Context.currentPos()};
 	}
 
-	#if macro
 	/**
-		Builds a table from a class's `@:case` methods: `call`, `exists`, `get`,
-		`keys` and `size`, as the class documentation describes.
+		Builds a `DispatchTable` from a class's `@:case` methods: `call`,
+		`exists`, `get`, `keys` and `size`, as `DispatchTable` describes.
 	**/
 	public static function build():Array<Field> {
 		var fields:Array<Field> = Context.getBuildFields();
@@ -224,11 +125,11 @@ class SwitchTable {
 			}
 		}
 		if (cases.length == 0) {
-			Context.error("A SwitchTable needs at least one @:case method", local.pos);
+			Context.error("A DispatchTable needs at least one @:case method", local.pos);
 		}
 		for (field in fields) {
 			if (["call", "exists", "get", "keys", "size"].indexOf(field.name) >= 0) {
-				Context.error('A SwitchTable makes its own ${field.name}: name this something else', field.pos);
+				Context.error('A DispatchTable makes its own ${field.name}: name this something else', field.pos);
 			}
 		}
 
@@ -349,14 +250,14 @@ class SwitchTable {
 			var typed:TypedExpr = try Context.typeExpr(key) catch (error:Dynamic) Context.error(Std.string(error), key.pos);
 			var value:Null<String> = __constant(typed);
 			if (value == null) {
-				Context.error('A SwitchTable key is a constant (a literal, an inline variable or an enum abstract value), and ${ExprTools.toString(key)} is not', key.pos);
+				Context.error('A DispatchTable key is a constant (a literal, an inline variable or an enum abstract value), and ${ExprTools.toString(key)} is not', key.pos);
 			}
 			if (keyType == null) {
 				keyType = typed.t;
 				switch (TypeTools.followWithAbstracts(keyType)) {
 					case TAbstract(_.get() => {pack: [], name: "Int"}, _) | TInst(_.get() => {pack: [], name: "String"}, _):
 					default:
-						Context.error('A SwitchTable key is an Int, a String or an enum abstract over one, and this is ${TypeTools.toString(keyType)}', key.pos);
+						Context.error('A DispatchTable key is an Int, a String or an enum abstract over one, and this is ${TypeTools.toString(keyType)}', key.pos);
 				}
 			} else if (!Context.unify(typed.t, keyType)) {
 				Context.error('This key is ${TypeTools.toString(typed.t)}, where the table\'s keys are ${TypeTools.toString(keyType)}', key.pos);
@@ -495,7 +396,7 @@ class SwitchTable {
 	}
 
 	private static function __refuse(key:Expr):Expr {
-		return macro throw new crossbyte.errors.ArgumentError("SwitchTable: no case for " + Std.string($key));
+		return macro throw new crossbyte.errors.ArgumentError("DispatchTable: no case for " + Std.string($key));
 	}
 
 	private static function __argType(arg:FunctionArg, field:Field):Type {
@@ -515,10 +416,8 @@ class SwitchTable {
 			default: false;
 		}
 	}
-	#end
 }
 
-#if macro
 private typedef Signature = {
 	args:Array<{name:String, opt:Bool, t:Type}>,
 	ret:Type

@@ -165,7 +165,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
-		// Typed pairs, callbacks and a typed SwitchTable, rather than Dynamic.
+		// Typed pairs, callbacks and a typed DispatchTable, rather than Dynamic.
 		runner.addCase(new crossbyte.ds.TypedShapesTest());
 		// Event-type constants that refuse a listener of the wrong event.
 		runner.addCase(new crossbyte.events.EventTypesTest());

@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.ds.DispatchTable;
 import crossbyte.ds.ListedMap.KeyValuePair;
 import crossbyte.ds.WeightedGraph.Edge;
 import crossbyte.utils.EnumUtil;
@@ -123,9 +124,9 @@ class TypedShapesTest extends utest.Test {
 		dispatch with the value finds the case, and one with a value no case
 		names reaches the fallback with it.
 	**/
-	public function testASwitchTableKeyedOnNamedConstantsMatchesTheirValues():Void {
+	public function testADispatchKeyedOnNamedConstantsMatchesTheirValues():Void {
 		var hits:Array<String> = [];
-		var named = SwitchTable.make([
+		var named = Dispatch.make([
 			{key: TypedShapesOpcodes.LOGIN, handler: () -> hits.push("login")},
 			{key: TypedShapesOpcodes.LOGOUT, handler: () -> hits.push("logout")}
 		], (key:Int) -> hits.push("other " + key));

@@ -25,7 +25,7 @@ class TypeCheck {
 	}
 
 	/**
-		The error a `SwitchTable.build()` class of the functions in `block`
+		The error a `DispatchTable` class of the functions in `block`
 		fails to build with, or null when it builds. Each function is a method
 		with the metadata written on it, static unless marked `@:instance`.
 		The class is a module of its own, so a key it names that is not a
@@ -68,14 +68,13 @@ class TypeCheck {
 					Context.error("tableErrorOf takes named functions", inner.pos);
 			}
 		}
-		var name:String = "SwitchTableProbe" + __probes++;
+		var name:String = "DispatchTableProbe" + __probes++;
 		Context.defineType({
 			pack: ["crossbyte", "ds"],
 			name: name,
 			pos: block.pos,
-			kind: TDClass(),
-			fields: fields,
-			meta: [{name: ":build", params: [macro crossbyte.ds.SwitchTable.build()], pos: block.pos}]
+			kind: TDClass(null, [{pack: ["crossbyte", "ds"], name: "DispatchTable"}]),
+			fields: fields
 		});
 		try {
 			switch (Context.getType("crossbyte.ds." + name)) {

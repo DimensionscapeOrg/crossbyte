@@ -105,11 +105,14 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `longestPrefixLength`; `QuadTree.queryCircle`; `Deque` with a starting
   capacity, `iterator()` and `clear()`; `BloomFilter.clear`, `addInt`,
   `containsInt`, `addBytes` and `containsBytes`; `Array2D.fill`.
-- `SwitchTable.build()`: a class of `@:case` methods is a table whose
-  `call` is a `switch` where it is written, calling the method directly (as
-  fast as the `switch` written out, and faster than an `Array` of
-  functions), with `exists`, `get`, `keys`, `size` and a `@:default`.
-  `SwitchTable.make` takes a fallback for a key no case names.
+- `DispatchTable`, for linking ids to their handlers on a hot path: a
+  class implementing it, its methods marked `@:case(key)`, gets a `call`
+  inlined as a `switch` where it is written, calling the method directly.
+  Sixteen opcodes cost 3 ns a dispatch natively, 5 to 7 on the jvm, 2 on
+  Node and 8 on HashLink, as the `switch` written out does and below an
+  `Array` of functions on each (9, 8, 7 and 9). It has `exists`, `get`,
+  `keys`, `size` and a `@:default`, and its cases' arguments, its keys'
+  type and duplicate keys are checked as it compiles.
 - `crossbyte.utils.Checksum` (CRC-32, Adler-32, MD5, SHA-1 and XOR) and
   `crossbyte.utils.IntParse`, which reads an integer the same way on every
   target.
@@ -625,10 +628,11 @@ says how.
   compiles. (Upgrading) `MathUtil.wrap` makes no `Int64` on JavaScript,
   eval and neko: 30 times faster on Node and over a hundred times on eval
   and neko.
-- `SwitchTable.make` builds a `switch`, typed by its handlers, where it
+- `SwitchTable` is `DispatchTable`, and `SwitchTable.make` is
+  `Dispatch.make`, which builds a `switch`, typed by its handlers, where it
   compared each key dynamically in turn and called the handler through
-  `Reflect`: a dispatch among sixteen opcodes costs 16 ns natively rather
-  than 138, 8 on the jvm rather than 45, 5 on Node rather than 36 and 8 on
+  `Reflect`: a dispatch among sixteen opcodes costs 17 ns natively rather
+  than 138, 7 on the jvm rather than 45, 5 on Node rather than 36 and 9 on
   HashLink rather than 964. Its keys are constants of one type, its
   handlers take the same arguments, and a dispatch is typed, all checked as
   it compiles. (Upgrading)
@@ -1645,13 +1649,16 @@ an API added in this release has is not listed here.
   do.
 - `MathUtil.lerp` answers a `Float`: where its result went into an `Int`,
   take `Std.int` of it.
-- `SwitchTable.make`'s keys are constants of one type (an `Int`, a
-  `String`, or an enum abstract over either) and its handlers take the same
-  arguments: a table mixing them is split into one per kind. A key held in
-  a variable is now a compile error. The fallback takes the key and then
-  the handlers' arguments, as `(key, name, amount) -> ...`, where it took
-  the key and an `Array<Dynamic>`. A dispatch with arguments of the wrong
-  type or number no longer compiles, where it threw an `ArgumentError`.
+- `SwitchTable` is `DispatchTable`, and `SwitchTable.make([...])` is
+  `Dispatch.make([...])`, which comes with `import crossbyte.ds.DispatchTable`.
+  For a dispatch in a hot loop, make a class implementing `DispatchTable`
+  instead. The keys are constants of one type (an `Int`, a `String`, or an
+  enum abstract over either) and the handlers take the same arguments: a
+  table mixing them is split into one per kind. A key held in a variable
+  is now a compile error. The fallback takes the key and then the
+  handlers' arguments, as `(key, name, amount) -> ...`, where it took the
+  key and an `Array<Dynamic>`. A dispatch with arguments of the wrong type
+  or number no longer compiles, where it threw an `ArgumentError`.
   Handlers return nothing unless they declare a return type, and then the
   table returns it.
 - `crossbyte.Timer.setInterval` refuses an interval of zero or less with an

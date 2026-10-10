@@ -82,7 +82,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
 		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
-		// Also in PortableSuite: typed pairs, callbacks and SwitchTable lookups.
+		// Also in PortableSuite: typed pairs, callbacks and DispatchTable lookups.
 		runner.addCase(new crossbyte.ds.TypedShapesTest());
 	}
 
