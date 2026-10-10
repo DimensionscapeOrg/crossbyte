@@ -242,22 +242,36 @@ class Logger {
 
 		var urgent:Bool = (recordLevel : Int) >= (LogLevel.WARN : Int);
 		if (records != null) {
-			if (__enterSink()) {
-				try {
-					records(new LogRecord(recordLevel, category, message == null ? "" : message, fields, time, line));
-					__leaveSink();
-					__sinkFailing = false;
-					return;
-				} catch (error:Dynamic) {
-					__leaveSink();
-					__sinkThrew(error);
-				}
+			if (!__offerRecord(records, new LogRecord(recordLevel, category, message == null ? "" : message, fields, time, line))) {
+				__emitDefault(line, urgent);
 			}
-			__emitDefault(line, urgent);
 			return;
 		}
 
 		__emit(line, urgent);
+	}
+
+	/**
+		Hands `record` to `records`, the record sink, and answers whether it
+		took it: `false` when it threw, which is said once as `sink` failing
+		is, or when this thread is already inside a sink. Where the record goes
+		then is the caller's to say. Whatever hands a record sink a record goes
+		through here, so that none of them can throw into whoever logged.
+	**/
+	@:noCompletion private static function __offerRecord(records:LogRecord->Void, record:LogRecord):Bool {
+		if (!__enterSink()) {
+			return false;
+		}
+		try {
+			records(record);
+			__leaveSink();
+			__sinkFailing = false;
+			return true;
+		} catch (error:Dynamic) {
+			__leaveSink();
+			__sinkThrew(error);
+			return false;
+		}
 	}
 
 	/**
