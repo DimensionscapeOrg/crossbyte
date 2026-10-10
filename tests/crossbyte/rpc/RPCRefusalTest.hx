@@ -125,6 +125,40 @@ class RPCRefusalTest extends utest.Test {
 		Assert.isTrue(Type.enumEq(Refused(RPCError.UNKNOWN_METHOD_MESSAGE), pair.told.failures[0]));
 	}
 
+	public function testAHandlerRefusesWithAStatusOfTheProtocols():Void {
+		final pair = new Pair();
+		// Thrown, with words of its own: the caller is told Busy, and its future says the words.
+		pair.handler.status = RPCError.refusal(Busy, "Slow down.");
+		final thrown = pair.commands.statused(1);
+		pair.commands.statusedThen(1, pair.told);
+		Assert.isTrue(Type.enumEq(Busy, thrown.failure), "a handler's Busy failed its caller as " + thrown.failure);
+		Assert.equals("Slow down.", thrown.error);
+		Assert.isTrue(Type.enumEq(Busy, pair.told.failures[0]));
+		// With the protocol's own words.
+		pair.handler.status = RPCError.refusal(UnknownMethod);
+		final unknown = pair.commands.statused(1);
+		Assert.isTrue(Type.enumEq(UnknownMethod, unknown.failure));
+		Assert.equals(RPCError.UNKNOWN_METHOD_MESSAGE, unknown.error);
+		// From beforeCall.
+		pair.handler.status = null;
+		pair.handler.refusing = RPCError.refusal(Busy);
+		final refused = pair.commands.quick(1);
+		Assert.isTrue(Type.enumEq(Busy, refused.failure), "beforeCall's Busy failed as " + refused.failure);
+		pair.handler.refusing = null;
+		// On the runtime lane.
+		pair.server.register(905, args -> throw RPCError.refusal(HandlerTimedOut, "Gave up."));
+		final runtime:RPCResponse<Dynamic> = pair.client.request(905, []);
+		Assert.isTrue(Type.enumEq(HandlerTimedOut, runtime.failure));
+		Assert.equals("Gave up.", runtime.error);
+		// Refused is a plain refusal; what only the caller's side finds is no refusal at all.
+		Assert.isTrue(Type.enumEq(Refused("No."), pair.commands.refuse("No.").failure));
+		final plain = RPCError.refusal(Refused("Plain."));
+		Assert.equals("Plain.", plain.message);
+		Assert.raises(() -> RPCError.refusal(TimedOut), crossbyte.errors.ArgumentError);
+		Assert.equals(0, pair.reported.length, "a refusal was reported as the handler failing");
+		pair.stillAnswers();
+	}
+
 	public function testABeforeCallRefusalIsRefused():Void {
 		final pair = new Pair();
 		pair.handler.refuseAll = "Not now.";
@@ -277,17 +311,21 @@ private class RefusalCommands extends RPCCommands {
 	@:rpc public function quick(value:Int):RPCResponse<Int> {}
 
 	@:rpc public function forward(key:String):RPCResponse<String> {}
+
+	@:rpc public function statused(value:Int):RPCResponse<Int> {}
 }
 
 private class RefusalHandler extends RPCHandler {
 	public final pending = new Map<String, Completer<String>>();
 	public var refuseAll:Null<String> = null;
+	public var refusing:Null<RPCError> = null;
+	public var status:Null<RPCError> = null;
 	public var forwardTo:Null<RefusalCommands> = null;
 
 	public function new() {}
 
 	override public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
-		return refuseAll != null ? new RPCError(refuseAll) : null;
+		return refusing != null ? refusing : (refuseAll != null ? new RPCError(refuseAll) : null);
 	}
 
 	@:rpc public function refuse(words:String):Int {
@@ -306,6 +344,10 @@ private class RefusalHandler extends RPCHandler {
 
 	@:rpc public function quick(value:Int):Int {
 		return value;
+	}
+
+	@:rpc public function statused(value:Int):Int {
+		throw status;
 	}
 
 	@:rpc public function forward(key:String):Future<String> {

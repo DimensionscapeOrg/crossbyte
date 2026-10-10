@@ -74,4 +74,42 @@ class RPCError extends Error {
 		super(message, id);
 		name = "RPCError";
 	}
+
+	/**
+		A refusal its caller is told as `failure`, a status of the
+		protocol's own rather than `RPCFailure.Refused`, as a gRPC handler
+		answers with a status code: `Busy` from a `beforeCall` that rate
+		limits, `UnknownMethod` for one a handler does not serve after all,
+		and the rest of the session's own refusals (`UnreadableArguments`,
+		`NoHandler`, `HandlerTimedOut`, `HandlerFailed`). Thrown, returned
+		from `beforeCall` or `beforeRuntimeCall`, or failing a handler's
+		future, as any `RPCError`.
+
+		```haxe
+		override public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
+			return tooMany() ? RPCError.refusal(Busy, "Slow down.") : null;
+		}
+		```
+
+		@param message What a future's `error` says; the case's own
+		message (`BUSY_MESSAGE` for `Busy`) when left out.
+		@throws ArgumentError For a failure that is not a refusal (`TimedOut`,
+		`Cancelled`, and the rest that only this side can find). `Refused(m)`
+		is an `RPCError` of `m`.
+	**/
+	public static function refusal(failure:RPCFailure, ?message:String):RPCError {
+		final code:Int = switch (failure) {
+			case Refused(words):
+				return new RPCError(message != null ? message : words);
+			case HandlerFailed: crossbyte.rpc._internal.RPCWire.REFUSED_HANDLER_FAILED;
+			case UnknownMethod: crossbyte.rpc._internal.RPCWire.REFUSED_UNKNOWN_METHOD;
+			case UnreadableArguments: crossbyte.rpc._internal.RPCWire.REFUSED_UNREADABLE;
+			case Busy: crossbyte.rpc._internal.RPCWire.REFUSED_BUSY;
+			case NoHandler: crossbyte.rpc._internal.RPCWire.REFUSED_NO_HANDLER;
+			case HandlerTimedOut: crossbyte.rpc._internal.RPCWire.REFUSED_HANDLER_TIMEOUT;
+			case other:
+				throw new crossbyte.errors.ArgumentError('$other is not a refusal a handler can answer with');
+		};
+		return new crossbyte.rpc._internal.RPCRefusal(message != null ? message : crossbyte.rpc._internal.RPCWire.refusalMessage(code), code);
+	}
 }

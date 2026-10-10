@@ -9,8 +9,10 @@ import crossbyte.rpc.RPCError;
 	so `RPCResponse.failure` can say which, and a handler answering with that
 	call's response passes the refusal on as it came, a busy peer as busy.
 
-	Made only for those: a handler's own refusal is a plain `RPCError`, as it
-	always was, and nothing else an `RPCError` is made for is any larger.
+	Made only for those, and for a handler that refuses with one of their
+	codes (`RPCError.refusal`): a handler's own refusal is a plain `RPCError`,
+	as it always was, and nothing else an `RPCError` is made for is any
+	larger.
 **/
 @:noCompletion
 class RPCRefusal extends RPCError {

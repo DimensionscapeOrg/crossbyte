@@ -413,7 +413,7 @@ abstract class RPCCommands {
 		var code:Int = RPCWire.REFUSED_BY_HANDLER;
 		try {
 			code = RPCWire.refusalCode(input, __frameEnd);
-			message = code != RPCWire.REFUSED_BY_HANDLER ? RPCWire.refusalMessage(code) : input.readVarUTF();
+			message = RPCWire.refusalText(input, code);
 			RPCWire.requireWithin(input, __frameEnd);
 		} catch (error:Dynamic) {
 			__rejectUnreadableResponse(op, requestId, error);

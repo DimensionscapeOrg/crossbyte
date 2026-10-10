@@ -329,7 +329,26 @@ side refused the call, the failure says what refused it:
 | `HandlerFailed` | its handler threw something else | `RPCError.INTERNAL_MESSAGE` |
 
 What refused it decides the case, not the words: a handler that throws an
-`RPCError` with the words of `RPCError.BUSY_MESSAGE` is `Refused`. A
+`RPCError` with the words of `RPCError.BUSY_MESSAGE` is `Refused`. A handler
+refuses with one of these cases itself, as a gRPC handler answers with a
+status code, through `RPCError.refusal`: thrown, returned from `beforeCall`, or
+failing its future.
+
+```haxe
+class LimitedChatHandler extends ChatHandler {
+	public var budget:Int = 100;
+
+	public function new() {
+		super();
+	}
+
+	override public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
+		// The caller is told Busy, its future's error "Slow down.".
+		return budget-- > 0 ? null : RPCError.refusal(Busy, "Slow down.");
+	}
+}
+```
+ A
 refusal the other side's session made is a single value, and allocates
 nothing to be told. A call that cannot go at all (its connection
 has ended, or it is over `maxFrameLength`) is told before its `...Then`
