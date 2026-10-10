@@ -82,6 +82,27 @@ class TypedShapesTest extends utest.Test {
 		Assert.equals("1,2,3", vector.filter(anything).join(","));
 	}
 
+	/**
+		`map` gives a vector of what its callback returns. It was typed as
+		the vector's own element type whatever the callback gave, so an `Int`
+		vector mapped to text claimed to be a `Vector<Int>` holding strings,
+		which a static target reads back as numbers it is not.
+	**/
+	public function testVectorMapIsTypedByWhatItsCallbackReturns():Void {
+		var vector = new Vector<Int>();
+		vector.push(1);
+		vector.push(2);
+
+		Assert.equals("crossbyte.ds.Vector<String>", TypeCheck.typeOf(vector.map((v:Int) -> "n" + v)));
+		Assert.equals("crossbyte.ds.Vector<Int>", TypeCheck.typeOf(vector.map((v:Int, i:Int) -> v + i)));
+		Assert.notNull(TypeCheck.errorOf({
+			var wrong:Vector<Int> = vector.map((v:Int) -> "n" + v);
+		}), "text mapped from numbers was taken as a vector of numbers");
+
+		var named:Vector<String> = vector.map((v:Int) -> "n" + v);
+		Assert.equals("n1,n2", named.join(","));
+	}
+
 	public function testVectorSortAndConcatAreTyped():Void {
 		var vector = new Vector<Int>();
 		vector.push(3);
