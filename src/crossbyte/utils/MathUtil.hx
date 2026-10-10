@@ -39,13 +39,19 @@ class MathUtil {
 	/**
 	 * Linearly interpolates between two values.
 	 *
+	 * In Float, Int arguments too: an Int `lerp` refused a fractional `t`
+	 * with Int ends (`lerp(0, 10, 0.5)`), and past the Int range wrapped on
+	 * native targets and not on JavaScript.
+	 *
 	 * @param a The start value.
 	 * @param b The end value.
 	 * @param t The interpolation factor, usually in [0,1].
 	 * @return  `a + (b - a) * t`.
 	 */
-	@:pure public static inline function lerp<T:Float>(a:T, b:T, t:T):T {
-		return a + (b - a) * t;
+	@:pure public static inline function lerp(a:Float, b:Float, t:Float):Float {
+		// `* 1.0`, not a cast: eval keeps Int arithmetic for an Int typed as
+		// Float, and inlined, the arguments are what was passed.
+		return a * 1.0 + (b * 1.0 - a) * t;
 	}
 
 	/**
@@ -139,12 +145,26 @@ class MathUtil {
 		// (max - min), (v - min), etc. can overflow 32-bit Int for wide ranges
 		// (e.g. min near INT32_MIN, max near INT32_MAX), which would otherwise
 		// make the range appear negative and collapse the result to `min`.
-		// Compute the modulo in 64-bit space, then narrow back to Int.
+		#if (cpp || java || hl || cs)
+		// Computed in 64 bits, a machine integer on these.
 		var range:haxe.Int64 = haxe.Int64.sub(haxe.Int64.ofInt(max), haxe.Int64.ofInt(min));
 		var result:haxe.Int64 = haxe.Int64.mod(haxe.Int64.sub(haxe.Int64.ofInt(v), haxe.Int64.ofInt(min)), range);
 		if (haxe.Int64.isNeg(result)) {
 			result = haxe.Int64.add(result, range);
 		}
 		return haxe.Int64.toInt(haxe.Int64.add(result, haxe.Int64.ofInt(min)));
+		#else
+		// In Float, where every one of them is exact (none passes 2^33): an
+		// Int64 is an object on JavaScript, eval and neko, made several
+		// times a call, which made this 30 times slower on Node and over a
+		// hundred on eval and neko. `+ 0.0` rather than a cast, since eval
+		// keeps Int arithmetic for an Int typed as Float.
+		var range:Float = (max + 0.0) - min;
+		var offset:Float = ((v + 0.0) - min) % range;
+		if (offset < 0) {
+			offset += range;
+		}
+		return Std.int(offset + min);
+		#end
 	}
 }

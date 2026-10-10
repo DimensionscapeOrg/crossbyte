@@ -35,11 +35,11 @@ class UtilsTest extends utest.Test {
 		// world or a shared simulation crossing targets would diverge silently.
 		Random.reseed(12345);
 
-		Assert.equals(1200724404, Random.nextU32());
-		Assert.equals(-372313751, Random.nextU32());
-		Assert.equals(-1711358538, Random.nextU32());
-		Assert.equals(1611630670, Random.nextU32());
-		Assert.equals(-1896865725, Random.nextU32());
+		Assert.equals(-1450303268, Random.nextU32());
+		Assert.equals(854707907, Random.nextU32());
+		Assert.equals(1998483316, Random.nextU32());
+		Assert.equals(-62413819, Random.nextU32());
+		Assert.equals(483484444, Random.nextU32());
 	}
 
 	/**
@@ -92,11 +92,12 @@ class UtilsTest extends utest.Test {
 	/**
 		Every range narrow enough not to overflow draws exactly the known values
 		it always has, so a seeded sequence (a replay, a generated world) still
-		reads the same.
+		reads the same. The shared generator's are those since a seed was
+		spread over its count (see `testAdjacentSeedsDrawUnrelatedSequences`).
 	**/
 	public function testANarrowRangeDrawsWhatItAlwaysDid():Void {
 		Random.reseed(12345);
-		Assert.equals("52,54,78,67,47,72", [for (_ in 0...6) Random.int(0, 99)].join(","));
+		Assert.equals("92,67,5,28,59,32", [for (_ in 0...6) Random.int(0, 99)].join(","));
 		var random = new Random(777);
 		Assert.equals("502,-856,244,-791,16,557", [for (_ in 0...6) random.inti(-1000, 1000)].join(","));
 		Assert.equals("960454248,910322303,270330903,1030871650", [for (_ in 0...4) random.inti(0, 0x3FFFFFFF)].join(","));
@@ -196,6 +197,31 @@ class UtilsTest extends utest.Test {
 		Assert.equals(1, Checksum.compute(XOR, xor).length);
 		Assert.equals(16, Checksum.compute(MD5, digits).length);
 		Assert.equals(20, Checksum.compute(SHA1, digits).length);
+	}
+
+	/**
+		CRC-32 eight bytes a step agrees with `haxe.crypto.Crc32`'s bit at a
+		time over every length to 64 from each offset to 7, which has every
+		mix of whole steps and bytes left over.
+	**/
+	public function testCrc32AgreesWithTheBitwiseOneAtEveryLengthAndOffset():Void {
+		var random = new Random(21);
+		var data = Bytes.alloc(80);
+		random.fillBytesi(data);
+		for (offset in 0...8) {
+			for (length in 0...65) {
+				var crc = new haxe.crypto.Crc32();
+				crc.update(data, offset, length);
+				var expected:Int = crc.get();
+				var actual:Bytes = Checksum.compute(CRC32, data, offset, length);
+				var value:Int = (actual.get(0) << 24) | (actual.get(1) << 16) | (actual.get(2) << 8) | actual.get(3);
+				if (value != expected) {
+					Assert.fail('CRC-32 of $length bytes from $offset was $value, not $expected');
+					return;
+				}
+			}
+		}
+		Assert.pass();
 	}
 
 	public function testChecksumTakesARangeAndRefusesOneOutside():Void {
@@ -319,8 +345,9 @@ class UtilsTest extends utest.Test {
 		// throws on the jvm and gives a wider-than-Int number on JavaScript.
 		var huge:Version = "1.4294967296.0";
 		Assert.equals(1, huge.major);
-		Assert.equals(999, huge.minor);
+		Assert.equals(0x7FFFFFFF, huge.minor);
 		Assert.isTrue(huge > new Version(1, 998, 0));
+		Assert.equals(1999000, huge.hash);
 
 		// A suffix after the digits still reads as the digits.
 		var suffixed:Version = "1.2.3-beta";
@@ -575,8 +602,234 @@ class UtilsTest extends utest.Test {
 		Assert.isTrue(new Version(1, 2, 0) <= new Version(1, 2, 0));
 		Assert.isTrue(new Version(2, 0, 0) == new Version(2, 0, 0));
 
-		Assert.raises(() -> new Version(1000, 0, 0));
-		Assert.raises(() -> new Version(1, 1000, 0));
-		Assert.raises(() -> new Version(1, 0, 1000));
+		// Past 999 is a version too, as a string has always been able to
+		// give; below zero is not one.
+		Assert.equals("1000.0.0", (new Version(1000, 0, 0):String));
+		Assert.raises(() -> new Version(1, -1, 0), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> new Version(1, 0, -1), crossbyte.errors.ArgumentError);
+	}
+
+	/**
+		An object recycled is reset once, as it comes back, and not again
+		when `drain` hands it on to the pool: a reset that hands an object's
+		parts back to a pool of their own would hand them back twice.
+	**/
+	public function testARecycledObjectIsResetOnce():Void {
+		var resets:Int = 0;
+		var pool:ObjectPool<PooledState> = new ObjectPool<PooledState>(() -> {id: 1, state: "fresh"}, obj -> resets++);
+		var recycler:ObjectRecycler<PooledState> = new ObjectRecycler<PooledState>(pool);
+		var first:PooledState = recycler.get();
+		var second:PooledState = recycler.get();
+		recycler.recycle(first);
+		recycler.recycle(second);
+		Assert.equals(2, resets);
+		recycler.drain();
+		Assert.equals(2, resets, "drain reset what recycle already had");
+		Assert.equals(2, pool.freeCount);
+	}
+
+	/**
+		An object recycled twice in a row is refused on every build, not only
+		a debug one: kept twice, the next two `get`s would hand it to two
+		owners.
+	**/
+	public function testAnObjectRecycledTwiceIsNotHandedOutTwice():Void {
+		var made:Int = 0;
+		var pool:ObjectPool<PooledState> = new ObjectPool<PooledState>(() -> {id: made++, state: "fresh"});
+		var recycler:ObjectRecycler<PooledState> = new ObjectRecycler<PooledState>(pool);
+		var only:PooledState = recycler.get();
+		Assert.isTrue(recycler.recycle(only));
+		#if debug
+		Assert.raises(() -> recycler.recycle(only));
+		#else
+		Assert.isFalse(recycler.recycle(only));
+		#end
+		Assert.equals(1, recycler.localSize());
+		Assert.equals(only, recycler.get());
+		Assert.notEquals(only, recycler.get());
+	}
+
+	/**
+		`!=` is `==`'s opposite. Without an operator of its own it compared the
+		strings, so "1.2" was both equal to 1.2.0 and not.
+	**/
+	public function testVersionInequalityAgreesWithEquality():Void {
+		var short:Version = "1.2";
+		var full:Version = new Version(1, 2, 0);
+		Assert.isTrue(short == full);
+		Assert.isFalse(short != full);
+		Assert.isTrue(short != new Version(1, 2, 1));
+		Assert.isFalse(full != "1.2");
+	}
+
+	/**
+		A null version is equal to null and to nothing else, rather than
+		throwing from inside the comparison; ordering one is refused.
+	**/
+	public function testANullVersionComparesWithoutThrowing():Void {
+		var none:Version = null;
+		var some:Version = "1.0.0";
+		var list:Array<Version> = [some, none];
+		Assert.isFalse(list[0] == list[1]);
+		Assert.isFalse(list[1] == list[0]);
+		Assert.isTrue(list[0] != list[1]);
+		Assert.isTrue(list[1] == none);
+		Assert.isFalse(list[1] != none);
+		Assert.raises(() -> list[1] < list[0], crossbyte.errors.ArgumentError);
+		Assert.raises(() -> list[0] >= list[1], crossbyte.errors.ArgumentError);
+	}
+
+	/**
+		Versions are compared part by part, so a part past 999 still orders:
+		held to 999, 2024.10.1 came out after 2025.1.0. The parts read as
+		written, a "v" in front of the first is allowed, and the constructor
+		takes what a string can give it and refuses a part below zero.
+	**/
+	public function testVersionsOrderPartByPart():Void {
+		var older:Version = "2024.10.1";
+		var newer:Version = "2025.1.0";
+		Assert.isTrue(older < newer);
+		Assert.isTrue(newer > older);
+		Assert.isFalse(older == newer);
+		Assert.equals(2024, older.major);
+		Assert.isTrue(new Version(1, 1000, 0) > new Version(1, 999, 5));
+		Assert.isTrue(Version.compare("1.10.0", "1.9.9") > 0);
+		Assert.equals(0, Version.compare("1.2", "1.2.0"));
+
+		var tagged:Version = "v1.2.3";
+		Assert.equals(1, tagged.major);
+		Assert.isTrue(tagged == new Version(1, 2, 3));
+
+		Assert.raises(() -> new Version(-1, 0, 0), crossbyte.errors.ArgumentError);
+		var version = new Version(1, 2, 3);
+		Assert.raises(() -> version.patch = -1, crossbyte.errors.ArgumentError);
+		Assert.equals("1.2.3", (version:String));
+	}
+
+	/**
+		Seeds next to each other draw unrelated sequences. The shared
+		generator counts up from its seed, so seeding 2 drew what seeding 1
+		drew, one step later: one level or one entity per seed came out as the
+		last one shifted by a draw.
+	**/
+	public function testAdjacentSeedsDrawUnrelatedSequences():Void {
+		Random.reseed(1);
+		var one:Array<Int> = [for (_ in 0...64) Random.nextU32()];
+		Random.reseed(2);
+		for (i in 0...4) {
+			var drawn:Int = Random.nextU32();
+			Assert.equals(-1, one.indexOf(drawn), 'seed 2 draw $i was in seed 1\'s sequence');
+		}
+	}
+
+	/**
+		A weight that is infinite or not a number is refused. Summed, either
+		made every draw past the total, so the last item came back every time
+		whatever its own weight.
+	**/
+	public function testAWeightThatIsNotFiniteIsRefused():Void {
+		var random = new Random(5);
+		var items = ["a", "b", "c"];
+		Assert.raises(() -> random.chooseWeightedi(items, [1.0, Math.POSITIVE_INFINITY, 0.0]), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> random.chooseWeightedi(items, [1.0, Math.NaN, 1.0]), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> Random.chooseWeighted(items, [Math.NaN, 1.0, 1.0]), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> random.chooseWeightedi(items, [1.0, 1.0]), crossbyte.errors.ArgumentError);
+	}
+
+	/**
+		A float drawn from [min, max) is below max. Where max - min is small
+		beside them, min plus a fraction of it rounds up to max: from 1e16 to
+		1e16 + 2, half of all draws did.
+	**/
+	public function testAFloatDrawIsBelowItsMaximum():Void {
+		var random = new Random(9);
+		var min:Float = 1e16;
+		var max:Float = 1e16 + 2;
+		for (_ in 0...200) {
+			var x:Float = random.floati(min, max);
+			if (!(x >= min && x < max)) {
+				Assert.fail('drew $x from [$min, $max)');
+				return;
+			}
+			var y:Float = Random.float(min, max);
+			if (!(y >= min && y < max)) {
+				Assert.fail('drew $y from [$min, $max) from the shared generator');
+				return;
+			}
+		}
+		Assert.pass();
+	}
+
+	/**
+		Filling bytes outside the buffer is a RangeError, as it is for
+		`Checksum`, rather than whatever the target does with a write out of
+		bounds.
+	**/
+	public function testFillingBytesOutsideTheBufferIsRefused():Void {
+		var random = new Random(3);
+		var buffer = Bytes.alloc(4);
+		Assert.raises(() -> random.fillBytesi(buffer, 2, 4), crossbyte.errors.RangeError);
+		Assert.raises(() -> random.fillBytesi(buffer, -1, 2), crossbyte.errors.RangeError);
+		Assert.raises(() -> random.fillBytesi(buffer, 5), crossbyte.errors.RangeError);
+		Assert.raises(() -> random.fillBytesi(buffer, 0, -2), crossbyte.errors.RangeError);
+		Assert.raises(() -> Random.fillBytes(buffer, 3, 2), crossbyte.errors.RangeError);
+		random.fillBytesi(buffer, 4);
+		random.fillBytesi(buffer, 1, 3);
+		Random.fillBytes(buffer);
+		Assert.pass();
+	}
+
+	/**
+		An alphabet past ASCII is drawn from a character at a time: not a
+		UTF-16 unit, half of a character outside the Basic Multilingual Plane,
+		nor on neko a byte of one.
+	**/
+	public function testARandomStringDrawsWholeCharacters():Void {
+		var random = new Random(11);
+		var alphabet:Array<String> = ["\u{1F600}", "\u00E9", "z"];
+		var drawn:String = random.randomStringi(40, alphabet.join(""));
+		var at:Int = 0;
+		var count:Int = 0;
+		while (at < drawn.length) {
+			var matched:Bool = false;
+			for (character in alphabet) {
+				if (drawn.substr(at, character.length) == character) {
+					at += character.length;
+					matched = true;
+					break;
+				}
+			}
+			if (!matched) {
+				Assert.fail('"$drawn" holds a character at $at that is not in the alphabet');
+				return;
+			}
+			count++;
+		}
+		Assert.equals(40, count);
+		var shared:String = Random.randomString(10, "\u{1F600}");
+		Assert.equals(10 * alphabet[0].length, shared.length);
+	}
+
+	/**
+		The parameters `getValue` answers are a copy: on eval and neko they
+		were the enum value's own, and changing them changed the value.
+	**/
+	public function testEnumParametersAreACopy():Void {
+		var pair = Pair(3, "hi");
+		var values:Array<Dynamic> = EnumUtil.getValue(pair);
+		values[0] = 99;
+		Assert.same([3, "hi"], Type.enumParameters(pair));
+		Assert.isTrue(Type.enumEq(pair, Pair(3, "hi")));
+	}
+
+	/**
+		`lerp` takes the Ints it is most often given with a fractional `t`,
+		and answers in Float alike everywhere: an Int `lerp` refused
+		`lerp(0, 10, 0.5)`, and on JavaScript, whose Int does not wrap,
+		answered past the Int range where the others wrapped.
+	**/
+	public function testLerpTakesIntsAndAnswersAFloat():Void {
+		Assert.equals(5.0, MathUtil.lerp(0, 10, 0.5));
+		Assert.equals(4294967293.0, MathUtil.lerp(0x40000000, 0x7FFFFFFF, 3));
 	}
 }
