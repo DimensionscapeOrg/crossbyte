@@ -1059,6 +1059,14 @@ Fixes to code new in this release are not listed.
 - A session is no longer closed when its socket's send buffer is
   momentarily full.
 - A `NetConnection` over reliable UDP reports deadlines as `Reason.Timeout`.
+- A reliable UDP server out of processor time slows its tick, as one over
+  TCP does, where it let what arrived wait in the system's buffer: its socket
+  read 1,024 datagrams a pass for all its sessions, so the rest were read a
+  frame later behind everything since. It now reads eight a session (1,024
+  at the least). Natively, one runtime at 60 ticks a second and 1,000 game
+  clients each sending three calls a tick: a call's round trip 21 ms (p50)
+  and 39 ms (p99) where it was 350 ms and 2.5 s; on the jvm 20 and 37 where
+  it was 342 ms and 2.6 s.
 - A `NetConnection` over a reliable UDP session in `STREAM` mode hands
   `onData` the stream's own input, as one over TCP does, so what a reader
   leaves unread is there at the next arrival. Each arrival was handed over

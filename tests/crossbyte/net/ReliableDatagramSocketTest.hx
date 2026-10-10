@@ -17,6 +17,48 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 @:access(crossbyte.net.ReliableDatagramSocket)
 class ReliableDatagramSocketTest extends utest.Test {
+	/**
+		A server's one socket, which every session's datagrams arrive on,
+		reads a share for each session in a pass (see
+		`DatagramSocketTest.testASocketReadForManyPeersTakesAShareForEachInAPass`):
+		eight a session past the 1,024 one peer gets, following the sessions
+		as they come and go.
+	**/
+	public function testAServersSocketReadsAShareForEachSession():Void {
+		if (!requireDatagramSupport()) return;
+		var server = new ReliableDatagramServerSocket();
+		var clients:Array<ReliableDatagramSocket> = [];
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			pumpUntil(() -> server.localPort != 0, 2.0);
+			Assert.equals(1024, @:privateAccess server.__socket.__readsPerPass, "a server with no sessions");
+			for (_ in 0...200) {
+				var client = new ReliableDatagramSocket();
+				client.connect("127.0.0.1", server.localPort);
+				clients.push(client);
+			}
+			pumpUntil(() -> server.__sessionList.length == 200, 10.0);
+			Assert.equals(200, server.__sessionList.length, "not every session was taken");
+			Assert.equals(200 * 8, @:privateAccess server.__socket.__readsPerPass, "200 sessions' share");
+			for (i in 0...150) {
+				clients[i].abort();
+			}
+			pumpUntil(() -> server.__sessionList.length <= 50, 10.0);
+			Assert.equals(1024, @:privateAccess server.__socket.__readsPerPass, "50 sessions' share is under one peer's");
+		} catch (e:Dynamic) {
+			for (client in clients) {
+				closeQuietly(client);
+			}
+			server.close();
+			throw e;
+		}
+		for (client in clients) {
+			closeQuietly(client);
+		}
+		server.close();
+	}
+
 	public function testAServerLearnsWhereItIsReachable():Void {
 		if (!requireDatagramSupport()) return;
 		if (!requireDiscovery()) return;
