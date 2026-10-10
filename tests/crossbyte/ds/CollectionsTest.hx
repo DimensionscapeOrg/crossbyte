@@ -791,6 +791,119 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("5,1", vector.join(","));
 	}
 
+	/**
+		`for (item in vector)` and `for (index => item in vector)` walk the
+		elements in order and, as an `Array`'s loop does, reach an element
+		pushed while they run and not one removed.
+	**/
+	public function testAVectorIsWalkedByForIn():Void {
+		var vector = Vector.ofArray([1, 2, 3]);
+		var seen:Array<String> = [];
+		for (item in vector) {
+			seen.push("" + item);
+			if (item == 1) {
+				vector.push(4);
+			}
+		}
+		Assert.equals("1,2,3,4", seen.join(","));
+
+		seen = [];
+		for (index => item in vector) {
+			seen.push(index + ":" + item);
+		}
+		Assert.equals("0:1,1:2,2:3,3:4", seen.join(","));
+		Assert.equals("1,2,3,4", joinGenerically(vector));
+
+		seen = [];
+		for (item in vector) {
+			seen.push("" + item);
+			vector.pop();
+		}
+		Assert.equals("1,2", seen.join(","));
+	}
+
+	/** `Vector.ofArray` and `toArray` copy, so neither side changes the other. **/
+	public function testAVectorIsMadeFromAndTurnedIntoAnArray():Void {
+		var array = [1, 2, 3];
+		var vector = Vector.ofArray(array);
+		array.push(4);
+		vector[0] = 10;
+		Assert.equals("10,2,3", vector.join(","));
+		Assert.equals("1,2,3,4", array.join(","));
+
+		var back = vector.toArray();
+		back.push(5);
+		Assert.equals(3, vector.length);
+		Assert.equals("10,2,3,5", back.join(","));
+	}
+
+	/**
+		A callback written where it is passed runs in the loop itself, so a
+		`return` in it ends that one call; one passed as a value is evaluated
+		once, after the vector, however many elements there are.
+	**/
+	public function testVectorCallbacksWrittenInPlaceOrPassedAsValues():Void {
+		var vector = Vector.ofArray([1, 2, 3, 4]);
+		var seen:Array<Int> = [];
+		vector.forEach(function(item:Int) {
+			if (item % 2 == 0) {
+				return;
+			}
+			seen.push(item);
+		});
+		Assert.equals("1,3", seen.join(","));
+
+		Assert.isTrue(vector.every(function(item:Int):Bool {
+			if (item > 10) {
+				return false;
+			}
+			return true;
+		}));
+		Assert.isTrue(vector.some(function(item:Int, index:Int):Bool {
+			for (k in 0...index) {
+				if (k == 2) {
+					return true;
+				}
+			}
+			return false;
+		}));
+
+		var order:Array<String> = [];
+		var made:Int = 0;
+		function source():Vector<Int> {
+			order.push("vector");
+			return vector;
+		}
+		function callback():Int->Void {
+			order.push("callback");
+			made++;
+			return item -> seen.push(item);
+		}
+		seen = [];
+		source().forEach(callback());
+		Assert.equals("vector,callback", order.join(","));
+		Assert.equals(1, made);
+		Assert.equals("1,2,3,4", seen.join(","));
+
+		Assert.equals(4, countGenerically(vector));
+		Assert.equals("2,4", vector.filter((item:Int, index:Int, of:Vector<Int>) -> of[index] % 2 == 0).join(","));
+		Assert.equals("1:4,2:4", vector.map((item:Int, index:Int, of:Vector<Int>) -> item + ":" + of.length).slice(0, 2).join(","));
+	}
+
+	static function joinGenerically<T>(vector:Vector<T>):String {
+		var parts:Array<String> = [];
+		for (item in vector) {
+			parts.push(Std.string(item));
+		}
+		return parts.join(",");
+	}
+
+	static function countGenerically<T>(vector:Vector<T>):Int {
+		var count:Int = 0;
+		vector.forEach((item:T) -> count++);
+		return count;
+	}
+
 	static function pushGenerically<T>(vector:Vector<T>, value:T):Void {
 		vector.push(value);
 	}

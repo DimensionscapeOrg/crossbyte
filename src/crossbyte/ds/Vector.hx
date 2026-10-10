@@ -17,12 +17,20 @@ import crossbyte.errors.RangeError;
  *
  * **Callbacks** given to `every`, `filter`, `forEach`, `map` and `some` are
  * called with as many of `(item, index, vector)` as they take, and one that
- * throws is never run a second time.
+ * throws is never run a second time. The five are macros, so a call is made
+ * from what it is given:
  *
- * A callback is a `VectorCallback`: any function of none to three of those,
- * typed, which is called directly. An untyped `Function` still works, and is
- * called through reflection, as is any callback given a
- * `thisObject`.
+ * - a function written where it is passed becomes the body of the loop, so
+ *   no closure is made and nothing is boxed to call it;
+ * - any other function of none to three arguments is evaluated once and
+ *   called directly;
+ * - an untyped `Function` or a `Dynamic` is asked how many arguments it
+ *   takes and called through reflection, as is any callback given a
+ *   `thisObject`.
+ *
+ * Being macros, they are not values: `vector.forEach` alone does not
+ * compile, where `f -> vector.forEach(f)` does. A vector held as `Dynamic`
+ * has them as methods.
  *
  * **A length given up front is not an initialised vector.** `new Vector<T>(n)`
  * and `length = n` grow with whatever the target fills an `Array` with, which
@@ -33,15 +41,20 @@ import crossbyte.errors.RangeError;
  * Write every element before reading it. A negative length is refused on
  * every target with `RangeError`.
  *
- * **What an element costs.** Reading, writing, `length` and the methods that
- * take no callback are inlined where they are called, and where that code
- * names the element type it works on an array of that type. Natively a read
- * or a write of a `Vector<Int>` takes about 2 ns, against half of one for an
- * `Array`, and `pop`, `shift` and `removeAt` take an element without boxing
- * it, which an `Array`'s `pop` and `shift` do: a push and a pop together
- * cost about 9 ns, against 21 for an `Array`. Code generic over `T`, and a
+ * **What it costs.** Reading, writing, `length`, `for` loops and the methods
+ * that take no callback are inlined where they are called, and where that
+ * code names the element type it works on an array of that type. Natively,
+ * an element of a `Vector<Int>` takes about 1.2 ns to read or write, against
+ * 0.6 for an `Array<Int>`, and 0.8 ns in `for (item in vector)`; a
+ * `Vector<Float>` reads as fast as an `Array<Float>`. `forEach` given a
+ * function written in place costs about 2 ns an element. `pop`, `shift` and
+ * `removeAt` take an element without boxing it, which an `Array`'s `pop` and
+ * `shift` do, so a push and a pop together cost 8 ns, against 20 for an
+ * `Array`. A function passed as a value costs about 30 ns a call natively,
+ * where hxcpp boxes what it is passed. Code generic over `T`, and a
  * `Vector<Dynamic>`, reach the elements through hxcpp's dynamic array, which
- * boxes each one: 15 to 20 ns. On the jvm the JIT takes the difference away.
+ * boxes each one: 15 to 20 ns. On the jvm and JavaScript a `Vector` costs
+ * what an `Array` does.
  *
  * Natively the elements are kept as the type the code reaching them names,
  * and converted to another when code naming that one reaches them. So a
@@ -49,7 +62,7 @@ import crossbyte.errors.RangeError;
  * through a `Vector<Dynamic>` or generic code reads back as `0` natively,
  * where other targets keep the `null`.
  */
-@:forward(concat, every, filter, forEach, map, some, sort, splice, toLocaleString, toString)
+@:forward(concat, sort, splice, toLocaleString, toString)
 abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	public var fixed(get, set):Bool;
 	public var length(get, set):Int;
@@ -63,6 +76,178 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 			items.resize(length);
 		}
 		this = new VectorImpl<T>(items, fixed);
+	}
+
+	/**
+		A new vector of `array`'s elements, as ActionScript's `Vector.<T>(array)`
+		makes one. The array is copied, so neither changes the other.
+	**/
+	public static inline function ofArray<T>(array:Array<T>):Vector<T> {
+		return new VectorImpl<T>(array.copy(), false);
+	}
+
+	/** A new array of this vector's elements. **/
+	public inline function toArray():Array<T> {
+		return this.__items().copy();
+	}
+
+	/**
+		`for (item in vector)`: each element in order, at what an `Array`'s
+		loop costs. As with an `Array`, an element pushed while the loop runs
+		is reached, and one removed is not.
+	**/
+	public inline function iterator():VectorIterator<T> {
+		return new VectorIterator<T>(this);
+	}
+
+	/** `for (index => item in vector)`, as `iterator` goes. **/
+	public inline function keyValueIterator():VectorKeyValueIterator<T> {
+		return new VectorKeyValueIterator<T>(this);
+	}
+
+	/**
+		Whether `callback` answers `true` for every element, stopping at the
+		first it does not.
+	**/
+	public macro function every(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.call(ethis, "__every", "__everyBy", callback, thisObject);
+	}
+
+	/** A new vector of the elements `callback` answers `true` for, in order. **/
+	public macro function filter(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.call(ethis, "__filter", "__filterBy", callback, thisObject);
+	}
+
+	/** Calls `callback` for each element, in order. **/
+	public macro function forEach(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.call(ethis, "__forEach", "__forEachBy", callback, thisObject);
+	}
+
+	/**
+		A new vector of what `callback` returns for each element, in order.
+		Typed by what the callback returns: an `Int` vector mapped to text is
+		a `Vector<String>`. ActionScript's `map` keeps the element type, which
+		a callback returning that type still does here.
+	**/
+	public macro function map(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.call(ethis, "__map", "__mapBy", callback, thisObject);
+	}
+
+	/**
+		Whether `callback` answers `true` for any element, stopping at the
+		first it does.
+	**/
+	public macro function some(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
+		return crossbyte._internal.macro.VectorMacro.call(ethis, "__some", "__someBy", callback, thisObject);
+	}
+
+	// What the five above become where they are called (see VectorMacro):
+	// a loop calling a function of (item, index, vector), or the vector's
+	// own method. Each loop walks the vector as that method does: never
+	// past the length it started with, as in ActionScript, and never past
+	// the length it has now, so a callback that shortens it is not handed
+	// the elements that are no longer there.
+
+	@:noCompletion public inline function __every(f:(T, Int, Vector<T>) -> Bool):Bool {
+		var count:Int = get_length();
+		var i:Int = 0;
+		var all:Bool = true;
+		while (i < count) {
+			var items:Array<T> = this.__items();
+			if (i >= items.length) {
+				break;
+			}
+			if (!f(items[i], i, this)) {
+				all = false;
+				break;
+			}
+			i++;
+		}
+		return all;
+	}
+
+	@:noCompletion public inline function __filter(f:(T, Int, Vector<T>) -> Bool):Vector<T> {
+		var out:Array<T> = [];
+		var count:Int = get_length();
+		var i:Int = 0;
+		while (i < count) {
+			var items:Array<T> = this.__items();
+			if (i >= items.length) {
+				break;
+			}
+			var item:T = items[i];
+			if (f(item, i, this)) {
+				out.push(item);
+			}
+			i++;
+		}
+		return new VectorImpl<T>(out, false);
+	}
+
+	@:noCompletion public inline function __forEach(f:(T, Int, Vector<T>) -> Void):Void {
+		var count:Int = get_length();
+		var i:Int = 0;
+		while (i < count) {
+			var items:Array<T> = this.__items();
+			if (i >= items.length) {
+				break;
+			}
+			f(items[i], i, this);
+			i++;
+		}
+	}
+
+	@:noCompletion public inline function __map<R>(f:(T, Int, Vector<T>) -> R):Vector<R> {
+		var out:Array<R> = [];
+		var count:Int = get_length();
+		var i:Int = 0;
+		while (i < count) {
+			var items:Array<T> = this.__items();
+			if (i >= items.length) {
+				break;
+			}
+			out.push(f(items[i], i, this));
+			i++;
+		}
+		return new VectorImpl<R>(out, false);
+	}
+
+	@:noCompletion public inline function __some(f:(T, Int, Vector<T>) -> Bool):Bool {
+		var count:Int = get_length();
+		var i:Int = 0;
+		var any:Bool = false;
+		while (i < count) {
+			var items:Array<T> = this.__items();
+			if (i >= items.length) {
+				break;
+			}
+			if (f(items[i], i, this)) {
+				any = true;
+				break;
+			}
+			i++;
+		}
+		return any;
+	}
+
+	@:noCompletion public inline function __everyBy(callback:VectorCallback<T, Bool>, thisObject:Object):Bool {
+		return this.every(callback, thisObject);
+	}
+
+	@:noCompletion public inline function __filterBy(callback:VectorCallback<T, Bool>, thisObject:Object):Vector<T> {
+		return this.filter(callback, thisObject);
+	}
+
+	@:noCompletion public inline function __forEachBy(callback:VectorCallback<T, Void>, thisObject:Object):Void {
+		this.forEach(callback, thisObject);
+	}
+
+	@:noCompletion public inline function __mapBy<R>(callback:VectorCallback<T, R>, thisObject:Object):Vector<R> {
+		return this.map(callback, thisObject);
+	}
+
+	@:noCompletion public inline function __someBy(callback:VectorCallback<T, Bool>, thisObject:Object):Bool {
+		return this.some(callback, thisObject);
 	}
 
 	@:arrayAccess @:noCompletion private inline function __arrayGet(index:Int):T {
@@ -113,7 +298,7 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 			VectorImpl.__lengthFixed();
 		}
 		var items:Array<T> = this.__items();
-		#if (cpp && !cppia)
+		#if (cpp && !cppia && !macro)
 		return untyped __cpp__("::crossbyte_vector_take({0}, {1})", items, items.length - 1);
 		#else
 		return items.pop();
@@ -137,7 +322,7 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 			// the end and taking one off the end for a negative one.
 			VectorImpl.__outOfRange(index, items.length);
 		}
-		#if (cpp && !cppia)
+		#if (cpp && !cppia && !macro)
 		return untyped __cpp__("::crossbyte_vector_take({0}, {1})", items, index);
 		#else
 		return items.splice(index, 1)[0];
@@ -154,7 +339,7 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 			VectorImpl.__lengthFixed();
 		}
 		var items:Array<T> = this.__items();
-		#if (cpp && !cppia)
+		#if (cpp && !cppia && !macro)
 		return untyped __cpp__("::crossbyte_vector_take({0}, 0)", items);
 		#else
 		return items.shift();
@@ -183,8 +368,9 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	}
 
 	private inline function get_length():Int {
-		#if (cpp && !cppia)
-		return untyped __cpp__("::crossbyte_vector_length({0})", this.__store);
+		#if (cpp && !cppia && !macro)
+		var length:Int = untyped __cpp__("::crossbyte_vector_length({0})", this.__store);
+		return length;
 		#else
 		return this.__items().length;
 		#end
@@ -197,16 +383,17 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 }
 
 /**
-	A function `every`, `filter`, `forEach`, `map` and `some` call for each
-	item: one taking none to three of `(item, index, vector)`, returning `R`.
-	A function of a known arity converts to this on its own, and is then
-	called directly; an untyped `Function` converts too, and is called
-	through reflection with as many arguments as it takes.
+	A callback `every`, `filter`, `forEach`, `map` and `some` cannot call
+	directly where they are called (see `Vector`): an untyped `Function` or a
+	`Dynamic`, or any callback given a `thisObject`. A vector held as
+	`Dynamic` takes its callbacks as these too.
 
-	Natively, called directly, an item costs about 17 ns, where
-	`Reflect.callMethod` with an argument array made per item costs about
-	70. On the jvm the two cost the same, about a nanosecond: it calls a
-	callback directly either way.
+	A function of a known arity converts to this on its own, and is called
+	directly; an untyped `Function` converts too, and is called through
+	reflection with as many of `(item, index, vector)` as it takes. Natively
+	that costs about 70 ns an item, against 30 for a function called
+	directly; on the jvm the two cost the same, since it calls a callback
+	directly either way.
 **/
 abstract VectorCallback<T, R>(Dynamic) {
 	@:from @:noCompletion private static inline function ofNone<T, R>(f:Void->R):VectorCallback<T, R> {
@@ -227,6 +414,57 @@ abstract VectorCallback<T, R>(Dynamic) {
 
 	@:from @:noCompletion private static inline function ofFunction<T, R>(f:Function):VectorCallback<T, R> {
 		return cast new VectorCall(-1, f);
+	}
+}
+
+/**
+	What `for (item in vector)` walks, made and taken apart where the loop is,
+	so nothing is allocated. Each step reaches the elements anew, as `v[i]`
+	does, so a loop sees what its body does to the vector.
+**/
+@:noCompletion
+final class VectorIterator<T> {
+	private final __vector:VectorImpl<T>;
+	private var __items:Array<T>;
+	private var __index:Int;
+
+	public inline function new(vector:VectorImpl<T>) {
+		__vector = vector;
+		__items = null;
+		__index = 0;
+	}
+
+	public inline function hasNext():Bool {
+		__items = __vector.__items();
+		return __index < __items.length;
+	}
+
+	public inline function next():T {
+		return __items[__index++];
+	}
+}
+
+/** What `for (index => item in vector)` walks; see `VectorIterator`. **/
+@:noCompletion
+final class VectorKeyValueIterator<T> {
+	private final __vector:VectorImpl<T>;
+	private var __items:Array<T>;
+	private var __index:Int;
+
+	public inline function new(vector:VectorImpl<T>) {
+		__vector = vector;
+		__items = null;
+		__index = 0;
+	}
+
+	public inline function hasNext():Bool {
+		__items = __vector.__items();
+		return __index < __items.length;
+	}
+
+	public inline function next():{key:Int, value:T} {
+		var index:Int = __index++;
+		return {key: index, value: __items[index]};
 	}
 }
 
@@ -260,39 +498,61 @@ final class VectorCall {
 	walking the store sees what a callback writes to it.
 **/
 @:noCompletion
-#if (cpp && !cppia)
+#if (cpp && !cppia && !macro)
 @:headerCode('
 #include <typeinfo>
 
-// The elements of a crossbyte.ds.Vector store as an array of ELEM_. The store
-// is a cpp::VirtualArray; when the array under it is not exactly an
-// Array_obj<ELEM_>, its elements are converted to one, and the store is
-// pinned to that, so generic code writing to it converts what it writes.
-template<typename ELEM_>
-::Array<ELEM_> crossbyte_vector_retype(::cpp::VirtualArray_obj *inStore)
-{
-	::Array<ELEM_> items = inStore->base ? ::Array<ELEM_>(::Dynamic(inStore->base)) : ::Array<ELEM_>(0, 0);
-	inStore->base = items.mPtr;
-	inStore->store = ::hx::arrayFixed;
-	HX_OBJ_WB_GET(inStore, inStore->base);
-	return items;
-}
+// The elements of a crossbyte.ds.Vector, as an array of ELEM_.
+//
+// The store is a cpp::VirtualArray, which generic code uses as it is. The
+// typed array under it, once code naming ELEM_ has reached it, is kept in
+// ioTyped, and ioKind is set to the address that stands for ELEM_, so
+// reaching it again takes one comparison. From then the store is pinned
+// (arrayFixed): generic code writing to it converts what it writes, rather
+// than moving the elements to another array, so the typed array stays the
+// store until code naming another type reaches it and converts them again.
+template<typename ELEM_> struct crossbyte_vector_kind { static char id; };
+template<typename ELEM_> char crossbyte_vector_kind<ELEM_>::id;
 
-template<typename ELEM_>
-inline void crossbyte_vector_items(::Array<ELEM_> &outItems, const ::Dynamic &inStore)
+inline ::hx::Object *crossbyte_vector_object(::hx::Object *inObject) { return inObject; }
+template<typename OBJ_>
+inline ::hx::Object *crossbyte_vector_object(const ::hx::ObjectPtr<OBJ_> &inObject) { return inObject.mPtr; }
+
+template<typename ELEM_, typename BOX_>
+void crossbyte_vector_pin(::Array<ELEM_> &outItems, const BOX_ &inBox, ::Dynamic &ioStore, ::Dynamic &ioTyped, void *&ioKind)
 {
-	::cpp::VirtualArray_obj *store = static_cast< ::cpp::VirtualArray_obj *>(inStore.mPtr);
+	::cpp::VirtualArray_obj *store = static_cast< ::cpp::VirtualArray_obj *>(ioStore.mPtr);
 	::hx::ArrayBase *base = store->base;
 	if (base && typeid(*base) == typeid(::Array_obj<ELEM_>))
+	{
 		outItems.mPtr = static_cast< ::Array_obj<ELEM_> *>(base);
+	}
 	else
-		outItems = ::crossbyte_vector_retype<ELEM_>(store);
+	{
+		outItems = base ? ::Array<ELEM_>(::Dynamic(base)) : ::Array<ELEM_>(0, 0);
+		store->base = outItems.mPtr;
+		HX_OBJ_WB_GET(store, store->base);
+	}
+	store->store = ::hx::arrayFixed;
+	ioTyped = outItems;
+	HX_OBJ_WB_GET(::crossbyte_vector_object(inBox), ioTyped.mPtr);
+	ioKind = &::crossbyte_vector_kind<ELEM_>::id;
+}
+
+template<typename ELEM_, typename BOX_>
+inline void crossbyte_vector_items(::Array<ELEM_> &outItems, const BOX_ &inBox, ::Dynamic &ioStore, ::Dynamic &ioTyped, void *&ioKind)
+{
+	if (ioKind == &::crossbyte_vector_kind<ELEM_>::id)
+		outItems.mPtr = static_cast< ::Array_obj<ELEM_> *>(ioTyped.mPtr);
+	else
+		::crossbyte_vector_pin<ELEM_>(outItems, inBox, ioStore, ioTyped, ioKind);
 }
 
 // Generic code, and Array<Dynamic>, which hxcpp makes a cpp::VirtualArray.
-inline void crossbyte_vector_items(::cpp::VirtualArray &outItems, const ::Dynamic &inStore)
+template<typename BOX_>
+inline void crossbyte_vector_items(::cpp::VirtualArray &outItems, const BOX_ &, ::Dynamic &ioStore, ::Dynamic &, void *&)
 {
-	outItems.mPtr = static_cast< ::cpp::VirtualArray_obj *>(inStore.mPtr);
+	outItems.mPtr = static_cast< ::cpp::VirtualArray_obj *>(ioStore.mPtr);
 }
 
 // How many elements a store holds, which needs no typed array.
@@ -346,10 +606,20 @@ class VectorImpl<T> {
 	@:noCompletion public var __store:Dynamic;
 	@:noCompletion public var __fixed:Bool;
 
+	#if (cpp && !cppia && !macro)
+	/** The typed array under the store, once code naming its type reached it. **/
+	@:noCompletion public var __typed:Dynamic;
+
+	/** What stands for the type of `__typed`; see the header code. **/
+	@:noCompletion public var __kind:cpp.RawPointer<cpp.Void>;
+	#end
+
 	/** A vector of `items`, which it keeps rather than copies. **/
 	@:noCompletion public function new(items:Dynamic, fixed:Bool) {
-		#if (cpp && !cppia)
+		#if (cpp && !cppia && !macro)
 		__store = untyped __cpp__("::crossbyte_vector_store({0})", items);
+		__typed = null;
+		__kind = null;
 		#else
 		__store = items;
 		#end
@@ -361,9 +631,9 @@ class VectorImpl<T> {
 		and the dynamic array natively where it names none.
 	**/
 	@:noCompletion public inline function __items():Array<T> {
-		#if (cpp && !cppia)
+		#if (cpp && !cppia && !macro)
 		var items:Array<T> = null;
-		untyped __cpp__("::crossbyte_vector_items({0}, {1})", items, __store);
+		untyped __cpp__("::crossbyte_vector_items({0}, {1}, {2}, {3}, {4})", items, this, __store, __typed, __kind);
 		return items;
 		#else
 		return cast __store;
@@ -662,7 +932,9 @@ class VectorImpl<T> {
 		where it cannot, which is eval.
 	**/
 	@:noCompletion private static function __arity(callback:Function):Int {
-		#if js
+		#if macro
+		return -1;
+		#elseif js
 		return untyped callback.length;
 		#elseif cpp
 		return untyped callback.__ArgCount();
@@ -694,7 +966,7 @@ class VectorImpl<T> {
 		if (arity < 0) {
 			return __callUnknown(callback, thisObject, value, index);
 		}
-		#if jvm
+		#if (jvm && !macro)
 		// The jvm's Reflect.callMethod cannot be trusted with a count that
 		// does not match; this one does, but a direct call is surer still.
 		var f:Dynamic = callback;
@@ -744,7 +1016,7 @@ class VectorImpl<T> {
 		return null;
 	}
 
-	#if jvm
+	#if (jvm && !macro)
 	/**
 		How many arguments a jvm callback takes.
 
