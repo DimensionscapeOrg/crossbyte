@@ -29,9 +29,15 @@ final class LogCategory {
 
 	/** Whether a record at `candidate` would be emitted. **/
 	public inline function isEnabled(candidate:LogLevel):Bool {
-		if (__version != Logger.__levelsVersion) {
+		// The version is read once, before the level it stands for. Read
+		// again after, a level set on another thread in between was stored
+		// as current beside the level from before it, and the cache stayed
+		// stale until some other level changed. Kept from before, it is
+		// behind instead, and the next call looks again.
+		var version:Int = Logger.__levelsVersion;
+		if (__version != version) {
 			__level = Logger.levelOf(name);
-			__version = Logger.__levelsVersion;
+			__version = version;
 		}
 		return (candidate : Int) >= (__level : Int) && (__level : Int) < (LogLevel.OFF : Int);
 	}
