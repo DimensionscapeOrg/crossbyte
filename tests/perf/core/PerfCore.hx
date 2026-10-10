@@ -38,7 +38,7 @@ import haxe.Timer;
 	Scenarios: tick, scanmap, scanarr, echo, echo3, idle, blocked, udp,
 	fdisset, fdwalk, timerfire, timerfireint, timerreset, tasks, post,
 	worker, workerbacklog, mutex, mutexnew, locknew, tasknew, switchtable,
-	switchtyped, vectorforeach, vectorloop, logtext, logjson, logoff, throw,
+	switchtyped, switchclass (B only), vectorforeach, vectorloop, logtext, logjson, logoff, throw,
 	jsonread, jsonshaped (B only), mtime. Each is described where it is
 	written below.
 **/
@@ -98,6 +98,10 @@ class PerfCore {
 				modificationDate(seconds);
 			case "switchtable", "switchtyped":
 				switchTable(scenario == "switchtable", param, seconds);
+			case "switchclass":
+				#if perf_new
+				switchClass(seconds);
+				#end
 			case "vectorforeach", "vectorloop":
 				vector(scenario == "vectorforeach", param, seconds);
 			case "fdisset", "fdwalk":
@@ -717,6 +721,28 @@ class PerfCore {
 	}
 
 	// ------------------------------------------------------------------
+	// The same sixteen opcodes as a table of methods: `call` is a switch
+	// where it is written, calling the method directly.
+
+	#if perf_new
+	static function switchClass(seconds:Float):Void {
+		PerfOpcodes.hits = [for (_ in 0...16) 0];
+		var calls = 0;
+		var c0 = cpu();
+		var w0 = Timer.stamp();
+		while (Timer.stamp() - w0 < seconds) {
+			for (i in 0...100000) {
+				PerfOpcodes.call(i & 15, 1);
+			}
+			calls += 100000;
+		}
+		var used = cpu() - c0;
+		sink += PerfOpcodes.hits[3] & 1;
+		Sys.println('RESULT switchclass 16 calls=$calls cpu_s=${r(used)} ns_per_dispatch=${r(used / calls * 1e9)}');
+	}
+	#end
+
+	// ------------------------------------------------------------------
 	// Vector.forEach over N Ints with a (value, index) callback, against an
 	// index loop over the same Vector. Per element.
 
@@ -1052,5 +1078,29 @@ extern interface JmxOsBean {}
 @:native("com.sun.management.OperatingSystemMXBean")
 extern interface OsBean extends JmxOsBean {
 	function getProcessCpuTime():haxe.Int64;
+}
+#end
+
+#if perf_new
+@:build(crossbyte.ds.SwitchTable.build())
+private class PerfOpcodes {
+	public static var hits:Array<Int>;
+
+	@:case(0) static function op0(v:Int):Void hits[0] += v;
+	@:case(1) static function op1(v:Int):Void hits[1] += v;
+	@:case(2) static function op2(v:Int):Void hits[2] += v;
+	@:case(3) static function op3(v:Int):Void hits[3] += v;
+	@:case(4) static function op4(v:Int):Void hits[4] += v;
+	@:case(5) static function op5(v:Int):Void hits[5] += v;
+	@:case(6) static function op6(v:Int):Void hits[6] += v;
+	@:case(7) static function op7(v:Int):Void hits[7] += v;
+	@:case(8) static function op8(v:Int):Void hits[8] += v;
+	@:case(9) static function op9(v:Int):Void hits[9] += v;
+	@:case(10) static function op10(v:Int):Void hits[10] += v;
+	@:case(11) static function op11(v:Int):Void hits[11] += v;
+	@:case(12) static function op12(v:Int):Void hits[12] += v;
+	@:case(13) static function op13(v:Int):Void hits[13] += v;
+	@:case(14) static function op14(v:Int):Void hits[14] += v;
+	@:case(15) static function op15(v:Int):Void hits[15] += v;
 }
 #end
