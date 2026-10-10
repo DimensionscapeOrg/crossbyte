@@ -403,6 +403,46 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty);
 	}
 
+	public function testTimersDueTogetherFireInTheOrderTheyWereArmed():Void {
+		// As JavaScript's and ActionScript's do. The heap fired the first and
+		// then the rest backwards: 0,4,3,2,1.
+		var heap = new TimerHeap();
+		var order:Array<Int> = [];
+		for (i in 0...8) {
+			heap.setTimeoutVoid(0, () -> order.push(i));
+		}
+		heap.advanceTime(0);
+		Assert.equals("0,1,2,3,4,5,6,7", order.join(","), "timeouts of zero");
+
+		order = [];
+		for (i in 0...6) {
+			heap.setTimeoutVoid(1.0, () -> order.push(i));
+		}
+		heap.advanceTime(1.0);
+		Assert.equals("0,1,2,3,4,5", order.join(","), "timeouts of a second, armed together");
+
+		// A recurring timer counts as armed again each time it runs.
+		order = [];
+		var handles = [for (i in 0...4) heap.setIntervalVoid(0.1, 0.1, () -> order.push(i))];
+		for (_ in 0...3) {
+			heap.advanceTime(0.1);
+		}
+		Assert.equals("0,1,2,3,0,1,2,3,0,1,2,3", order.join(","), "intervals armed together");
+		for (handle in handles) {
+			heap.clear(handle);
+		}
+
+		// So does one given a new time: after those already due then.
+		order = [];
+		heap.setTimeoutVoid(1.0, () -> order.push(0));
+		var moved = heap.setTimeoutVoid(2.0, () -> order.push(2));
+		heap.setTimeoutVoid(1.0, () -> order.push(1));
+		heap.reschedule(moved, heap.time + 1.0);
+		heap.advanceTime(1.0);
+		Assert.equals("0,1,2", order.join(","), "a timer rescheduled to a time others were due at");
+		Assert.isTrue(heap.isEmpty);
+	}
+
 	public function testAnIntervalOfZeroOrLessIsRefused():Void {
 		// Refused on every build. Only a debug build checked it, and threw a
 		// String; anywhere else such an interval fired once, as a timeout.

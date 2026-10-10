@@ -171,9 +171,9 @@ class TimerWheelTest extends utest.Test {
 		// waited a whole revolution, half a second.
 		var wheel = new TimerWheel();
 		var fired = 0;
-		wheel.setTimeoutVoid(0.005, () -> fired++);
-		// Linked last, so first in the bucket.
+		// Armed first, so fired first.
 		wheel.setTimeoutVoid(0.005, () -> throw "timer bug");
+		wheel.setTimeoutVoid(0.005, () -> fired++);
 		try {
 			wheel.advanceTime(0.010);
 			Assert.fail("the failure did not leave advanceTime");
@@ -184,6 +184,31 @@ class TimerWheelTest extends utest.Test {
 
 		wheel.advanceTime(0.001);
 		Assert.equals(1, fired, "a timer due beside one that threw waited a revolution");
+		Assert.isTrue(wheel.isEmpty);
+	}
+
+	public function testTimersDueInOneTickFireInTheOrderTheyWereArmed():Void {
+		// A bucket was a list pushed at its head, so they fired backwards.
+		var wheel = new TimerWheel();
+		var order:Array<Int> = [];
+		for (i in 0...5) {
+			wheel.setTimeoutVoid(0, () -> order.push(i));
+		}
+		wheel.advanceTime(0.002);
+		Assert.equals("0,1,2,3,4", order.join(","), "timeouts of zero");
+
+		order = [];
+		for (i in 0...5) {
+			wheel.setTimeoutVoid(0.3, () -> order.push(i));
+		}
+		// Past the ring, they wait together and join their tick together.
+		for (i in 5...10) {
+			wheel.setTimeoutVoid(1.5, () -> order.push(i));
+		}
+		for (_ in 0...120) {
+			wheel.advanceTime(1 / 60);
+		}
+		Assert.equals("0,1,2,3,4,5,6,7,8,9", order.join(","), "timeouts in the ring and past it");
 		Assert.isTrue(wheel.isEmpty);
 	}
 
