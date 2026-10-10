@@ -13,6 +13,10 @@ package crossbyte.ds;
  *
  * A lookup reads the key in place and allocates nothing.
  *
+ * The empty key, like `null`, is not held: `insert("", value)` does nothing,
+ * and `search("")` is null. For a catch-all route, use what `longestPrefix`
+ * answers or, when it is null, a fallback of your own.
+ *
  * ```haxe
  * var routes = new RadixTree<Handler>();
  * routes.insert("/api/v1/users", users);

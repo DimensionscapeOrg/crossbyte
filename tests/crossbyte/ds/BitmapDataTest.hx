@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.math.Point;
+import crossbyte.math.Rectangle;
 import utest.Assert;
 
 class BitmapDataTest extends utest.Test {
@@ -82,6 +84,79 @@ class BitmapDataTest extends utest.Test {
 		0xFF is above 0x7F. Compared as signed Ints, every opaque pixel would
 		read as negative and so as less than any threshold with a clear top bit.
 	**/
+	public function testFillCopyAndThresholdClipToTheBitmap():Void {
+		// As Flash's do. They threw part way through instead, the pixels
+		// before the edge written and the rest not.
+		var bitmap = new BitmapData(4, 4, true, 0);
+		bitmap.fillRect(new Rectangle(2, 2, 4, 4), 0xFFFF0000);
+		Assert.equals(0xFFFF0000, bitmap.getPixel32(3, 3));
+		Assert.equals(0xFFFF0000, bitmap.getPixel32(2, 3));
+		Assert.equals(0, bitmap.getPixel32(1, 1));
+		bitmap.fillRect(new Rectangle(-2, -2, 3, 3), 0xFF00FF00);
+		Assert.equals(0xFF00FF00, bitmap.getPixel32(0, 0));
+		Assert.equals(0, bitmap.getPixel32(1, 0));
+
+		var source = new BitmapData(4, 1, true, 0xFF0000FF);
+		var target = new BitmapData(4, 4, true, 0);
+		target.copyPixels(source, new Rectangle(0, 0, 4, 1), new Point(2, 0));
+		Assert.equals(0xFF0000FF, target.getPixel32(3, 0));
+		Assert.equals(0, target.getPixel32(1, 0));
+		target.copyPixels(source, new Rectangle(-1, 0, 6, 1), new Point(0, 3));
+		Assert.equals(0, target.getPixel32(0, 3), "a pixel from outside the source was copied");
+		Assert.equals(0xFF0000FF, target.getPixel32(1, 3));
+
+		var small = new BitmapData(2, 2, true, 0);
+		var hits:Int = small.threshold(new BitmapData(4, 4, true, 0xFF808080), new Rectangle(0, 0, 4, 4), new Point(0, 0), ">", 0, 0xFFFFFFFF);
+		Assert.equals(4, hits, "pixels past the target were counted");
+	}
+
+	public function testACopyWithinOneBitmapMovesTheRegionWhole():Void {
+		// Copied in order, a region moved over itself read pixels it had
+		// already written: 1 2 3 4 shifted right became 1 1 1 1.
+		var row = new BitmapData(4, 1, true, 0);
+		for (x in 0...4) {
+			row.setPixel32(x, 0, 0xFF000001 + x);
+		}
+		row.copyPixels(row, new Rectangle(0, 0, 3, 1), new Point(1, 0));
+		Assert.equals("1,1,2,3", [for (x in 0...4) row.getPixel32(x, 0) & 0xFF].join(","));
+		row.copyPixels(row, new Rectangle(1, 0, 3, 1), new Point(0, 0));
+		Assert.equals("1,2,3,3", [for (x in 0...4) row.getPixel32(x, 0) & 0xFF].join(","));
+
+		var column = new BitmapData(1, 4, true, 0);
+		for (y in 0...4) {
+			column.setPixel32(0, y, 0xFF000001 + y);
+		}
+		column.copyPixels(column, new Rectangle(0, 0, 1, 3), new Point(0, 1));
+		Assert.equals("1,1,2,3", [for (y in 0...4) column.getPixel32(0, y) & 0xFF].join(","));
+	}
+
+	public function testASizeThatCannotBeHeldIsRefused():Void {
+		// Negative was taken as it came; past 2^31 pixels the index wrapped,
+		// and two pixels shared one place.
+		for (size in [[-3, 4], [4, -3], [65536, 65537]]) {
+			try {
+				new BitmapData(size[0], size[1]);
+				Assert.fail('a ${size[0]} by ${size[1]} bitmap was made');
+			} catch (e:crossbyte.errors.ArgumentError) {
+				Assert.pass();
+			}
+		}
+	}
+
+	public function testAFullyTransparentPixelHoldsNoColour():Void {
+		// As setPixel32 already kept it: setPixel and fromByteArray put a
+		// colour under no alpha.
+		var bitmap = new BitmapData(2, 1, true, 0);
+		bitmap.setPixel(0, 0, 0x123456);
+		Assert.equals(0, bitmap.getPixel32(0, 0));
+		var bytes = new crossbyte.io.ByteArray();
+		bytes.writeUnsignedInt(0x00123456);
+		bytes.writeUnsignedInt(0x80123456);
+		var read = BitmapData.fromByteArray(2, 1, bytes);
+		Assert.equals(0, read.getPixel32(0, 0));
+		Assert.equals(0x80123456, read.getPixel32(1, 0));
+	}
+
 	public function testThresholdComparesAsUnsigned():Void {
 		var source = new crossbyte.ds.BitmapData(3, 1, true, 0);
 		source.setPixel32(0, 0, 0xFF123456);

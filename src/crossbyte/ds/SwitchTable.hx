@@ -15,6 +15,12 @@ class SwitchTable {
 	 * A key no case matches goes to `otherwise`, a `(key:Dynamic,
 	 * args:Array<Dynamic>) -> Void`, or without one throws naming the key.
 	 *
+	 * A handler whose type says how many arguments it takes is given that
+	 * many or refused: a dispatch passing another number throws an
+	 * `ArgumentError` naming the case, on every target. Unchecked, it threw
+	 * on the interpreter, ran with the extra arguments dropped on JavaScript,
+	 * and on the jvm did not run at all and said nothing.
+	 *
 	 * Example:
 	 * ```haxe
 	 * final dispatch = SwitchTable.make([
@@ -85,6 +91,10 @@ class SwitchTable {
 		// parameters keep the backend on the general equality/call paths.
 		// A handler written as a function literal is made once, with the
 		// dispatcher, rather than each time its case is chosen.
+		// How many arguments each handler takes, read from its type before it
+		// is hoisted: null for one whose type does not say (a Dynamic).
+		var arities:Array<Null<Array<Int>>> = [for (handler in handlers) __arity(handler)];
+		var labels:Array<String> = [for (key in keys) haxe.macro.ExprTools.toString(key)];
 		var hoisted:Array<Expr> = [];
 		for (i in 0...handlers.length) {
 			switch (handlers[i].expr) {
@@ -104,12 +114,17 @@ class SwitchTable {
 			}
 		}
 
-		var chain:Expr = hasOtherwise ? macro crossbyte.ds.SwitchTable.__callWithKey(${otherwise}, key, $i{"args"}) : macro crossbyte.ds.SwitchTable.__notFound(key);
+		// The dispatcher's own parameters are named so a case's key cannot
+		// mean them: named `key` and `args`, a key held in a variable of
+		// either name read the dispatcher's argument, and every dispatch went
+		// to the first case.
+		var chain:Expr = hasOtherwise ? macro crossbyte.ds.SwitchTable.__callWithKey(${otherwise}, __switchTableKey, __switchTableArgs) : macro crossbyte.ds.SwitchTable.__notFound(__switchTableKey);
+		var calls:Array<Expr> = [for (i in 0...handlers.length) __callOf(handlers[i], arities[i], labels[i])];
 		var caseIndex:Int = keys.length - 1;
 		while (caseIndex >= 0) {
 			var caseValue:Expr = keys[caseIndex];
-			var caseBody:Expr = macro crossbyte.ds.SwitchTable.__call(${handlers[caseIndex]}, $i{"args"});
-			chain = macro if (crossbyte.ds.SwitchTable.__matches(key, ${caseValue})) ${caseBody} else ${chain};
+			var caseBody:Expr = calls[caseIndex];
+			chain = macro if (crossbyte.ds.SwitchTable.__matches(__switchTableKey, ${caseValue})) ${caseBody} else ${chain};
 			caseIndex--;
 		}
 
@@ -121,7 +136,7 @@ class SwitchTable {
 		// through the chain, so what matches and what reaches `otherwise` is
 		// the same either way; the jvm's mixed-key miscompile needs keys of
 		// both types, which never come here.
-		var typed:Null<Expr> = __typedLookup(keys, handlers);
+		var typed:Null<Expr> = __typedLookup(keys, calls);
 		var body:Expr = typed == null ? chain : macro {
 			var __switchDone:Bool = false;
 			${typed};
@@ -131,8 +146,8 @@ class SwitchTable {
 		};
 
 		var funcArgs:Array<FunctionArg> = [
-			{name: "key", type: macro :Dynamic},
-			{name: "args", type: macro :haxe.Rest<Dynamic>, opt: false}
+			{name: "__switchTableKey", type: macro :Dynamic},
+			{name: "__switchTableArgs", type: macro :haxe.Rest<Dynamic>, opt: false}
 		];
 		var dispatcher:Expr = {
 			expr: EFunction(FAnonymous, {
@@ -151,10 +166,46 @@ class SwitchTable {
 
 	#if macro
 	/**
+		The fewest and the most arguments `handler` takes, from its type, the
+		most -1 for a rest argument; null when its type does not say.
+	**/
+	private static function __arity(handler:Expr):Null<Array<Int>> {
+		var type = try Context.follow(Context.typeof(handler)) catch (_:Dynamic) null;
+		return switch (type) {
+			case TFun(args, _):
+				var fewest:Int = 0;
+				var most:Int = args.length;
+				for (arg in args) {
+					var rest:Bool = switch (Context.follow(arg.t)) {
+						case TAbstract(_.get() => {pack: ["haxe"], name: "Rest"}, _): true;
+						default: false;
+					}
+					if (rest) {
+						most = -1;
+					} else if (!arg.opt) {
+						fewest++;
+					}
+				}
+				[fewest, most];
+			default: null;
+		}
+	}
+
+	/** The call of one case's handler, its arguments counted when its type counts them. **/
+	private static function __callOf(handler:Expr, arity:Null<Array<Int>>, label:String):Expr {
+		if (arity == null) {
+			return macro crossbyte.ds.SwitchTable.__call(${handler}, __switchTableArgs);
+		}
+		var fewest:Int = arity[0];
+		var most:Int = arity[1];
+		return macro crossbyte.ds.SwitchTable.__callCounted(${handler}, __switchTableArgs, $v{fewest}, $v{most}, $v{label});
+	}
+
+	/**
 		The typed lookup, when every key has one type: Int or String. Null
 		when they do not, or when a key cannot be typed here.
 	**/
-	private static function __typedLookup(keys:Array<Expr>, handlers:Array<Expr>):Null<Expr> {
+	private static function __typedLookup(keys:Array<Expr>, calls:Array<Expr>):Null<Expr> {
 		var literals:Bool = true;
 		var kind:Null<String> = null;
 		for (key in keys) {
@@ -186,17 +237,17 @@ class SwitchTable {
 			for (i in 0...keys.length)
 				macro {
 					__switchDone = true;
-					crossbyte.ds.SwitchTable.__call(${handlers[i]}, $i{"args"});
+					${calls[i]};
 				}
 		];
 		var subjectType:ComplexType = kind == "Int" ? macro :Int : macro :String;
-		var test:Expr = kind == "Int" ? macro Std.isOfType(key, Int) : macro Std.isOfType(key, String);
+		var test:Expr = kind == "Int" ? macro Std.isOfType(__switchTableKey, Int) : macro Std.isOfType(__switchTableKey, String);
 
 		if (literals) {
 			var cases:Array<Case> = [for (i in 0...keys.length) {values: [keys[i]], expr: bodies[i]}];
 			var lookup:Expr = {expr: ESwitch(macro __switchKey, cases, macro {}), pos: Context.currentPos()};
 			return macro if (${test}) {
-				var __switchKey:$subjectType = key;
+				var __switchKey:$subjectType = __switchTableKey;
 				${lookup};
 			};
 		}
@@ -212,7 +263,7 @@ class SwitchTable {
 			i--;
 		}
 		return macro if (${test}) {
-			var __switchKey:$subjectType = key;
+			var __switchKey:$subjectType = __switchTableKey;
 			${compared};
 		};
 	}
@@ -250,6 +301,18 @@ class SwitchTable {
 			case 3: handler(args[0], args[1], args[2]);
 			default: Reflect.callMethod(handler, handler, args);
 		}
+	}
+
+	/**
+	 * `__call` for a handler whose type says how many arguments it takes:
+	 * another number is refused, the same way on every target.
+	 */
+	@:noCompletion public static function __callCounted(handler:Dynamic, args:Array<Dynamic>, fewest:Int, most:Int, label:String):Void {
+		if (args.length < fewest || (most >= 0 && args.length > most)) {
+			var takes:String = most < 0 ? '$fewest or more' : (fewest == most ? '$fewest' : '$fewest to $most');
+			throw new crossbyte.errors.ArgumentError('SwitchTable: the case for $label takes $takes arguments, and was given ${args.length}.');
+		}
+		__call(handler, args);
 	}
 
 	/**

@@ -15,7 +15,11 @@ import haxe.ds.StringMap;
  * integers by value, objects by identity, so building a graph of n nodes
  * costs n lookups rather than n^2 comparisons. Floats, booleans and null,
  * which few graphs use as nodes, are found by a pass over the nodes of
- * that kind.
+ * that kind. On the interpreter its own `ObjectMap` is not a hash, and
+ * object nodes cost n^2 there.
+ *
+ * NaN is refused as a node with an `ArgumentError`: it equals nothing, not
+ * even itself, so every use of it added another node nobody could reach.
  *
  * @param T The type of values stored in the graph nodes.
  */
@@ -72,7 +76,8 @@ class WeightedGraph<T> {
 	 * Gets the neighbors and edge weights for a given node.
 	 *
 	 * @param node The node whose neighbors are to be retrieved.
-	 * @return An array of edges representing the neighbors and their weights.
+	 * @return An array of edges representing the neighbors and their weights:
+	 *         the node's own, to read; adding to it adds no node.
 	 */
 	public function getNeighbors(node:T):Array<Edge<T>> {
 		var entry = __find(node);
@@ -80,9 +85,12 @@ class WeightedGraph<T> {
 	}
 
 	private function __add(node:T):Adjacency<T> {
+		var key:Dynamic = node;
+		if (Std.isOfType(key, Float) && Math.isNaN(key)) {
+			throw new crossbyte.errors.ArgumentError("NaN cannot be a node: it equals no node, not even itself.");
+		}
 		var entry = new Adjacency<T>(node);
 		adjacencyList.push(entry);
-		var key:Dynamic = node;
 		switch (__kind(key)) {
 			case 0:
 				__byString.set(key, entry);
