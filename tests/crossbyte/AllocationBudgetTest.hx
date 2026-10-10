@@ -150,6 +150,11 @@ class AllocationBudgetTest extends utest.Test {
 	// cases, as the TCP line's do (the JDK's Windows selector boxing the two
 	// sockets it finds ready, which the compiler leaves out only sometimes).
 	private static final RPC_RUDP_RECEIVER = new Budget("an RPC call over reliable UDP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
+	// A call the other side has no method for, told to a receiver as
+	// UnknownMethod: nothing, where the reason `onUnreadableFrame` would be
+	// told was made for every one (240 B natively, 1,208 on the jvm) though
+	// nothing listened. Measured on 2026-10-09.
+	private static final RPC_UNKNOWN_REFUSED = new Budget("an RPC call to a method the other side has not got, refused through a receiver", "call", [0, 0, 0], [8, 8, 8]);
 	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
@@ -794,6 +799,21 @@ class AllocationBudgetTest extends utest.Test {
 		__warm(op, WARM_CHEAP);
 		__within(RPC_INT_RECEIVER, AllocationMeter.measure(op, 20000));
 		Assert.isTrue(receiver.int > 0);
+	}
+
+	public function testAnRpcCallToAMethodTheOtherSideHasNotGot():Void {
+		var fixture = new BudgetRpc();
+		var refused = new RefusedReceiver();
+		var op = () -> {
+			var told:Int = refused.told;
+			fixture.commands.absentThen(1, refused);
+			if (refused.told != told + 1) {
+				throw "the call was not refused";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_UNKNOWN_REFUSED, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(refused.told > 0);
 	}
 
 	public function testAnRpcCallAnsweredThroughAFloatReceiver():Void {
@@ -1613,6 +1633,27 @@ private class BudgetCommands extends RPCCommands {
 	@:rpc public function greet(id:Int):RPCResponse<String> {}
 
 	@:rpc public function count(n:haxe.Int64):RPCResponse<haxe.Int64> {}
+
+	// Its handler has no such method.
+	@:rpc public function absent(a:Int):RPCResponse<Int> {}
+}
+
+/** Counts the calls refused as UnknownMethod. **/
+private class RefusedReceiver implements RPCIntReceiver {
+	public var told:Int = 0;
+
+	public function new() {}
+
+	public function onInt(call:Int, value:Int):Void {
+		throw "a call to a method nobody has was answered";
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		if (failure != UnknownMethod) {
+			throw "the call failed as " + failure;
+		}
+		told++;
+	}
 }
 
 /** A pair of sessions over the in-memory pair, and a receiver for their answers. **/
