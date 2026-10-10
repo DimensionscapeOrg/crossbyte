@@ -5,10 +5,6 @@ import crossbyte.Object;
 import crossbyte.errors.RangeError;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * ActionScript's `Vector`: a dense, typed array whose length can be fixed.
  *
  * `v[i]` reads and writes an element on every target. As in ActionScript,
@@ -27,6 +23,15 @@ import crossbyte.errors.RangeError;
  * typed, which is called directly. An untyped `Function` still works, and is
  * called through reflection, as is any callback given a
  * `thisObject`.
+ *
+ * **A length given up front is not an initialised vector.** `new Vector<T>(n)`
+ * and `length = n` grow with whatever the target fills an `Array` with, which
+ * is `0` natively and on the jvm but `null` on the interpreter and
+ * JavaScript. So `new Vector<Int>(3)` is three zeroes on one target and three
+ * nulls on another: adding them throws on the interpreter and quietly gives
+ * `NaN` on JavaScript, where ActionScript would fill a numeric vector with 0.
+ * Write every element before reading it. A negative length is refused on
+ * every target with `RangeError`.
  */
 @:forward
 abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
@@ -148,7 +153,14 @@ class VectorImpl<T> {
 	public function every(callback:VectorCallback<T, Bool>, thisObject:Object = null):Bool {
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
-		for (i in 0...__array.length) {
+		// `every`, `filter`, `forEach`, `map` and `some` all walk the vector
+		// this way: never past the length they started with, as in
+		// ActionScript, and never past the length it has now, so a callback
+		// that shortens it under the loop is not handed the elements that are
+		// no longer there.
+		var count:Int = __array.length;
+		var i:Int = 0;
+		while (i < count && i < __array.length) {
 			var result:Dynamic = __call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
@@ -156,6 +168,7 @@ class VectorImpl<T> {
 			if (result != true) {
 				return false;
 			}
+			i++;
 		}
 		return true;
 	}
@@ -164,7 +177,9 @@ class VectorImpl<T> {
 		var out:Array<T> = [];
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
-		for (i in 0...__array.length) {
+		var count:Int = __array.length;
+		var i:Int = 0;
+		while (i < count && i < __array.length) {
 			var value:T = __array[i];
 			var result:Dynamic = __call(f, thisObject, arity, value, i);
 			if (arity < 0) {
@@ -173,6 +188,7 @@ class VectorImpl<T> {
 			if (result == true) {
 				out.push(value);
 			}
+			i++;
 		}
 		return __fromArray(out);
 	}
@@ -180,11 +196,14 @@ class VectorImpl<T> {
 	public function forEach(callback:VectorCallback<T, Void>, thisObject:Object = null):Void {
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
-		for (i in 0...__array.length) {
+		var count:Int = __array.length;
+		var i:Int = 0;
+		while (i < count && i < __array.length) {
 			__call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
+			i++;
 		}
 	}
 
@@ -209,11 +228,14 @@ class VectorImpl<T> {
 		var out:Array<T> = [];
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
-		for (i in 0...__array.length) {
+		var count:Int = __array.length;
+		var i:Int = 0;
+		while (i < count && i < __array.length) {
 			out.push(cast __call(f, thisObject, arity, __array[i], i));
 			if (arity < 0) {
 				arity = __resolvedArity;
 			}
+			i++;
 		}
 		return __fromArray(out);
 	}
@@ -231,6 +253,11 @@ class VectorImpl<T> {
 
 	public function removeAt(index:Int):T {
 		__checkNotFixed();
+		if (index < 0 || index >= __array.length) {
+			// As `v[i]` does, rather than answering `null` for an index past
+			// the end and taking one off the end for a negative one.
+			throw new RangeError('Index $index is out of range (length ${__array.length}).');
+		}
 		return __array.splice(index, 1)[0];
 	}
 
@@ -251,7 +278,9 @@ class VectorImpl<T> {
 	public function some(callback:VectorCallback<T, Bool>, thisObject:Object = null):Bool {
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
-		for (i in 0...__array.length) {
+		var count:Int = __array.length;
+		var i:Int = 0;
+		while (i < count && i < __array.length) {
 			var result:Dynamic = __call(f, thisObject, arity, __array[i], i);
 			if (arity < 0) {
 				arity = __resolvedArity;
@@ -259,6 +288,7 @@ class VectorImpl<T> {
 			if (result == true) {
 				return true;
 			}
+			i++;
 		}
 		return false;
 	}
@@ -278,15 +308,21 @@ class VectorImpl<T> {
 	}
 
 	public function splice(startIndex:Int, deleteCount:UInt = 2147483647, ...items:T):Vector<T> {
+		// Where the removal starts, counted back from the end for a negative
+		// index and clamped to the vector. The items go back in at this same
+		// place, so it is worked out before anything is removed: `insert`
+		// reads a negative index against the length it is given, which the
+		// removal has already changed.
+		var start:Int = startIndex < 0 ? __array.length + startIndex : startIndex;
+		if (start < 0) {
+			start = 0;
+		}
+		if (start > __array.length) {
+			start = __array.length;
+		}
+
 		if (__fixed) {
 			// Allowed only where it leaves the length as it is.
-			var start:Int = startIndex < 0 ? __array.length + startIndex : startIndex;
-			if (start < 0) {
-				start = 0;
-			}
-			if (start > __array.length) {
-				start = __array.length;
-			}
 			var available:Int = __array.length - start;
 			var removing:Int = (deleteCount : Int) < 0 || (deleteCount : Int) > available ? available : (deleteCount : Int);
 			if (removing != items.length) {
@@ -294,9 +330,9 @@ class VectorImpl<T> {
 			}
 		}
 
-		var vec:Vector<T> = __fromArray(__array.splice(startIndex, deleteCount));
+		var vec:Vector<T> = __fromArray(__array.splice(start, deleteCount));
 
-		var insertIndex:Int = startIndex;
+		var insertIndex:Int = start;
 		for (item in items) {
 			__array.insert(insertIndex++, item);
 		}
@@ -332,6 +368,12 @@ class VectorImpl<T> {
 	}
 
 	private function set_length(value:Int):Int {
+		if (value < 0) {
+			// `Array.resize` takes one: it is `Invalid_argument("Array.fill")`
+			// on the interpreter, which no `catch` can hold, and drops
+			// elements off the end on the jvm.
+			throw new RangeError('Length $value is negative.');
+		}
 		if (value != __array.length) {
 			__checkNotFixed();
 		}
@@ -459,7 +501,22 @@ class VectorImpl<T> {
 	}
 
 	#if jvm
+	/**
+		How many arguments a jvm callback takes.
+
+		A function the compiler made declares an `invoke` of its own arity. A
+		method reached through `Reflect` does not: it is a `haxe.jvm.Closure`,
+		which declares only `invokeDynamic(Object[])` and holds the method it
+		will call, so the count is read from that. Guessing it called a
+		one-argument method with two, which threw
+		`IllegalArgumentException`, and handed a three-argument one `null` for
+		the vector.
+	**/
 	@:noCompletion private static function __jvmArity(callback:Function):Int {
+		if (Std.isOfType(callback, jvm.Closure)) {
+			return (cast callback : jvm.Closure).method.getParameterTypes().length;
+		}
+
 		var cls = java.Lib.toNativeType(Type.getClass(callback));
 		if (cls != null) {
 			var methods = cls.getDeclaredMethods();
@@ -469,6 +526,8 @@ class VectorImpl<T> {
 				}
 			}
 		}
+		// Nothing left to ask, which no callback the compiler or `Reflect`
+		// makes reaches. Two is what a Vector callback most often takes.
 		return 2;
 	}
 	#end
