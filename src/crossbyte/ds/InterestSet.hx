@@ -65,6 +65,16 @@ final class InterestSet {
 	private var __entered:Vector<Int>;
 	private var __enteredCount:Int = 0;
 	private var __committing:Bool = false;
+	// Counts commits and clears, so a loop over the view knows when one has
+	// replaced what it walks.
+	private var __round:Int = 0;
+
+	/**
+	 * The largest id the set holds, as for `SpatialGrid.MAX_ID`: ids index
+	 * bit sets that grow to the largest one held. One past it is refused
+	 * with an `ArgumentError`.
+	 */
+	public static inline var MAX_ID:Int = (1 << 24) - 1;
 
 	/**
 	 * @param capacity Ids to make room for at the start; either set grows to
@@ -90,6 +100,9 @@ final class InterestSet {
 	public function add(id:Int):Void {
 		if (id < 0) {
 			throw new ArgumentError("An id cannot be negative.");
+		}
+		if (id > MAX_ID) {
+			throw new ArgumentError('An id is at most $MAX_ID, not $id.');
 		}
 		if (!__next.get(id)) {
 			__next.set(id, true);
@@ -174,6 +187,7 @@ final class InterestSet {
 		__nextIds = emptiedIds;
 		__nextCount = 0;
 		length = __viewCount;
+		__round++;
 
 		if (left == null && entered == null) {
 			return;
@@ -229,6 +243,7 @@ final class InterestSet {
 		__viewCount = 0;
 		__nextCount = 0;
 		length = 0;
+		__round++;
 	}
 
 	/**
@@ -272,20 +287,26 @@ final class InterestSet {
 @:access(crossbyte.ds.InterestSet)
 class InterestSetIterator {
 	private var __set:InterestSet;
-	private var __at:Int;
+	private var __at:Int = 0;
+	private var __round:Int;
 
 	public inline function new(set:InterestSet) {
 		__set = set;
-		__at = set.__stillInView(0);
+		__round = set.__round;
 	}
 
+	// Whether the view walked is still the set's, and past what the loop's
+	// body forgot: decided here rather than in `next`, which ran before the
+	// body and returned an id the body had just forgotten.
 	public inline function hasNext():Bool {
+		if (__round != __set.__round) {
+			return false;
+		}
+		__at = __set.__stillInView(__at);
 		return __at < __set.__viewCount;
 	}
 
 	public inline function next():Int {
-		var id:Int = __set.__viewIds[__at];
-		__at = __set.__stillInView(__at + 1);
-		return id;
+		return __set.__viewIds[__at++];
 	}
 }

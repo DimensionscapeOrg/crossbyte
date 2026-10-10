@@ -189,4 +189,59 @@ class InterestSetTest extends utest.Test {
 		Assert.raises(() -> set.add(-1));
 		Assert.isFalse(set.has(-1));
 	}
+
+	public function testALoopSkipsAnIdItsBodyForgets():Void {
+		// The next id was chosen before the body ran, so one the body forgot
+		// was still returned.
+		var set = new InterestSet();
+		for (id in [1, 2, 3]) {
+			set.add(id);
+		}
+		set.commit();
+		var seen:Array<Int> = [];
+		for (id in set) {
+			seen.push(id);
+			if (id == 1) {
+				set.forget(2);
+			}
+		}
+		Assert.equals("1,3", seen.join(","));
+	}
+
+	public function testACommitOrClearInsideALoopEndsIt():Void {
+		// As documented: it carried on into the new view, from its second id.
+		var set = new InterestSet();
+		for (id in [1, 2, 3, 4]) {
+			set.add(id);
+		}
+		set.commit();
+		var seen:Array<Int> = [];
+		for (id in set) {
+			seen.push(id);
+			for (other in 10...15) {
+				set.add(other);
+			}
+			set.commit();
+		}
+		Assert.equals("1", seen.join(","));
+
+		seen = [];
+		for (id in set) {
+			seen.push(id);
+			set.clear();
+		}
+		Assert.equals(1, seen.length);
+	}
+
+	public function testAnIdPastTheLargestIsRefused():Void {
+		var set = new InterestSet();
+		try {
+			set.add(0x7FFFFFFF);
+			Assert.fail("id 0x7FFFFFFF was taken");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+		set.commit();
+		Assert.equals(0, set.length);
+	}
 }

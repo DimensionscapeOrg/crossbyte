@@ -68,6 +68,15 @@ final class SpatialGrid3D {
 	public static inline var MAX_CELLS:Int = 1 << 24;
 
 	/**
+	 * The largest id a grid holds. Ids index arrays that grow to the largest
+	 * one held, so they are meant dense (an entity's slot, a
+	 * `SlotHandle.index()`), and one past this is refused with an
+	 * `ArgumentError`: grown to fit the largest Int, the size wrapped, a
+	 * segfault on the interpreter, and on Node the heap ran out.
+	 */
+	public static inline var MAX_ID:Int = (1 << 24) - 1;
+
+	/**
 	 * How far, in cells, a query reaches past its own edge when choosing the
 	 * cells to visit; see `SpatialGrid`.
 	 */
@@ -138,9 +147,10 @@ final class SpatialGrid3D {
 
 		// Counted in Float: three axes of small cells overflow an Int long
 		// before they are refused for being too many.
-		var across:Float = Math.fceil(width / cellSize);
-		var down:Float = Math.fceil(height / cellSize);
-		var deep:Float = Math.fceil(depth / cellSize);
+		// At least one each way; see SpatialGrid.
+		var across:Float = Math.max(1, Math.fceil(width / cellSize));
+		var down:Float = Math.max(1, Math.fceil(height / cellSize));
+		var deep:Float = Math.max(1, Math.fceil(depth / cellSize));
 		if (across * down * deep > MAX_CELLS) {
 			throw new ArgumentError('${across} by ${down} by ${deep} cells is more than the ${MAX_CELLS} a grid will make; use a larger cellSize.');
 		}
@@ -183,6 +193,9 @@ final class SpatialGrid3D {
 		// it could never be found again.
 		if (Math.isNaN(x) || Math.isNaN(y) || Math.isNaN(z)) {
 			throw new ArgumentError("A position cannot be NaN.");
+		}
+		if (id > MAX_ID) {
+			throw new ArgumentError('An id is at most $MAX_ID, not $id.');
 		}
 		if (id >= __cells.length) {
 			__grow(id + 1);

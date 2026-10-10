@@ -39,6 +39,12 @@ class QuadTree<T> {
 	private var southeast:QuadTree<T>;
 	private var southwest:QuadTree<T>;
 
+	// The quad's far edges, as its parent drew them: the parent's own edge
+	// or its midline, never a child's `x + width`, which rounds. A query
+	// pruned by the rounded edge missed a point filed in the sliver past it.
+	private var __right:Float;
+	private var __bottom:Float;
+
 	/**
 	 * Constructs a new QuadTree.
 	 *
@@ -47,12 +53,14 @@ class QuadTree<T> {
 	 */
 	public function new(boundary:Rectangle, capacity:Int) {
 		if (capacity <= 0) {
-			throw "capacity must be > 0";
+			throw new crossbyte.errors.ArgumentError('A QuadTree capacity is at least 1, not $capacity.');
 		}
 		this.boundary = boundary;
 		this.capacity = capacity;
 		this.nodes = [];
 		this.divided = false;
+		__right = boundary.x + boundary.width;
+		__bottom = boundary.y + boundary.height;
 	}
 
 	/**
@@ -97,6 +105,14 @@ class QuadTree<T> {
 		southwest = new QuadTree<T>(new Rectangle(x, y + h, w, h), capacity);
 		southeast = new QuadTree<T>(new Rectangle(x + w, y + h, w, h), capacity);
 		northwest.depth = northeast.depth = southwest.depth = southeast.depth = depth + 1;
+		// The midlines are where insert files points; the outer edges are this
+		// quad's own.
+		var midX:Float = northeast.boundary.x;
+		var midY:Float = southwest.boundary.y;
+		northwest.__right = southwest.__right = midX;
+		northeast.__right = southeast.__right = __right;
+		northwest.__bottom = northeast.__bottom = midY;
+		southwest.__bottom = southeast.__bottom = __bottom;
 
 		divided = true;
 	}
@@ -106,7 +122,9 @@ class QuadTree<T> {
 			found = [];
 		}
 
-		if (!boundary.intersects(range)) {
+		// Overlap as `contains` reads both: from the left and top edges up to,
+		// not including, the far ones.
+		if (!(range.x < __right && boundary.x < range.x + range.width && range.y < __bottom && boundary.y < range.y + range.height)) {
 			return found;
 		}
 
@@ -137,8 +155,9 @@ class QuadTree<T> {
 		if (found == null) {
 			found = [];
 		}
-		// Negative or NaN: a circle that reaches nothing.
-		if (radius >= 0) {
+		// Negative or NaN: a circle that reaches nothing; nor does one about a
+		// NaN centre, which was compared with every quad to find so.
+		if (radius >= 0 && x == x && y == y) {
 			__queryCircle(x, y, radius * radius, found);
 		}
 		return found;
@@ -147,8 +166,8 @@ class QuadTree<T> {
 	private function __queryCircle(x:Float, y:Float, radiusSquared:Float, found:Array<QuadTreeNode<T>>):Void {
 		// The point of this quad nearest the centre. If even that is out of
 		// reach, nothing inside it can be in reach.
-		var right:Float = boundary.x + boundary.width;
-		var bottom:Float = boundary.y + boundary.height;
+		var right:Float = __right;
+		var bottom:Float = __bottom;
 		var nearestX:Float = x < boundary.x ? boundary.x : (x > right ? right : x);
 		var nearestY:Float = y < boundary.y ? boundary.y : (y > bottom ? bottom : y);
 		var gapX:Float = x - nearestX;

@@ -65,4 +65,22 @@ class Array2DTest extends utest.Test {
 		grid.fill(5);
 		Assert.same([5, 5, 5, 5, 5, 5], grid.toFlatArray());
 	}
+
+	public function testACellOutsideTheGridIsRefused():Void {
+		// Unchecked, the same read gave null, 0 or undefined by target, and a
+		// write past a row's end made the grid ragged where it did not throw.
+		var grid = new Array2D<Int>(2, 2, 7);
+		for (cell in [[0, 5], [5, 0], [0, -1], [-1, 0], [0, 2], [2, 0]]) {
+			try {
+				grid.get(cell[0], cell[1]);
+				Assert.fail('get(${cell[0]}, ${cell[1]}) answered');
+			} catch (e:crossbyte.errors.RangeError) {}
+			try {
+				grid.set(cell[0], cell[1], 1);
+				Assert.fail('set(${cell[0]}, ${cell[1]}) was taken');
+			} catch (e:crossbyte.errors.RangeError) {}
+		}
+		Assert.equals(2, grid.getWidth());
+		Assert.equals("7,7,7,7", grid.toFlatArray().join(","));
+	}
 }
