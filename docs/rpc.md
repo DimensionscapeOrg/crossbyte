@@ -327,6 +327,7 @@ side refused the call, the failure says what refused it:
 | `NoHandler` | has nothing to answer calls | `RPCError.NO_HANDLER_MESSAGE` |
 | `HandlerTimedOut` | its handler ran past `handlerTimeout` | `RPCError.TIMEOUT_MESSAGE` |
 | `HandlerFailed` | its handler threw something else | `RPCError.INTERNAL_MESSAGE` |
+| `TooLarge` | could not take the call, or its answer, for its size | which limit (see "When a handler fails") |
 
 What refused it decides the case, not the words: a handler that throws an
 `RPCError` with the words of `RPCError.BUSY_MESSAGE` is `Refused`. A handler
@@ -706,26 +707,32 @@ session.onUnreadableFrame = (op, requestId, reason) -> {
 };
 ```
 
-What does end a connection is a frame whose length cannot be trusted: shorter
-than any frame, or longer than the session's `maxFrameLength` (8 MiB unless
-set). Nothing after it would line up, so the session closes the connection,
-and every call still waiting on it fails.
+A frame larger than this side takes (over its `maxFrameLength`, 8 MiB unless
+set, or more than its connection holds to read whole, a TCP socket's
+`maxInputBufferSize`, 16 MiB unless set) is refused as its head arrives and
+read past as the rest does, and the connection carries on: a request is
+answered `TooLarge`, with a message naming the limit; the call an answer was
+for fails `TooLarge`; a one-way call is dropped; and `onUnreadableFrame` is
+told. What does end a connection is a frame whose length cannot be trusted:
+shorter than any frame, or one too large whose head is neither a call nor an
+answer. Nothing after it would line up, so the session closes the
+connection, and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
 sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
-`cause`, a one-way call throws one, and an answer too long is not sent: its
-caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
-Both ends of a connection should agree on the limit.
+`cause` (`Unsent`), a one-way call throws one, and an answer too long is not
+sent: its caller is answered `TooLarge`, and `onHandlerError` is told. Both
+ends of a connection should agree on the limit.
 
-A frame has to fit its transport's own limits too, which hold whatever
-`maxFrameLength` says: a TCP socket reads at most its `maxInputBufferSize`
-(16 MiB unless set) ahead of what is read, so a frame larger than that never
-arrives whole; a WebSocket session takes messages up to its `maxMessageSize`
-(1 MiB unless set) and closes on a larger one; and a reliable UDP session
-ends when more than its `maxOutputBufferSize` (256 KB unless set) waits to go.
-An answer longer than `chunkLength` goes in pieces (see "Large answers"),
-which each of these takes; a call that large needs the limit raised on the
-transport that carries it.
+A frame has to fit its transport too. Over a WebSocket a large frame goes as
+messages of 64 KiB, which the other side reads as one stream, so its peer's
+`maxMessageSize` (1 MiB unless set) is no limit on it as long as it is 64 KiB
+or more. Over reliable UDP a call larger than what the session may hold for
+its window (`maxOutputBufferSize`, 256 KB unless set) fails as it is made
+(`Unsent`), and so does one over local IPC larger than its 8 MiB message,
+where either would have ended the connection or gone nowhere; an answer that
+large goes in pieces over reliable UDP (see "Large answers"), and over local
+IPC its caller is answered `TooLarge`.
 
 A request to a session with no handler to answer it (one with only commands,
 calling out) is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
@@ -1379,7 +1386,7 @@ The codes after an error answer's message say what refused the call, as
 failing (`HandlerFailed`), `2` no such method (`UnknownMethod`), `3`
 arguments that did not read (`UnreadableArguments`), `4` too many calls
 waiting (`Busy`), `5` nothing to answer calls (`NoHandler`), `6` its handler
-out of time (`HandlerTimedOut`). A code a reader does not know is the
+out of time (`HandlerTimedOut`), `7` larger than its reader takes (`TooLarge`). A code a reader does not know is the
 handler's refusal, with its message.
 
 A ping is a one-way call to op `0x165DF089` with no arguments, answered with

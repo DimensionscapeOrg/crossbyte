@@ -66,6 +66,13 @@ class RPCError extends Error {
 	public static inline final UNREADABLE_MESSAGE:String = "The call's arguments could not be read";
 
 	/**
+		What a caller is told, unless more is said, when its call or its
+		answer was larger than the side reading it takes; see
+		`RPCFailure.TooLarge`.
+	**/
+	public static inline final TOO_LARGE_MESSAGE:String = "The call or its answer was larger than its reader takes";
+
+	/**
 		@param message What the caller is told.
 		@param id A number for the error, kept on this side; only the message
 		crosses the wire.
@@ -107,6 +114,7 @@ class RPCError extends Error {
 			case Busy: crossbyte.rpc._internal.RPCWire.REFUSED_BUSY;
 			case NoHandler: crossbyte.rpc._internal.RPCWire.REFUSED_NO_HANDLER;
 			case HandlerTimedOut: crossbyte.rpc._internal.RPCWire.REFUSED_HANDLER_TIMEOUT;
+			case TooLarge: crossbyte.rpc._internal.RPCWire.REFUSED_TOO_LARGE;
 			case other:
 				throw new crossbyte.errors.ArgumentError('$other is not a refusal a handler can answer with');
 		};

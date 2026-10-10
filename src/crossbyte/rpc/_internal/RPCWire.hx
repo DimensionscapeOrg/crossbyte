@@ -99,6 +99,9 @@ class RPCWire {
 	/** The handler did not answer in time: `RPCFailure.HandlerTimedOut`. **/
 	public static inline final REFUSED_HANDLER_TIMEOUT:Int = 6;
 
+	/** The frame was larger than its receiver takes: `RPCFailure.TooLarge`. **/
+	public static inline final REFUSED_TOO_LARGE:Int = 7;
+
 	/** The message a refusal of `code` is framed with, or `null` for one whose message is the handler's. **/
 	public static function refusalMessage(code:Int):Null<String> {
 		return switch (code) {
@@ -108,6 +111,7 @@ class RPCWire {
 			case REFUSED_BUSY: crossbyte.rpc.RPCError.BUSY_MESSAGE;
 			case REFUSED_NO_HANDLER: crossbyte.rpc.RPCError.NO_HANDLER_MESSAGE;
 			case REFUSED_HANDLER_TIMEOUT: crossbyte.rpc.RPCError.TIMEOUT_MESSAGE;
+			case REFUSED_TOO_LARGE: crossbyte.rpc.RPCError.TOO_LARGE_MESSAGE;
 			case _: null;
 		}
 	}
@@ -162,7 +166,7 @@ class RPCWire {
 			code = input.readVarUInt();
 		}
 		input.position = start;
-		return code > REFUSED_BY_HANDLER && code <= REFUSED_HANDLER_TIMEOUT ? code : REFUSED_BY_HANDLER;
+		return code > REFUSED_BY_HANDLER && code <= REFUSED_TOO_LARGE ? code : REFUSED_BY_HANDLER;
 	}
 
 	/**

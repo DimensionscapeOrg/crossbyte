@@ -1233,12 +1233,26 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
 		final maxLength:Int = maxFrameLength;
-		while (input.bytesAvailable >= 9) {
+		while (input.bytesAvailable >= 9 || (__skipping > 0 && input.bytesAvailable > 0)) {
+			if (__skipping > 0) {
+				__skip(input);
+				continue;
+			}
 			final lenPos:Int = input.position;
 			final payloadLen:Int = input.readInt();
 
-			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (maxLength > 0 && payloadLen > maxLength)) {
+			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN) {
 				throw "Invalid RPC frame length";
+			}
+
+			// Larger than this side takes, or than its connection can hold
+			// to be read whole: refused, and passed over as it arrives.
+			if ((maxLength > 0 && payloadLen > maxLength) || (input.bytesAvailable < payloadLen && __cannotHold(payloadLen))) {
+				if (!__refuseTooLarge(input, lenPos, payloadLen)) {
+					input.position = lenPos;
+					break;
+				}
+				continue;
 			}
 
 			if (input.bytesAvailable < payloadLen) {
@@ -1329,6 +1343,82 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (now >= 0.0) {
 			__connection.inTimestamp = now;
 		}
+	}
+
+	// What is left of a frame this side refused for its size, read past as
+	// it arrives; see __refuseTooLarge.
+	@:noCompletion private var __skipping:Int = 0;
+
+	/** Reads past what has arrived of a frame refused for its size. **/
+	@:noCompletion private function __skip(input:ByteArrayInput):Void {
+		final available:Int = input.bytesAvailable;
+		final count:Int = available < __skipping ? available : __skipping;
+		input.position += count;
+		__skipping -= count;
+	}
+
+	/**
+		Whether a frame of `payloadLen` bytes after its length cannot be held
+		whole by this side's connection before it is read: a TCP socket
+		stops reading at its `maxInputBufferSize`, and a frame larger than
+		that would never be in whole.
+	**/
+	@:noCompletion private function __cannotHold(payloadLen:Int):Bool {
+		final capacity:Int = (__connection : NetConnectionBase).__inputCapacity();
+		return capacity > 0 && payloadLen > capacity - 4;
+	}
+
+	/**
+		A frame of `payloadLen` bytes at `lenPos` too large for this side to
+		take: a request is answered `TooLarge`, the call an answer was for
+		fails `TooLarge`, a one-way call is dropped, and the frame is read
+		past as it arrives, the connection going on. False until its head (its
+		flags, op and request id) is in. A frame of any other kind ends the
+		connection, as a length that cannot be trusted.
+	**/
+	@:noCompletion private function __refuseTooLarge(input:ByteArrayInput, lenPos:Int, payloadLen:Int):Bool {
+		final head:Int = payloadLen < 10 ? payloadLen : 10;
+		if (input.bytesAvailable < head) {
+			return false;
+		}
+		final start:Int = input.position;
+		final flags:Int = input.readByte();
+		final op:Int = input.readInt();
+		final runtime:Bool = (flags & RPCWire.FLAG_RUNTIME) != 0;
+		final kind:Int = flags & ~(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_DEADLINE);
+		final call:Bool = kind == 0 || kind == RPCWire.FLAG_REQUEST;
+		final answer:Bool = kind == RPCWire.FLAG_RESPONSE || kind == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
+		if (!call && !answer) {
+			throw "Invalid RPC frame length";
+		}
+		final requestId:Int = kind == 0 ? 0 : input.readVarUInt();
+		final why:String = __tooLargeWhy(payloadLen);
+		if (call && requestId != 0) {
+			if (runtime) {
+				__sendRuntimeError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE);
+			} else {
+				__sendCompiledError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE);
+			}
+		} else if (answer && requestId != 0) {
+			final response:Null<RPCResponse<Dynamic>> = runtime ? __takeRuntimeResponse(requestId) : (__commands != null ? __commands.__takeResponse(requestId) : null);
+			if (response != null) {
+				response.__fail(why, new crossbyte.rpc._internal.RPCRefusal(why, RPCWire.REFUSED_TOO_LARGE));
+			}
+		}
+		if (__hearsUnreadable()) {
+			__passedOver(op, requestId, why);
+		}
+		__skipping = payloadLen - (input.position - start);
+		return true;
+	}
+
+	/** Why a frame of `payloadLen` bytes was refused: past `maxFrameLength`, or past what the connection holds. **/
+	@:noCompletion private function __tooLargeWhy(payloadLen:Int):String {
+		if (maxFrameLength > 0 && payloadLen > maxFrameLength) {
+			return "An RPC frame of " + payloadLen + " bytes is over the other side's " + maxFrameLength + "-byte maxFrameLength";
+		}
+		return "An RPC frame of " + payloadLen + " bytes is more than the other side's connection holds to read it whole ("
+			+ (__connection : NetConnectionBase).__inputCapacity() + " bytes; for TCP its Socket.maxInputBufferSize)";
 	}
 
 	/** A piece of an answer the peer sends in pieces; see RPCChunks. **/
@@ -1718,7 +1808,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		which is news here as well.
 	**/
 	@:noCompletion private static inline function __reported(answer:Null<String>, requestId:Int, error:haxe.Exception):Bool {
-		return answer == null || requestId == 0 || (error is RPCTimeoutError);
+		return answer == null || requestId == 0 || (error is RPCTimeoutError) || __refusedAs(error, RPCWire.REFUSED_TOO_LARGE);
+	}
+
+	/** Whether `error` refuses as `code`: news on this side too, for an answer too large to send. **/
+	@:noCompletion private static function __refusedAs(error:haxe.Exception, code:Int):Bool {
+		return Std.isOfType(error, crossbyte.rpc._internal.RPCRefusal) && (cast error : crossbyte.rpc._internal.RPCRefusal).code == code;
 	}
 
 	/**
@@ -1803,21 +1898,20 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Sends a compiled call's answer, framed by the handler's generated code.
-		One over `maxFrameLength` throws, which the call it answers takes for
-		the handler failing: its caller is answered `RPCError.INTERNAL_MESSAGE`
-		and `onHandlerError` is told.
+		One too large to send (over `maxFrameLength`, or larger than the
+		connection carries whole and not going in pieces) throws an `RPCError`
+		of `RPCFailure.TooLarge`, which its caller is answered with, and
+		`onHandlerError` is told.
 	**/
 	@:noCompletion private inline function __sendAnswer(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
-			final message:String = __oversizedMessage("RPC answer", framed);
-			__sent(framed);
-			throw new ArgumentError(message);
+			__answerTooLarge(framed);
 		}
 		// An answer for a connection that has ended (its handler closed it)
 		// has nobody to go to.
 		if (__ended) {
 			__sent(framed);
-		} else if (chunkLength > 0 && framed.payloadLength > chunkLength) {
+		} else if (framed.payloadLength > LARGE_FRAME) {
 			__sendLongAnswer(framed);
 		} else {
 			__sendFrame(framed);
@@ -1825,13 +1919,33 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-		An answer past `chunkLength`: in pieces, to a peer that reads them
-		over a connection that says what it holds unsent, and otherwise whole.
-		The frame is the pieces' from here, out of the session's hands.
+		Past it, a frame may be more than a connection carries at once (its
+		smallest limit, a WebSocket peer's 64 KiB pieces, is larger), so a
+		frame larger goes through the paths that ask.
+	**/
+	@:noCompletion private static inline final LARGE_FRAME:Int = 16 * 1024;
+
+	/** Throws for an answer too large to send, given back. **/
+	@:noCompletion private function __answerTooLarge(framed:RPCFrame):Void {
+		final message:String = __oversized(framed) ? __oversizedMessage("RPC answer", framed) : __uncarriedMessage("RPC answer", framed);
+		__sent(framed);
+		throw new crossbyte.rpc._internal.RPCRefusal(message, RPCWire.REFUSED_TOO_LARGE);
+	}
+
+	/**
+		An answer past `LARGE_FRAME`: in pieces past `chunkLength`, to a peer
+		that reads them over a connection that says what it holds unsent;
+		otherwise whole, if the connection carries it so, and refused
+		`TooLarge` if not. The frame is the pieces' from here, out of the
+		session's hands.
 	**/
 	@:noCompletion private function __sendLongAnswer(framed:RPCFrame):Void {
-		if ((peerCapabilities & RPCWire.CAPABILITY_CHUNKS) == 0 || !(__connection : NetConnectionBase).__paces) {
-			__sendFrame(framed);
+		if (chunkLength <= 0 || framed.payloadLength <= chunkLength || (peerCapabilities & RPCWire.CAPABILITY_CHUNKS) == 0
+			|| !(__connection : NetConnectionBase).__paces) {
+			if (__uncarried(framed)) {
+				__answerTooLarge(framed);
+			}
+			__sendWhole(framed);
 			return;
 		}
 		// What waits here in pieces counts on every connection that sends
@@ -1879,9 +1993,16 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} else if (__ended) {
 			message = __closedMessage();
 			cause = __endReason;
+		} else if (framed.payloadLength > LARGE_FRAME && __uncarried(framed)) {
+			message = __uncarriedMessage("RPC call", framed);
+			cause = new ArgumentError(message);
 		} else {
 			try {
-				__connection.send(framed);
+				if (framed.payloadLength > LARGE_FRAME) {
+					__sendWholeOnce(framed);
+				} else {
+					__connection.send(framed);
+				}
 			} catch (error:Dynamic) {
 				message = UNSENT_PREFIX + Std.string(error);
 				cause = error;
@@ -1914,10 +2035,73 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		if (__ended) {
 			__sent(framed);
+		} else if (framed.payloadLength > LARGE_FRAME) {
+			if (__uncarried(framed)) {
+				final message:String = __uncarriedMessage("RPC call", framed);
+				__sent(framed);
+				throw new ArgumentError(message);
+			}
+			__sendWhole(framed);
 		} else {
 			__sendFrame(framed);
 		}
 	}
+
+	/**
+		Whether `framed` is more than the connection carries in one send: a
+		local IPC connection's 8 MiB message, or what a reliable UDP session
+		may hold for its window before it ends itself. Sent, it would end the
+		connection or go nowhere, and its caller would wait.
+	**/
+	@:noCompletion private function __uncarried(framed:RPCFrame):Bool {
+		final largest:Int = (__connection : NetConnectionBase).__largestSend();
+		return largest > 0 && framed.length > largest;
+	}
+
+	@:noCompletion private function __uncarriedMessage(what:String, framed:RPCFrame):String {
+		return what + " of " + framed.length + " bytes is more than its connection carries in one send ("
+			+ (__connection : NetConnectionBase).__largestSend() + " bytes)";
+	}
+
+	/** Sends a large frame whole, as `__sendFrame` sends, in pieces of a stream where the connection's sends are each a message; see `__sendWholeOnce`. **/
+	@:noCompletion private function __sendWhole(frame:RPCFrame):Void {
+		if (maxOutputPending > 0 && (__connection : NetConnectionBase).__holdsOutput && !__peerReads()) {
+			__sent(frame);
+			return;
+		}
+		try {
+			__sendWholeOnce(frame);
+		} catch (error:Dynamic) {
+			__sent(frame);
+			throw error;
+		}
+		__sent(frame);
+	}
+
+	/**
+		A large frame handed to the connection: in one send, or, where each
+		send is a message its peer may refuse past a size but reads as one
+		stream (a WebSocket's, whose peer takes 1 MiB messages unless told
+		otherwise), in sends of `MESSAGE_PIECE` bytes one after another, read
+		on the other side as the frame they make.
+	**/
+	@:noCompletion private function __sendWholeOnce(frame:RPCFrame):Void {
+		final connection:NetConnectionBase = __connection;
+		final length:Int = frame.length;
+		if (!connection.__sendsMessages || length <= MESSAGE_PIECE) {
+			__connection.send(frame);
+			return;
+		}
+		var at:Int = 0;
+		while (at < length) {
+			final count:Int = length - at > MESSAGE_PIECE ? MESSAGE_PIECE : length - at;
+			connection.__sendRange(frame, at, count);
+			at += count;
+		}
+	}
+
+	/** The most a message-carrying connection's send of a large frame holds; see `__sendWholeOnce`. **/
+	@:noCompletion private static inline final MESSAGE_PIECE:Int = 64 * 1024;
 
 	/**
 		Whether the peer is still taking what this session sends: what waits
@@ -2198,13 +2382,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		framed.finish();
 		if (__oversized(framed)) {
-			final message:String = __oversizedMessage("RPC answer", framed);
-			__sent(framed);
-			throw new ArgumentError(message);
+			__answerTooLarge(framed);
 		}
 		if (__ended) {
 			__sent(framed);
-		} else if (chunkLength > 0 && framed.payloadLength > chunkLength) {
+		} else if (framed.payloadLength > LARGE_FRAME) {
 			__sendLongAnswer(framed);
 		} else {
 			__sendFrame(framed);

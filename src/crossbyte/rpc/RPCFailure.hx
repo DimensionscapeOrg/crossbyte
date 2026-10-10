@@ -90,6 +90,16 @@ enum RPCFailure {
 	HandlerFailed;
 
 	/**
+		The call, or its answer, was larger than the side reading it takes:
+		over that side's `RPCSession.maxFrameLength`, or more than its
+		connection holds to read it whole (a TCP socket's
+		`maxInputBufferSize`), or, for an answer, more than the answering
+		side's connection carries. The connection carries on. Its message
+		says which limit.
+	**/
+	TooLarge;
+
+	/**
 		The call could not be sent: it was over the session's
 		`RPCSession.maxFrameLength`, the connection's `send` threw, or the
 		commands are bound to no session.

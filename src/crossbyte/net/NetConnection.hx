@@ -528,6 +528,16 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		outTimestamp = connection.outTimestamp;
 	}
 
+	/** A local IPC connection's message: 8 MiB, past which its send goes nowhere. **/
+	override public function __largestSend():Int {
+		#if !js
+		if (Std.isOfType(__connection, LocalConnection)) {
+			return LocalConnection.MAX_FRAME_SIZE;
+		}
+		#end
+		return 0;
+	}
+
 	@:noCompletion private inline function get_remoteAddress():String {
 		return __connection.remoteAddress;
 	}
@@ -772,6 +782,10 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		protocol = TCP;
 		__holdsOutput = true;
 		__paces = true;
+		#if (js && !nodejs)
+		// A page's Socket is a WebSocket: each send a message.
+		__sendsMessages = true;
+		#end
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -808,6 +822,11 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	override public function __queueLimit():Int {
 		return __socket.maxOutputBufferSize;
+	}
+
+	/** A socket stops reading at its `maxInputBufferSize` under `PAUSE`, and closes past it under `CLOSE`. **/
+	override public function __inputCapacity():Int {
+		return __socket.maxInputBufferSize > 0 ? __socket.maxInputBufferSize : 0;
 	}
 
 	// A paced sender waiting for room; see __whenQueueUnder.
@@ -1167,6 +1186,16 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		return __socket.maxOutputBufferSize;
 	}
 
+	/** What the window may hold before the session ends itself, less what it holds now. **/
+	override public function __largestSend():Int {
+		final limit:Int = __socket.maxOutputBufferSize;
+		if (limit <= 0) {
+			return 0;
+		}
+		final room:Int = limit - __socket.bufferedAmount;
+		return room > 0 ? room : 1;
+	}
+
 	/** Told as the congestion window lets what waits out; see `ReliableDatagramSocket.__whenQueueUnder`. **/
 	override public function __whenQueueUnder(below:Int, room:Void->Void):Bool {
 		@:privateAccess __socket.__whenQueueUnder(below, room);
@@ -1419,6 +1448,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	private function new(socket:WebSocket) {
 		__holdsOutput = true;
 		__paces = true;
+		__sendsMessages = true;
 		protocol = WEBSOCKET;
 		this.__socket = socket;
 		__prepareLifecycle();

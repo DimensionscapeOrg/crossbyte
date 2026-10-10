@@ -104,7 +104,9 @@ class RPCUnhandledCallTest extends utest.Test {
 
 		var answer = fixture.commands.blob(RPCHandler.MAX_FRAME_LEN + 1);
 
-		Assert.equals(RPCError.INTERNAL_MESSAGE, answer.error, "an oversized answer was sent, or never answered");
+		// Its caller is told it was too large, which says which limit.
+		Assert.isTrue(Type.enumEq(RPCFailure.TooLarge, answer.failure), "an oversized answer was sent, or never answered: " + answer.failure);
+		Assert.stringContains("frame limit", answer.error);
 		Assert.same(["blob"], reported, "the handler's oversized answer was not reported");
 		Assert.isFalse(clientEnded.value, "the caller's connection ended");
 		Assert.equals(4, fixture.commands.blob(4).result.length);
@@ -116,11 +118,15 @@ class RPCUnhandledCallTest extends utest.Test {
 		var refused = fixture.commands.store(Bytes.alloc(2048));
 		Assert.isTrue(Std.isOfType(refused.cause, ArgumentError), "the session's own limit was not the one kept");
 
-		// The receiving side's limit ends a connection that sends past it.
+		// The receiving side refuses a frame past its limit, and the
+		// connection goes on.
 		fixture.client.maxFrameLength = 0;
 		fixture.server.maxFrameLength = 1024;
-		fixture.commands.store(Bytes.alloc(2048));
-		Assert.isTrue(fixture.serverEnded.length > 0, "a frame past the reader's limit was read");
+		var past = fixture.commands.store(Bytes.alloc(2048));
+		Assert.isTrue(Type.enumEq(RPCFailure.TooLarge, past.failure), "a frame past the reader's limit failed as " + past.failure);
+		Assert.stringContains("maxFrameLength", past.error);
+		Assert.same([], fixture.serverEnded, "a frame past the reader's limit ended its connection");
+		Assert.equals(4, fixture.commands.blob(4).result.length);
 	}
 
 	public function testAFrameWithFlagsNoFrameHasIsPassedOver():Void {
