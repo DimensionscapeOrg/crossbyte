@@ -1078,6 +1078,22 @@ Fixes to code new in this release are not listed.
   and a pixel of no alpha holds no colour however it is set.
 - `WeightedGraph` refuses NaN as a node, which equals nothing and added
   another node at every use.
+- `SpatialGrid`, `SpatialGrid3D` and `InterestSet` refuse an id past
+  `MAX_ID` (16,777,215) with an `ArgumentError`. Their arrays grew to fit
+  the largest id, which at the largest `Int` wrapped: a segfault on the
+  interpreter, an index out of bounds on the jvm, and on Node arrays of
+  2^31 entries until the heap ran out. Bounds smaller than one cell still
+  make a grid of one.
+- A loop over an `InterestSet` skips an id its body forgets, where it
+  returned it next, and ends at a `commit` or `clear` in its body, as
+  documented, where it carried on into the new view.
+- `QuadTree.query` and `queryCircle` find a point in the sliver past a
+  quad's rounded far edge, where it was filed but never found; a circle
+  about a NaN centre answers at once; a capacity below 1 is an
+  `ArgumentError`.
+- `Array2D.get` and `set` refuse a cell outside the grid with a
+  `RangeError`, where the same read gave null, 0 or undefined by target and
+  a write past a row's end grew that row alone.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.

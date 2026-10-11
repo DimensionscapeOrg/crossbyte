@@ -271,4 +271,32 @@ class SpatialGridTest extends utest.Test {
 		Assert.equals(1, one.columns);
 		Assert.equals(1, one.rows);
 	}
+
+	public function testAnIdPastTheLargestIsRefused():Void {
+		// Its arrays grew to the id plus one, which wrapped at the largest Int:
+		// a segfault on the interpreter, an index out of bounds on the jvm,
+		// and on Node arrays of 2^31 entries until the heap ran out.
+		var grid = new SpatialGrid(0, 0, 100, 100, 10);
+		for (id in [SpatialGrid.MAX_ID + 1, 0x7FFFFFFF]) {
+			try {
+				grid.set(id, 5, 5);
+				Assert.fail('id $id was taken');
+			} catch (e:ArgumentError) {}
+		}
+		Assert.equals(0, grid.length);
+		var space = new SpatialGrid3D(0, 0, 0, 100, 100, 100, 10);
+		try {
+			space.set(0x7FFFFFFF, 5, 5, 5);
+			Assert.fail("id 0x7FFFFFFF was taken in 3D");
+		} catch (e:ArgumentError) {}
+		Assert.equals(0, space.length);
+	}
+
+	public function testBoundsTooSmallForOneCellStillHoldOne():Void {
+		// A width that over the cell size comes to 0 made a grid of no columns.
+		var grid = new SpatialGrid(0, 0, 1e-30, 1e-30, 1e300);
+		grid.set(1, 0, 0);
+		Assert.equals(1, grid.length);
+		Assert.isTrue(grid.has(1));
+	}
 }

@@ -23,12 +23,31 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 		}
 	}
 
+	/**
+		@throws RangeError For a cell outside the grid. Unchecked, the same
+		        read gave null, 0 or undefined by target, and a write past a
+		        row's end grew that row alone.
+	**/
 	public inline function get(row:Int, col:Int):T {
+		__check(this, row, col);
 		return this[row][col];
 	}
 
+	/** @throws RangeError For a cell outside the grid; see `get`. **/
 	public inline function set(row:Int, col:Int, value:T):Void {
+		__check(this, row, col);
 		this[row][col] = value;
+	}
+
+	// A compare inline, the throw out of line.
+	private static inline function __check<T>(rows:Array<Array<T>>, row:Int, col:Int):Void {
+		if (row < 0 || row >= rows.length || col < 0 || col >= rows[row].length) {
+			__outside(row, col);
+		}
+	}
+
+	private static function __outside(row:Int, col:Int):Void {
+		throw new crossbyte.errors.RangeError('There is no cell at row $row, column $col.');
 	}
 
 	/** Sets every cell to `value`. **/

@@ -126,4 +126,27 @@ class QuadTreeTest extends utest.Test {
 		}
 		return most;
 	}
+
+	public function testAPointInTheSliverIsFoundByANarrowQuery():Void {
+		// Filed by the midlines, a point in the sliver past a child's rounded
+		// far edge was then pruned away by that edge: a query starting at the
+		// point never found it.
+		var x:Float = -860.2891528507621;
+		var width:Float = 453.56597600631187;
+		var sliver:Float = -406.7231768444503;
+		var tree = new QuadTree<Int>(new Rectangle(x, 0, width, 100), 1);
+		tree.insert(new QuadTreeNode<Int>(x + 1, 1, 1));
+		tree.insert(new QuadTreeNode<Int>(sliver, 1, 2));
+		Assert.same("2", sortedValues(tree.query(new Rectangle(sliver, 0, 1, 100))));
+		Assert.same("2", sortedValues(tree.queryCircle(sliver, 1, 0)));
+	}
+
+	public function testACapacityOfZeroIsAnArgumentError():Void {
+		try {
+			new QuadTree<Int>(new Rectangle(0, 0, 10, 10), 0);
+			Assert.fail("a capacity of 0 was taken");
+		} catch (e:crossbyte.errors.ArgumentError) {
+			Assert.pass();
+		}
+	}
 }
