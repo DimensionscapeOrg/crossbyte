@@ -607,6 +607,66 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
+		Keys whose characters lie past the Basic Multilingual Plane (emoji,
+		the rarer CJK ideographs) are each found, though many share the first
+		of the two UTF-16 halves such a character is written in. Natively a
+		label split between the halves had each half turned into U+FFFD, so
+		125 of these 750 keys could not be found again.
+	**/
+	public function testARadixTreeKeepsCharactersPastTheBasicPlaneWhole():Void {
+		// neko's fromCharCode keeps the low byte of a code past 255: its
+		// strings are bytes, so the character is written as its UTF-8.
+		function pastThePlane(code:Int):String {
+			#if neko
+			var bytes = haxe.io.Bytes.alloc(4);
+			bytes.set(0, 0xF0 | (code >> 18));
+			bytes.set(1, 0x80 | ((code >> 12) & 0x3F));
+			bytes.set(2, 0x80 | ((code >> 6) & 0x3F));
+			bytes.set(3, 0x80 | (code & 0x3F));
+			return bytes.toString();
+			#else
+			return String.fromCharCode(code);
+			#end
+		}
+		var tree = new RadixTree<Int>();
+		var keys:Array<String> = [];
+		for (i in 0...300) {
+			var character:String = pastThePlane(i % 2 == 0 ? 0x1F600 + i : 0x20000 + i * 5);
+			keys.push("/x/" + character + "/" + i);
+			if (i % 4 == 0) {
+				keys.push("/x/" + character + "-" + i);
+				keys.push("/y" + character + character);
+			}
+		}
+		keys.push("/z/" + pastThePlane(0x1F600));
+		keys.push("/z/" + pastThePlane(0x1F601));
+		var seed:Int = 11;
+		var order:Array<Int> = [for (i in 0...keys.length) i];
+		for (i in 0...order.length) {
+			seed = (crossbyte.utils.Hash.mul32(seed, 1103515245) + 12345) & 0x7FFFFFFF;
+			var j:Int = i + Std.int(seed / 2147483648.0 * (order.length - i));
+			var held:Int = order[i];
+			order[i] = order[j];
+			order[j] = held;
+		}
+		for (i in order) {
+			tree.insert(keys[i], i);
+		}
+		var wrong:Array<String> = [];
+		for (i in 0...keys.length) {
+			if (tree.search(keys[i]) != i) {
+				wrong.push("key " + i + " found " + tree.search(keys[i]));
+			}
+			if (tree.longestPrefix(keys[i] + "/more") != i) {
+				wrong.push("key " + i + "/more found " + tree.longestPrefix(keys[i] + "/more"));
+			}
+		}
+		Assert.same([], wrong.slice(0, 10), wrong.length + " wrong");
+		Assert.isNull(tree.search("/z/" + pastThePlane(0x1F602)));
+		Assert.equals(-1, tree.longestPrefixLength("/z/" + pastThePlane(0x1F602)));
+	}
+
+	/**
 		Finding the child to follow is not a pass over a node's children. With
 		2,048 children it took 389 ns a lookup natively, against 18 ns with 4,
 		and 620 against 19 on Node; a binary search past the first few makes

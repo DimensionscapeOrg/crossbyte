@@ -18,6 +18,11 @@ package crossbyte.ds;
  * first character past a common prefix, a character set past ASCII) costs
  * a few comparisons rather than one for each.
  *
+ * A character past the Basic Multilingual Plane (an emoji, say), two
+ * UTF-16 units where strings are UTF-16, is kept whole: no node's label
+ * ends between its two halves, which natively would turn each half into
+ * U+FFFD.
+ *
  * The empty key, like `null`, is not held: `insert("", value)` does nothing,
  * and `search("")` is null. For a catch-all route, use what `longestPrefix`
  * answers or, when it is null, a fallback of your own.
@@ -61,7 +66,7 @@ class RadixTree<T> {
 				return;
 			}
 
-			var child:RadixTreeNode<T> = node.childFor(StringTools.fastCodeAt(key, at));
+			var child:RadixTreeNode<T> = node.childFor(RadixTreeNode.codeAt(key, at));
 			if (child == null) {
 				node.addChild(new RadixTreeNode<T>(key.substr(at), value, true));
 				return;
@@ -171,7 +176,7 @@ class RadixTree<T> {
 
 	// The child of `node` whose whole label `key` holds at `at`, or null.
 	private static function __step<T>(node:RadixTreeNode<T>, key:String, at:Int):Null<RadixTreeNode<T>> {
-		var child:RadixTreeNode<T> = node.childFor(StringTools.fastCodeAt(key, at));
+		var child:RadixTreeNode<T> = node.childFor(RadixTreeNode.codeAt(key, at));
 		if (child == null) {
 			return null;
 		}
@@ -192,6 +197,12 @@ class RadixTree<T> {
 		while (i < most && StringTools.fastCodeAt(label, i) == StringTools.fastCodeAt(key, at + i)) {
 			i++;
 		}
+		// Short of the label's end on the first half of a pair: the halves
+		// are kept together, so the match ends before it. Split there,
+		// natively substr would make each half U+FFFD.
+		if (i > 0 && i < label.length && RadixTreeNode.isHighSurrogate(StringTools.fastCodeAt(label, i - 1))) {
+			i--;
+		}
 		return i;
 	}
 }
@@ -210,7 +221,8 @@ class RadixTreeNode<T> {
 	public var hasValue:Bool;
 	// No two begin with the same character, so the one to follow is found by
 	// its first. Kept in the order of that character, with the characters
-	// beside them in `__firsts`, so a search reads only those.
+	// beside them in `__firsts`, so a search reads only those. A character
+	// is a code point: two UTF-16 halves of one are a single character.
 	public var children:Array<RadixTreeNode<T>>;
 	private var __firsts:haxe.ds.Vector<Int>;
 
@@ -263,7 +275,7 @@ class RadixTreeNode<T> {
 
 	/** Adds a child whose first character no other child's label begins with. **/
 	public function addChild(child:RadixTreeNode<T>):Void {
-		var code:Int = StringTools.fastCodeAt(child.label, 0);
+		var code:Int = codeAt(child.label, 0);
 		var count:Int = children.length;
 		var at:Int = 0;
 		while (at < count && __firsts[at] < code) {
@@ -286,5 +298,24 @@ class RadixTreeNode<T> {
 	/** Puts `replacement`, whose label begins with the same character, where `child` was. **/
 	public function replaceChild(child:RadixTreeNode<T>, replacement:RadixTreeNode<T>):Void {
 		children[children.indexOf(child)] = replacement;
+	}
+
+	/**
+		The character at `at`: a pair of UTF-16 halves read as the one code
+		point they make, and anything else as the unit it is.
+	**/
+	public static inline function codeAt(text:String, at:Int):Int {
+		var code:Int = StringTools.fastCodeAt(text, at);
+		if (isHighSurrogate(code) && at + 1 < text.length) {
+			var low:Int = StringTools.fastCodeAt(text, at + 1);
+			if (low >= 0xDC00 && low <= 0xDFFF) {
+				code = ((code - 0xD800) << 10) + (low - 0xDC00) + 0x10000;
+			}
+		}
+		return code;
+	}
+
+	public static inline function isHighSurrogate(code:Int):Bool {
+		return code >= 0xD800 && code <= 0xDBFF;
 	}
 }

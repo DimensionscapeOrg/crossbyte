@@ -1197,6 +1197,12 @@ Fixes to code new in this release are not listed.
   with a thousand children under one node a lookup takes 23 ns rather
   than 389 natively, 22 rather than 418 on the jvm and 26 rather than 620
   on Node, and with a few no longer.
+- Natively a `RadixTree` finds keys holding characters past the Basic
+  Multilingual Plane (emoji, the rarer CJK ideographs): two such
+  characters sharing the first of their two UTF-16 halves split a label
+  between the halves, which natively turned each into U+FFFD, and the
+  keys under it were lost. Labels now end only between characters, and a
+  node's children are told apart by code point.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.
