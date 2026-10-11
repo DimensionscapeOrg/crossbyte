@@ -696,6 +696,10 @@ says how.
   `String`, an `Int` or a `TypedObject` of another type no longer compiles
   as one, nor does one as an `Int`. A `Dynamic`, as `Json.parse` gives,
   still converts, and `for (field in typed)` compiles. (Upgrading)
+- A null `String` in a `PrimitiveValue` stays null, where it became `""`:
+  `isNull()` is true of it, and it converts as null does, to 0, `0.0`,
+  `false` and back to a null `String`, where `toInt` threw and `toFloat`
+  was NaN. A null value's `toString()` is null, not `"null"`. (Upgrading)
 
 #### TCP
 
@@ -1880,6 +1884,10 @@ an API added in this release has is not listed here.
   `Json.parse`'s result, and becomes a `T` or a `Dynamic`: code that gave
   one a value of another type, or took one as another type, `cast`s it
   where that is meant (`var t:TypedObject<Point> = cast value`).
+- A `PrimitiveValue` made from a null `String` is null rather than `""`,
+  and converts back to a null `String`: code that asked `isString()` of
+  one, or used the `""` it gave, asks `isNull()`, or makes the value from
+  `text != null ? text : ""`.
 
 #### TCP
 

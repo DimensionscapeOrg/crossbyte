@@ -235,6 +235,33 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(nullAsBool);
 	}
 
+	/**
+		A null `String` stays null. It was held as `""`, so it read as a
+		string, `toInt` threw where null converts to 0, `toFloat` was NaN
+		where null is 0, and it came back as `""`.
+	**/
+	public function testPrimitiveValueKeepsANullStringNull():Void {
+		var text:Null<String> = null;
+		var value:PrimitiveValue = text;
+		Assert.isTrue(value.isNull(), "a null String was not null");
+		Assert.isFalse(value.isString(), "a null String was a string");
+		var back:String = value;
+		Assert.isNull(back, "a null String came back as " + back);
+		Assert.isFalse(value.toBool());
+		Assert.equals(0.0, value.toFloat());
+		var whole:Int = -1;
+		try {
+			whole = value.toInt();
+		} catch (_:Dynamic) {}
+		Assert.equals(0, whole, "a null String did not convert to 0");
+
+		var nothing:PrimitiveValue = cast null;
+		Assert.isNull(nothing.toString());
+		var empty:PrimitiveValue = "";
+		Assert.isTrue(empty.isString());
+		Assert.equals("", (empty : String));
+	}
+
 	public function testPrimitiveValueFloatToIntTruncates():Void {
 		var positive:PrimitiveValue = 3.9;
 		var negative:PrimitiveValue = -2.7;

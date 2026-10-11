@@ -14,9 +14,10 @@ import crossbyte.utils.IntParse;
  * - `Float`
  * - `Bool`
  *
- * A null `String` is held as `""`, and a `Float` that is NaN as `0.0`; a
- * null value (`cast null`, or a null `Dynamic` through `fromDynamic`) is
- * `isNull()`. A conversion that cannot be made throws a `String`.
+ * A null `String` stays null, as a null `Dynamic` through `fromDynamic`
+ * does: `isNull()` is true, and it converts as null does, to `0`, `0.0`,
+ * `false` and back to a null `String`. A `Float` that is NaN is held as
+ * `0.0`. A conversion that cannot be made throws a `String`.
  *
  * ## Example:
  * ```haxe
@@ -96,10 +97,11 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 
 	/**
 	 * Converts the primitive to a `String`.
-	 * @return The string representation of the primitive.
+	 * @return The string representation of the primitive, or null for a null
+	 *         value, so a null `String` comes back as it went in.
 	 */
 	@:to public inline function toString():String {
-		return Std.string(this);
+		return this == null ? null : Std.string(this);
 	}
 
 	/**
@@ -207,7 +209,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	}
 
 	@:from private static inline function fromNullableString(s:Null<String>):PrimitiveValue {
-		return cast (s != null ? s : "");
+		return cast s;
 	}
 
 	@:from private static inline function fromInt(i:Int):PrimitiveValue {
