@@ -365,7 +365,7 @@ private class RelayingHost implements INetHost {
 	public var isRunning(get, never):Bool;
 	public var protocol(default, null):Protocol = RUDP;
 	public var maxConnections(get, set):Int;
-	public var refusedConnections(get, never):Int;
+	public var refusedConnections(get, never):Float;
 	public var onAccept(get, set):INetConnection->Void;
 	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
 	public var onError(get, set):Reason->Void;
@@ -416,7 +416,7 @@ private class RelayingHost implements INetHost {
 		return __maxConnections = value;
 	}
 
-	private function get_refusedConnections():Int {
+	private function get_refusedConnections():Float {
 		return 0;
 	}
 

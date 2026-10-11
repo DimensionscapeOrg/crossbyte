@@ -73,6 +73,42 @@ class ServerSocketLimitsTest extends utest.Test {
 	}
 
 	/**
+		A server's counts are Floats, so a flood that goes on for long enough
+		does not wrap one past 2^31 into a negative number: as Ints,
+		2,147,483,647 refusals and one more read as -2,147,483,648 (natively,
+		on the jvm, the interpreter, Neko and HashLink).
+	**/
+	@:timeout(20000)
+	public function testRefusalsAreCountedPastTwoToTheThirtyOne(async:Async):Void {
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : ServerSocket).refusedConnections));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : ServerSocket).acceptFailures));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : ServerSocket).handshakeFailures));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : INetHost).refusedConnections));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : NetHost).refusedConnections));
+
+		var server = new ServerSocket();
+		server.maxConnections = 1;
+		server.__refusedConnections += 2147483647;
+		var announced:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> announced.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peers:Array<WirePeer> = [new WirePeer(server.localPort)];
+			NetPump.until(() -> {
+				if (peers.length < 2 && announced.length == 1) {
+					peers.push(new WirePeer(server.localPort));
+				}
+				return server.refusedConnections != 2147483647;
+			}, 10.0, function(_) {
+				Assert.equals(2147483648.0, server.refusedConnections, "the count wrapped");
+				Assert.equals(1, announced.length);
+				__finish(server, announced, peers, async);
+			});
+		});
+	}
+
+	/**
 		A connection's place is given back however it ends: its peer
 		closing, its server closing it, or the peer resetting it.
 	**/

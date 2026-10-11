@@ -140,7 +140,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   any TLS work; `maxAcceptsPerTick` (64); `maxPendingHandshakes` (256);
   `maxConnections` (10,000); `maxPendingHandshakesPerAddress` (16); and
   the counts `refusedConnections`, `acceptFailures` and
-  `handshakeFailures`.
+  `handshakeFailures`. They are `Float`s, as `PeerConnection.refusedChannels`
+  is, exact to 2^53, so a flood that goes on for long enough cannot wrap
+  one past 2^31 into a negative number.
 - Limits on a connection: `Socket.maxOutputBufferSize`,
   `outputOverflowPolicy` and `outputBufferLength` for what waits for a
   peer, and `maxInputBufferSize` (16 MiB) with `inputOverflowPolicy`
@@ -1898,7 +1900,7 @@ an API added in this release has is not listed here.
   line or set the cap it wants. A host asks for the system's largest
   backlog.
 - A class implementing `INetHost` declares `maxConnections` as
-  `(get, set)` and adds `refusedConnections`, `canDial`, `dial`,
+  `(get, set)` and adds `refusedConnections` (a `Float`), `canDial`, `dial`,
   `discoverPublicAddress`, `localAddressFor`, `allocateRelay`,
   `dialRelayed` and `permitRelayedPeer`. A host that cannot dial from its
   listening endpoint answers `canDial` false, throws

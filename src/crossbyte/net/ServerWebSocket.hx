@@ -812,7 +812,7 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 		if (!@:privateAccess session.__upgradeRefused) {
-			handshakeFailures++;
+			__handshakeFailures++;
 		}
 		#if !nodejs
 		// And a listener set aside at the limit can take the next.
@@ -897,7 +897,7 @@ class ServerWebSocket extends ServerSocket {
 		for (session in expired) {
 			// Given up on, so it failed to arrive; counted here, since it is
 			// off the list by the time its close is told.
-			handshakeFailures++;
+			__handshakeFailures++;
 			try {
 				session.close();
 			} catch (_:Dynamic) {}
@@ -1985,7 +1985,7 @@ class ServerWebSocket extends ServerSocket {
 			// Node reports here and nowhere else: counted, as natively, and the
 			// connection let go, since Node leaves that to whoever listens here.
 			__webServerSocket.on("tlsClientError", function(_:Dynamic, socket:NodeSocket):Void {
-				handshakeFailures++;
+				__handshakeFailures++;
 				try {
 					socket.destroy();
 				} catch (_:Dynamic) {}

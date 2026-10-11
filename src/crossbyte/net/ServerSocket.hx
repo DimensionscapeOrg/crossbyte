@@ -248,13 +248,17 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		application's own, and not counted.
 
 		On a server spread over `runtimes`, every runtime's together.
+
+		A `Float`, as this server's other counts are, so a flood that goes on
+		for long enough cannot wrap it past 2^31 into a negative number: it
+		counts exactly to 2^53, as a JavaScript number does.
 	**/
-	public var refusedConnections(get, never):Int;
+	public var refusedConnections(get, never):Float;
 
-	@:noCompletion private var __refusedConnections:Int = 0;
+	@:noCompletion private var __refusedConnections:Float = 0.0;
 
-	@:noCompletion private function get_refusedConnections():Int {
-		var count:Int = __refusedConnections;
+	@:noCompletion private function get_refusedConnections():Float {
+		var count:Float = __refusedConnections;
 		#if (target.threaded && !js)
 		if (__spread != null) {
 			for (replica in __spread.replicas) {
@@ -414,8 +418,12 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		On a server spread over `runtimes` with `reusePort`, where each
 		runtime accepts for itself, the count is theirs together, and each
 		runtime's listener is set aside on its own.
+
+		A `Float`, exact to 2^53, as `refusedConnections` is.
 	**/
-	@:isVar public var acceptFailures(get, null):Int = 0;
+	public var acceptFailures(get, never):Float;
+
+	@:noCompletion private var __acceptFailures:Float = 0.0;
 
 	/**
 		TLS handshakes that failed, or were given up on at `handshakeTimeout`,
@@ -426,8 +434,12 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		there.
 
 		On a server spread over `runtimes`, the count is theirs together.
+
+		A `Float`, exact to 2^53, as `refusedConnections` is.
 	**/
-	@:isVar public var handshakeFailures(get, null):Int = 0;
+	public var handshakeFailures(get, never):Float;
+
+	@:noCompletion private var __handshakeFailures:Float = 0.0;
 
 	/**
 		Decides, from the peer's address alone, whether a connection is taken
@@ -1182,7 +1194,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			// A handshake that failed, which Node reports here and nowhere
 			// else. Counted, as natively, and the connection let go.
 			__serverSocket.on("tlsClientError", function(_:Dynamic, raw:NodeSocket):Void {
-				handshakeFailures++;
+				__handshakeFailures++;
 				try {
 					raw.destroy();
 				} catch (_:Dynamic) {}
@@ -2171,24 +2183,24 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		return super.dispatchEvent(event);
 	}
 
-	@:noCompletion private function get_acceptFailures():Int {
-		var total:Int = acceptFailures;
+	@:noCompletion private function get_acceptFailures():Float {
+		var total:Float = __acceptFailures;
 		#if (target.threaded && !js)
 		if (__spread != null) {
 			for (replica in __spread.replicas) {
-				total += replica.acceptFailures;
+				total += replica.__acceptFailures;
 			}
 		}
 		#end
 		return total;
 	}
 
-	@:noCompletion private function get_handshakeFailures():Int {
-		var total:Int = handshakeFailures;
+	@:noCompletion private function get_handshakeFailures():Float {
+		var total:Float = __handshakeFailures;
 		#if (target.threaded && !js)
 		if (__spread != null) {
 			for (replica in __spread.replicas) {
-				total += replica.handshakeFailures;
+				total += replica.__handshakeFailures;
 			}
 		}
 		#end
@@ -2460,7 +2472,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		descriptor frees.
 	**/
 	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
-		acceptFailures++;
+		__acceptFailures++;
 		#if !nodejs
 		__backOffAccepting();
 		#end
@@ -2963,7 +2975,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	@:noCompletion private function __abandonHandshake(pending:PendingHandshake):Void {
 		pending.settled = true;
 		__handshakeEnded(pending);
-		handshakeFailures++;
+		__handshakeFailures++;
 		__closeHandshake(pending);
 	}
 

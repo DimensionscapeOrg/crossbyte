@@ -319,8 +319,12 @@ class PeerConnection {
 	**/
 	public var maxLabelSize(get, set):Int;
 
-	/** The peer's OPENs refused for `maxPeerChannels` or `maxLabelSize`. **/
-	public var refusedChannels(get, never):Int;
+	/**
+		The peer's OPENs refused for `maxPeerChannels` or `maxLabelSize`. A
+		`Float`, exact to 2^53, so a peer refused for long enough cannot wrap
+		it.
+	**/
+	public var refusedChannels(get, never):Float;
 
 	@:noCompletion private var __maxPeerChannels:Int = DEFAULT_MAX_PEER_CHANNELS;
 	@:noCompletion private var __maxLabelSize:Int = DEFAULT_MAX_LABEL_SIZE;
@@ -349,7 +353,7 @@ class PeerConnection {
 		return __maxLabelSize = value;
 	}
 
-	@:noCompletion private function get_refusedChannels():Int {
+	@:noCompletion private function get_refusedChannels():Float {
 		return __channels == null ? 0 : __channels.refusedChannels;
 	}
 

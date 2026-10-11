@@ -1003,7 +1003,7 @@ class JvmTlsTest extends utest.Test {
 		connection it accepted, and the server, are closed on every path.
 	**/
 	private function __serve(configure:ServerSocket->Void, peer:Int->Void, ?onAccept:crossbyte.net.Socket->Void,
-			seconds:Float = 20):{finished:Bool, failure:Null<String>, accepted:Int, handshakeFailures:Int} {
+			seconds:Float = 20):{finished:Bool, failure:Null<String>, accepted:Int, handshakeFailures:Float} {
 		var runtime = crossbyte.core.CrossByte.current();
 		var server = new ServerSocket(true);
 		var accepted:Array<crossbyte.net.Socket> = [];

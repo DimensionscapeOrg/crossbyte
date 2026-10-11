@@ -206,7 +206,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	/** The server's `maxConnections`; see `INetHost.maxConnections`. **/
 	public var maxConnections(get, set):Int;
 	/** The server's `refusedConnections`. **/
-	public var refusedConnections(get, never):Int;
+	public var refusedConnections(get, never):Float;
 	public var onAccept(get, set):INetConnection->Void;
 	public var onDisconnect(get, set):DisconnectHandler;
 	public var onError(get, set):Reason->Void;
@@ -219,7 +219,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 		return __server.maxConnections = value;
 	}
 
-	@:noCompletion private inline function get_refusedConnections():Int {
+	@:noCompletion private inline function get_refusedConnections():Float {
 		return __server.refusedConnections;
 	}
 
@@ -429,11 +429,11 @@ private class RUDPHost implements INetHost {
 		it connect and then close. See `INetHost.maxConnections`.
 	**/
 	public var maxConnections(get, set):Int;
-	public var refusedConnections(get, never):Int;
+	public var refusedConnections(get, never):Float;
 
 	@:noCompletion private var __maxConnections:Int = ServerSocket.DEFAULT_MAX_CONNECTIONS;
 	@:noCompletion private var __open:Int = 0;
-	@:noCompletion private var __refused:Int = 0;
+	@:noCompletion private var __refused:Float = 0.0;
 
 	@:noCompletion private inline function get_maxConnections():Int {
 		return __maxConnections;
@@ -443,7 +443,7 @@ private class RUDPHost implements INetHost {
 		return __maxConnections = value;
 	}
 
-	@:noCompletion private inline function get_refusedConnections():Int {
+	@:noCompletion private inline function get_refusedConnections():Float {
 		return __refused;
 	}
 	public var onAccept(get, set):INetConnection->Void;

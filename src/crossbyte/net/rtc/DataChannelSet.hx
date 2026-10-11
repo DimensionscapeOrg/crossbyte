@@ -95,8 +95,11 @@ class DataChannelSet {
 	**/
 	public var maxLabelSize:Int = DEFAULT_MAX_LABEL_SIZE;
 
-	/** OPENs refused for `maxPeerChannels` or `maxLabelSize`. **/
-	public var refusedChannels(default, null):Int = 0;
+	/**
+		OPENs refused for `maxPeerChannels` or `maxLabelSize`. A `Float`,
+		exact to 2^53, so a peer refused for long enough cannot wrap it.
+	**/
+	public var refusedChannels(default, null):Float = 0.0;
 
 	@:noCompletion private var __channels:IntMap<DataChannel> = new IntMap();
 	@:noCompletion private var __nextId:Int;

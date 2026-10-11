@@ -112,7 +112,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 
 		var client:sys.net.Socket = null;
 		var attempts:Int = -1;
-		var failures:Int = -1;
+		var failures:Float = -1;
 		var cpu:Float = 0;
 		var waited:Float = -1;
 		var taken:Int = 0;
@@ -202,7 +202,7 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 		var ballast:Array<sys.net.Socket> = [];
 		var clients:Array<sys.net.Socket> = [];
 		var attempts:Int = -1;
-		var failures:Int = 0;
+		var failures:Float = 0;
 		var cpu:Float = 0;
 		var lowered:Bool = false;
 		if (started.wait(5.0)) {
@@ -245,9 +245,9 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 				} catch (_:Dynamic) {}
 				__waitFor(() -> server.acceptFailures > 0, 3.0);
 				var cpuBefore:Float = Sys.cpuTime();
-				var before:Int = server.acceptFailures;
+				var before:Float = server.acceptFailures;
 				crossbyte.sys.System.sleep(1.0);
-				attempts = server.acceptFailures - before;
+				attempts = Std.int(server.acceptFailures - before);
 				cpu = Sys.cpuTime() - cpuBefore;
 				failures = server.acceptFailures;
 				for (socket in ballast) {

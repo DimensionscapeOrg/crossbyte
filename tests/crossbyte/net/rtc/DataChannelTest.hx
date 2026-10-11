@@ -705,6 +705,27 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
+		`refusedChannels` is a Float, as a server's counts are, so a peer
+		refused for long enough does not wrap it past 2^31 into a negative
+		number.
+	**/
+	public function testRefusedChannelsAreCountedPastTwoToTheThirtyOne():Void {
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : DataChannelSet).refusedChannels));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : PeerConnection).refusedChannels));
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		pair.clientChannels.maxPeerChannels = 1;
+		@:privateAccess pair.clientChannels.refusedChannels += 2147483647;
+		var theirs:Array<DataChannel> = [for (i in 0...2) pair.serverChannels.create("c" + i)];
+		for (channel in theirs) {
+			channel.opened.then(_ -> {}, _ -> {});
+		}
+		pair.run(() -> pair.clientChannels.refusedChannels != 2147483647 && pair.settled());
+		Assert.equals(2147483648.0, pair.clientChannels.refusedChannels, "the count wrapped");
+	}
+
+	/**
 		A peer opens no more than `maxPeerChannels` at once.
 
 		Without a bound other than the stream numbers, 3,000 OPENs with 1 KB

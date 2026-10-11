@@ -39,9 +39,10 @@ interface INetHost {
 	/**
 		Connections the host closed for its own limits: `maxConnections`,
 		and a TCP or WebSocket host's server's other limits (see
-		`ServerSocket.refusedConnections`).
+		`ServerSocket.refusedConnections`). A `Float`, exact to 2^53, so a
+		flood that goes on for long enough cannot wrap it.
 	**/
-	public var refusedConnections(get, never):Int;
+	public var refusedConnections(get, never):Float;
 	/** Called for each accepted connection. */
 	public var onAccept(get, set):INetConnection->Void;
 	/** Called when an accepted connection later closes. */
