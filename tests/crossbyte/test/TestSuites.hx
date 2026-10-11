@@ -696,6 +696,9 @@ class TestSuites {
 		// The resource tree is generated code, and natively it is C++ that
 		// has to compile; the paths it confines are read by native calls.
 		addResources(runner);
+		// Object, TypedObject and PrimitiveValue answer through reflection,
+		// which hxcpp does its own way.
+		addFoundation(runner);
 		addAllocationBudgets(runner);
 	}
 }

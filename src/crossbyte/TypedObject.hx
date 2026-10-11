@@ -20,11 +20,11 @@ abstract TypedObject<T>(T) from T to T from Dynamic to Dynamic {
 	}
 
 	public inline function exists(field:String):Bool {
-		return Reflect.hasField(this, field);
+		return this != null && Reflect.hasField(this, field);
 	}
 
 	public inline function keys():Array<String> {
-		var fields = Reflect.fields(this);
+		var fields:Array<String> = this != null ? Reflect.fields(this) : null;
 		return fields == null ? [] : fields;
 	}
 

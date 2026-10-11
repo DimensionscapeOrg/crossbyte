@@ -1233,6 +1233,9 @@ Fixes to code new in this release are not listed.
   half the range no longer reads as ahead of it.
 - `PrimitiveValue.toInt`, `Version` and every number a peer sends are read
   the same way on every target, through `IntParse`.
+- A null `Object` or `TypedObject` answers as an empty one on every
+  target, where `exists` threw on the jvm and Node, `keys`, `values` and
+  `entries` on the jvm, and `remove` on Node and neko.
 - `GlobalTimer` hands out unique ids on every threaded target.
 - On the jvm, `PriorityQueue` and `Vector`'s `every`, `some` and `filter`
   work.

@@ -114,6 +114,34 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(object.exists("first"));
 	}
 
+	/**
+		A null `Object` or `TypedObject` answers as an empty one, on every
+		target. `exists` threw on the jvm and Node, `keys`, `values` and
+		`entries` on the jvm, and `remove` on Node and neko, where the others
+		answered false and nothing.
+	**/
+	public function testANullObjectAnswersAsAnEmptyOne():Void {
+		var object:Object = null;
+		Assert.isFalse(object.exists("a"));
+		Assert.isFalse(object.remove("a"));
+		Assert.equals(0, object.keys().length);
+		Assert.equals(0, object.values().length);
+		Assert.isFalse(object.entries().hasNext());
+		Assert.isNull(object.get("a"));
+		var visited:Int = 0;
+		for (_ in object) {
+			visited++;
+		}
+		Assert.equals(0, visited);
+
+		var typed:TypedObject<SamplePayload> = null;
+		Assert.isFalse(typed.exists("id"));
+		Assert.equals(0, typed.keys().length);
+		Assert.equals(0, typed.values().length);
+		Assert.isFalse(typed.entries().hasNext());
+		Assert.isNull(typed["id"]);
+	}
+
 	public function testPrimitiveValueCastsAcrossSupportedPrimitives():Void {
 		var intValue:PrimitiveValue = 42;
 		var stringValue:PrimitiveValue = "123";
