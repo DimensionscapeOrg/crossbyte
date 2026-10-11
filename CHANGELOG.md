@@ -1236,6 +1236,11 @@ Fixes to code new in this release are not listed.
 - A null `Object` or `TypedObject` answers as an empty one on every
   target, where `exists` threw on the jvm and Node, `keys`, `values` and
   `entries` on the jvm, and `remove` on Node and neko.
+- On JavaScript, `Object` and `TypedObject` read `__proto__` and
+  `constructor` as the object's own fields, and set `__proto__` as one, as
+  every other target does. `get("__proto__")` read the prototype every
+  plain object shares, so a path of names a peer chose, walked with `get`
+  and ended with `set`, gave every object in the process that field.
 - `GlobalTimer` hands out unique ids on every threaded target.
 - On the jvm, `PriorityQueue` and `Vector`'s `every`, `some` and `filter`
   work.

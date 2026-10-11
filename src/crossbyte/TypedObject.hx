@@ -39,12 +39,22 @@ abstract TypedObject<T>(T) from T to T from Dynamic to Dynamic {
 		}).iterator();
 	}
 
+	/** The field `field`, or null; on JavaScript as `Object.get` reads it. **/
 	@:arrayAccess public inline function get(field:String):Dynamic {
+		#if js
+		return crossbyte._internal.js.OwnField.get(this, field);
+		#else
 		return Reflect.field(this, field);
+		#end
 	}
 
+	/** Sets the field `field`; on JavaScript as `Object.set` does. **/
 	@:arrayAccess public inline function set(field:String, value:Dynamic):Dynamic {
+		#if js
+		crossbyte._internal.js.OwnField.set(this, field, value);
+		#else
 		Reflect.setField(this, field, value);
+		#end
 		return value;
 	}
 

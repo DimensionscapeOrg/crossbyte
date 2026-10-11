@@ -61,12 +61,31 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		return new ObjectEntries(this, keys());
 	}
 
+	/**
+		The field `field`, or null if there is none. On JavaScript
+		`__proto__` and `constructor` are read as the object's own fields, as
+		everywhere else, rather than as its prototype and its class, through
+		which a path of names a peer chose could reach `Object.prototype`.
+	**/
 	@:arrayAccess public inline function get(field:String):Dynamic {
+		#if js
+		return crossbyte._internal.js.OwnField.get(this, field);
+		#else
 		return Reflect.field(this, field);
+		#end
 	}
 
+	/**
+		Sets the field `field`. On JavaScript `__proto__` is set as the
+		object's own field, as everywhere else, rather than replacing its
+		prototype.
+	**/
 	@:arrayAccess public inline function set(field:String, value:Dynamic):Dynamic {
+		#if js
+		crossbyte._internal.js.OwnField.set(this, field, value);
+		#else
 		Reflect.setField(this, field, value);
+		#end
 		return value;
 	}
 

@@ -142,6 +142,59 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isNull(typed["id"]);
 	}
 
+	/**
+		`__proto__` and `constructor` are fields like any other, on every
+		target. On JavaScript `get("__proto__")` read a plain object's
+		prototype, which is every plain object's, so a path of names a peer
+		chose, walked by `get` and finished by `set`, gave every object in the
+		process a field; and `set("__proto__", ...)` replaced the object's
+		prototype, so what it held was read as the object's own fields.
+	**/
+	public function testProtoAndConstructorAreOrdinaryFields():Void {
+		var plain:Object = new Object();
+		Assert.isNull(plain.get("__proto__"), "a plain object's __proto__ was read");
+		Assert.isNull(plain.get("constructor"), "a plain object's constructor was read");
+
+		for (path in [["__proto__", "cbPolluted"], ["constructor", "prototype", "cbPolluted"]]) {
+			var step:Object = new Object();
+			for (i in 0...path.length - 1) {
+				var next:Object = step.get(path[i]);
+				if (next == null) {
+					next = new Object();
+					step.set(path[i], next);
+				}
+				step = next;
+			}
+			step.set(path[path.length - 1], "yes");
+			var fresh:Object = new Object();
+			var reached:Dynamic = fresh.get("cbPolluted");
+			#if js
+			js.Syntax.code("delete Object.prototype.cbPolluted");
+			#end
+			Assert.isNull(reached, path.join(".") + " reached every object");
+		}
+
+		var shadow:Object = new Object();
+		shadow.set("__proto__", {admin: true});
+		Assert.isTrue(shadow.exists("__proto__"), "__proto__ was not set as a field");
+		Assert.same(["__proto__"], shadow.keys());
+		Assert.isNull(shadow.get("admin"), "a field set as __proto__ was read as the object's own");
+		Assert.equals(true, (shadow.get("__proto__") : Dynamic).admin);
+
+		var fields:FieldStruct<String> = new FieldStruct();
+		fields["__proto__"] = "p";
+		Assert.equals("p", fields.toObject().get("__proto__"), "toObject lost __proto__");
+
+		var parsed:Object = haxe.Json.parse('{"__proto__":{"admin":true},"constructor":2}');
+		Assert.equals(2, parsed.get("constructor"));
+		Assert.isNull(parsed.get("admin"));
+
+		var typed:TypedObject<Dynamic> = TypedObject.of(new Object());
+		typed["__proto__"] = {admin: true};
+		Assert.isNull(typed["admin"]);
+		Assert.isTrue(typed.exists("__proto__"));
+	}
+
 	public function testPrimitiveValueCastsAcrossSupportedPrimitives():Void {
 		var intValue:PrimitiveValue = 42;
 		var stringValue:PrimitiveValue = "123";
