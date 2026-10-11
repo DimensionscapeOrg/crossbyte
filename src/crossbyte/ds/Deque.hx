@@ -11,10 +11,12 @@ import haxe.ds.Vector;
  * the back, each in constant time.
  *
  * The items sit in a ring that doubles when it fills, so adding an object
- * allocates nothing once the ring has grown to fit. An `Int`, `Float` or
- * `Bool` is boxed as it goes in, natively and on the jvm, where the ring
- * holds it as a nullable value: past -128 to 127 on the jvm that is an
- * allocation a push. The ring keeps its size when emptied.
+ * allocates nothing once the ring has grown to fit. Natively and on the jvm
+ * the ring holds every item as an object, so a number is boxed as it goes
+ * in: natively an `Int` outside -1 to 255, or a `Float` that is not one of
+ * those whole numbers, is 24 bytes a push; on the jvm an `Int` outside -128
+ * to 127 is 16 bytes, and every `Float` 24. A `Bool` costs nothing, as an
+ * object does. The ring keeps its size when emptied.
  *
  * `for (item in deque)` walks from the front to the back.
  */

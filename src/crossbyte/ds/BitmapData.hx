@@ -110,6 +110,11 @@ class BitmapData {
 		return clone;
 	}
 
+	/**
+		The pixels as a `ByteArray`: each an unsigned 32-bit ARGB value, row
+		by row from the top left, in the ByteArray's default byte order, and
+		the position at 0, ready for `fromByteArray`.
+	**/
 	public function toByteArray():ByteArray {
 		__ensureNotDisposed();
 		var byteArray = new ByteArray();
@@ -121,6 +126,20 @@ class BitmapData {
 		return byteArray;
 	}
 
+	/**
+		A bitmap of `width` by `height` pixels read from `byteArray` as
+		`toByteArray` writes them: one `readUnsignedInt` a pixel, in the
+		ByteArray's byte order.
+
+		It reads from the start of `byteArray`, whatever its position, which
+		it moves to just after the last pixel read; so pixels written into a
+		ByteArray are read back without moving its position first. (Flash's
+		`setPixels` reads from the position instead.) Bytes past the pixels
+		are left unread.
+
+		@throws EOFError When `byteArray` holds fewer than `width * height`
+		        pixels.
+	**/
 	public static function fromByteArray(width:Int, height:Int, byteArray:ByteArray, transparent:Bool = true):BitmapData {
 		var bitmap = new BitmapData(width, height, transparent);
 		byteArray.position = 0;

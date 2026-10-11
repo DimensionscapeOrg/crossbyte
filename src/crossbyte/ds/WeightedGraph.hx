@@ -15,8 +15,9 @@ import haxe.ds.StringMap;
  * integers by value, objects by identity, so building a graph of n nodes
  * costs n lookups rather than n^2 comparisons. Floats, booleans and null,
  * which few graphs use as nodes, are found by a pass over the nodes of
- * that kind. On the interpreter its own `ObjectMap` is not a hash, and
- * object nodes cost n^2 there.
+ * that kind (where a whole `Float` is an `Int`, as on JavaScript, it is an
+ * integer node). On the interpreter its own `ObjectMap` is not a hash, and
+ * object nodes cost n^2 there: 5 us a node at 1,000 nodes, 21 at 8,000.
  *
  * NaN is refused as a node with an `ArgumentError`: it equals nothing, not
  * even itself, so every use of it added another node nobody could reach.
@@ -132,9 +133,11 @@ class WeightedGraph<T> {
 			return 0;
 		}
 		if (Std.isOfType(key, Int)) {
-			// The jvm's IntMap visits every bucket to find a missing key, and
-			// every new node is one; its ObjectMap compares a boxed Integer by
-			// value, and stops at the first empty bucket.
+			// On the jvm in the ObjectMap, which compares a boxed Integer by
+			// value: Haxe's own IntMap there visits every bucket to find a
+			// missing key, and every new node is one. CrossByte puts a fixed
+			// IntMap ahead of it (StdOverrides), but only in builds that take
+			// CrossByte as a library.
 			return #if (java || jvm) 2 #else 1 #end;
 		}
 		if (Std.isOfType(key, Float) || Std.isOfType(key, Bool)) {

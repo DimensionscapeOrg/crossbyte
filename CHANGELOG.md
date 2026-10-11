@@ -1210,6 +1210,11 @@ Fixes to code new in this release are not listed.
   natively, 11.2 rather than 12.4 on the jvm (61 KB a rebuild before), and
   a third faster on neko. On JavaScript, where a new quad measured the
   cheaper, it is made anew as before.
+- `BitmapData.fromByteArray` and `toByteArray` say what they read and
+  write: `fromByteArray` reads from the start of the ByteArray, whatever
+  its position, and leaves the position after the last pixel. `Deque` says
+  what a number costs a push natively and on the jvm, which its
+  documentation had only in part.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

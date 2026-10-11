@@ -157,6 +157,39 @@ class BitmapDataTest extends utest.Test {
 		Assert.equals(0x80123456, read.getPixel32(1, 0));
 	}
 
+	/**
+		`fromByteArray` reads its pixels from the start of the ByteArray,
+		whatever its position, in the ByteArray's byte order, and leaves the
+		position after the last pixel read; too few bytes are an `EOFError`.
+	**/
+	public function testFromByteArrayReadsFromTheStart():Void {
+		var bytes = new crossbyte.io.ByteArray();
+		bytes.endian = crossbyte.io.Endian.LITTLE_ENDIAN;
+		bytes.writeUnsignedInt(0xFF102030);
+		bytes.writeUnsignedInt(0xFF405060);
+		bytes.writeUnsignedInt(0xFF708090);
+		bytes.position = 8;
+		var read = BitmapData.fromByteArray(2, 1, bytes);
+		Assert.equals(0xFF102030, read.getPixel32(0, 0));
+		Assert.equals(0xFF405060, read.getPixel32(1, 0));
+		Assert.equals(8, bytes.position);
+
+		var three = BitmapData.fromByteArray(3, 1, bytes);
+		Assert.equals(0xFF708090, three.getPixel32(2, 0));
+		Assert.equals(12, bytes.position);
+
+		// What toByteArray writes it reads back.
+		var again = BitmapData.fromByteArray(3, 1, three.toByteArray());
+		Assert.equals(0xFF405060, again.getPixel32(1, 0));
+
+		try {
+			BitmapData.fromByteArray(2, 2, bytes);
+			Assert.fail("four pixels were read from three");
+		} catch (e:crossbyte.errors.EOFError) {
+			Assert.pass();
+		}
+	}
+
 	public function testThresholdComparesAsUnsigned():Void {
 		var source = new crossbyte.ds.BitmapData(3, 1, true, 0);
 		source.setPixel32(0, 0, 0xFF123456);
