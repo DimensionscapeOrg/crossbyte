@@ -9,7 +9,22 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * for field-oriented payloads. It supports dot access, bracket access, field
  * iteration, and simple field introspection.
  *
- * As in ActionScript, an `Object` holding a function can be called.
+ * As in ActionScript, an `Object` holding a function can be called. Called
+ * holding anything else it throws, except natively, where it does not.
+ *
+ * **What the field helpers see.** `exists`, `remove`, `keys`, `values`,
+ * `entries`, `get` and `set` ask by reflection. Of an anonymous structure (a
+ * literal, parsed JSON, `new Object()`) they answer alike on every target,
+ * and a null `Object` answers as an empty one. Of a class instance each
+ * target answers its own way: natively `exists` is false for a declared
+ * field and `keys` lists properties too, on neko and Node `remove` deletes a
+ * declared field, and on the jvm `get` of a property throws. Read a class's
+ * fields through the class.
+ *
+ * **A field named like a method.** `exists`, `remove`, `keys`, `values`,
+ * `entries`, `get`, `set` and `iterator` are these methods, so a payload's
+ * field of one of those names is read with brackets: `payload["values"]`,
+ * where `payload.values` is the method.
  *
  * **What it costs.** Every field of an `Object` is looked up by its name when
  * it is read. Built from a literal such as `{name: "a", hits: 3}`, the fields

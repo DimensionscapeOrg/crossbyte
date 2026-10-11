@@ -72,6 +72,25 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(20, object["beta"]);
 	}
 
+	/**
+		A `FieldStruct` is walked by a key and value loop, as its
+		documentation says. It did not compile: it had no `keyValueIterator`
+		(and its static `iterator` refuses a plain `for (x in fields)`).
+	**/
+	public function testFieldStructIsWalkedByAKeyValueLoop():Void {
+		var fields:FieldStruct<Int> = new FieldStruct();
+		fields.alpha = 1;
+		fields["beta"] = 2;
+		fields["keys"] = 3;
+		var seen:Array<String> = [];
+		for (name => value in fields) {
+			seen.push(name + "=" + value);
+		}
+		seen.sort(Reflect.compare);
+		Assert.same(["alpha=1", "beta=2", "keys=3"], seen);
+		Assert.equals(3, fields["keys"]);
+	}
+
 	public function testObjectIteratesDynamicFields():Void {
 		var object:Object = new Object();
 		object.alpha = "a";

@@ -14,6 +14,10 @@ import crossbyte.utils.IntParse;
  * - `Float`
  * - `Bool`
  *
+ * A null `String` is held as `""`, and a `Float` that is NaN as `0.0`; a
+ * null value (`cast null`, or a null `Dynamic` through `fromDynamic`) is
+ * `isNull()`. A conversion that cannot be made throws a `String`.
+ *
  * ## Example:
  * ```haxe
  * var p:PrimitiveValue = 42;
@@ -174,9 +178,11 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 
 	/**
 	 * Converts the primitive to a `Bool`.
-	 * 
-	 * - `0` or `0.0` converts to `false`, anything else is `true`.
-	 * - Strings convert to `true` unless they are `"false"`.
+	 *
+	 * - `0` or `0.0` converts to `false`, any other number (NaN, which only
+	 *   `fromDynamic` can hold, included) is `true`.
+	 * - A string converts to `false` when, without its surrounding spaces and
+	 *   in any case, it is `""`, `"0"` or `"false"`, and to `true` otherwise.
 	 * - `null` converts to `false`.
 	 *
 	 * @return The boolean representation of the primitive.

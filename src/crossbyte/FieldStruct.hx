@@ -10,7 +10,13 @@ private typedef BaseStruct<T = Dynamic> = StringMap<T>;
  *
  * `FieldStruct<T>` gives CrossByte a compact way to model dynamic, string-keyed
  * records while still constraining the value lane to `T`. It supports dot access,
- * bracket access, and iteration over keys or key/value pairs.
+ * bracket access, and iteration over keys or key/value pairs:
+ * `for (name => value in fields)`, or `keys()`, `values()` and `entries()`.
+ *
+ * Any name is a key, `__proto__` included, on every target. A key named
+ * like a member (`keys`, `values`, `entries`, `toObject`,
+ * `keyValueIterator`) is read and written with brackets, `fields["keys"]`,
+ * where `fields.keys` is the method.
  */
 @:generic
 @:callable
@@ -48,6 +54,11 @@ abstract FieldStruct<T = Dynamic>(BaseStruct<T>) {
 	}
 
 	public inline function entries():KeyValueIterator<String, T> {
+		return (cast this : BaseStruct<T>).keyValueIterator();
+	}
+
+	/** What `for (name => value in fields)` walks. **/
+	public inline function keyValueIterator():KeyValueIterator<String, T> {
 		return (cast this : BaseStruct<T>).keyValueIterator();
 	}
 

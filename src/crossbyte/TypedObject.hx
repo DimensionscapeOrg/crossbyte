@@ -7,6 +7,17 @@ package crossbyte;
  * `TypedObject<T>` keeps direct typed field access through `T`, while also
  * supporting dynamic-style bracket access and field iteration when a computed
  * field name is more convenient.
+ *
+ * `T` is a structure (a typedef or an anonymous type): the field helpers
+ * (`exists`, `keys`, `values`, `entries` and `[]`) ask by reflection, as
+ * `Object`'s do, and of a class instance each target answers its own way.
+ * Walk the fields with `keys()` or `entries()`; for a structure `T`,
+ * `for (field in typed)` does not compile. A field named like one of those
+ * methods is read with brackets, or through `T`.
+ *
+ * A `TypedObject` is made from any value without a check against `T` (it
+ * converts from `Dynamic`, as `Json.parse`'s result needs), so where its
+ * shape matters, check it once where it arrives.
  */
 @:forward
 @:generic
