@@ -213,6 +213,26 @@ class HTTPHardeningTest extends utest.Test {
 		Assert.isFalse(HttpSyntax.exceedsChunkedBodyLimit(0, 100, 100));
 	}
 
+	/**
+		A limit near the largest Int holds where what is held and what
+		arrives add up past 2^31. Added, the sum wrapped negative and fitted
+		any limit: a chunk of a response, a request's chunk size line, and a
+		response body or streamed write against the output cap all went past
+		it. The HTTP/1.1 server's three checks go through `passes` too.
+	**/
+	public function testALimitNearTheLargestIntHoldsWhereTheSumWouldWrap():Void {
+		Assert.isTrue(HttpSyntax.exceedsChunkedBodyLimit(2000000000, 200000000, 2100000000), "a chunk past the limit fitted");
+		Assert.isTrue(HttpSyntax.exceedsChunkedBodyLimit(0x7FFFFFF0, 0x20, 0x7FFFFFFF), "a chunk past the largest Int fitted");
+		Assert.isFalse(HttpSyntax.exceedsChunkedBodyLimit(0x7FFFFFF0, 0x0F, 0x7FFFFFFF), "a chunk to the limit exactly was refused");
+		Assert.isTrue(HttpSyntax.passes(1500000000, 1000000000, 2000000000));
+		Assert.isTrue(HttpSyntax.passes(0x7FFFFFFF, 1, 0x7FFFFFFF));
+		Assert.isFalse(HttpSyntax.passes(1500000000, 500000000, 2000000000));
+		// No room at all, or less than none.
+		Assert.isTrue(HttpSyntax.passes(10, 1, 10));
+		Assert.isTrue(HttpSyntax.passes(20, 1, 10));
+		Assert.isFalse(HttpSyntax.passes(20, 0, 30));
+	}
+
 	public function testChunkedBodyLimitDisabledWhenNonPositive():Void {
 		Assert.isFalse(HttpSyntax.exceedsChunkedBodyLimit(1000, 1000, 0));
 		Assert.isFalse(HttpSyntax.exceedsChunkedBodyLimit(1000, 1000, -1));

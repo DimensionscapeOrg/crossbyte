@@ -249,6 +249,31 @@ class H2Test extends utest.Test {
 		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
 	}
 
+	/**
+		A header block limit near the largest Int holds where what the block
+		holds, plus the next fragment, would pass 2^31. Added, the sum wrapped
+		negative and fitted. What the block holds is set just under the
+		limit, rather than sent.
+	**/
+	public function testAHeaderBlockLimitNearTheLargestIntHoldsWhereTheSumWouldWrap():Void {
+		var server = new ServerScript();
+		server.settings();
+		var connection = server.connect();
+		connection.maxHeaderBlockSize = 0x7FFFFFFF;
+		// A block open on stream 1, as a HEADERS without END_HEADERS leaves one.
+		@:privateAccess connection.__continuationStreamId = 1;
+		@:privateAccess connection.__continuationBuffer = new haxe.io.BytesBuffer();
+		@:privateAccess connection.__continuationLength = 0x7FFFFFFF - 512;
+		var failure:Null<H2ConnectionError> = null;
+		try {
+			@:privateAccess connection.__appendHeaderFragment(Bytes.alloc(1024));
+		} catch (e:H2ConnectionError) {
+			failure = e;
+		}
+		Require.notNull(failure, "a header block past its limit grew on");
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
+	}
+
 	public function testAResponseHeaderSectionPastTheLimitIsRefusedAndTheConnectionCarriesOn():Void {
 		// 3,000 one-byte references to one set-cookie entry: a block of about
 		// three kilobytes that decodes to 117 KB by the table's accounting. The

@@ -1407,6 +1407,10 @@ Fixes to code new in this release are not listed.
 - Request smuggling: a `Content-Length` too large for an `Int`, an
   obs-fold header line, whitespace before a colon or a line with no colon
   is refused with 400, and a chunk size is bounded before it is parsed.
+- A limit set near the largest `Int` holds: the server's
+  `maxRequestBodySize` against a chunk size, its output cap against a
+  response or a streamed write, and the client's `maxBodySize`, where what
+  was held and what arrived added past 2^31, wrapped and fitted.
 - A URL can no longer add a header or a request: control characters are
   refused and the request target, `Host` and other headers are sanitised.
 - A request path can no longer forge a field in the access log. Its

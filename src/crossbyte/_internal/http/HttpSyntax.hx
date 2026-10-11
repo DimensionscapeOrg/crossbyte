@@ -41,7 +41,16 @@ class HttpSyntax {
 			return false;
 		}
 
-		return (accumulated + incoming) > limit;
+		return passes(accumulated, incoming, limit);
+	}
+
+	/**
+	 * Whether `adding` more to `held` would take it past `limit`, asked of
+	 * what is left of the limit rather than of their sum: with a limit near
+	 * the largest Int the sum passes 2^31, wraps negative, and fits.
+	 */
+	public static inline function passes(held:Int, adding:Int, limit:Int):Bool {
+		return adding > limit - held;
 	}
 
 	/**

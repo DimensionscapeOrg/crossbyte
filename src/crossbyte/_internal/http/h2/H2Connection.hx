@@ -575,7 +575,9 @@ class H2Connection {
 	 * cannot be decoded, and HPACK is connection state.
 	 */
 	private function __appendHeaderFragment(payload:Bytes):Void {
-		if (maxHeaderBlockSize >= 0 && __continuationLength + payload.length > maxHeaderBlockSize) {
+		// Against what is left of the limit: added, a limit near the largest
+		// Int let the sum wrap negative and the block grow past it.
+		if (maxHeaderBlockSize >= 0 && payload.length > maxHeaderBlockSize - __continuationLength) {
 			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM, 'Header block exceeded $maxHeaderBlockSize bytes across its CONTINUATION frames');
 		}
 		__continuationBuffer.addBytes(payload, 0, payload.length);

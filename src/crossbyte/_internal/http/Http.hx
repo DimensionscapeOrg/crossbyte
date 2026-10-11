@@ -914,7 +914,7 @@ class Http {
 						}
 						if (n <= 0)
 							break;
-						if (maxBodySize > 0 && buffer.length + n > maxBodySize) {
+						if (maxBodySize > 0 && HttpSyntax.passes(buffer.length, n, maxBodySize)) {
 							throw "Response body exceeded " + maxBodySize + " bytes";
 						}
 						buffer.addBytes(b, 0, n);

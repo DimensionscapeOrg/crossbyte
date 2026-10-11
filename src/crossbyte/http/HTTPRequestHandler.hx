@@ -2216,7 +2216,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// be held all the same, by this handler, where nothing counts it.
 		var bodyLength:Int = (!headOnly && responseData != null) ? responseData.length : 0;
 		var cap:Int = __writer.maxBufferedBytes;
-		var fromMemory:Bool = bodyLength > 0 && cap > 0 && !__writer.ownsConnection && __writer.bufferedBytes + bodyLength > cap;
+		var fromMemory:Bool = bodyLength > 0 && cap > 0 && !__writer.ownsConnection && HttpSyntax.passes(__writer.bufferedBytes, bodyLength, cap);
 		if (fromMemory || openBody) {
 			__streamPending = true;
 		}
@@ -2497,8 +2497,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var cap:Int = __writer.maxBufferedBytes;
-		if (cap > 0 && __writer.bufferedBytes + length > cap) {
-			Logger.error('A streamed response to ${__requestPath} outran its client: ' + (__writer.bufferedBytes + length)
+		if (cap > 0 && HttpSyntax.passes(__writer.bufferedBytes, length, cap)) {
+			Logger.error('A streamed response to ${__requestPath} outran its client: ' + (__writer.bufferedBytes + 0.0 + length)
 				+ ' bytes would be waiting, past maxOutputBufferSize ($cap). Ending it.');
 			__detachOpenStream();
 			__abandonResponse();
@@ -4613,7 +4613,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 				// A chunk that would take the body past its limit is refused on
 				// its size line, rather than once it has been buffered whole.
-				if (__bodyBuf.length + parsed > __config.maxRequestBodySize) {
+				if (HttpSyntax.passes(__bodyBuf.length, parsed, __config.maxRequestBodySize)) {
 					__sendErrorResponse(413, "Payload Too Large");
 					return false;
 				}

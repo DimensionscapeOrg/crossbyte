@@ -1138,6 +1138,73 @@ class H2ServerTest extends utest.Test {
 		Assert.isTrue(server.closed);
 	}
 
+	/**
+		The three amounts the server holds to a limit hold where the limit is
+		near the largest Int and what is held, plus what arrives, would pass
+		2^31: a header block across its CONTINUATION frames, the decoded
+		headers held for streams whose bodies are still coming, and a body.
+		Each was added before comparing, and the sum wrapped negative and
+		fitted. What is held is set just under its limit, rather than sent:
+		two gigabytes would have to arrive first.
+	**/
+	public function testLimitsNearTheLargestIntHoldWhereTheSumWouldWrap():Void {
+		var filler = Bytes.alloc(1024);
+
+		// A header block.
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxHeaderBlockSize = 0x7FFFFFFF;
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		server.receive(frame(H2FrameType.HEADERS, 0, 1, filler));
+		@:privateAccess server.__continuationLength = 0x7FFFFFFF - 512;
+		server.receive(frame(H2FrameType.CONTINUATION, 0, 1, filler));
+		Assert.notNull(failure, "a header block past its limit grew on");
+		Assert.isTrue(failure != null && failure.code == H2ErrorCode.ENHANCE_YOUR_CALM);
+
+		// Headers held for bodies still arriving.
+		var heldOut = new Collector();
+		var heldSettings = new H2Settings();
+		heldSettings.enablePush = false;
+		heldSettings.maxHeaderListSize = 0x7FFFFFFF;
+		var held = new H2ServerConnection(heldOut.write, heldSettings);
+		held.receive(Bytes.ofString(H2Connection.PREFACE));
+		heldOut.bytes();
+		Assert.equals(0x7FFFFFFF, @:privateAccess held.__headerAllowance);
+		@:privateAccess held.__headersHeld = 0x7FFFFFFF - 10;
+		var encoder = new HpackEncoder(4096);
+		held.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([]))));
+		var refused:Null<H2Frame> = null;
+		for (candidate in Collector.parse(heldOut.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				refused = candidate;
+			}
+		}
+		Assert.notNull(refused, "headers past the allowance were held");
+
+		// A body.
+		var bodyOut = new Collector();
+		var body = new H2ServerConnection(bodyOut.write);
+		body.maxRequestBodySize = 0x7FFFFFFF;
+		var delivered:Array<H2ServerRequest> = [];
+		body.onRequest = request -> delivered.push(request);
+		body.receive(Bytes.ofString(H2Connection.PREFACE));
+		bodyOut.bytes();
+		var bodyEncoder = new HpackEncoder(4096);
+		body.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, bodyEncoder.encode(requestFields([]))));
+		var stream:H2Stream = @:privateAccess body.__streams.get(1);
+		Require.notNull(stream);
+		var limit:Int = @:privateAccess body.__bodyLimit;
+		@:privateAccess stream.__bodyLength = limit - 100;
+		body.receive(frame(H2FrameType.DATA, 0, 1, filler));
+		Assert.equals(1, delivered.length, "a body past its limit was taken");
+		Assert.isTrue(delivered.length == 1 && delivered[0].tooLarge);
+		Assert.isTrue(delivered.length == 1 && delivered[0].body.length == 0, "the frame past the limit was kept");
+	}
+
 	public function testTheHeaderListLimitIsAdvertised():Void {
 		// SETTINGS_MAX_HEADER_LIST_SIZE is sent, since its absence tells a
 		// client the list is unlimited, and the decoder holds to it.

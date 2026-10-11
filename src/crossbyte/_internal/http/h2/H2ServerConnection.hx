@@ -1320,7 +1320,9 @@ class H2ServerConnection {
 	 * read as though it were new frames.
 	 */
 	private function __appendHeaderFragment(payload:Bytes):Void {
-		if (maxHeaderBlockSize >= 0 && (__continuationLength + payload.length) > maxHeaderBlockSize) {
+		// Against what is left of the limit: added, a limit near the largest
+		// Int let the sum wrap negative and the block grow past it.
+		if (maxHeaderBlockSize >= 0 && payload.length > maxHeaderBlockSize - __continuationLength) {
 			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM,
 				'Header block exceeded $maxHeaderBlockSize bytes across its CONTINUATION frames');
 		}
@@ -1390,7 +1392,7 @@ class H2ServerConnection {
 		// Held until its body has arrived, and held to an allowance across
 		// the connection: see __headerAllowance.
 		var size:Int = __decoder.listSize;
-		if (__headersHeld + size > __headerAllowance) {
+		if (size > __headerAllowance - __headersHeld) {
 			resetStream(streamId, H2ErrorCode.REFUSED_STREAM);
 			return;
 		}
@@ -1532,7 +1534,9 @@ class H2ServerConnection {
 			throw new H2StreamError(frame.streamId, H2ErrorCode.STREAM_CLOSED, "DATA after the end of the stream");
 		}
 		if (target != null && !target.overflowed) {
-			if (target.bodyLength + content.length > __bodyLimit) {
+			// What is left of the limit, not the sum, which wraps where the
+			// limit is within a frame of the largest Int.
+			if (content.length > __bodyLimit - target.bodyLength) {
 				__refuseOversized(target);
 			} else {
 				target.appendBody(content);
