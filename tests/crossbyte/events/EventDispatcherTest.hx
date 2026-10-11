@@ -350,6 +350,25 @@ class EventDispatcherTest extends utest.Test {
 		Assert.equals(0, calls.length, "an event of a null type reached another type's listeners");
 	}
 
+	public function testAListenerAddedTwiceRunsTwiceAndIsRemovedOnceAtATime():Void {
+		// Unlike ActionScript, and documented: adding is not a search.
+		var dispatcher = new EventDispatcher();
+		var calls = 0;
+		var listener = (_:Event) -> calls++;
+		dispatcher.addEventListener("demo", listener);
+		dispatcher.addEventListener("demo", listener);
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals(2, calls);
+
+		dispatcher.removeEventListener("demo", listener);
+		calls = 0;
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals(1, calls, "a removal took more than one");
+
+		dispatcher.removeEventListener("demo", listener);
+		Assert.isFalse(dispatcher.hasEventListener("demo"));
+	}
+
 	public function testRemovingOneObjectsMethodLeavesAnothersAttached():Void {
 		var dispatcher = new EventDispatcher();
 		var first = new MethodSubscriber();

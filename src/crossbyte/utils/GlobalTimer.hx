@@ -13,7 +13,8 @@ import sys.thread.Mutex;
 	A timer runs where a `haxe.Timer` made on the calling thread would: on
 	that thread's runtime (the primordial runtime on the primordial thread, a
 	child runtime on its own thread), or on the primordial runtime when the
-	thread has none. One whose runtime exits never runs.
+	thread has none. One whose runtime exits never runs, and its id is let
+	go then.
 
 	Safe to call from any thread. The ids and the map behind them are kept
 	under a lock wherever there are threads, so threads setting and
@@ -91,18 +92,29 @@ final class GlobalTimer {
 
 	@:noCompletion private static function __setIntervalVoid(closure:Void->Void, delay:Int):UInt {
 		var id = __nextID();
-		var timer = new HxTimer(delay);
-		timer.run = closure;
-		__setTimer(id, timer);
+		__setTimer(id, __running(delay, closure));
 		return id;
 	}
 
 	@:noCompletion private static function __setInterval(closure:Function, delay:Int, args:Array<Dynamic>):UInt {
 		var id = __nextID();
-		var timer = new HxTimer(delay);
-		timer.run = __onInterval.bind(id, closure, args);
-		__setTimer(id, timer);
+		__setTimer(id, __running(delay, __onInterval.bind(id, closure, args)));
 		return id;
+	}
+
+	/**
+		A `haxe.Timer` running `run`, given before the timer is handed to its
+		runtime: given after, a runtime on another thread could run the timer
+		before it had one. See `haxe.Timer.__given`.
+	**/
+	@:noCompletion private static inline function __running(delay:Int, run:Void->Void):HxTimer {
+		#if lime_cffi
+		var timer = new HxTimer(delay);
+		timer.run = run;
+		return timer;
+		#else
+		return @:privateAccess HxTimer.__given(delay, _ -> run());
+		#end
 	}
 
 	/**
@@ -210,6 +222,33 @@ final class GlobalTimer {
 		if (cleared) {
 			timer.stop();
 		}
+	}
+
+	/**
+		Lets go of the timers on a runtime that has exited, which never run:
+		their ids would hold them, and whatever their functions held, for as
+		long as the process ran. Called by the runtime as it exits.
+	**/
+	@:allow(crossbyte.core.CrossByte)
+	@:noCompletion private static function __runtimeExited(runtime:crossbyte.core.CrossByte):Void {
+		#if !lime_cffi
+		__lock();
+		var gone:Array<UInt> = null;
+		for (id => timer in __timers) {
+			if (timer != null && @:privateAccess timer.__home == runtime) {
+				if (gone == null) {
+					gone = [];
+				}
+				gone.push(id);
+			}
+		}
+		if (gone != null) {
+			for (id in gone) {
+				__timers.remove(id);
+			}
+		}
+		__unlock();
+		#end
 	}
 
 	@:noCompletion private static function __removeTimer(id:UInt):HxTimer {

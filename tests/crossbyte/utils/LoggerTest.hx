@@ -2,8 +2,119 @@ package crossbyte.utils;
 
 import utest.Assert;
 
+#if (cpp && (linux || mac || macos))
+@:cppFileCode('
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+static struct sigaction crossbyte_test_sigpipe_saved;
+
+static void crossbyte_test_sigpipe_handler(int number) {}
+
+static void crossbyte_test_sigpipe_save() {
+	sigaction(SIGPIPE, NULL, &crossbyte_test_sigpipe_saved);
+}
+
+static void crossbyte_test_sigpipe_restore() {
+	sigaction(SIGPIPE, &crossbyte_test_sigpipe_saved, NULL);
+}
+
+// 0 the default, 1 ignored, 2 a handler.
+static void crossbyte_test_sigpipe_set(int how) {
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	sigemptyset(&action.sa_mask);
+	action.sa_handler = how == 0 ? SIG_DFL : (how == 1 ? SIG_IGN : crossbyte_test_sigpipe_handler);
+	sigaction(SIGPIPE, &action, NULL);
+}
+
+static int crossbyte_test_sigpipe_get() {
+	struct sigaction action;
+	sigaction(SIGPIPE, NULL, &action);
+	if (action.sa_handler == SIG_DFL) {
+		return 0;
+	}
+	return action.sa_handler == SIG_IGN ? 1 : 2;
+}
+
+// Points stdout at a pipe whose reading end is closed, and answers the
+// descriptor stdout was, to be put back.
+static int crossbyte_test_stdout_to_closed_pipe() {
+	int ends[2];
+	fflush(stdout);
+	if (pipe(ends) != 0) {
+		return -1;
+	}
+	close(ends[0]);
+	int saved = dup(1);
+	dup2(ends[1], 1);
+	close(ends[1]);
+	return saved;
+}
+
+static void crossbyte_test_stdout_restore(int saved) {
+	fflush(stdout);
+	clearerr(stdout);
+	if (saved >= 0) {
+		dup2(saved, 1);
+		close(saved);
+	}
+	clearerr(stdout);
+}
+')
+#end
 @:access(crossbyte.utils.Logger)
+@:access(crossbyte.core.CrossByte)
 class LoggerTest extends utest.Test {
+	#if (cpp && (linux || mac || macos))
+	/**
+		A runtime ignores SIGPIPE natively, as Node, the jvm and Python do, so
+		a process whose stdout has no reader left (piped into head, a log
+		shipper that died) carries on, and logging there neither ends it nor
+		throws. SIGPIPE ended it, exit code 141 with no word of why, unless a
+		socket or a child process had been made first. A handler of the
+		application's own is left in place.
+	**/
+	public function testAStdoutWithNoReaderEndsNothing():Void {
+		var harness = crossbyte.core.CrossByte.current();
+		untyped __cpp__("crossbyte_test_sigpipe_save()");
+		untyped __cpp__("crossbyte_test_sigpipe_set(0)");
+		var runtime = new crossbyte.core.CrossByte(false, DEFAULT, true);
+		var disposition:Int = untyped __cpp__("crossbyte_test_sigpipe_get()");
+		Assert.equals(1, disposition, "a runtime left SIGPIPE at its default, which ends the process");
+
+		// Only with SIGPIPE ignored: at its default, this would end the suite.
+		if (disposition == 1) {
+			var thrown:Dynamic = null;
+			var saved:Int = untyped __cpp__("crossbyte_test_stdout_to_closed_pipe()");
+			try {
+				Logger.info("to a stdout nobody reads");
+				Logger.warn("a warning, flushed at once");
+				Logger.__flushStdout();
+				Sys.println("and a line of the application's own");
+				Sys.stdout().flush();
+			} catch (e:Dynamic) {
+				thrown = e;
+			}
+			untyped __cpp__("crossbyte_test_stdout_restore({0})", saved);
+			Assert.isNull(thrown, "writing to a stdout with no reader threw: " + thrown);
+		}
+
+		untyped __cpp__("crossbyte_test_sigpipe_set(2)");
+		var second = new crossbyte.core.CrossByte(false, DEFAULT, true);
+		var kept:Int = untyped __cpp__("crossbyte_test_sigpipe_get()");
+		Assert.equals(2, kept, "a runtime replaced a SIGPIPE handler of the application's own");
+
+		second.exit();
+		runtime.exit();
+		untyped __cpp__("crossbyte_test_sigpipe_restore()");
+		// Its timers are this thread's again.
+		harness.pump(0, 0);
+	}
+	#end
+
 	#if (cpp && (windows || linux || mac || macos))
 	/**
 		A record reaches a redirected stdout within a frame of being logged,

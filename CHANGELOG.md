@@ -545,6 +545,16 @@ says how.
 - A timer interval of zero or less is refused with an `ArgumentError` on
   every build. A debug build threw a `String`, and any other ran the
   timer once, as a timeout. (Upgrading)
+- A `haxe.Timer`, or a `GlobalTimer.setInterval`, that has fallen more than
+  an interval behind owes one run, not every one it missed. One shorter
+  than a frame fell further behind every frame, and once frames came
+  faster (a host pumping faster, a higher `tps`) ran at every one: ten
+  times its rate, for as long as the debt lasted.
+- Natively, a runtime has SIGPIPE ignored, unless the application set it
+  otherwise, as Node, the jvm and Python do: a write to a stdout nobody
+  reads any more (piped into `head`, a log shipper that died) fails as any
+  other write does, where it ended the process with exit code 141. Sockets
+  never raised it. (Upgrading)
 - Dispatching an event costs about half what it did, and adding or removing
   a listener copies the list only while a dispatch is walking it. A
   dispatcher keeps the listeners of the type it was last asked about, so
@@ -979,6 +989,12 @@ Fixes to code new in this release are not listed.
   the first, then the third, then the second. Natively the heap fires a
   timer 15% faster where timers' times differ, and 11% slower where many
   are due at once.
+- A `GlobalTimer` timer whose runtime exits is let go. A timeout still
+  waiting on a child runtime that exited held its id, and whatever its
+  function held, for as long as the process ran.
+- `haxe.Timer.delay`, `GlobalTimer.setTimeout` and `setInterval` give a
+  timer its function before handing it to a runtime on another thread,
+  which could run it once with none first.
 - `removeEventListener(type, this.handler)` removes the listener on eval and
   the jvm, where a bound method never compared equal.
 - A listener that dispatches its event on to another dispatcher no longer
@@ -1260,6 +1276,8 @@ Fixes to code new in this release are not listed.
 - A `heartbeatInterval` of zero or less is no heartbeat. It sent one ping
   and then stopped for good, so a peer that vanished was held, and a debug
   build threw from `start()`.
+- A `heartbeatTimeout` of zero or less never times the peer out, and the
+  pings go on. It closed the connection at the first beat.
 - The heartbeat no longer closes healthy connections: pings were never
   answered.
 - A method returning `Null<T>` answers correctly, where the first answer that
@@ -1532,6 +1550,11 @@ an API added in this release has is not listed here.
 - `crossbyte.Timer.setInterval` refuses an interval of zero or less with an
   `ArgumentError`, where it ran the timer once: arm a timer that runs once
   with `setTimeout`.
+- Natively, a runtime has SIGPIPE ignored when the process still has it at
+  its default, so a write to a pipe with no reader fails rather than ending
+  the process. A program that should end there (a tool whose output is
+  piped into `head`, say) sets SIGPIPE back to its default after making its
+  runtime.
 - `ThreadEvent.UPDATE` is gone; nothing dispatched it.
 - `Random.seed` is no longer public: set the shared seed with
   `Random.reseed(value)`.
