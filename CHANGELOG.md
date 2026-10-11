@@ -1107,8 +1107,10 @@ Fixes to code new in this release are not listed.
   near 2^31 the check wrapped and passed, and natively the read answered 0
   as if the bytes were there, where eval and the jvm threw errors of their
   own. A write whose end would pass 2^31 - 1 bytes is a `RangeError`,
-  where natively it grew the buffer toward 2 GB a byte at a time. A
-  position of 2^31 or more is refused with a `RangeError`.
+  refused before any room is made for it, where natively it grew the
+  buffer toward 2 GB a byte at a time, and on JavaScript text grew it past
+  2 GB first (which a browser refuses with an allocation error of its own).
+  A position of 2^31 or more is refused with a `RangeError`.
 - `ByteArray`'s `[]` reads 0 outside its bytes, where past `length` it
   read what was there before the array was shortened (natively and on the
   jvm), and a negative index written is a `RangeError`. `bytesAvailable`

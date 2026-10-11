@@ -1774,12 +1774,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function writeUTF(value:String):Void {
 		// ASCII is its own UTF-8, a byte a character: the length is known and
 		// the text written as writeUTFBytes writes it, with no Bytes made of
-		// it to count.
+		// it to count. Each way refuses a string that would end past the
+		// largest ByteArray before its length goes in (see __refusePast).
 		#if cpp
 		// Parenthesized: `untyped` takes everything after it, and unbracketed
 		// the length test went inside the negation, so a narrow string past
 		// 65535 bytes was written behind a wrapped length instead of refused.
 		if (!(untyped __cpp__("{0}.isUTF16Encoded()", value)) && value.length <= 0xFFFF) {
+			__refusePast(2 + value.length);
 			writeShort(value.length);
 			writeUTFBytes(value);
 			return;
@@ -1790,6 +1792,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			if (size > 0xFFFF) {
 				throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${size}. Use writeUTFBytes with a length of your own.');
 			}
+			__refusePast(2 + size);
 			writeShort(size);
 			__writeNative(value, size);
 			return;
@@ -1803,6 +1806,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// writeUTFBytes writes them, the length patched in after.
 		if (value.length <= 0xFFFF / crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
 			var start:Int = position;
+			// Sized only near the end, where the most it could take does not fit.
+			if (start > 0x7FFFFFFF - 2 - value.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+				__refusePast(2 + crossbyte._internal.Utf8.sizeOf(value));
+			}
 			writeShort(0);
 			var size:Int = __writeText(value);
 			initData();
@@ -1819,8 +1826,26 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
 		}
 
+		__refusePast(2 + bytes.length);
 		writeShort(bytes.length);
 		__writeAll(bytes);
+	}
+
+	/**
+		Refuses a write of `count` bytes at the position whose end would pass
+		2^31 - 1, the largest ByteArray, before anything of it is written or
+		room is made for it. For a write of two parts, a length and its text:
+		the text's own write refuses its end, but only after the length has
+		gone in, and room made for that, toward 2 GB.
+	**/
+	@:noCompletion private inline function __refusePast(count:Int):Void {
+		if (position > 0x7FFFFFFF - count) {
+			__tooLarge();
+		}
+	}
+
+	@:noCompletion private static function __tooLarge():Void {
+		throw new RangeError("A ByteArray holds at most 2^31 - 1 bytes.");
 	}
 
 	public function writeUTFBytes(value:String):Void {
@@ -1876,6 +1901,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 		}
 		if (prefixed) {
+			__refusePast(2 + count);
 			writeShort(count);
 		}
 		if (count > 0) {
@@ -1909,6 +1935,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	**/
 	@:noCompletion private function __writeText(value:String):Int {
 		var at:Int = position;
+		// The end checked before anything is written or grown, sized only near
+		// it: past the largest ByteArray, the room made for the rest (Int does
+		// not wrap here) was a buffer of 2 GB or more, which a browser refuses
+		// with an allocation error of its own, and the RangeError came after.
+		if (at > 0x7FFFFFFF - value.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+			__refusePast(crossbyte._internal.Utf8.sizeOf(value));
+		}
 		var size:Int = crossbyte._internal.Utf8.writeView(value, b, at, __length);
 		var read:Int = crossbyte._internal.Utf8.read;
 		if (read < value.length) {
@@ -1918,8 +1951,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				__resize(at + size, at);
 			}
 			var rest:String = value.substring(read);
+			// The most the rest can take, held to the largest ByteArray, which
+			// it fits, as checked above.
 			var end:Int = at + size + rest.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT;
-			__reserve(__grown(end));
+			var room:Int = __grown(end);
+			__reserve(room > 0x7FFFFFFF ? 0x7FFFFFFF : room);
 			size += crossbyte._internal.Utf8.writeView(rest, b, at + size, __length);
 		}
 		// Readable to its end, and any gap before it zeroed, as a write is;

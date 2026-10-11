@@ -695,6 +695,12 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		a RangeError, and writes nothing. Its end wrapped negative, so nothing
 		grew: natively the write then asked the buffer to grow itself to 2 GB a
 		byte at a time, and the jvm threw ArrayIndexOutOfBoundsException.
+
+		It is refused before any room is made for it. On JavaScript, whose Int
+		does not wrap, text grew the buffer past 2 GB first, which a browser
+		refuses with an allocation error of its own; and a `writeUTF` whose
+		length fits where its text does not wrote the length, growing the
+		buffer to 2 GB for it, before the text was refused.
 	**/
 	public function testAWritePastTheLargestByteArrayIsARangeError():Void {
 		var writes:Array<{at:Int, write:ByteArray->Void}> = [
@@ -706,7 +712,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 			{at: 0x7FFFFFFA, write: b -> b.writeDouble(1.5)},
 			{at: 0x7FFFFFFE, write: b -> b.writeFloat(1.5)},
 			{at: 0x7FFFFFFE, write: b -> b.writeUTFBytes("abc")},
-			{at: 0x7FFFFFFF, write: b -> b.writeVarUInt(300)}
+			{at: 0x7FFFFFFF, write: b -> b.writeVarUInt(300)},
+			{at: 0x7FFFFFFC, write: b -> b.writeUTFBytes("héllo")},
+			{at: 0x7FFFFFFD, write: b -> b.writeUTF("abc")},
+			{at: 0x7FFFFFF9, write: b -> b.writeUTF("héllo")}
 		];
 		for (i in 0...writes.length) {
 			var bytes = new ByteArray();
@@ -720,6 +729,8 @@ class ByteArrayCorrectnessTest extends utest.Test {
 			}
 			Assert.isTrue(Std.isOfType(raised, RangeError), 'write $i raised ' + Std.string(raised));
 			Assert.equals(4, (bytes.length : Int), 'write $i changed the length');
+			var room:Int = @:privateAccess (bytes : crossbyte.io.ByteArray.ByteArrayData).__length;
+			Assert.isTrue(room < 1 << 16, 'write $i made room for $room bytes before it was refused');
 		}
 	}
 
