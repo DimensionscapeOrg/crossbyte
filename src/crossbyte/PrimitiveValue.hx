@@ -1,5 +1,8 @@
 package crossbyte;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.Error;
+import crossbyte.errors.RangeError;
 import crossbyte.utils.IntParse;
 
 /**
@@ -17,7 +20,13 @@ import crossbyte.utils.IntParse;
  * A null `String` stays null, as a null `Dynamic` through `fromDynamic`
  * does: `isNull()` is true, and it converts as null does, to `0`, `0.0`,
  * `false` and back to a null `String`. A `Float` that is NaN is held as
- * `0.0`. A conversion that cannot be made throws a `String`.
+ * `0.0`.
+ *
+ * A conversion that cannot be made throws a `crossbyte.errors.RangeError`
+ * for a number outside the range of the type asked for (`3e9`, or
+ * `"4294967296"`, as an `Int`), and an `ArgumentError` for anything else:
+ * text that is not a number (`"abc"` as an `Int`), a value that is not a
+ * primitive, and `fromDynamic` given one.
  *
  * ## Example:
  * ```haxe
@@ -31,9 +40,14 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 		return isValid(value) ? cast value : null;
 	}
 
+	/**
+		`value` as a `PrimitiveValue`.
+		@throws ArgumentError If it is not a `String`, an `Int`, a `Float`, a
+		`Bool` or null.
+	**/
 	public static inline function fromDynamic(value:Dynamic):PrimitiveValue {
 		if (!isValid(value)) {
-			throw "Cannot convert " + Std.string(value) + " to PrimitiveValue";
+			throw __cannotConvert(value, "PrimitiveValue");
 		}
 		return cast value;
 	}
@@ -113,12 +127,14 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 * - `true` becomes `1`, `false` becomes `0`.
 	 * - `null` converts to `0`.
 	 *
-	 * A string or a Float whose value is not an `Int` (too large, too small,
-	 * not a number) throws on every target, as anything else that cannot be
-	 * converted does.
+	 * A string or a Float whose value is not an `Int` throws on every target,
+	 * as anything else that cannot be converted does.
 	 *
 	 * @return The integer representation of the primitive.
-	 * @throws If conversion is not possible.
+	 * @throws RangeError For a number too large or too small for an `Int`,
+	 *         a string of digits or a `Float` (infinities included).
+	 * @throws ArgumentError For text that is not a whole number, a NaN, and
+	 *         a value that is not a primitive.
 	 */
 	@:to public inline function toInt():Int {
 		switch (Type.typeof(this)) {
@@ -127,7 +143,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TFloat:
 				var f:Float = this;
 				if (!(f > -2147483649.0 && f < 2147483648.0)) {
-					throw "Cannot convert " + Std.string(this) + " to Int";
+					throw __outOfIntRange(f);
 				}
 				return Std.int(f);
 			case TBool:
@@ -137,7 +153,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TNull:
 				return 0;
 			default:
-				throw "Cannot convert " + Std.string(this) + " to Int";
+				throw __cannotConvert(this, "Int");
 		}
 	}
 
@@ -155,8 +171,8 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 * - `null` converts to `0.0`.
 	 *
 	 * @return The float representation of the primitive.
-	 * @throws If the primitive holds something other than a string, a number,
-	 *         a `Bool` or null.
+	 * @throws ArgumentError If the primitive holds something other than a
+	 *         string, a number, a `Bool` or null.
 	 */
 	@:to public inline function toFloat():Float {
 		switch (Type.typeof(this)) {
@@ -174,7 +190,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TNull:
 				return 0.0;
 			default:
-				throw "Cannot convert " + Std.string(this) + " to Float";
+				throw __cannotConvert(this, "Float");
 		}
 	}
 
@@ -188,7 +204,8 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 * - `null` converts to `false`.
 	 *
 	 * @return The boolean representation of the primitive.
-	 * @throws If conversion is not possible.
+	 * @throws ArgumentError If the primitive holds something other than a
+	 *         string, a number, a `Bool` or null.
 	 */
 	@:to public inline function toBool():Bool {
 		switch (Type.typeof(this)) {
@@ -204,7 +221,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TNull:
 				return false;
 			default:
-				throw "Cannot convert " + Std.string(this) + " to Bool";
+				throw __cannotConvert(this, "Bool");
 		}
 	}
 
@@ -251,7 +268,30 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 				return 0x80000000;
 			}
 		}
-		throw "Cannot convert \"" + text + "\" to Int";
+		// Digits alone, refused, are a number past the bound.
+		var number:Bool = digits.length > 0;
+		for (i in 0...digits.length) {
+			var code:Int = StringTools.fastCodeAt(digits, i);
+			if (!(hex ? __hexDigit(code) >= 0 : __isDigit(code))) {
+				number = false;
+				break;
+			}
+		}
+		if (number) {
+			throw new RangeError("\"" + text + "\" is outside the range of Int.");
+		}
+		throw new ArgumentError("Cannot convert \"" + text + "\" to Int: it is not a whole number.");
+	}
+
+	@:noCompletion private static function __outOfIntRange(value:Float):Error {
+		if (Math.isNaN(value)) {
+			return new ArgumentError("Cannot convert NaN to Int.");
+		}
+		return new RangeError(Std.string(value) + " is outside the range of Int.");
+	}
+
+	@:noCompletion private static function __cannotConvert(value:Dynamic, type:String):Error {
+		return new ArgumentError("Cannot convert " + Std.string(value) + " to " + type + ".");
 	}
 
 	// The text checked against one grammar before any target reads it, since

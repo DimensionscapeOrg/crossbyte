@@ -6,6 +6,8 @@ import crossbyte.PrimitiveValue;
 import crossbyte.Seq32;
 import crossbyte.TypedObject;
 import crossbyte.ds.TypeCheck;
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.RangeError;
 import utest.Assert;
 
 private typedef SamplePayload = {
@@ -294,8 +296,11 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(31, int("0x1F"));
 		Assert.equals(-16, int("-0X10"));
 		Assert.equals(-2147483647 - 1, int("-0x80000000"));
-		for (bad in ["4294967396", "99999999999", "2147483648", "-2147483649", "abc", "12abc", "", "   ", "-", "0x", "1e3", "0x100000000", "--1"]) {
-			Assert.raises(() -> int(bad), String, '"$bad" was read as a number');
+		for (big in ["4294967396", "99999999999", "2147483648", "-2147483649", "0x100000000", " -0x80000001 "]) {
+			Assert.raises(() -> int(big), RangeError, '"$big" was read as a number');
+		}
+		for (bad in ["abc", "12abc", "", "   ", "-", "0x", "1e3", "--1", "0xg", "1.5"]) {
+			Assert.raises(() -> int(bad), ArgumentError, '"$bad" was read as a number');
 		}
 	}
 
@@ -312,7 +317,49 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(-2147483647 - 1, int(-2147483648.9));
 		Assert.equals(-3, int(-3.99));
 		for (bad in [3e9, -3e9, 2147483648.0, -2147483649.0, Math.POSITIVE_INFINITY, Math.NEGATIVE_INFINITY]) {
-			Assert.raises(() -> int(bad), String, bad + " became an Int");
+			Assert.raises(() -> int(bad), RangeError, bad + " became an Int");
+		}
+	}
+
+	/**
+		A conversion `PrimitiveValue` cannot make throws one of CrossByte's
+		own errors, as every other refusal does: a `RangeError` for a number
+		outside the type's range and an `ArgumentError` for anything else.
+		It threw a `String`, which a `catch (e:Error)` let through.
+	**/
+	public function testPrimitiveValueThrowsTypedErrors():Void {
+		function thrown(f:Void->Void):Dynamic {
+			try {
+				f();
+			} catch (e:Dynamic) {
+				return e;
+			}
+			return null;
+		}
+		var big:PrimitiveValue = "4294967396";
+		var huge:PrimitiveValue = 3e9;
+		var word:PrimitiveValue = "abc";
+		var structure:PrimitiveValue = cast {nested: true};
+		var nan:PrimitiveValue = PrimitiveValue.fromDynamic(Math.NaN);
+
+		var range:Dynamic = thrown(() -> big.toInt());
+		Assert.isTrue(Std.isOfType(range, RangeError), "a string of digits past Int threw " + range);
+		Assert.isTrue(Std.isOfType(thrown(() -> huge.toInt()), RangeError));
+		var notANumber:Dynamic = thrown(() -> word.toInt());
+		Assert.isTrue(Std.isOfType(notANumber, ArgumentError), "text that is not a number threw " + notANumber);
+		Assert.isTrue(Std.isOfType(thrown(() -> nan.toInt()), ArgumentError), "NaN as an Int");
+		Assert.isTrue(Std.isOfType(thrown(() -> structure.toInt()), ArgumentError));
+		Assert.isTrue(Std.isOfType(thrown(() -> structure.toFloat()), ArgumentError));
+		Assert.isTrue(Std.isOfType(thrown(() -> structure.toBool()), ArgumentError));
+		var refused:Dynamic = thrown(() -> PrimitiveValue.fromDynamic({nested: true}));
+		Assert.isTrue(Std.isOfType(refused, ArgumentError), "fromDynamic threw " + refused);
+
+		// Each says what it was given.
+		if (Std.isOfType(range, crossbyte.errors.Error)) {
+			Assert.isTrue((range : crossbyte.errors.Error).message.indexOf("4294967396") >= 0, (range : crossbyte.errors.Error).message);
+		}
+		if (Std.isOfType(notANumber, crossbyte.errors.Error)) {
+			Assert.isTrue((notANumber : crossbyte.errors.Error).message.indexOf("abc") >= 0, (notANumber : crossbyte.errors.Error).message);
 		}
 	}
 
@@ -435,11 +482,11 @@ class FoundationConstructsTest extends utest.Test {
 
 		Assert.raises(() -> {
 			var ignored:Int = value;
-		});
+		}, ArgumentError);
 
 		Assert.raises(() -> {
 			var ignored:Bool = value;
-		});
+		}, ArgumentError);
 	}
 
 	public function testPrimitiveValueSupportsExplicitDynamicGateAndTypeChecks():Void {

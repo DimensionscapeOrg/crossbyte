@@ -700,6 +700,11 @@ says how.
   `isNull()` is true of it, and it converts as null does, to 0, `0.0`,
   `false` and back to a null `String`, where `toInt` threw and `toFloat`
   was NaN. A null value's `toString()` is null, not `"null"`. (Upgrading)
+- `PrimitiveValue` throws CrossByte's own errors, as every other refusal
+  does: a `RangeError` for a number outside the range of the type asked
+  for (`"4294967296"` or `3e9` as an `Int`), and an `ArgumentError` for
+  text that is not a number, a value that is not a primitive, and
+  `fromDynamic` given one, where it threw a `String`. (Upgrading)
 
 #### TCP
 
@@ -1888,6 +1893,10 @@ an API added in this release has is not listed here.
   and converts back to a null `String`: code that asked `isString()` of
   one, or used the `""` it gave, asks `isNull()`, or makes the value from
   `text != null ? text : ""`.
+- Code that caught a `String` from a `PrimitiveValue` conversion or from
+  `PrimitiveValue.fromDynamic` catches a `crossbyte.errors.RangeError` (a
+  number out of range) or an `ArgumentError` (anything else), or the
+  `crossbyte.errors.Error` both extend.
 
 #### TCP
 
