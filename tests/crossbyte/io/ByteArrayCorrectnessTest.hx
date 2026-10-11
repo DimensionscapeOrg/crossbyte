@@ -656,4 +656,162 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		Assert.equals(widest, ba.readUTF());
 		Assert.equals(42, ba.readInt());
 	}
+
+	/**
+		A read with the position far past the end is an EOFError, as one just
+		past it is, and leaves the position alone. The checks added the read's
+		size to the position, which near 2^31 wrapped negative and passed:
+		natively the read then answered 0 as though the bytes were there, the
+		interpreter threw OutsideBounds and the jvm an
+		ArrayIndexOutOfBoundsException, none of which a reader waiting for
+		more bytes catches.
+	**/
+	public function testAReadFarPastTheEndIsAnEOFError():Void {
+		var reads:Array<ByteArray->Dynamic> = [
+			b -> b.readInt(), b -> b.readUnsignedInt(), b -> b.readShort(), b -> b.readUnsignedShort(), b -> b.readInt64(),
+			b -> b.readDouble(), b -> b.readFloat(), b -> b.readByte(), b -> b.readUnsignedByte(), b -> b.readBoolean(),
+			b -> b.readUTFBytes(2), b -> b.readUTF(), b -> b.readVarUInt()
+		];
+		for (at in [0x7FFFFFFF, 0x7FFFFFFE, 0x7FFFFFFC, 0x7FFFFFF9]) {
+			for (i in 0...reads.length) {
+				var bytes = new ByteArray();
+				bytes.writeInt(1);
+				bytes.writeInt(2);
+				bytes.position = at;
+				var raised:Dynamic = null;
+				try {
+					reads[i](bytes);
+				} catch (e:Dynamic) {
+					raised = e;
+				}
+				Assert.isTrue(Std.isOfType(raised, EOFError), 'read $i at $at raised ' + Std.string(raised));
+				Assert.equals(at, (bytes.position : Int), 'read $i at $at moved the position');
+			}
+		}
+	}
+
+	/**
+		A write whose end would pass the largest ByteArray, 2^31 - 1 bytes, is
+		a RangeError, and writes nothing. Its end wrapped negative, so nothing
+		grew: natively the write then asked the buffer to grow itself to 2 GB a
+		byte at a time, and the jvm threw ArrayIndexOutOfBoundsException.
+	**/
+	public function testAWritePastTheLargestByteArrayIsARangeError():Void {
+		var writes:Array<{at:Int, write:ByteArray->Void}> = [
+			{at: 0x7FFFFFFF, write: b -> b.writeByte(1)},
+			{at: 0x7FFFFFFF, write: b -> b.writeBoolean(true)},
+			{at: 0x7FFFFFFE, write: b -> b.writeShort(1)},
+			{at: 0x7FFFFFFC, write: b -> b.writeInt(1)},
+			{at: 0x7FFFFFFE, write: b -> b.writeUnsignedInt(1)},
+			{at: 0x7FFFFFFA, write: b -> b.writeDouble(1.5)},
+			{at: 0x7FFFFFFE, write: b -> b.writeFloat(1.5)},
+			{at: 0x7FFFFFFE, write: b -> b.writeUTFBytes("abc")},
+			{at: 0x7FFFFFFF, write: b -> b.writeVarUInt(300)}
+		];
+		for (i in 0...writes.length) {
+			var bytes = new ByteArray();
+			bytes.writeInt(7);
+			bytes.position = writes[i].at;
+			var raised:Dynamic = null;
+			try {
+				writes[i].write(bytes);
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			Assert.isTrue(Std.isOfType(raised, RangeError), 'write $i raised ' + Std.string(raised));
+			Assert.equals(4, (bytes.length : Int), 'write $i changed the length');
+		}
+	}
+
+	/**
+		A position is an Int: one from 2^31 up, which as a UInt is past the
+		largest ByteArray, is refused rather than kept as a negative number
+		every read and write then went wrong with.
+	**/
+	public function testAPositionPastTheLargestByteArrayIsRefused():Void {
+		var bytes = new ByteArray();
+		bytes.writeInt(1);
+		Assert.raises(() -> bytes.position = 0xFFFFFFFF, RangeError);
+		Assert.raises(() -> bytes.position = 0x80000000, RangeError);
+		Assert.equals(4, (bytes.position : Int));
+		bytes.position = 0x7FFFFFFF;
+		Assert.equals(0x7FFFFFFF, (bytes.position : Int));
+	}
+
+	/**
+		`readDouble` and `readUTF` cut short leave the position where it was,
+		as every other read does, so a reader that catches the EOFError and
+		tries again with more bytes reads from the start of the value.
+		`readDouble` read two Ints and the first moved the position;
+		`readUTF` read its length and then failed on the text.
+	**/
+	public function testATruncatedDoubleOrUTFLeavesThePositionAlone():Void {
+		for (available in 4...8) {
+			var partial = new ByteArray();
+			for (_ in 0...available) {
+				partial.writeByte(0x3F);
+			}
+			partial.position = 0;
+			Assert.raises(() -> partial.readDouble(), EOFError);
+			Assert.equals(0, (partial.position : Int), 'readDouble with $available bytes moved the position');
+		}
+
+		var text = new ByteArray();
+		text.writeShort(5);
+		text.writeUTFBytes("abc");
+		text.position = 0;
+		Assert.raises(() -> text.readUTF(), EOFError);
+		Assert.equals(0, (text.position : Int), "readUTF moved the position past its length");
+		text.position = text.length;
+		text.writeUTFBytes("de");
+		text.position = 0;
+		Assert.equals("abcde", text.readUTF());
+	}
+
+	/**
+		Reading by index outside the bytes answers 0, as one inside a gap
+		does, on every target. Past `length`, inside the buffer, it answered
+		whatever was there before the ByteArray was shortened, natively and on
+		the jvm; past the buffer the jvm threw.
+	**/
+	public function testAnIndexOutsideTheBytesReadsAsZero():Void {
+		var bytes = new ByteArray();
+		bytes.writeInt(0x11223344);
+		bytes.writeInt(0x55667788);
+		bytes.length = 4;
+		Assert.equals(0, bytes[6]);
+		Assert.equals(0, bytes[4]);
+		Assert.equals(0, bytes[-1]);
+		Assert.equals(0, bytes[1000000]);
+		Assert.equals(0x22, bytes[2]);
+	}
+
+	/**
+		Writing by a negative index is a RangeError, not a write nowhere (or
+		an exception of the target's own), and nothing changes.
+	**/
+	public function testWritingANegativeIndexIsARangeError():Void {
+		var bytes = new ByteArray();
+		bytes.writeInt(0);
+		Assert.raises(() -> bytes[-1] = 7, RangeError);
+		Assert.equals(4, (bytes.length : Int));
+		bytes[5] = 9;
+		Assert.equals(6, (bytes.length : Int));
+		Assert.equals(9, bytes[5]);
+		Assert.equals(0, bytes[4]);
+	}
+
+	/**
+		With the position past the end there is nothing to read, not about
+		four billion bytes: `bytesAvailable` is a UInt, and length less
+		position went negative.
+	**/
+	public function testNothingIsAvailableWithThePositionPastTheEnd():Void {
+		var bytes = new ByteArray();
+		bytes.writeInt(1);
+		bytes.position = 10;
+		Assert.equals(0, (bytes.bytesAvailable : Int));
+		bytes.position = 1;
+		Assert.equals(3, (bytes.bytesAvailable : Int));
+	}
 }
