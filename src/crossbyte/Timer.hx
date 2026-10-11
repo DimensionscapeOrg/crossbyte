@@ -23,8 +23,8 @@ import sys.thread.Tls;
  * `CrossByte.post()` instead.
  *
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
- * For process-wide timeout/interval APIs backed by the primordial runtime,
- * consider using `crossbyte.utils.GlobalTimer` instead.
+ * For ActionScript's `setTimeout` and `setInterval`, which can also be called
+ * from a thread with no runtime, see `crossbyte.utils.GlobalTimer`.
  *
  * **Handles.** A runtime numbers the timers it arms, so a handle is not given
  * again until 2^31 timers have been armed on that runtime (ten hours at
@@ -32,9 +32,10 @@ import sys.thread.Tls;
  * kept after its timer fired or was cleared stays inert: `clear` answers
  * false and touches nothing else.
  *
- * **Delays.** A delay or interval of NaN is refused with an `ArgumentError`.
- * A negative delay counts as zero: the timer fires at the runtime's next
- * frame. An infinite one never fires, and its timer is held until cleared.
+ * **Delays.** A delay or interval of NaN is refused with an `ArgumentError`,
+ * and so is an interval of zero or less. A negative delay counts as zero:
+ * the timer fires at the runtime's next frame. An infinite one never fires,
+ * and its timer is held until cleared.
  *
  * @see crossbyte.utils.GlobalTimer
  */

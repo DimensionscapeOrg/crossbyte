@@ -165,6 +165,43 @@ class TimerWheelTest extends utest.Test {
 		Assert.isTrue(wheel.isActive(handle));
 	}
 
+	public function testAThrowWithNothingToCatchItLeavesTheRestOfItsTickForTheNextPass():Void {
+		// Driven by hand, with no onError: the failure leaves advanceTime, and
+		// what was due beside it fires at the next call, as on the heap. It
+		// waited a whole revolution, half a second.
+		var wheel = new TimerWheel();
+		var fired = 0;
+		wheel.setTimeoutVoid(0.005, () -> fired++);
+		// Linked last, so first in the bucket.
+		wheel.setTimeoutVoid(0.005, () -> throw "timer bug");
+		try {
+			wheel.advanceTime(0.010);
+			Assert.fail("the failure did not leave advanceTime");
+		} catch (e:String) {
+			Assert.equals("timer bug", e);
+		}
+		Assert.equals(0, fired);
+
+		wheel.advanceTime(0.001);
+		Assert.equals(1, fired, "a timer due beside one that threw waited a revolution");
+		Assert.isTrue(wheel.isEmpty);
+	}
+
+	public function testAnIntervalOfZeroOrLessIsRefused():Void {
+		var wheel = new TimerWheel();
+		var refused = 0;
+		for (interval in [0.0, -1.0]) {
+			try {
+				wheel.setIntervalVoid(0.010, interval, () -> Assert.fail("an interval of zero or less fired"));
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(2, refused, "an interval of zero or less was taken");
+		Assert.isTrue(wheel.isEmpty);
+		wheel.advanceTime(0.1);
+	}
+
 	public function testEveryDueTimerFiresInOnePass():Void {
 		var wheel = new TimerWheel();
 		var fired = 0;

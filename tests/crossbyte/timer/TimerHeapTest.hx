@@ -403,6 +403,26 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty);
 	}
 
+	public function testAnIntervalOfZeroOrLessIsRefused():Void {
+		// Refused on every build. Only a debug build checked it, and threw a
+		// String; anywhere else such an interval fired once, as a timeout.
+		var heap = new TimerHeap();
+		var fired = 0;
+		var refused = 0;
+		for (attempt in [() -> heap.setIntervalVoid(0.1, 0, () -> fired++), () -> heap.setInterval(0.1, -1.0, _ -> fired++),
+			() -> heap.setIntervalVoid(0.1, Math.NEGATIVE_INFINITY, () -> fired++)]) {
+			try {
+				attempt();
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(3, refused, "an interval of zero or less was taken");
+		Assert.isTrue(heap.isEmpty);
+		heap.advanceTime(1.0);
+		Assert.equals(0, fired);
+	}
+
 	public function testNegativeAndInfiniteDelays():Void {
 		// Negative counts as zero: due at the next pass. Infinite is never
 		// due, and its timer is held until cleared.

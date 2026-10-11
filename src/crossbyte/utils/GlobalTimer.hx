@@ -8,7 +8,12 @@ import sys.thread.Mutex;
 #end
 
 /**
-	Process-level timeout and interval helpers backed by the primordial runtime.
+	ActionScript's `setTimeout` and `setInterval`, by id, on `haxe.Timer`.
+
+	A timer runs where a `haxe.Timer` made on the calling thread would: on
+	that thread's runtime (the primordial runtime on the primordial thread, a
+	child runtime on its own thread), or on the primordial runtime when the
+	thread has none. One whose runtime exits never runs.
 
 	Safe to call from any thread. The ids and the map behind them are kept
 	under a lock wherever there are threads, so threads setting and

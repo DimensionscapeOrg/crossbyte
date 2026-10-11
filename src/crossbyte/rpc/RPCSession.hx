@@ -79,7 +79,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var handler(get, set):RPCHandler<Dynamic, Dynamic>;
 	/** Optional client-side command surface for outbound RPC calls and responses. */
 	public var commands(get, set):C;
-	/** Heartbeat interval in milliseconds. */
+	/**
+		Heartbeat interval in milliseconds. Zero or less is no heartbeat: no
+		pings, and no `heartbeatTimeout`. Read as the heartbeat starts.
+	**/
 	public var heartbeatInterval(get, set):Int;
 	/** Heartbeat timeout in milliseconds. */
 	public var heartbeatTimeout(get, set):Int;
@@ -2676,6 +2679,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __resumeHeartbeat():Void {
 		__hasHeartbeat = true;
+		if (__heartbeatInterval <= 0) {
+			// None: no pings and no timeout. Handed to the timer, it fired
+			// once and stopped for good.
+			return;
+		}
 		__intervalSec = __heartbeatInterval / 1000;
 		__timeoutSec = __heartbeatTimeout / 1000;
 		__heardSince = Timer.getTime();

@@ -16,9 +16,9 @@ import crossbyte.core.TimerStrategy;
  *
  * Both schedulers number the timers they arm, so a handle is not given again
  * until 2^31 timers have been armed, and a cleared one stays inert (see
- * `TimerHandle`). Both refuse a NaN delay, interval or time with an
- * `ArgumentError`; a negative delay counts as zero, and an infinite one never
- * fires, its timer held until cleared.
+ * `TimerHandle`). Both refuse a NaN delay, interval or time, and an interval
+ * of zero or less, with an `ArgumentError`; a negative delay counts as zero,
+ * and an infinite one never fires, its timer held until cleared.
  */
 @:forward(startTime, onError)
 abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler {
