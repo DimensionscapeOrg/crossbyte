@@ -453,7 +453,7 @@ private class RequestOnlySocket extends Socket {
 		return 50000;
 	}
 
-	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__arriving != null) {
 			// Written at `offset` with the reader's position left where it
 			// was, as a socket's read leaves it.

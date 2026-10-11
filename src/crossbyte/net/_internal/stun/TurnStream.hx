@@ -137,7 +137,7 @@ class TurnStream {
 		}
 
 		try {
-			__socket.writeBytes(payload, 0, payload.length);
+			__socket.__writeBytes(payload, 0, payload.length);
 			__socket.flush();
 		} catch (e:Dynamic) {
 			__end("a write failed: " + Std.string(e));
@@ -167,7 +167,7 @@ class TurnStream {
 		}
 
 		var chunk = new ByteArray();
-		__socket.readBytes(chunk, 0, available);
+		__socket.__readBytes(chunk, 0, available);
 		chunk.position = 0;
 		client.receiveStream(chunk, haxe.Timer.stamp());
 	}

@@ -2652,7 +2652,7 @@ private class FlushCountingSocket extends Socket {
 		return 50000;
 	}
 
-	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__arriving != null) {
 			bytes.position = offset;
 			bytes.writeBytes(__arriving, 0, __arriving.length);
@@ -2660,7 +2660,7 @@ private class FlushCountingSocket extends Socket {
 		}
 	}
 
-	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		var count:Int = length == 0 ? bytes.length - offset : length;
 		for (i in 0...count) {
 			__written.addByte(bytes[offset + i]);
@@ -2694,7 +2694,7 @@ private class BreakingDataSocket extends FlushCountingSocket {
 		__streamId = streamId;
 	}
 
-	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		__breakOnData(bytes, offset, length == 0 ? bytes.length - offset : length);
 		super.writeBytes(bytes, offset, length);
 	}

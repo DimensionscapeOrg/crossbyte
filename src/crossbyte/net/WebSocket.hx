@@ -752,20 +752,8 @@ class WebSocket extends Socket {
 		return __input.readByte();
 	}
 
-	/**
-		Reads the number of data bytes specified by the length parameter from
-		the socket. The bytes are read into the specified byte array, starting
-		at the position indicated by `offset`.
-		@param bytes  The ByteArray object to read data into.
-		@param offset The offset at which data reading should begin in the
-					  byte array.
-		@param length The number of bytes to read. The default value of 0
-					  causes all available data to be read.
-		@throws EOFError There is insufficient data available to read.
-		@throws IOError  An I/O error occurred on the socket, or the socket is
-						 not open.
-	**/
-	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	// How a WebSocket reads, for `readBytes`: from what its messages brought.
+	override public function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -983,27 +971,8 @@ class WebSocket extends Socket {
 		__output.writeByte(value);
 	}
 
-	/**
-		Writes a sequence of bytes from the specified byte array. The write
-		operation starts at the position specified by `offset`.
-		If you omit the `length` parameter the default length of 0 causes the
-		method to write the entire buffer starting at `offset`.
-		If you also omit the `offset` parameter, the entire buffer is written.
-		@param bytes  The ByteArray object to write data from.
-		@param offset The zero-based offset into the `bytes` ByteArray object
-					  at which data writing should begin.
-		@param length The number of bytes to write. The default value of 0
-					  causes the entire buffer to be written, starting at the
-					  value specified by the `offset` parameter.
-		@throws IOError    An I/O error occurred on the socket, or the socket
-						   is not open.
-		@throws RangeError If `offset` is greater than the length of the
-						   ByteArray specified in `bytes` or if the amount of
-						   data specified to be written by `offset` plus
-						   `length` exceeds the data available.
-		@throws ArgumentError If `bytes` is `null`.
-	**/
-	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	// How a WebSocket writes, for `writeBytes`: into the message it is building.
+	override public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}

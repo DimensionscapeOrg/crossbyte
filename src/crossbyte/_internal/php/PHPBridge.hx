@@ -404,7 +404,7 @@ class PHPBridge {
 		var socket = new crossbyte.net.Socket();
 
 		socket.addEventListener(Event.CONNECT, function(_):Void {
-			socket.writeBytes(ByteArray.fromBytes(payload), 0, payload.length);
+			socket.__writeBytes(ByteArray.fromBytes(payload), 0, payload.length);
 			socket.flush();
 		});
 
@@ -420,7 +420,7 @@ class PHPBridge {
 			}
 
 			var chunk = new ByteArray();
-			socket.readBytes(chunk, 0, available);
+			socket.__readBytes(chunk, 0, available);
 
 			if (exchange.receive(chunk, chunk.length)) {
 				exchange.succeed();

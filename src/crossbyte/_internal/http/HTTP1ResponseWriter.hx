@@ -121,7 +121,7 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	/** `text` written to the socket, and given back to the thread whatever the write does. **/
 	private function __writeTaken(text:ByteArray):Void {
 		try {
-			__socket.writeBytes(text, 0, text.length);
+			__socket.__writeBytes(text, 0, text.length);
 		} catch (error:Dynamic) {
 			HeadBytes.give(text);
 			throw error;
@@ -145,7 +145,7 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
 		if (!__chunked) {
-			__socket.writeBytes(data, offset, length);
+			__socket.__writeBytes(data, offset, length);
 			return;
 		}
 		if (length <= 0) {
@@ -157,7 +157,7 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		__writeHex(size, length);
 		size.writeUTFBytes("\r\n");
 		__writeTaken(size);
-		__socket.writeBytes(data, offset, length);
+		__socket.__writeBytes(data, offset, length);
 		__socket.writeUTFBytes("\r\n");
 	}
 

@@ -1954,8 +1954,20 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@throws RangeError If `offset` or `length` are out of bounds, or an
 		        unreliable or sequenced message is larger than
 		        `maxPayloadSize`: 1,200 bytes, 1,179 for an encrypted session.
+
+		`send` is `inline`, as `DatagramSocket.send` is: a forwarder over a
+		method with no optional arguments, since the jvm boxes each optional
+		argument per call (16 bytes for a length or an offset above 127). So
+		a subclass cannot override it: wrap the socket instead. Taken as a
+		value, or called through `Reflect` or `Dynamic`, it works as any
+		other method does.
 	**/
-	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, delivery:DeliveryMode = RELIABLE):Void {
+	public inline function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, delivery:DeliveryMode = RELIABLE):Void {
+		__send(bytes, offset, length, delivery);
+	}
+
+	/** `send`, with every argument given: nothing boxed on the jvm. **/
+	@:noCompletion public function __send(bytes:ByteArray, offset:Int, length:Int, delivery:DeliveryMode):Void {
 		__requireDatagramMode();
 		__requireOpenConnection();
 		if (delivery == RELIABLE) {
@@ -2063,6 +2075,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@param length The number of bytes to append. Use `0` to append all remaining bytes from `offset`.
 	**/
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__writeBytes(bytes, offset, length);
+	}
+
+	// What `writeBytes` does, its arguments without defaults, as `__send`.
+	@:noCompletion public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		__requireStreamMode();
 		__requireOpenConnection();
 		__output.writeBytes(bytes, offset, length);

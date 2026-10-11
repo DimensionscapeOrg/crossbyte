@@ -1163,9 +1163,9 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	public function send(data:ByteArray):Void {
 		switch (__socket.mode) {
 			case DATAGRAM:
-				__socket.send(data);
+				__socket.__send(data, 0, 0, RELIABLE);
 			case STREAM:
-				__socket.writeBytes(data);
+				__socket.__writeBytes(data, 0, 0);
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
@@ -1175,9 +1175,9 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
 		switch (__socket.mode) {
 			case DATAGRAM:
-				__socket.send(data, offset, length);
+				__socket.__send(data, offset, length, RELIABLE);
 			case STREAM:
-				__socket.writeBytes(data, offset, length);
+				__socket.__writeBytes(data, offset, length);
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
@@ -1504,14 +1504,14 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
-		__socket.writeBytes(data);
+		__socket.__writeBytes(data, 0, 0);
 		__socket.flush();
 		outTimestamp = __uptime();
 	}
 
 	/** Part of `data` in place, as one message, as `send` sends the whole. **/
 	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
-		__socket.writeBytes(data, offset, length);
+		__socket.__writeBytes(data, offset, length);
 		__socket.flush();
 		outTimestamp = __uptime();
 	}

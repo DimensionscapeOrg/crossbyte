@@ -345,9 +345,9 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 			header.set(1, (length >>> 16) & 0xFF);
 			header.set(2, (length >>> 8) & 0xFF);
 			header.set(3, length & 0xFF);
-			__socket.writeBytes(__header, 0, 4);
+			__socket.__writeBytes(__header, 0, 4);
 			if (length > 0) {
-				__socket.writeBytes(payload, 0, length);
+				__socket.__writeBytes(payload, 0, length);
 			}
 
 			if (__holdForPass()) {

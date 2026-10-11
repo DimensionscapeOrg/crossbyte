@@ -109,7 +109,7 @@ class FrameCodec {
 	@:noCompletion public function __feedFrom(socket:crossbyte.net.Socket):Void {
 		var count:Int = socket.bytesAvailable;
 		if (count > 0) {
-			socket.readBytes(__buffer, __buffer.length, count);
+			socket.__readBytes(__buffer, __buffer.length, count);
 		}
 	}
 

@@ -1631,6 +1631,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						 not open.
 	**/
 	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__readBytes(bytes, offset, length);
+	}
+
+	/**
+		What `readBytes` does, its arguments without defaults: on the jvm an
+		argument with a default is an `Integer`, and one past 127 was
+		allocated at every call. CrossByte's own readers call this, and a
+		subclass that changes how a socket reads overrides it, which
+		`readBytes` comes through too.
+	**/
+	@:noCompletion public function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -1878,6 +1889,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws ArgumentError If `bytes` is null.
 	**/
 	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__writeBytes(bytes, offset, length);
+	}
+
+	/**
+		What `writeBytes` does, its arguments without defaults, as
+		`__readBytes` is to `readBytes`: CrossByte's own writers (an HTTP/1.1
+		response, a cluster link) call this, with lengths past 127 that the
+		jvm allocated an `Integer` for at every call.
+	**/
+	@:noCompletion public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}

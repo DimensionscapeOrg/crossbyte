@@ -2172,7 +2172,7 @@ private class BreakingBodySocket extends Socket {
 		return 50000;
 	}
 
-	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (__arriving != null) {
 			var position = bytes.position;
 			bytes.position = offset;
@@ -2186,7 +2186,7 @@ private class BreakingBodySocket extends Socket {
 		written.add(value);
 	}
 
-	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	override public function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		var count:Int = length == 0 ? bytes.length - offset : length;
 		var text:StringBuf = new StringBuf();
 		for (i in 0...count) {

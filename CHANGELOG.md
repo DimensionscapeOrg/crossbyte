@@ -779,6 +779,13 @@ says how.
 
 #### Reliable UDP
 
+- On the jvm CrossByte's own socket reads and writes no longer box their
+  offsets and lengths (an `Integer`, allocated past 127, for every
+  argument with a default): an HTTP/1.1 GET allocates 264 bytes rather
+  than 280, a POST of 4 KB 4,664 rather than 4,724, and a 200-byte
+  reliable UDP message 128 rather than 144.
+  `ReliableDatagramSocket.send` is `inline`, as `DatagramSocket.send` is,
+  so a caller's own arguments are not boxed either. (Upgrading)
 - A session sends at the rate the path carries: a retransmission timeout
   measured as RFC 6298 has it (200 ms to 10 s), a window that starts at ten
   frames and halves on loss, selective acknowledgements with RACK loss
@@ -1815,6 +1822,15 @@ an API added in this release has is not listed here.
 
 #### Reliable UDP
 
+- `ReliableDatagramSocket.send` is `inline`, so a subclass can no longer
+  override it, as with `DatagramSocket.send`: wrap the socket instead.
+  Every call compiles as it did, and `send` taken as a value, or called
+  through `Reflect` or `Dynamic`, works as before.
+- A `Socket` subclass that overrides `readBytes` or `writeBytes` no longer
+  sees CrossByte's own reads and writes through them (an HTTP/1.1
+  response, a cluster link, a TURN relay): those go through `__readBytes`
+  and `__writeBytes`, which `readBytes` and `writeBytes` forward to.
+  Override those instead to see both.
 - `ReliableDatagramSocket.close()` is graceful: its `close` event comes
   once the peer has acknowledged everything, not during the call, and
   `abort()` is the old immediate close. Its FIN holds a place in the
