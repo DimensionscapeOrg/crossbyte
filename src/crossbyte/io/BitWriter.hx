@@ -261,18 +261,24 @@ final class BitWriter {
 		if (bits < 1 || bits > 31) {
 			throw new ArgumentError('A quantized field is 1 to 31 bits, not $bits.');
 		}
-		if (!Math.isFinite(min) || !Math.isFinite(max) || !(max > min)) {
+		// The span too: from -1.7e308 to 1.7e308 it is infinite, every value
+		// quantized to 0, and one the subtraction also overflowed came out
+		// NaN, which natively set bit 31 of the word and spoiled the next
+		// field.
+		if (!Math.isFinite(min) || !Math.isFinite(max) || !(max > min) || !Math.isFinite(max - min)) {
 			throw new ArgumentError('A quantized range needs finite bounds with the maximum above the minimum, not $min to $max.');
 		}
 		return bits == 31 ? 2147483647.0 : ((1 << bits) - 1 : Float);
 	}
 
 	private inline function get_bitLength():Int {
-		return (__wordAt << 3) + __scratchBits;
+		// Held at the largest Int from 256 MB, where bits no longer fit one.
+		return __wordAt >= 0x0FFFFFFF ? 0x7FFFFFFF : (__wordAt << 3) + __scratchBits;
 	}
 
 	private inline function get_length():Int {
-		return ((__wordAt << 3) + __scratchBits + 7) >> 3;
+		// In bytes throughout: in bits, a buffer of 256 MB overflowed an Int.
+		return __wordAt + ((__scratchBits + 7) >> 3);
 	}
 
 	// Gathers `bits` bits of `value`, already known to fit, and stores the

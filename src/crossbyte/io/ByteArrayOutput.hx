@@ -16,7 +16,11 @@ import crossbyte.errors.RangeError;
  * makes room for the run at once, the same way: a chunk of at least what it asks for.
  *
  * Converting the output to `Bytes` or a `ByteArray`, by assigning it to one, merges the chunks
- * into one contiguous array (`flush()`).
+ * into one contiguous array (`flush()`). What it converts to is the output's own storage, not a
+ * copy: a later write or `reset()` changes a ByteArray already handed out (one queued for an
+ * asynchronous send, say). Take `copy()` for one that stays as it was.
+ *
+ * Every value is written little-endian, and the ByteArray it becomes says so in its `endian`.
  *
  * ## Key Features
  * - Fast, low-level `Bytes`-backed writing, never past the end of a chunk
@@ -42,7 +46,7 @@ import crossbyte.errors.RangeError;
  */
 @:access(crossbyte.io.ByteArrayDataOutput)
 @:access(crossbyte.io.ByteArrayData)
-@:forward(reset)
+@:forward(reset, copy)
 abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteArrayOutput {
 	/**
 	 * The total reserved (allocated) capacity of this output stream, in bytes.
@@ -98,7 +102,8 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * Finalizes the current write session by committing all
 	 * intermediate buffer chunks into the underlying `ByteArray`.
 	 *
-	 * Must be called before converting to `Bytes` or `ByteArray`.
+	 * Converting to `Bytes` or `ByteArray` calls it; call it yourself only to
+	 * merge the chunks ahead of that.
 	 *
 	 * No-op if already flushed.
 	 */
@@ -258,6 +263,12 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		if (length < 0) {
 			length = source.length - offset;
 		}
+		// The source range first, so a bad one is refused before room is
+		// made for it: a length of 2^31 asked for a 2 GB chunk before the
+		// copy found it out.
+		if (offset < 0 || length < 0 || offset > source.length || length > source.length - offset) {
+			throw 'ByteArrayOutput.writeBytes: $length bytes from $offset is outside the source';
+		}
 
 		__room(length);
 		inline current.blit(this.__outputPosition, source, offset, length);
@@ -298,11 +309,13 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	}
 
 	public function writeIntAt(position:Int, value:Int):Void {
-		#if !final
-		if (position < 0 || position + 4 > bytesWritten) {
+		// In every build, and against what is written rather than
+		// `position + 4`, which wraps: past it natively the chunk grew by up
+		// to 2 GB, and in `final` a near miss wrote into the unused part of
+		// the chunk, which nothing copies, and the patch was lost.
+		if (position < 0 || position > bytesWritten - 4) {
 			throw 'ByteArrayOutput position out of range (' + position + ' + 4 > ' + bytesWritten + ')';
 		}
-		#end
 
 		var chunkStart:Int = 0;
 		if (this.byteCache != null) {
@@ -381,7 +394,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeUTFBytes(value:String, reserved:Bool = false):Void {
-		var b:Bytes = Bytes.ofString(value);
+		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 		if (!reserved) {
 			reserve(b.length);
 		}
@@ -399,7 +412,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @throws RangeError If the string is more than 65535 bytes as UTF-8.
 	 */
 	public inline function writeUTF(value:String, reserved:Bool = false):Void {
-		var b:Bytes = Bytes.ofString(value);
+		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		// A sixteen-bit prefix cannot describe more, and past it the length
 		// wrapped and every later read landed in the wrong place.
@@ -449,7 +462,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeVarUTF(value:String, reserved:Bool = false):Void {
-		var b:Bytes = Bytes.ofString(value);
+		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		if (!reserved) {
 			reserve(varUIntSize(b.length) + b.length);
@@ -511,7 +524,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * Once flushed, data is committed and no further changes to internal
 	 * buffers will occur.
 	 *
-	 * @return `true` if `flush()` has already been called.
+	 * @return `true` when everything written is in one contiguous array: after
+	 *         `flush()`, and for an output nothing has been written to. A write
+	 *         after a flush makes it false again.
 	 */
 	public inline function isFlushed():Bool {
 		return this.byteCache == null && this.currentBytes == this.byteArray && this.__outputPosition == this.byteArray.length;
@@ -557,6 +572,9 @@ class ByteArrayDataOutput extends ByteArrayData {
 
 	@:noCompletion private function new(length:Int):Void {
 		super(length);
+		// What every writer here writes, so the ByteArray it becomes reads
+		// its integers back as they were, whatever `defaultEndian` is.
+		this.endian = LITTLE_ENDIAN;
 		this.currentBytes = byteArray;
 		this.size = length;
 	}
@@ -570,6 +588,7 @@ class ByteArrayDataOutput extends ByteArrayData {
 		}
 
 		var out:ByteArrayData = new ByteArray(used);
+		out.endian = LITTLE_ENDIAN;
 		var offset:Int = 0;
 
 		if (byteCache != null) {

@@ -326,4 +326,17 @@ class BitPackingTest extends utest.Test {
 		}
 		return out.toString();
 	}
+
+	/**
+		A quantized range whose span overflows a Float is refused: from
+		-1.7e308 to 1.7e308 every value quantized to 0, and where the
+		subtraction overflowed too the result was NaN, which natively set bit
+		31 of the word and spoiled the next field.
+	**/
+	public function testAQuantizedRangeWhoseSpanOverflowsIsRefused():Void {
+		var writer = new BitWriter();
+		Assert.raises(() -> writer.writeQuantized(1e308, -1.7e308, 1.7e308, 16), ArgumentError);
+		writer.writeQuantized(1.0, -1e300, 1e300, 16);
+		Assert.pass();
+	}
 }

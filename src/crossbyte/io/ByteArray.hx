@@ -1665,7 +1665,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 			return;
 		}
-		#elseif (jvm || java)
+		#elseif (jvm || java || js)
 		if (__writeAscii(value)) {
 			return;
 		}
@@ -1674,12 +1674,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
 
-	#if (jvm || java)
+	#if (jvm || java || js)
 	/**
 		A short text that is all ASCII, written a character at a time: on the
-		jvm the platform's encoder makes an array and a Bytes for it, and a
-		loop beats it up to a few hundred characters. False, having written
-		nothing, for anything else.
+		jvm the platform's encoder makes an array and a Bytes for it, and on
+		JavaScript TextEncoder makes a buffer, and a loop beats either up to a
+		few hundred characters. False, having written nothing, for anything
+		else.
 	**/
 	@:noCompletion private function __writeAscii(value:String):Bool {
 		var count:Int = value.length;
@@ -1779,7 +1780,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// A write's end past 2^31 - 1 wraps negative, and nothing would grow:
 		// natively the bytes then asked the buffer to grow itself to 2 GB, a
 		// byte at a time, and the jvm threw an index error of its own.
-		if (size < 0) {
+		// Past it on JavaScript too, whose Int does not wrap: there the sum
+		// stays positive, and Node would grow the buffer to 3 GB.
+		if (size < 0 || size > 0x7FFFFFFF) {
 			throw new RangeError("A ByteArray holds at most 2^31 - 1 bytes.");
 		}
 

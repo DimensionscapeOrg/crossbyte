@@ -643,8 +643,15 @@ says how.
   `TextEncoder` and `TextDecoder`, about ten times faster, and a NUL byte no
   longer ends a string read from bytes (on HashLink too).
 - `ByteArray.writeUTFBytes` writes ASCII text without making bytes of it
-  first: natively by one copy, and on the jvm a character at a time for
-  text of up to 256 characters.
+  first: natively by one copy, and on the jvm and JavaScript a character
+  at a time for text of up to 256 characters (twelve characters on Node
+  in 56 ns rather than 690). On HashLink strings are decoded in one pass,
+  ASCII four bytes at a time, where `getString` made three: `ByteArray`
+  reads of 200 characters take 790 ns rather than 1,530. On Node
+  `ByteArrayInput` and `ByteArrayOutput` strings go through the platform's
+  decoder and encoder, 144 ns rather than 1,456 for 200 characters, though
+  a short string past ASCII read through `ByteArrayInput` costs about
+  30 ns more (153 rather than 121 for eleven characters).
 
 #### TCP
 
@@ -1065,6 +1072,26 @@ Fixes to code new in this release are not listed.
   read what was there before the array was shortened (natively and on the
   jvm), and a negative index written is a `RangeError`. `bytesAvailable`
   is 0 with the position past the end, not about four billion.
+- Writing a string that ends in half of a surrogate pair no longer crashes
+  HashLink (its encoder ran past the end of the string), and natively no
+  longer throws "Invalid UTF16": the half is written as U+FFFD, as on
+  JavaScript. A malformed UTF-8 sequence reads as U+FFFD on HashLink and
+  eval, where HashLink dropped everything from it on and eval kept the
+  bytes, which the next operation on the string aborted the process over.
+- `ByteArrayInput.readBytes` refuses a destination range that does not fit
+  in every build: a large offset wrapped the check, and natively the copy
+  went 2 GB past the buffer. Its strings read as `ByteArray`'s do (a NUL is
+  a character on JavaScript and HashLink too, and a string ends where its
+  length says), are bounded in `final` builds, and one cut short leaves
+  `position` alone, as does a `ByteDelta` cut short.
+- `ByteArrayOutput` writes strings as `ByteArray` does, refuses a source
+  range outside the source before making room for it, and `writeIntAt`
+  checks its range in every build without wrapping. What it becomes is
+  marked little-endian, as it is written, whatever `defaultEndian` is, and
+  `copy()` is available on it.
+- `BitWriter.writeQuantized` refuses a range whose span overflows, which
+  quantized everything to 0 and could spoil the next field, and the bit
+  readers and writers count past 256 MB.
 - The varint writers write every 32-bit value (bit 31 set went out as one
   byte), and the readers refuse a value past 32 bits.
 - `writeUTF` refuses a string over 65,535 bytes with a `RangeError`, where

@@ -11,12 +11,16 @@ import crossbyte.io.ByteArray;
  * readers for common primitive types, UTF strings, and variable-length integers.
  *
  * ### Key characteristics
+ * - **Little-endian, unsigned**: every multi-byte value is read little-endian,
+ *   whatever the ByteArray's `endian`, and `readByte` and `readShort` are
+ *   unsigned (0–255, 0–65535), where `ByteArray`'s of the same names are
+ *   signed. It reads what `ByteArrayOutput` writes.
  * - **Zero-copy reads**: uses direct getters on the backing buffer where possible.
  * - **Explicit cursoring**: all reads advance `position` by the number of bytes consumed.
  * - **Safety outside `final`**: out-of-range accesses throw helpful errors in normal builds.
- * - **Always checked**: the varint decoders are the exception. They read a value
- *   or a length a remote peer chose, so `readVarUInt` and the length `readVarUTF`
- *   decodes are bounded in every build, `final` included.
+ * - **Always checked**: the varint decoders, the string readers and `readBytes`
+ *   are the exception. They read a value or a length a remote peer chose, or
+ *   write into a buffer, so they are bounded in every build, `final` included.
  * - **Interop**: can be implicitly created from `ByteArrayData` or `ByteArray`.
  *
  * ### Typical usage
@@ -190,12 +194,19 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * @param dst       Destination `Bytes` to write into.
 	 * @param dstOffset Start offset in `dst` (default `0`).
 	 * @param len       Number of bytes to copy (default `-1` = fill to end of `dst`).
-	 * @throws String In debug builds if the read would exceed `length`.
+	 * @throws String If the bytes are not there to read (outside `final`), or the
+	 *                range does not fit in `dst` (in every build).
 	 */
 	public inline function readBytes(dst:Bytes, dstOffset:Int = 0, len:Int = -1):Void {
-		if (len < 0){
+		if (len < 0) {
 			len = dst.length - dstOffset;
-		}			
+		}
+		// The destination in every build: Bytes.blit checks `pos + len`,
+		// which a large offset wraps negative, and natively the copy then
+		// went ahead, 2 GB past the buffer.
+		if (dstOffset < 0 || len < 0 || dstOffset > dst.length || len > dst.length - dstOffset) {
+			throw "ByteArrayInput.readBytes: the range does not fit the destination";
+		}
 		__need(len);
 		dst.blit(dstOffset, this, this.position, len);
 		this.position += len;
@@ -206,13 +217,19 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 *
 	 * **Note:** No length prefix is consumed; this reads a fixed-size slice.
 	 *
+	 * A NUL is a character like any other, and a malformed sequence reads
+	 * as U+FFFD, as `ByteArray.readUTFBytes` reads them, on every target.
+	 *
 	 * @param len Number of bytes to decode into a string.
 	 * @return The decoded string.
-	 * @throws String In debug builds if the read would exceed `length`.
+	 * @throws String If the read would exceed `length`, in every build: the
+	 *                length is usually one a peer sent.
 	 */
 	public inline function readUTFBytes(len:Int):String {
-		__need(len);
-		var s:String = this.getString(this.position, len);
+		if (len < 0 || len > this.length - this.position) {
+			throw "ByteArrayInput underflow";
+		}
+		var s:String = crossbyte._internal.Utf8.stringOf(this, this.position, len);
 		this.position += len;
 		return s;
 	}
@@ -224,10 +241,17 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Layout: `[u16 length][length bytes of UTF data]`
 	 *
 	 * @return The decoded string.
-	 * @throws String In debug builds if the read would exceed `length`.
+	 * @throws String If the read would exceed `length`, in every build.
+	 *                `position` does not move, so the read can be tried again
+	 *                once the rest has arrived.
 	 */
 	public inline function readUTF():String {
+		var at:Int = this.position;
 		var len:Int = readShort();
+		if (len > this.length - this.position) {
+			this.position = at;
+			throw "ByteArrayInput underflow";
+		}
 		return readUTFBytes(len);
 	}
 
@@ -313,14 +337,15 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 *
 	 * @return The decoded string.
 	 * @throws String If the decoded length exceeds the bytes remaining. Checked in
-	 *                every build, including `final`.
+	 *                every build, including `final`. `position` does not move.
 	 */
 	public inline function readVarUTF():String {
+		var at:Int = this.position;
 		var len:Int = readVarUInt();
-		// Same reason as the decoder above: the length is the peer's, and
-		// readUTFBytes only bounds itself outside `final`. Negative is a
-		// length from 2^31 up, which no buffer holds.
+		// The length is the peer's. Negative is a length from 2^31 up, which
+		// no buffer holds.
 		if (len < 0 || len > this.length - this.position) {
+			this.position = at;
 			throw "ByteArrayInput underflow";
 		}
 		return readUTFBytes(len);

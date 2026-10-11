@@ -814,4 +814,69 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		bytes.position = 1;
 		Assert.equals(3, (bytes.bytesAvailable : Int));
 	}
+
+	static function __hex(bytes:ByteArray):String {
+		return [for (i in 0...bytes.length) StringTools.hex(bytes[i], 2)].join(" ");
+	}
+
+	/**
+		A string with half of a surrogate pair in it is written with U+FFFD in
+		its place, as JavaScript's encoder writes it. HashLink's encoder ran
+		past the end of a string ending in one and crashed the process, and
+		natively hxcpp threw "Invalid UTF16". The jvm writes `?`, and HashLink
+		one mid-string as bytes UTF-8 does not allow, without crashing.
+	**/
+	public function testHalfASurrogatePairIsWrittenAsTheReplacementCharacter():Void {
+		#if (js || cpp || hl || jvm)
+		var high:String = "\u{1F600}".substr(0, 1);
+		var replaced:String = #if jvm "3F" #else "EF BF BD" #end;
+		var end = new ByteArray();
+		end.writeUTFBytes("x" + high);
+		Assert.equals("78 " + replaced, __hex(end));
+		// Mid-string, HashLink writes it as bytes UTF-8 does not allow, and
+		// does not crash; finding those would cost every string a pass.
+		var middle = new ByteArray();
+		middle.writeUTFBytes("a" + high + "Z");
+		#if !hl
+		Assert.equals("61 " + replaced + " 5A", __hex(middle));
+		#end
+		var paired = new ByteArray();
+		paired.writeUTFBytes("\u{1F600}");
+		Assert.equals("F0 9F 98 80", __hex(paired));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Malformed UTF-8 reads with U+FFFD for each malformed sequence, as on
+		JavaScript and the jvm. HashLink dropped everything from the first bad
+		byte, and eval kept the bytes as they were, so the next operation on
+		the string aborted the process past any catch. Natively hxcpp decodes
+		leniently; it neither crashes nor is checked.
+	**/
+	public function testMalformedUTF8ReadsAsTheReplacementCharacter():Void {
+		var cases:Array<{bytes:Array<Int>, text:String}> = [
+			{bytes: [0x41, 0x80, 0x42, 0x43], text: "A\uFFFDBC"},
+			{bytes: [0x48, 0x6F, 0x73, 0x74, 0xC0], text: "Host\uFFFD"},
+			{bytes: [0xFF, 0x41], text: "\uFFFDA"},
+			{bytes: [0x41, 0xE2, 0x82], text: "A\uFFFD"},
+			{bytes: [0x61, 0x00, 0x62], text: "a" + String.fromCharCode(0) + "b"},
+			{bytes: [0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80], text: "\u20AC\u{1F600}"}
+		];
+		for (c in cases) {
+			var bytes = new ByteArray();
+			for (b in c.bytes) {
+				bytes.writeByte(b);
+			}
+			bytes.position = 0;
+			var text:String = bytes.readUTFBytes(bytes.length);
+			// An operation on the string, which is where eval used to abort.
+			text.toLowerCase();
+			#if !(cpp || neko)
+			Assert.equals(c.text, text, "decoding " + c.bytes);
+			#end
+		}
+		Assert.pass();
+	}
 }

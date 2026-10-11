@@ -103,7 +103,8 @@ final class ByteDelta {
 	 * Rebuilds the bytes a delta was encoded from.
 	 *
 	 * Reads the delta from its `position`, and leaves `position` just past
-	 * it. The baseline's `position` does not move.
+	 * it; a delta it refuses, or one cut short, leaves `position` where it
+	 * was. The baseline's `position` does not move.
 	 *
 	 * @param delta The delta, at its `position`.
 	 * @param baseline The bytes it was encoded against, or `null` if it was
@@ -116,13 +117,20 @@ final class ByteDelta {
 	 * @throws EOFError If the delta ends inside one of its varints.
 	 */
 	public static function decode(delta:ByteArray, ?baseline:ByteArray, maxLength:Int = DEFAULT_MAX_LENGTH):ByteArray {
+		// Put back on any failure: one cut short is read again from the start
+		// once the rest has arrived, as every other reader is.
+		var start:Int = delta.position;
 		try {
 			return __decode(delta, baseline, maxLength);
 		} catch (error:RangeError) {
 			// A varint that does not fit in 32 bits, which the reader refuses
 			// as out of range; to the caller it is a malformed delta like any
 			// other.
+			delta.position = start;
 			throw new IOError("A delta holds a varint that does not fit in 32 bits.");
+		} catch (error:Dynamic) {
+			delta.position = start;
+			throw error;
 		}
 	}
 

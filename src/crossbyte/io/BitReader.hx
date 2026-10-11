@@ -161,14 +161,19 @@ final class BitReader {
 	}
 
 	private inline function get_bitsRemaining():Int {
-		return ((__end - __wordAt) << 3) + __scratchBits;
+		// Held at the largest Int from 256 MB left, where the count in bits
+		// no longer fits one.
+		var bytes:Int = __end - __wordAt;
+		return bytes >= 0x0FFFFFFF ? 0x7FFFFFFF : (bytes << 3) + __scratchBits;
 	}
 
 	// `__scratch` holds exactly `__scratchBits` unread bits, lowest first, with
 	// zeros above them: both the shift below and a load keep it that way, so
 	// the bits of the next word can simply be or-ed on above them.
 	private function __take(bits:Int):Int {
-		if (bits > ((__end - __wordAt) << 3) + __scratchBits) {
+		// In bytes, not bits: `(__end - __wordAt) << 3` overflows an Int
+		// from 256 MB, and a read there was refused, or let through.
+		if (bits > __scratchBits && ((bits - __scratchBits + 7) >> 3) > __end - __wordAt) {
 			throw new EOFError();
 		}
 
