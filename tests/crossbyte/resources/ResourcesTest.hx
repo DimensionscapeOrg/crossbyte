@@ -108,6 +108,38 @@ class ResourcesTest extends utest.Test {
 		Assert.isFalse(Resources.exists(null));
 	}
 
+	/**
+		On Windows a name Windows opens as a device is refused, in any
+		directory, case and extension. `exists` answered true for `nul`,
+		`con` and `CONIN$` natively and on neko, `resourceSize` threw for
+		them on the interpreter, and reading `con.txt` waited on the console
+		for good on the interpreter and the jvm. Only names are resolved
+		here, and `nul` read, so the old code fails rather than waits.
+		Elsewhere these are ordinary names.
+	**/
+	public function testANameWindowsOpensAsADeviceIsRefused():Void {
+		var devices:Array<String> = ["CON", "con.txt", "testsuite/nul", "NUL.json", "aux", "Prn.log", "COM1", "lpt9.dat", "COM0", "CONIN$",
+			"conout$.txt", "con .txt", "nul ", "COM¹", "testsuite/con/x.txt"];
+		for (name in devices) {
+			if (crossbyte.sys.System.isWindows) {
+				Assert.raises(() -> Resources.getAbsolutePath(name), crossbyte.errors.SecurityError, name + " was resolved");
+				Assert.isFalse(Resources.exists(name), name + " was found");
+				Assert.equals(-1, Resources.resourceSize(name), name + " was sized");
+			} else {
+				Assert.isTrue(StringTools.endsWith(Resources.getAbsolutePath(name), name), name + " was refused off Windows");
+			}
+		}
+		if (crossbyte.sys.System.isWindows) {
+			Assert.raises(() -> Resources.getText("nul"), crossbyte.errors.SecurityError, "nul was read");
+			Assert.raises(() -> Resources.getBytes("testsuite/nul.txt"), crossbyte.errors.SecurityError, "testsuite/nul.txt was read");
+		}
+
+		// Names that only begin like one are names.
+		for (name in ["console.txt", "com10", "lpt", "nul_", "auxiliary.json", "CONIN", "com1x"]) {
+			Assert.isTrue(StringTools.endsWith(Resources.getAbsolutePath(name), name), name + " was refused");
+		}
+	}
+
 	/** What only looks unusual still resolves inside the directory. **/
 	public function testHarmlessSpellingsOfAPathStillResolve():Void {
 		for (path in ["./testsuite/sample.txt", "testsuite//sample.txt", "testsuite/./sample.txt", "testsuite\\sample.txt"]) {

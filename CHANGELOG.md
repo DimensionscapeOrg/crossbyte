@@ -1553,6 +1553,11 @@ Fixes to code new in this release are not listed.
   cannot hold becomes `_` (`level-1.json` is `level_1_json`), and a leading
   digit or a keyword gets a `_`, where a resource named `level-1.json`,
   `1.png` or `class` failed the program's build.
+- On Windows, `Resources` refuses a name Windows opens as a device (`con`,
+  `nul`, `COM1`, `con.txt`, `CONIN$`) in any directory, where reading
+  `maps/con.txt` waited on the console for good on the jvm and the
+  interpreter, and `exists` answered true for `nul` natively and on neko.
+  (Upgrading)
 - `FileStream`: reads and writes keep the `IDataInput` contract in both
   modes, `endian` and `position` mean the same opened either way,
   `truncate()` truncates in place, `UPDATE` mode reads back on macOS, an
@@ -2205,7 +2210,10 @@ an API added in this release has is not listed here.
   `resources` with it.
 - `Resources` refuses a path with a `..` segment, a leading `/` or `\`, or
   a `:`: `exists` answers `false`, `resourceSize` -1, and the loaders throw
-  `SecurityError`. Name resources relative to `resourcesDir`.
+  `SecurityError`. Name resources relative to `resourcesDir`. On Windows it
+  also refuses a segment Windows opens as a device (`CON`, `PRN`, `AUX`,
+  `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, `CONIN$`, `CONOUT$`, with or
+  without an extension), which Windows cannot hold as a file anyway.
 - `File` no longer expands `%NAME%` in a path on Windows: build the path
   from `Sys.getEnv("NAME")`, or start from `File.applicationStorageDirectory`
   and the other static directories, which are usually what was meant.

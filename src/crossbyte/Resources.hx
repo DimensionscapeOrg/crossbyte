@@ -31,11 +31,16 @@ import crossbyte.io.File;
  *
  * **Paths stay inside `resourcesDir`.** A path is a relative one, separated by
  * `/` or `\`, with no `..` segment, no leading separator and no `:`, so no
- * drive letter, no `C:` drive-relative path and no NTFS stream name. Anything
- * else is refused: `exists` answers `false` and `resourceSize` `-1`, and the
- * rest throw `SecurityError`. So a server loading a map by the name a client
- * sent, `getText("maps/" + name)`, cannot read what `"../../config.json"`
- * names.
+ * drive letter, no `C:` drive-relative path and no NTFS stream name. On
+ * Windows it has no segment Windows reads as a device either: `CON`, `PRN`,
+ * `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, `CONIN$` or `CONOUT$`,
+ * in any case and with any extension (`con.txt`), the names Go's
+ * `filepath.IsLocal` refuses; reading `con.txt` in any directory reads the
+ * console, and waits on it. Anything else is refused: `exists` answers
+ * `false` and `resourceSize` `-1`, and the rest throw `SecurityError`. So a
+ * server loading a map by the name a client sent, `getText("maps/" + name)`,
+ * cannot read what `"../../config.json"` names, nor wait on what `"con"`
+ * does.
  * Empty and `.` segments are dropped, so `"./maps//a.txt"` is `"maps/a.txt"`.
  */
 final class Resources {
@@ -174,7 +179,8 @@ final class Resources {
 		empty and `.` segments dropped, or null when it names somewhere
 		else: a `..` segment, a leading separator (an absolute or UNC path),
 		a `:` (a drive letter, a drive-relative `C:x`, an NTFS stream, a
-		URL) or a NUL, which a native call would cut the path at.
+		URL), a NUL, which a native call would cut the path at, or on
+		Windows a device's name.
 
 		`\` counts as a separator on every target, since Windows reads one as
 		such and `..\..` would otherwise climb out there.
@@ -192,17 +198,50 @@ final class Resources {
 			return null;
 		}
 
+		var windows:Bool = System.isWindows;
 		var kept:Array<String> = [];
 		for (segment in path.split("/")) {
 			if (segment == "" || segment == ".") {
 				continue;
 			}
-			if (segment == "..") {
+			if (segment == ".." || (windows && __namesADevice(segment))) {
 				return null;
 			}
 			kept.push(segment);
 		}
 		return kept.join("/");
+	}
+
+	/**
+		Whether Windows opens `segment` as a device rather than a file in
+		whatever directory it is in: its name up to the first `.`, less
+		trailing spaces, is `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
+		or `COM` or `LPT` and a digit or a superscript one, two or three, in
+		any case. The rule of Go's `filepath.IsLocal`, with `COM0` and `LPT0`
+		as Windows' own list names them.
+	**/
+	@:noCompletion private static function __namesADevice(segment:String):Bool {
+		var dot:Int = segment.indexOf(".");
+		var end:Int = dot >= 0 ? dot : segment.length;
+		while (end > 0 && StringTools.fastCodeAt(segment, end - 1) == " ".code) {
+			end--;
+		}
+		if (end < 3) {
+			return false;
+		}
+		var name:String = segment.substr(0, end).toUpperCase();
+		switch (name) {
+			case "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$":
+				return true;
+			default:
+		}
+		var family:String = name.substr(0, 3);
+		if (family != "COM" && family != "LPT") {
+			return false;
+		}
+		var number:String = name.substr(3);
+		return (number.length == 1 && StringTools.fastCodeAt(number, 0) >= "0".code && StringTools.fastCodeAt(number, 0) <= "9".code)
+			|| number == "¹" || number == "²" || number == "³";
 	}
 
 	@:noCompletion private static function __require(relativePath:String):String {
