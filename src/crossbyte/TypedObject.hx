@@ -38,8 +38,9 @@ abstract TypedObject<T>(T) from T to T {
 		return cast value;
 	}
 
+	/** Whether the value has a field `field`; false for a null name. **/
 	public inline function exists(field:String):Bool {
-		return this != null && Reflect.hasField(this, field);
+		return this != null && field != null && Reflect.hasField(this, field);
 	}
 
 	public inline function keys():Array<String> {
@@ -63,17 +64,26 @@ abstract TypedObject<T>(T) from T to T {
 		return entries();
 	}
 
-	/** The field `field`, or null; on JavaScript as `Object.get` reads it. **/
+	/**
+		The field `field`, or null, also for a null name (but on JavaScript,
+		where that is a `TypeError`); on JavaScript as `Object.get` reads it.
+	**/
 	@:arrayAccess public inline function get(field:String):Dynamic {
 		#if js
 		return crossbyte._internal.js.OwnField.get(this, field);
 		#else
-		return Reflect.field(this, field);
+		return field == null ? null : Reflect.field(this, field);
 		#end
 	}
 
-	/** Sets the field `field`; on JavaScript as `Object.set` does. **/
+	/**
+		Sets the field `field`; on JavaScript as `Object.set` does.
+		@throws ArgumentError For a null name.
+	**/
 	@:arrayAccess public inline function set(field:String, value:Dynamic):Dynamic {
+		if (field == null) {
+			@:privateAccess Object.__refuseNullName();
+		}
 		#if js
 		crossbyte._internal.js.OwnField.set(this, field, value);
 		#else

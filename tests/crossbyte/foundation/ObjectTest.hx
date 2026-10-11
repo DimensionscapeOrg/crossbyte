@@ -176,6 +176,23 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
+		The same of a `TypedObject`, whose `get`, `exists` and `set` ended the
+		process natively for a null name, and on Node threw from `get` and
+		`set` a `TypeError`.
+	**/
+	public function testANullNameHasNoFieldOfATypedObject():Void {
+		var typed:TypedObject<{id:Int}> = haxe.Json.parse('{"id":1,"null":2}');
+		var name:Null<String> = null;
+		#if !js
+		Assert.isNull(typed[name], "a null name read a field");
+		#end
+		Assert.isFalse(typed.exists(name));
+		Assert.raises(() -> typed[name] = 3, crossbyte.errors.ArgumentError);
+		Assert.equals(1, typed.id);
+		Assert.equals(2, typed["null"]);
+	}
+
+	/**
 		An `Object` converts on its own to `Dynamic` and to nothing else, and
 		its own arithmetic does not compile. It converted to anything,
 		unchecked, and each target made its own of that: one holding "12" as
