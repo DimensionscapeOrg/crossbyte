@@ -33,8 +33,10 @@ import haxe.Timer as HxTimer;
  *   and is reconsidered once per revolution. A runtime whose timers are
  *   mostly long is doing a scan the heap would never do, and should use the
  *   heap.
- * - **Exact ordering.** Two timers in the same tick fire in bucket order, not
- *   by their exact times. The heap orders them precisely.
+ * - **Exact ordering.** Timers in the same tick fire in the order they were
+ *   armed, not by their exact times; one that waited past the ring joins
+ *   its tick when the ring comes round to it, after those armed into the
+ *   tick directly. The heap orders them by time, and then by arming.
  * - **Catch-up past a revolution.** After a stall longer than the ring, the
  *   whole revolutions beyond the first are skipped rather than walked, so a
  *   recurring timer does not fire once for each tick it missed. The heap
@@ -79,8 +81,13 @@ class TimerWheel implements ITimerScheduler {
 	public var onError:Dynamic->Void = null;
 	public var cutShort(get, never):Bool;
 
+	// Each a list fired from its head and armed onto its tail, so a tick's
+	// timers fire in the order they were armed. Pushed at the head, they fired
+	// backwards.
 	@:noCompletion private var __buckets:Array<WheelNode>;
+	@:noCompletion private var __tails:Array<WheelNode>;
 	@:noCompletion private var __overflow:WheelNode;
+	@:noCompletion private var __overflowTail:WheelNode;
 
 	/**
 	 * The bucket the cursor last reached, and how many ticks from the start
@@ -116,8 +123,10 @@ class TimerWheel implements ITimerScheduler {
 
 	public function new() {
 		__buckets = [];
+		__tails = [];
 		for (i in 0...BUCKETS) {
 			__buckets.push(null);
+			__tails.push(null);
 		}
 	}
 
@@ -518,6 +527,7 @@ class TimerWheel implements ITimerScheduler {
 	@:noCompletion private function __admitOverflow():Void {
 		var node:WheelNode = __overflow;
 		__overflow = null;
+		__overflowTail = null;
 
 		while (node != null) {
 			var next:WheelNode = node.next;
@@ -577,25 +587,28 @@ class TimerWheel implements ITimerScheduler {
 
 		if (ticks >= BUCKETS) {
 			node.bucket = -1;
-			node.prev = null;
-			node.next = __overflow;
-			if (__overflow != null) {
-				__overflow.prev = node;
+			node.next = null;
+			node.prev = __overflowTail;
+			if (__overflowTail != null) {
+				__overflowTail.next = node;
+			} else {
+				__overflow = node;
 			}
-			__overflow = node;
+			__overflowTail = node;
 			return;
 		}
 
 		var index:Int = (__cursor + Std.int(ticks)) & (BUCKETS - 1);
+		var tail:WheelNode = __tails[index];
 		node.bucket = index;
-		node.prev = null;
-		node.next = __buckets[index];
-
-		if (node.next != null) {
-			node.next.prev = node;
+		node.next = null;
+		node.prev = tail;
+		if (tail != null) {
+			tail.next = node;
+		} else {
+			__buckets[index] = node;
 		}
-
-		__buckets[index] = node;
+		__tails[index] = node;
 	}
 
 	@:noCompletion private inline function __unlink(node:WheelNode):Void {
@@ -615,6 +628,8 @@ class TimerWheel implements ITimerScheduler {
 
 		if (node.next != null) {
 			node.next.prev = node.prev;
+		} else if (__tails[index] == node) {
+			__tails[index] = node.prev;
 		}
 
 		node.prev = null;
@@ -631,6 +646,8 @@ class TimerWheel implements ITimerScheduler {
 
 		if (node.next != null) {
 			node.next.prev = node.prev;
+		} else if (__overflowTail == node) {
+			__overflowTail = node.prev;
 		}
 
 		node.prev = null;

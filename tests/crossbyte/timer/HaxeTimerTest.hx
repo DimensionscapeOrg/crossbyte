@@ -53,6 +53,19 @@ class HaxeTimerTest extends utest.Test {
 		Assert.isTrue(global >= 19 && global <= 20, "a 100ms GlobalTimer.setInterval ran " + global + " times in 2s");
 	}
 
+	public function testTimeoutsArmedTogetherRunInTheOrderTheyWereArmed():Void {
+		// haxe.Timer.delay and GlobalTimer.setTimeout, as a library ported
+		// from JavaScript arms them: f before g whenever both are due.
+		var runtime = CrossByte.current();
+		var order:Array<String> = [];
+		for (i in 0...3) {
+			HxTimer.delay(() -> order.push("delay" + i), 0);
+			GlobalTimer.setTimeout(() -> order.push("global" + i), 0);
+		}
+		runtime.pump(0, 0);
+		Assert.equals("delay0,global0,delay1,global1,delay2,global2", order.join(","));
+	}
+
 	public function testATimerBehindRunsOnceAFrameRatherThanInABurst():Void {
 		var runtime = CrossByte.current();
 		var fired = 0;
