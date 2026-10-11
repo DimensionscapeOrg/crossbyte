@@ -44,7 +44,19 @@ final class Resources {
 		`File.applicationDirectory`, with a separator at the end.
 	**/
 	public static var resourcesDir(get, never):String;
-	/** Macro-generated tree that mirrors compile-time resources when available. */
+	/**
+		The project's `resources` directory as the build found it: a field
+		per directory, and per file a `String` field holding the file's path,
+		ready for the functions here. `maps/level-1.json` is
+		`Resources.tree.maps.level_1_json`.
+
+		A name becomes a field with each character an identifier cannot hold
+		made `_`, a `_` before a leading digit (`1.png` is `_1_png`), and a
+		`_` after a name Haxe or JavaScript keeps for itself (`class`, `new`,
+		`toString`, `constructor`). Where two names make one field (`a.b` and
+		`a_b`), the first in sorted order has it and the build warns that the
+		other is left out; read that one by its path.
+	**/
 	public static var tree:ResourceTree = new ResourceTree();
 
 	/** Returns `true` when a resource exists relative to `resourcesDir`. */

@@ -21,6 +21,22 @@ class ResourcesTest extends utest.Test {
 		Assert.equals("testsuite/nested/child.txt", Resources.tree.testsuite.nested.child_txt);
 	}
 
+	/**
+		A resource whose name is not a Haxe identifier still has a field in
+		the tree. A dash, a leading digit, a space, a keyword or a member's
+		name made an invalid field, and the whole program failed to build.
+	**/
+	public function testResourcesWhoseNamesAreNotIdentifiersHaveFields():Void {
+		Assert.equals("names/my-file.txt", Resources.tree.names.my_file_txt);
+		Assert.equals("names/1.png", Resources.tree.names._1_png);
+		Assert.equals("names/a b.txt", Resources.tree.names.a_b_txt);
+		Assert.equals("names/class", Resources.tree.names.class_);
+		Assert.equals("names/new", Resources.tree.names.new_);
+		Assert.equals("names/sub-dir/toString", Resources.tree.names.sub_dir.toString_);
+		Assert.equals("dash", Resources.getText(Resources.tree.names.my_file_txt));
+		Assert.equals("member", Resources.getText(Resources.tree.names.sub_dir.toString_));
+	}
+
 	public function testTextBytesJsonAndLinesLoadResourceContent():Void {
 		Assert.isTrue(Resources.exists("testsuite/sample.txt"));
 		Assert.equals("alpha\nbeta\ngamma\n", Resources.getText("testsuite/sample.txt"));

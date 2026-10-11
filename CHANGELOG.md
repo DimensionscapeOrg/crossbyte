@@ -1549,6 +1549,10 @@ Fixes to code new in this release are not listed.
 - `File.createTempFile` and `createTempDirectory` use unguessable names and
   create exclusively, so another user cannot steer them.
 - `Resources` reads only inside `resourcesDir`. (Upgrading)
+- `Resources.tree` has a field for every resource: a character a name
+  cannot hold becomes `_` (`level-1.json` is `level_1_json`), and a leading
+  digit or a keyword gets a `_`, where a resource named `level-1.json`,
+  `1.png` or `class` failed the program's build.
 - `FileStream`: reads and writes keep the `IDataInput` contract in both
   modes, `endian` and `position` mean the same opened either way,
   `truncate()` truncates in place, `UPDATE` mode reads back on macOS, an

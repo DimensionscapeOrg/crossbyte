@@ -116,28 +116,90 @@ class ResourcesMacro {
 		return Crc32.make(File.getBytes(path));
 	}
 
+	/**
+		The field `Resources.tree` gives the file or directory `entry`: its
+		name with every character that cannot be in a Haxe identifier made
+		`_` (so `sample.txt` is `sample_txt` and `my-file.png` is
+		`my_file_png`), a `_` before a leading digit, and a `_` after a name
+		Haxe keeps for itself (`class`, `new`, `toString`).
+	**/
+	public static function fieldNameFor(entry:String):String {
+		var name:StringBuf = new StringBuf();
+		for (i in 0...entry.length) {
+			var code:Int = StringTools.fastCodeAt(entry, i);
+			var kept:Bool = (code >= "a".code && code <= "z".code) || (code >= "A".code && code <= "Z".code) || (code >= "0".code && code <= "9".code)
+				|| code == "_".code;
+			name.addChar(kept ? code : "_".code);
+		}
+		var field:String = name.toString();
+		if (field == "" || (StringTools.fastCodeAt(field, 0) >= "0".code && StringTools.fastCodeAt(field, 0) <= "9".code)) {
+			field = "_" + field;
+		}
+		return RESERVED.indexOf(field) >= 0 ? field + "_" : field;
+	}
+
+	// Haxe's keywords, which no field may be named; the two members every node
+	// of the tree has of its own; and what every JavaScript object has, which
+	// a field of that name would hide or, for __proto__, never become.
+	private static final RESERVED:Array<String> = [
+		"abstract", "break", "case", "cast", "catch", "class", "continue", "default", "do", "dynamic", "else", "enum", "extends", "extern",
+		"false", "final", "for", "function", "if", "implements", "import", "in", "inline", "interface", "macro", "new", "null", "operator",
+		"overload", "override", "package", "private", "public", "return", "static", "switch", "this", "throw", "true", "try", "typedef",
+		"untyped", "using", "var", "while", "toString", "constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+		"toLocaleString", "valueOf", "__proto__", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__", "__class__"
+	];
+
 	public static function buildResourceTree():Array<Field> {
 		var rootPath = getProjectResourcesDirectory();
 		var allFields:Array<Field> = [];
-
-		function capitalize(str:String):String {
-			return str.charAt(0).toUpperCase() + str.substr(1);
-		}
+		// Node type names in use, lower-cased: the generated classes are files
+		// natively and on the jvm, and two names differing only in case are
+		// one file where the file system ignores case.
+		var typeNames:Map<String, Bool> = new Map();
 
 		function processDirectory(path:String, relativePath:String, className:String):Array<Field> {
 			var entries = FileSystem.readDirectory(path);
+			// Sorted, so which of two names that make one field keeps it does
+			// not depend on the order a file system lists them in.
+			entries.sort((a, b) -> a < b ? -1 : a > b ? 1 : 0);
 			var subFields:Array<Field> = [];
+			var fieldsTaken:Map<String, String> = new Map();
 
 			for (entry in entries) {
 				var fullPath = path + "/" + entry;
 				var relativeFilePath = (relativePath == "") ? entry : relativePath + "/" + entry;
-				var fieldName = entry.replace(".", "_");
+				var fieldName = fieldNameFor(entry);
+
+				// Two names that make one field (`a.b` and `a_b`) cannot both
+				// have it; the first keeps it, and the other is still read by
+				// its path.
+				if (fieldsTaken.exists(fieldName)) {
+					Context.warning('Resources.tree leaves out "$relativeFilePath": its field, $fieldName, is "${fieldsTaken.get(fieldName)}"\'s. '
+						+ 'Read it by its path.', Context.currentPos());
+					continue;
+				}
+				fieldsTaken.set(fieldName, relativeFilePath);
 
 				if (FileSystem.isDirectory(fullPath)) {
-					// Derive the generated node type name from the full relative
-					// path so two same-named directories in different subtrees do
-					// not collide into a single duplicate Context.defineType.
-					var subClassName = capitalize(relativeFilePath.replace("/", "_").replace(".", "_") + "_RTNode");
+					// Named for the directory's whole path, so same-named
+					// directories in different places are different types, and
+					// numbered where two paths would still make one name.
+					var subClassName = fieldNameFor(relativeFilePath.replace("/", "_"));
+					var first:Int = StringTools.fastCodeAt(subClassName, 0);
+					if (first >= "a".code && first <= "z".code) {
+						subClassName = subClassName.charAt(0).toUpperCase() + subClassName.substr(1);
+					} else if (first < "A".code || first > "Z".code) {
+						subClassName = "Dir" + subClassName;
+					}
+					subClassName += "_RTNode";
+					if (typeNames.exists(subClassName.toLowerCase())) {
+						var n:Int = 2;
+						while (typeNames.exists((subClassName + n).toLowerCase())) {
+							n++;
+						}
+						subClassName += n;
+					}
+					typeNames.set(subClassName.toLowerCase(), true);
 					var nestedFields = processDirectory(fullPath, relativeFilePath, subClassName);
 
 					var classPath:TypePath = {pack: [], name: subClassName};

@@ -693,6 +693,9 @@ class TestSuites {
 		// differently produces output that is wrong rather than merely slower,
 		// and nothing else here would say so.
 		addDataStructures(runner);
+		// The resource tree is generated code, and natively it is C++ that
+		// has to compile; the paths it confines are read by native calls.
+		addResources(runner);
 		addAllocationBudgets(runner);
 	}
 }
