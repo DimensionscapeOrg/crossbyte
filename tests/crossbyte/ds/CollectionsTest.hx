@@ -916,6 +916,9 @@ class CollectionsTest extends utest.Test {
 			return Std.int(a / 10) - Std.int(b / 10);
 		});
 		Assert.equals("12,11,13,31,33,32", keyed.join(","));
+		// And by a comparator that is a value, which sorts another way.
+		var byTens = function(a:Int, b:Int):Int return Std.int(a / 10) - Std.int(b / 10);
+		Assert.equals("12,11,13,31,33,32", Vector.ofArray([31, 12, 33, 11, 32, 13]).sort(byTens).join(","));
 
 		var seed:Int = 12345;
 		var numbers:Array<Int> = [];
