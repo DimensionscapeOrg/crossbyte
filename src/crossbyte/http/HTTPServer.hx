@@ -82,7 +82,7 @@ class HTTPServer extends ServerSocket {
 	// On a replica: what its connections hold unsent, as last measured by
 	// its sweep, for the front's gauges; see __publishBufferStats.
 	@:noCompletion private var __publishedMaxBuffer:Int = 0;
-	@:noCompletion private var __publishedTotalBuffer:Int = 0;
+	@:noCompletion private var __publishedTotalBuffer:Float = 0;
 	// The status-class counters, by status / 100, each looked up once.
 	@:noCompletion private var __statusCounters:Array<Null<crossbyte.metrics.Counter>> = [for (_ in 0...10) null];
 	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
@@ -728,7 +728,7 @@ class HTTPServer extends ServerSocket {
 		// Disarmed with nothing held, or with nothing measured: either way the
 		// front's gauges are told nothing is held here.
 		__publishedMaxBuffer = 0;
-		__publishedTotalBuffer = 0;
+		__publishedTotalBuffer = 0.0;
 	}
 
 	/**
@@ -907,8 +907,14 @@ class HTTPServer extends ServerSocket {
 		return peak;
 	}
 
-	@:noCompletion private function __totalOutputBuffer():Int {
-		var total:Int = 0;
+	/**
+		What every connection holds unsent, all together: a Float, as across
+		thousands of connections it passes 2^31 bytes, where an Int went
+		negative. Started from `0.0`, which eval and neko need to add in
+		floating point.
+	**/
+	@:noCompletion private function __totalOutputBuffer():Float {
+		var total:Float = 0.0;
 		for (socket in __active.keys()) {
 			total += socket.outputBufferLength;
 		}

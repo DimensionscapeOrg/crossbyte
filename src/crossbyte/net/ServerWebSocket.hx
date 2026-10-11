@@ -457,8 +457,14 @@ class ServerWebSocket extends ServerSocket {
 		return peak;
 	}
 
-	@:noCompletion private function __totalOutputBuffer():Int {
-		var total:Int = 0;
+	/**
+		What every session holds unsent, all together: a Float, as across
+		thousands of sessions it passes 2^31 bytes, where an Int went
+		negative. Started from `0.0`, which eval and neko need to add in
+		floating point.
+	**/
+	@:noCompletion private function __totalOutputBuffer():Float {
+		var total:Float = 0.0;
 		for (client in __clients) {
 			total += client.outputBufferLength;
 		}
@@ -475,7 +481,7 @@ class ServerWebSocket extends ServerSocket {
 	// On a replica: its sessions' unsent bytes as last measured, and when
 	// next to measure them; see __publishBufferStats.
 	@:noCompletion private var __publishedMaxBuffer:Int = 0;
-	@:noCompletion private var __publishedTotalBuffer:Int = 0;
+	@:noCompletion private var __publishedTotalBuffer:Float = 0;
 	@:noCompletion private var __bufferStatsDue:Float = 0.0;
 
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;

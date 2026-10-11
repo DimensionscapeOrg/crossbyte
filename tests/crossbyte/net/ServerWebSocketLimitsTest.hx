@@ -749,6 +749,25 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		});
 	}
 
+	// ---- What the sessions hold, all together ----------------------------
+
+	/**
+		The total every session holds unsent counts past 2^31 bytes, as
+		thousands of sessions holding a megabyte each make it: summed in an
+		Int it went negative, natively, on the jvm, on HashLink, on the
+		interpreter and on neko. Two sessions that each say they hold 1.5 GB
+		stand in for them.
+	**/
+	public function testTheOutputBufferTotalCountsPastTwoGigabytes():Void {
+		var server = new ServerWebSocket();
+		@:privateAccess {
+			server.__clients.push(new HeldOutputWebSocket(1500000000));
+			server.__clients.push(new HeldOutputWebSocket(1500000000));
+			Assert.equals(3000000000.0, server.__totalOutputBuffer());
+			server.__clients.resize(0);
+		}
+	}
+
 	/** The one session `server` is waiting on to upgrade, or null. **/
 	private static function __upgrading(server:ServerWebSocket):Null<crossbyte._internal.websocket.WebSocket> {
 		var pending:Array<Dynamic> = @:privateAccess server.__pendingUpgrades;
@@ -757,5 +776,19 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		}
 		var session:WebSocket = pending[0].session;
 		return session == null ? null : @:privateAccess session.__webSocket;
+	}
+}
+
+/** A session that says it holds `held` bytes unsent, and holds none. **/
+private class HeldOutputWebSocket extends WebSocket {
+	private final __held:Int;
+
+	public function new(held:Int) {
+		super();
+		__held = held;
+	}
+
+	@:noCompletion override private function get_outputBufferLength():Int {
+		return __held;
 	}
 }

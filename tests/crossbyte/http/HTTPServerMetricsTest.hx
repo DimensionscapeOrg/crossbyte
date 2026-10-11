@@ -57,6 +57,21 @@ class HTTPServerMetricsTest extends utest.Test {
 		});
 	}
 
+	/**
+		The total every connection holds unsent counts past 2^31 bytes, as
+		thousands of connections holding a megabyte each make it: summed in an
+		Int it went negative, natively, on the jvm, on HashLink and on neko.
+		Two connections that each say they hold 1.5 GB stand in for them.
+	**/
+	public function testTheOutputBufferTotalCountsPastTwoGigabytes():Void {
+		var server = new HTTPServer(new HTTPServerConfig());
+		@:privateAccess {
+			server.__active.set(new HeldOutputSocket(1500000000), null);
+			server.__active.set(new HeldOutputSocket(1500000000), null);
+			Assert.equals(3000000000.0, server.__totalOutputBuffer());
+		}
+	}
+
 	public function testMetricsEndpointServesRegistry(async:Async):Void {
 		var registry = new Metrics();
 		registry.counter("custom_total", null, "A custom counter.").inc(7);
@@ -198,5 +213,19 @@ private class CountingMetrics extends Metrics {
 			statusLookups++;
 		}
 		return super.counter(name, labels, help);
+	}
+}
+
+/** A connection that says it holds `held` bytes unsent, and holds none. **/
+private class HeldOutputSocket extends Socket {
+	private final __held:Int;
+
+	public function new(held:Int) {
+		super();
+		__held = held;
+	}
+
+	@:noCompletion override private function get_outputBufferLength():Int {
+		return __held;
 	}
 }
