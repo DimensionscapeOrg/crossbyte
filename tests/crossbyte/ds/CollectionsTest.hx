@@ -270,98 +270,184 @@ class CollectionsTest extends utest.Test {
 		Assert.isTrue(read == handle);
 	}
 
-	public function testSwitchTableDispatchesMixedKeysAndArguments():Void {
-		var seen = [];
-		var total = 0;
+	/**
+		`make` builds a switch into a function typed by its handlers: each key
+		reaches its own handler with the arguments, a handler can use and
+		change the variables around it and return early, and a key no case
+		names goes to the fallback with the key and the arguments, or without
+		one is an `ArgumentError`.
+	**/
+	public function testASwitchTableDispatchesEachKeyToItsHandler():Void {
+		var seen:Array<String> = [];
+		var total:Int = 0;
 		var dispatch = SwitchTable.make([
-			{key: "PING", handler: () -> seen.push("pong")},
-			{key: "ADD", handler: (value:Int) -> total += value},
-			{key: 7, handler: (left:Int, right:Int) -> seen.push((left + right) + "")}
-		]);
+			{key: SwitchTableOpcodes.PING, handler: (name:String, amount:Int) -> seen.push("pong " + name)},
+			{key: SwitchTableOpcodes.LOGIN, handler: (name:String, amount:Int) -> total += amount},
+			{
+				key: 7,
+				handler: (name:String, amount:Int) -> {
+					if (amount < 0) {
+						return;
+					}
+					seen.push("seven " + name + " " + amount);
+				}
+			}
+		], (op:Int, name:String, amount:Int) -> seen.push("other " + op + " " + name));
 
-		dispatch("PING");
-		dispatch("ADD", 4);
-		dispatch("ADD", 6);
-		dispatch(7, 2, 5);
+		dispatch(SwitchTableOpcodes.PING, "ada", 0);
+		dispatch(SwitchTableOpcodes.LOGIN, "ada", 5);
+		dispatch(SwitchTableOpcodes.LOGIN, "bob", 6);
+		dispatch(7, "cy", -1);
+		dispatch(7, "cy", 2);
+		dispatch(99, "dee", 0);
+		Assert.equals(11, total);
+		Assert.equals("pong ada,seven cy 2,other 99 dee", seen.join(","));
+		Assert.equals("(Int, String, Int) -> Void", TypeCheck.typeOf(dispatch));
 
-		Assert.equals(10, total);
-		Assert.equals("pong,7", seen.join(","));
-		Assert.raises(() -> dispatch("MISSING"));
+		var strict = SwitchTable.make([{key: "A", handler: () -> {}}]);
+		Assert.raises(() -> strict("B"), crossbyte.errors.ArgumentError);
 	}
 
 	/**
-		Keys can be named constants, and a key no case matches can be handled,
-		rather than only literals (a table keyed on opcodes repeating their
-		numbers) and "Case not found" thrown for an unmatched key.
+		A handler that says what it returns makes the table return it. A
+		static method is called as one, and any other function value is
+		taken when the table is made, not looked up again at each dispatch.
 	**/
-	public function testASwitchTableKeyHeldInAVariableNamedKeyOrArgsIsItsOwn():Void {
-		// The dispatcher's parameters were named key and args, so a case key
-		// held in a variable of either name read the dispatcher's argument:
-		// every dispatch went to the first case, or none to its own.
-		var seen:Array<String> = [];
-		var key:String = "LOGIN";
-		var byKey = SwitchTable.make([
-			{key: key, handler: () -> seen.push("login")},
-			{key: "PING", handler: () -> seen.push("ping")}
-		], (k, a) -> seen.push("other " + k));
-		byKey("LOGIN");
-		byKey("PING");
-		byKey("NOPE");
-		Assert.equals("login,ping,other NOPE", seen.join(","));
+	public function testASwitchTableHandlerIsAFunctionAMethodOrAValue():Void {
+		var made = SwitchTable.make([
+			{key: "TWICE", handler: function(v:Int):Int return v * 2},
+			{key: "THRICE", handler: SwitchTableOpcodes.thrice}
+		], (op:String, v:Int) -> -v);
+		Assert.equals(8, made("TWICE", 4));
+		Assert.equals(12, made("THRICE", 4));
+		Assert.equals(-4, made("NONE", 4));
 
-		seen = [];
-		var args:String = "X";
-		var byArgs = SwitchTable.make([{key: args, handler: () -> seen.push("x")}], (k, a) -> seen.push("other " + k));
-		byArgs("X");
-		byArgs("Y");
-		Assert.equals("x,other Y", seen.join(","));
+		var current:Int->Int = v -> v + 100;
+		var byValue = SwitchTable.make([{key: 1, handler: current}]);
+		current = v -> v + 200;
+		Assert.equals(101, byValue(1, 1));
 	}
 
-	public function testASwitchTableHandlerGivenTheWrongNumberOfArgumentsIsRefused():Void {
-		// Unchecked, the same dispatch threw on the interpreter, ran on
-		// JavaScript and was dropped without a word on the jvm.
-		var calls:Int = 0;
-		var dispatch = SwitchTable.make([
-			{key: "ZERO", handler: () -> calls++},
-			{key: "ONE", handler: (n:Int) -> calls += n}
-		]);
-		var refused:Int = 0;
-		for (wrong in [() -> dispatch("ZERO", 1), () -> dispatch("ONE"), () -> dispatch("ONE", 1, 2)]) {
-			try {
-				wrong();
-			} catch (e:crossbyte.errors.ArgumentError) {
-				refused++;
-			}
+	/**
+		What would go wrong when a table runs is refused when it is
+		compiled: two keys of one value (a literal and a named constant
+		among them), keys of two types, a key that is not a constant,
+		handlers that take different arguments, and a fallback that does not
+		take the key and then what they take.
+	**/
+	public function testASwitchTableRefusesWhatWouldGoWrongWhenItRuns():Void {
+		var variable:Int = 3;
+		var errors:Array<Null<String>> = [
+			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: SwitchTableOpcodes.PING, handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: "a", handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(SwitchTable.make([{key: variable, handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: 2, handler: (v:String) -> {}}])),
+			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}], (op:Int) -> {})),
+			TypeCheck.errorOf(SwitchTable.make([{key: 1.5, handler: (v:Int) -> {}}]))
+		];
+		var expected:Array<String> = [
+			"Two cases name the key",
+			"where the table's keys are Int",
+			"is a constant",
+			"where the table's handlers are",
+			"where it takes the key and then",
+			"this is Float"
+		];
+		for (i in 0...expected.length) {
+			Assert.isTrue(errors[i] != null && errors[i].indexOf(expected[i]) >= 0, 'case $i: ' + errors[i]);
 		}
-		Assert.equals(3, refused, "a dispatch with the wrong number of arguments was taken");
-		Assert.equals(0, calls);
-
-		dispatch("ZERO");
-		dispatch("ONE", 5);
-		Assert.equals(1 + 5, calls);
+		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([
+			{key: SwitchTableOpcodes.PING, handler: (v:Int) -> {}},
+			{key: SwitchTableOpcodes.LOGIN, handler: (v:Int) -> {}}
+		])));
 	}
 
-	public function testSwitchTableTakesNamedKeysAndAFallback():Void {
-		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([{key: SwitchTableOpcodes.PING, handler: () -> {}}])), "a named constant was refused as a key");
-		Assert.notNull(TypeCheck.errorOf(SwitchTable.make([{key: "A", handler: () -> {}}, {key: "A", handler: () -> {}}])), "a duplicate key was accepted");
+	/**
+		A class of `@:case` methods gets `call`, a switch where it is
+		written calling the method directly, and `exists`, `get`, `keys`
+		and `size`; a method can take several keys.
+	**/
+	public function testAClassSwitchTableCallsItsCaseMethods():Void {
+		SwitchTableStatics.seen = [];
+		SwitchTableStatics.call(SwitchTableOpcodes.PING, "ada");
+		SwitchTableStatics.call(SwitchTableOpcodes.LOGIN, "bob");
+		SwitchTableStatics.call(3, "cy");
+		Assert.raises(() -> SwitchTableStatics.call(99, "dee"), crossbyte.errors.ArgumentError);
+		var login = SwitchTableStatics.get(SwitchTableOpcodes.LOGIN);
+		login("eve");
+		Assert.equals("ping ada,login bob,login cy,login eve", SwitchTableStatics.seen.join(","));
+		Assert.isNull(SwitchTableStatics.get(99));
+		Assert.isTrue(SwitchTableStatics.exists(3));
+		Assert.isFalse(SwitchTableStatics.exists(99));
+		Assert.equals("1,2,3", SwitchTableStatics.keys.join(","));
+		Assert.equals(3, SwitchTableStatics.size);
+	}
 
-		var seen:Array<String> = [];
-		var custom:String = "CUSTOM";
-		var dispatch = SwitchTable.make([
-			{key: SwitchTableOpcodes.PING, handler: () -> seen.push("pong")},
-			{key: SwitchTableOpcodes.LOGIN, handler: (name:String) -> seen.push("login " + name)},
-			{key: custom, handler: () -> seen.push("custom")}
-		], (key:Dynamic, args:Array<Dynamic>) -> seen.push("unknown " + key + " with " + args.length));
+	/**
+		An instance table keeps its state in its fields, returns what its
+		cases return, and has a default that takes the key.
+	**/
+	public function testAnInstanceSwitchTableKeepsItsStateAndItsDefault():Void {
+		var counter = new SwitchTableCounter();
+		Assert.equals(5, counter.call(SwitchTableCounterKey.ADD, 5));
+		Assert.equals(3, counter.call(SwitchTableCounterKey.TAKE, 2));
+		Assert.equals(-1, counter.call(SwitchTableCounterKey.RESET, 0));
+		Assert.equals("RESET", counter.unknown);
+		Assert.equals(3, counter.total);
+		Assert.equals(4, counter.get(SwitchTableCounterKey.ADD)(1));
+		Assert.isFalse(counter.exists(SwitchTableCounterKey.RESET));
+	}
 
-		dispatch(1);
-		dispatch(2, "ada");
-		dispatch("CUSTOM");
-		dispatch(99, "x", "y");
-		dispatch("nope");
-		Assert.equals("pong,login ada,custom,unknown 99 with 2,unknown nope with 0", seen.join(","));
-
-		var strict = SwitchTable.make([{key: 1, handler: () -> {}}]);
-		Assert.raises(() -> strict(2));
+	/**
+		A class table is refused for what a made one is, and for what only a
+		class can get wrong: static and instance cases together, no cases,
+		a member of a name the table makes, an argument without its type.
+	**/
+	public function testAClassSwitchTableRefusesWhatAMadeOneDoes():Void {
+		var errors:Array<Null<String>> = [
+			TypeCheck.tableErrorOf({
+				@:case(1) function one(v:Int):Void {}
+				@:case(2) function two(v:String):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				@:case(10) function one(v:Int):Void {}
+				@:case(crossbyte.ds.TypedShapesTest.TypedShapesOpcodes.LOGIN) function two(v:Int):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				@:case(1) function one(v:Int):Void {}
+				@:instance @:case(2) function two(v:Int):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				function one(v:Int):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				@:case(1) function one(v:Int):Void {}
+				function call(v:Int):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				@:case(1) function one(v):Void {}
+			}),
+			TypeCheck.tableErrorOf({
+				@:case(1) function one(v:Int):Void {}
+				@:default function other(v:Int):Void {}
+			})
+		];
+		var expected:Array<String> = [
+			"where the table's cases are",
+			"Two cases name the key",
+			"all static methods or all instance methods",
+			"at least one @:case",
+			"makes its own call",
+			"its type",
+			"where it takes the key and then"
+		];
+		for (i in 0...expected.length) {
+			Assert.isTrue(errors[i] != null && errors[i].indexOf(expected[i]) >= 0, 'case $i: ' + errors[i]);
+		}
+		Assert.isNull(TypeCheck.tableErrorOf({
+			@:case(1, 2) function one(v:Int):Void {}
+			@:case(3) function two(v:Int):Void {}
+		}));
 	}
 
 	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
@@ -2187,6 +2273,55 @@ class CollectionsTest extends utest.Test {
 private class SwitchTableOpcodes {
 	public static inline var PING:Int = 1;
 	public static inline var LOGIN:Int = 2;
+
+	public static function thrice(v:Int):Int {
+		return v * 3;
+	}
+}
+
+/** A static table: one method takes two keys. **/
+@:build(crossbyte.ds.SwitchTable.build())
+private class SwitchTableStatics {
+	public static var seen:Array<String> = [];
+
+	@:case(SwitchTableOpcodes.PING) static function ping(name:String):Void {
+		seen.push("ping " + name);
+	}
+
+	@:case(SwitchTableOpcodes.LOGIN, 3) static function login(name:String):Void {
+		seen.push("login " + name);
+	}
+}
+
+private enum abstract SwitchTableCounterKey(Int) {
+	var ADD = 1;
+	var TAKE = 2;
+	var RESET = 3;
+}
+
+/** An instance table, its state in its fields. **/
+@:build(crossbyte.ds.SwitchTable.build())
+private class SwitchTableCounter {
+	public var total:Int = 0;
+	public var unknown:String = "";
+
+	public function new() {}
+
+	@:case(SwitchTableCounterKey.ADD) function add(amount:Int):Int {
+		return total += amount;
+	}
+
+	@:case(SwitchTableCounterKey.TAKE) function take(amount:Int):Int {
+		return total -= amount;
+	}
+
+	@:default function other(key:SwitchTableCounterKey, amount:Int):Int {
+		unknown = switch (key) {
+			case RESET: "RESET";
+			default: "?";
+		};
+		return -1;
+	}
 }
 
 /**

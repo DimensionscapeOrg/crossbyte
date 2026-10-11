@@ -119,42 +119,20 @@ class TypedShapesTest extends utest.Test {
 	}
 
 	/**
-		Typed keys are found typed, and whatever is not one of them still
-		reaches `otherwise`: a String where the keys are Ints, a key no case
-		names.
+		Keys named by constants from another class are their values: a
+		dispatch with the value finds the case, and one with a value no case
+		names reaches the fallback with it.
 	**/
-	public function testATypedSwitchTableMatchesAsTheChainDid():Void {
+	public function testASwitchTableKeyedOnNamedConstantsMatchesTheirValues():Void {
 		var hits:Array<String> = [];
-		var ints = SwitchTable.make([
-			{key: 1, handler: (v:String) -> hits.push("one " + v)},
-			{key: 2, handler: () -> hits.push("two")}
-		], (key, args) -> hits.push("other " + Std.string(key)));
-		ints(1, "a");
-		ints(2);
-		ints(3);
-		ints("1");
-		Assert.equals("one a,two,other 3,other 1", hits.join(","));
-
-		hits = [];
-		var strings = SwitchTable.make([
-			{key: "PING", handler: () -> hits.push("pong")},
-			{key: "ECHO", handler: (v:Int) -> hits.push("echo " + v)}
-		], (key, args) -> hits.push("other " + Std.string(key)));
-		strings("PING");
-		strings("ECHO", 4);
-		strings(1);
-		strings("NOPE");
-		Assert.equals("pong,echo 4,other 1,other NOPE", hits.join(","));
-
-		hits = [];
 		var named = SwitchTable.make([
 			{key: TypedShapesOpcodes.LOGIN, handler: () -> hits.push("login")},
 			{key: TypedShapesOpcodes.LOGOUT, handler: () -> hits.push("logout")}
-		], (key, args) -> hits.push("other"));
+		], (key:Int) -> hits.push("other " + key));
 		named(TypedShapesOpcodes.LOGOUT);
 		named(10);
 		named(99);
-		Assert.equals("logout,login,other", hits.join(","));
+		Assert.equals("logout,login,other 99", hits.join(","));
 	}
 
 	public function testAnObjectsEntriesAndValues():Void {

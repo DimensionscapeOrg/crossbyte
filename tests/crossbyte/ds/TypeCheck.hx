@@ -25,6 +25,76 @@ class TypeCheck {
 	}
 
 	/**
+		The error a `SwitchTable.build()` class of the functions in `block`
+		fails to build with, or null when it builds. Each function is a method
+		with the metadata written on it, static unless marked `@:instance`.
+		The class is a module of its own, so a key it names that is not a
+		literal is written with its full path.
+	**/
+	public static macro function tableErrorOf(block:Expr):ExprOf<Null<String>> {
+		var fields:Array<Field> = [];
+		var functions:Array<Expr> = switch (block.expr) {
+			case EBlock(exprs): exprs;
+			default: [block];
+		};
+		for (e in functions) {
+			var meta:Array<MetadataEntry> = [];
+			var inner:Expr = e;
+			var done:Bool = false;
+			while (!done) {
+				switch (inner.expr) {
+					case EMeta(m, x):
+						meta.push(m);
+						inner = x;
+					default:
+						done = true;
+				}
+			}
+			switch (inner.expr) {
+				case EFunction(FNamed(name, _), f):
+					var isInstance:Bool = Lambda.exists(meta, m -> m.name == ":instance");
+					fields.push({
+						name: name,
+						access: isInstance ? [] : [AStatic],
+						kind: FFun(f),
+						meta: [for (m in meta) if (m.name != ":instance") m],
+						pos: inner.pos
+					});
+				case EVars(vars):
+					for (v in vars) {
+						fields.push({name: v.name, access: [APublic], kind: FVar(v.type, v.expr), pos: inner.pos});
+					}
+				default:
+					Context.error("tableErrorOf takes named functions", inner.pos);
+			}
+		}
+		var name:String = "SwitchTableProbe" + __probes++;
+		Context.defineType({
+			pack: ["crossbyte", "ds"],
+			name: name,
+			pos: block.pos,
+			kind: TDClass(),
+			fields: fields,
+			meta: [{name: ":build", params: [macro crossbyte.ds.SwitchTable.build()], pos: block.pos}]
+		});
+		try {
+			switch (Context.getType("crossbyte.ds." + name)) {
+				case TInst(c, _):
+					c.get().statics.get();
+					c.get().fields.get();
+				default:
+			}
+		} catch (error:Dynamic) {
+			return macro $v{Std.string(error)};
+		}
+		return macro null;
+	}
+
+	#if macro
+	private static var __probes:Int = 0;
+	#end
+
+	/**
 		The type `e` has where it is written, as the compiler prints it, or
 		the error it fails to type with.
 	**/
