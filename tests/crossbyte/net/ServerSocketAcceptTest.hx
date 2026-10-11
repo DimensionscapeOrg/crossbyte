@@ -136,7 +136,7 @@ class ServerSocketAcceptTest extends utest.Test {
 
 	@:access(crossbyte.events.EventDispatcher)
 	private static function __tickListeners(runtime:crossbyte.core.CrossByte):Int {
-		var list:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		var list:Array<Dynamic> = cast runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
 		return list == null ? 0 : list.length;
 	}
 	#end

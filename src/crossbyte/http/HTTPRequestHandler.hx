@@ -2640,7 +2640,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __listensForClose(listener:Event->Void):Bool {
-		var listeners = __eventMap == null ? null : __eventMap.get(Event.CLOSE);
+		var listeners = __listenersOf(Event.CLOSE);
 		if (listeners == null) {
 			return false;
 		}

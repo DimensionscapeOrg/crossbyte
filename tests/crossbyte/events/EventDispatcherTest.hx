@@ -122,14 +122,14 @@ class EventDispatcherTest extends utest.Test {
 		var third = (_:Event) -> {};
 		dispatcher.addEventListener("demo", first);
 		dispatcher.addEventListener("demo", second);
-		var list = dispatcher.__eventMap.get("demo");
+		var list = dispatcher.__listenersOf("demo");
 
 		dispatcher.addEventListener("demo", third);
-		Assert.equals(list, dispatcher.__eventMap.get("demo"), "adding copied the list");
+		Assert.equals(list, dispatcher.__listenersOf("demo"), "adding copied the list");
 		dispatcher.addEventListener("demo", (_:Event) -> {}, 5);
-		Assert.equals(list, dispatcher.__eventMap.get("demo"), "adding ahead of the others copied the list");
+		Assert.equals(list, dispatcher.__listenersOf("demo"), "adding ahead of the others copied the list");
 		dispatcher.removeEventListener("demo", second);
-		Assert.equals(list, dispatcher.__eventMap.get("demo"), "removing copied the list");
+		Assert.equals(list, dispatcher.__listenersOf("demo"), "removing copied the list");
 		Assert.equals(3, list.length);
 	}
 
@@ -205,11 +205,11 @@ class EventDispatcherTest extends utest.Test {
 
 		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")), String);
 		Assert.equals(0, dispatcher.__walking, "the walk was left counted after a listener threw");
-		var walked = dispatcher.__eventMap.get("demo");
+		var walked = dispatcher.__listenersOf("demo");
 		var other:Event->Void = (_:Event) -> {};
 		dispatcher.addEventListener("demo", other);
 		dispatcher.removeEventListener("demo", other);
-		Assert.isTrue(walked == dispatcher.__eventMap.get("demo"), "a change after the throw copied the listeners");
+		Assert.isTrue(walked == dispatcher.__listenersOf("demo"), "a change after the throw copied the listeners");
 		failing = false;
 
 		calls = [];
@@ -273,11 +273,12 @@ class EventDispatcherTest extends utest.Test {
 	}
 
 	/**
-		A dispatcher remembers the listeners of the type it dispatched last,
-		so a repeated dispatch skips looking them up. What it remembers is
-		forgotten by every change: the next dispatch, and `hasEventListener`,
-		see listeners added or removed since, from inside a dispatch (which
-		puts a new list in place of the one being walked) or out of one.
+		The next dispatch, and `hasEventListener`, see every listener added
+		or removed since the last, from inside a dispatch (which puts a new
+		list in place of the one being walked) or out of one. Natively a type
+		is found first by which string it is, so a type with the same text
+		made apart from the one added is found too, and a null type matches
+		no other.
 	**/
 	public function testADispatchSeesEveryChangeMadeSinceTheLast():Void {
 		var dispatcher = new EventDispatcher();
@@ -368,6 +369,145 @@ class EventDispatcherTest extends utest.Test {
 		dispatcher.removeEventListener("demo", listener);
 		Assert.isFalse(dispatcher.hasEventListener("demo"));
 	}
+
+	/**
+		A dispatcher keeps a few types in a short chain and more in a map:
+		types added and removed in any order, past that limit and back, keep
+		their own listeners, and a type added from inside a dispatch, moving
+		every type into the map, leaves the walk in progress alone.
+	**/
+	public function testManyTypesAddedAndRemovedInAnyOrderKeepTheirListeners():Void {
+		var dispatcher = new EventDispatcher();
+		var heard:Array<String> = [];
+		var listeners:Map<String, Event->Void> = new Map();
+		var types:Array<String> = [for (i in 0...14) "type" + i];
+		for (type in types) {
+			var listener = (event:Event) -> heard.push(type + ":" + event.type);
+			listeners.set(type, listener);
+			dispatcher.addEventListener(type, listener);
+		}
+		function check(present:Array<String>, step:String):Void {
+			for (type in types) {
+				heard = [];
+				var listened:Bool = present.indexOf(type) >= 0;
+				Assert.equals(listened, dispatcher.hasEventListener(type), step + ": hasEventListener(" + type + ")");
+				Assert.equals(listened, dispatcher.dispatchEvent(new Event(type)), step + ": dispatching " + type);
+				Assert.equals(listened ? type + ":" + type : "", heard.join(","), step + ": who heard " + type);
+			}
+		}
+		check(types, "all added");
+
+		var present:Array<String> = types.copy();
+		for (index in [0, 13, 6, 7, 1, 12, 3, 2, 11, 4, 10, 5, 9]) {
+			var type:String = types[index];
+			dispatcher.removeEventListener(type, listeners.get(type));
+			present.remove(type);
+			check(present, "removed " + type);
+		}
+		for (index in [9, 0, 5, 13]) {
+			var type:String = types[index];
+			dispatcher.addEventListener(type, listeners.get(type));
+			present.push(type);
+			check(present, "added back " + type);
+		}
+
+		// A listener that adds enough new types to move the rest into a map:
+		// the dispatch it is part of still reaches the listener after it.
+		var fresh = new EventDispatcher();
+		var calls:Array<String> = [];
+		fresh.addEventListener("first", (_:Event) -> {
+			calls.push("adder");
+			for (i in 0...12) {
+				fresh.addEventListener("extra" + i, (_:Event) -> calls.push("extra"));
+			}
+		});
+		fresh.addEventListener("first", (_:Event) -> calls.push("after"));
+		fresh.dispatchEvent(new Event("first"));
+		Assert.equals("adder,after", calls.join(","));
+		calls = [];
+		fresh.dispatchEvent(new Event("extra11"));
+		Assert.equals("extra", calls.join(","));
+	}
+
+	#if (target.threaded && !eval)
+	/**
+		Two threads dispatching different types on one dispatcher, its
+		listeners added beforehand: each thread's events reach its own type's
+		listeners and only those, and are always found. Asking which listeners
+		a type has must not write anything another thread's question can
+		mix with its own: a remembered type and list, written one after the
+		other, could be left holding one thread's type with the other's
+		listeners, or with none.
+
+		A test can only make the two threads overlap as much as it can, and
+		on targets whose threads take turns it may never catch a lookup
+		halfway; natively and on the jvm they run at once.
+	**/
+	public function testTwoThreadsDispatchingDifferentTypesReachOnlyTheirOwnListeners():Void {
+		var dispatcher = new EventDispatcher();
+		var strays:sys.thread.Deque<String> = new sys.thread.Deque();
+		dispatcher.addEventListener("left", (event:Event) -> {
+			if (event.type != "left") {
+				strays.add(event.type + " reached left");
+			}
+		});
+		dispatcher.addEventListener("right", (event:Event) -> {
+			if (event.type != "right") {
+				strays.add(event.type + " reached right");
+			}
+		});
+
+		var rounds:Int = 200000;
+		var start:sys.thread.Lock = new sys.thread.Lock();
+		var results:sys.thread.Deque<Int> = new sys.thread.Deque();
+		for (type in ["left", "right"]) {
+			sys.thread.Thread.create(() -> {
+				start.wait();
+				var event = new Event(type);
+				var missed:Int = 0;
+				for (_ in 0...rounds) {
+					@:privateAccess event.target = null;
+					if (!dispatcher.dispatchEvent(event)) {
+						missed++;
+					}
+					if (!dispatcher.hasEventListener(type)) {
+						missed++;
+					}
+				}
+				results.add(missed);
+			});
+		}
+		start.release();
+		start.release();
+
+		var missed:Int = 0;
+		var deadline:Float = haxe.Timer.stamp() + 60;
+		for (_ in 0...2) {
+			var count:Null<Int> = null;
+			while (count == null && haxe.Timer.stamp() < deadline) {
+				count = results.pop(false);
+				if (count == null) {
+					crossbyte.sys.System.sleep(0.001);
+				}
+			}
+			if (count == null) {
+				Assert.fail("a dispatching thread did not finish within 60 s");
+				return;
+			}
+			missed += count;
+		}
+
+		var stray:Null<String> = strays.pop(false);
+		var strayCount:Int = 0;
+		var first:Null<String> = stray;
+		while (stray != null) {
+			strayCount++;
+			stray = strays.pop(false);
+		}
+		Assert.equals(0, strayCount, strayCount + " events reached another type's listeners, the first: " + first);
+		Assert.equals(0, missed, "a type with listeners was found to have none " + missed + " times");
+	}
+	#end
 
 	public function testRemovingOneObjectsMethodLeavesAnothersAttached():Void {
 		var dispatcher = new EventDispatcher();

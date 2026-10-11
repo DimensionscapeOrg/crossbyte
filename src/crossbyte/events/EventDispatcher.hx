@@ -38,7 +38,30 @@ import crossbyte.Object;
  */
 @:access(crossbyte.events.Event)
 class EventDispatcher implements IEventDispatcher {
+	/**
+		Natively and on JavaScript, the types listened for while there have
+		been no more than `LISTED_TYPES` at once, each with its listeners,
+		chained in the order each type was first added; null when nothing
+		listens or `__eventMap` holds them. Walking a few links finds a type
+		sooner than a map's lookup does (natively by which string it is
+		before what it says), and takes less memory than a map.
+	**/
+	#if (cpp || js)
+	@:noCompletion private var __types:Null<ListenerSlot>;
+	#end
+
+	/**
+		The types listened for and their listeners, by type: on the other
+		targets all of them, natively and on JavaScript once there have been
+		more than `LISTED_TYPES` at once, and from then on. Past a handful a
+		lookup by hash beats the walk, above all for a type nothing listens
+		for, which the walk can only answer at its end.
+
+		Neither is written by a lookup, so threads asking about different
+		types at once cannot disturb each other's answers.
+	**/
 	@:noCompletion private var __eventMap:Null<StringMap<Array<ListenerEntry>>>;
+
 	@:noCompletion private var __targetDispatcher:IEventDispatcher;
 
 	/**
@@ -63,15 +86,14 @@ class EventDispatcher implements IEventDispatcher {
 	@:noCompletion private var __walking:Int;
 
 	/**
-		The type dispatched last, and its listeners as the map held them
-		then (null for none): a dispatcher mostly dispatches one type over
-		and over (a socket's data, a runtime's tick), and natively the map's
-		lookup was half of what dispatching to one listener cost. Forgotten
-		whenever a listener is added or removed.
+		How many types are chained before they all go into a map: as many as
+		a walk was measured to find no later than the map would, a type
+		nothing listens for included. Elsewhere a map's lookup is about as
+		cheap as one compare (the jvm's HashMap), and no type is chained.
 	**/
-	@:noCompletion private var __lastType:Null<String>;
-
-	@:noCompletion private var __lastList:Null<Array<ListenerEntry>>;
+	#if (cpp || js)
+	@:noCompletion private static inline var LISTED_TYPES:Int = #if cpp 8 #else 4 #end;
+	#end
 
 	/**
 	 * Creates a new `EventDispatcher`, optionally bound to a target dispatcher.
@@ -83,11 +105,12 @@ class EventDispatcher implements IEventDispatcher {
 	 */
 	public function new(target:IEventDispatcher = null) {
 		__targetDispatcher = target;
+		#if (cpp || js)
+		__types = null;
+		#end
 		__eventMap = null;
 		__nextListenerOrder = 0;
 		__walking = 0;
-		__lastType = null;
-		__lastList = null;
 	}
 
 	/**
@@ -125,19 +148,32 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		var entry:ListenerEntry = new ListenerEntry(cast listener, priority, __nextListenerOrder++);
-		__lastType = null;
 
 		var eventMap = __eventMap;
+		#if (cpp || js)
+		var slot:Null<ListenerSlot> = null;
+		var list:Null<Array<ListenerEntry>>;
+		if (eventMap != null) {
+			list = eventMap.get(type);
+		} else {
+			slot = __slotOf(type);
+			list = slot == null ? null : slot.list;
+		}
+		if (list == null) {
+			__addType(type, [entry]);
+			return;
+		}
+		#else
 		if (eventMap == null) {
 			eventMap = new StringMap();
 			__eventMap = eventMap;
 		}
-
 		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
 		if (list == null) {
 			eventMap.set(type, [entry]);
 			return;
 		}
+		#end
 
 		var length:Int = list.length;
 		var idx:Int = length;
@@ -160,6 +196,12 @@ class EventDispatcher implements IEventDispatcher {
 			// array must not change underneath it.
 			var next:Array<ListenerEntry> = list.copy();
 			next.insert(idx, entry);
+			#if (cpp || js)
+			if (slot != null) {
+				slot.list = next;
+				return;
+			}
+			#end
 			eventMap.set(type, next);
 			return;
 		}
@@ -189,15 +231,24 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		var eventMap = __eventMap;
+		#if (cpp || js)
+		var slot:Null<ListenerSlot> = null;
+		var list:Null<Array<ListenerEntry>>;
+		if (eventMap != null) {
+			list = eventMap.get(type);
+		} else {
+			slot = __slotOf(type);
+			list = slot == null ? null : slot.list;
+		}
+		#else
 		if (eventMap == null) {
 			return;
 		}
-
 		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
+		#end
 		if (list == null) {
 			return;
 		}
-		__lastType = null;
 
 		for (i in 0...list.length) {
 			final registered:Function = list[i].listener;
@@ -213,7 +264,11 @@ class EventDispatcher implements IEventDispatcher {
 			#end
 			if (same) {
 				if (list.length == 1) {
-					__eventMap.remove(type);
+					#if (cpp || js)
+					__removeType(type, slot);
+					#else
+					eventMap.remove(type);
+					#end
 					return;
 				}
 
@@ -225,6 +280,12 @@ class EventDispatcher implements IEventDispatcher {
 					// flight.
 					var next:Array<ListenerEntry> = list.copy();
 					next.splice(i, 1);
+					#if (cpp || js)
+					if (slot != null) {
+						slot.list = next;
+						return;
+					}
+					#end
 					eventMap.set(type, next);
 					return;
 				}
@@ -311,7 +372,9 @@ class EventDispatcher implements IEventDispatcher {
 	 * Use with caution: this clears the entire internal event map.
 	 */
 	public function removeAllListeners():Void {
-		__lastType = null;
+		#if (cpp || js)
+		__types = null;
+		#end
 		if (__eventMap != null) {
 			__eventMap.clear();
 		}
@@ -438,47 +501,146 @@ class EventDispatcher implements IEventDispatcher {
 	}
 
 	/**
-		The listeners for `type`, or null: the last type's without a lookup.
-		A null `__lastType` is nothing remembered, so a null `type` is always
-		looked up, as it was before anything was.
+		The listeners for `type`, in the order they run, or null for none.
+		The array is the one dispatch walks: read it, do not change it.
 	**/
-	private inline function __listenersOf(type:String):Null<Array<ListenerEntry>> {
-		var eventMap = __eventMap;
-		var lastType:Null<String> = __lastType;
+	@:noCompletion private inline function __listenersOf(type:String):Null<Array<ListenerEntry>> {
 		var list:Null<Array<ListenerEntry>> = null;
-		if (eventMap == null) {
-			// Nothing ever listened here.
-		} else if (lastType != null && __sameType(type, lastType)) {
-			list = __lastList;
-		} else {
+		#if (cpp || js)
+		var first:Null<ListenerSlot> = __types;
+		if (first != null) {
+			if (__sameString(first.type, type)) {
+				list = first.list;
+			} else {
+				var slot:Null<ListenerSlot> = __findSlot(first, type);
+				if (slot != null) {
+					list = slot.list;
+				}
+			}
+			return list;
+		}
+		#end
+		var eventMap = __eventMap;
+		if (eventMap != null) {
 			list = eventMap.get(type);
-			__lastType = type;
-			__lastList = list;
 		}
 		return list;
 	}
 
+	#if (cpp || js)
+
+	/** The chained slot for `type`, or null. **/
+	@:noCompletion private inline function __slotOf(type:String):Null<ListenerSlot> {
+		var first:Null<ListenerSlot> = __types;
+		return first == null ? null : (__sameString(first.type, type) ? first : __findSlot(first, type));
+	}
+
 	/**
-		Whether two types are the same. Natively a dispatcher's repeated type
-		is mostly the very same string, which is checked first: hxcpp's `==`
-		on strings is a call that looks at their encodings before their
-		characters, 8 ns each time, where comparing where they point is free.
+		The chained slot for `type`, or null, looking from `first`. A
+		dispatcher is mostly asked about the very strings it was given, so
+		natively the walk compares which string each is first, which costs
+		nothing, and only then their text; on JavaScript one walk by `===`
+		is as cheap.
 	**/
-	private static inline function __sameType(a:String, b:Null<String>):Bool {
+	@:noCompletion private function __findSlot(first:ListenerSlot, type:String):Null<ListenerSlot> {
+		var slot:Null<ListenerSlot> = first.next;
+		while (slot != null) {
+			if (__sameString(slot.type, type)) {
+				return slot;
+			}
+			slot = slot.next;
+		}
 		#if (cpp && !cppia && !macro)
-		var same:Bool = untyped __cpp__("({0}.raw_ptr() == {1}.raw_ptr())", a, b);
-		return same || a == b;
+		if (type == null) {
+			return null;
+		}
+		var length:Int = type.length;
+		slot = first;
+		while (slot != null) {
+			var other:Null<String> = slot.type;
+			if (other != null && other.length == length && other == type) {
+				return slot;
+			}
+			slot = slot.next;
+		}
+		#end
+		return null;
+	}
+
+	/** A new type and its listeners: chained, or mapped once there are many. **/
+	@:noCompletion private function __addType(type:String, list:Array<ListenerEntry>):Void {
+		var eventMap = __eventMap;
+		if (eventMap != null) {
+			eventMap.set(type, list);
+			return;
+		}
+		var last:Null<ListenerSlot> = __types;
+		if (last == null) {
+			__types = new ListenerSlot(type, list);
+			return;
+		}
+		var count:Int = 1;
+		while (last.next != null) {
+			last = last.next;
+			count++;
+		}
+		if (count < LISTED_TYPES) {
+			last.next = new ListenerSlot(type, list);
+			return;
+		}
+		// One more than the chain keeps: all of them go into a map.
+		eventMap = new StringMap();
+		var slot:Null<ListenerSlot> = __types;
+		while (slot != null) {
+			eventMap.set(slot.type, slot.list);
+			slot = slot.next;
+		}
+		eventMap.set(type, list);
+		__eventMap = eventMap;
+		__types = null;
+	}
+
+	/**
+		Forgets a type, its last listener gone; `slot` is its slot if chained.
+		A map stays one: it went past the chain once, and may again.
+	**/
+	@:noCompletion private function __removeType(type:String, slot:Null<ListenerSlot>):Void {
+		var eventMap = __eventMap;
+		if (eventMap != null) {
+			eventMap.remove(type);
+			return;
+		}
+		if (slot == null) {
+			return;
+		}
+		var at:Null<ListenerSlot> = __types;
+		if (at == slot) {
+			__types = slot.next;
+			return;
+		}
+		while (at != null && at.next != slot) {
+			at = at.next;
+		}
+		if (at != null) {
+			at.next = slot.next;
+		}
+	}
+
+	/**
+		Whether two types are the one string: natively by where their text
+		is, which costs nothing where hxcpp's `==` is a call; on JavaScript
+		by `===`, as cheap there.
+	**/
+	private static inline function __sameString(a:Null<String>, b:Null<String>):Bool {
+		#if (cpp && !cppia && !macro)
+		return untyped __cpp__("({0}.raw_ptr() == {1}.raw_ptr())", a, b);
 		#else
 		return a == b;
 		#end
 	}
+	#end
 
-	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
-		__lastType = null;
-		if (__eventMap == null) {
-			return;
-		}
-
+	@:noCompletion private function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
 		// Built fresh rather than spliced, for the same reason add and remove
 		// build fresh: a dispatch may be walking this array right now, and
 		// removing from underneath it would make it skip entries.
@@ -490,14 +652,49 @@ class EventDispatcher implements IEventDispatcher {
 			}
 		}
 
-		if (kept.length == 0) {
-			__eventMap.remove(type);
+		#if (cpp || js)
+		var slot:Null<ListenerSlot> = __slotOf(type);
+		if (slot != null) {
+			if (kept.length == 0) {
+				__removeType(type, slot);
+			} else {
+				slot.list = kept;
+			}
 			return;
 		}
-
-		__eventMap.set(type, kept);
+		#end
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			return;
+		}
+		if (kept.length == 0) {
+			eventMap.remove(type);
+		} else {
+			eventMap.set(type, kept);
+		}
 	}
 }
+
+#if (cpp || js)
+/**
+	A chained type and its listeners: a lookup finds both in one object, so
+	nothing can pair one type with another's listeners.
+**/
+private final class ListenerSlot {
+	public final type:String;
+
+	/** Its listeners, in the order they run; never empty while chained. **/
+	public var list:Array<ListenerEntry>;
+
+	public var next:Null<ListenerSlot>;
+
+	public inline function new(type:String, list:Array<ListenerEntry>) {
+		this.type = type;
+		this.list = list;
+		this.next = null;
+	}
+}
+#end
 
 /**
 	One registered listener. A class rather than an anonymous structure: on

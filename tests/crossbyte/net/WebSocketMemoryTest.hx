@@ -208,14 +208,18 @@ class WebSocketMemoryTest extends utest.Test {
 	/**
 		A server hangs no listener of its own on its sessions: it is told of
 		a close by the session itself, and still takes the session off its
-		list. A close listener on every session would be a map, a list, an
-		entry and a closure, 370 bytes natively, for as long as it lasted.
+		list. A close listener on every session would be a slot for its type,
+		a list, an entry and a closure, about 280 bytes natively, for as long
+		as it lasted.
 	**/
 	@:timeout(15000)
 	public function testTheServerHangsNoListenerOnItsSessions(async:Async):Void {
 		__openSession(async, null, null, function(server, session, peer, done) {
 			Assert.isFalse(session.hasEventListener(Event.CLOSE), "the server listens for its session's close");
 			Assert.isNull(@:privateAccess session.__eventMap, "the session holds listeners nobody added");
+			#if (cpp || js)
+			Assert.isNull(@:privateAccess session.__types, "the session holds listeners nobody added");
+			#end
 			var closed:Bool = false;
 			session.addEventListener(Event.CLOSE, function(_) {
 				closed = true;

@@ -606,17 +606,17 @@ class CrossThreadCloseTest extends utest.Test {
 
 	@:access(crossbyte.events.EventDispatcher)
 	private static function __tickListeners(runtime:CrossByte):Int {
-		var list:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		var list:Array<Dynamic> = cast runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
 		return list == null ? 0 : list.length;
 	}
 
 	/** Whether `listener` is among `runtime`'s tick listeners. **/
 	@:access(crossbyte.events.EventDispatcher)
 	private static function __listening(runtime:CrossByte, listener:Dynamic):Bool {
-		if (listener == null || runtime.__eventMap == null) {
+		if (listener == null) {
 			return false;
 		}
-		var listeners:Array<Dynamic> = runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		var listeners:Array<Dynamic> = cast runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
 		if (listeners == null) {
 			return false;
 		}

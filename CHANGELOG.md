@@ -564,9 +564,11 @@ says how.
   rather than throwing into the frame. Sockets never raised it. (Upgrading)
 - Dispatching an event costs about half what it did, and adding or removing
   a listener copies the list only while a dispatch is walking it. A
-  dispatcher keeps the listeners of the type it was last asked about, so
-  natively it halves again: a dispatch to one listener takes 14 ns where
-  it took 31, and `hasEventListener` 3 ns where it took 14.
+  dispatcher keeps its first few types in a short chain rather than a map
+  (eight natively, four on JavaScript), so natively it halves again,
+  whichever of its types is asked about: a dispatch to one listener takes
+  9 ns where it took 20, `hasEventListener` 1 ns where it took 12, and a
+  dispatcher with one listener 184 bytes where it took 264.
 - `CrossByte.current()` answers the calling thread's own runtime on every
   threaded target, and throws on a thread no runtime belongs to.
   `CrossByte.make()` no longer takes over the calling thread's timers, and a

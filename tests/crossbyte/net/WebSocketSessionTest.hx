@@ -1028,7 +1028,7 @@ class WebSocketSessionTest extends utest.Test {
 
 	private static function __tickListeners():Int {
 		var runtime:CrossByte = CrossByte.current();
-		var listeners:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(TickEvent.TICK);
+		var listeners:Array<Dynamic> = cast runtime.__listenersOf(TickEvent.TICK);
 		return listeners == null ? 0 : listeners.length;
 	}
 	#end

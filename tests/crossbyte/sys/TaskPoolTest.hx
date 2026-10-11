@@ -97,7 +97,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	private static function __tickListeners(runtime:CrossByte):Int {
-		var list:Array<Dynamic> = @:privateAccess runtime.__eventMap == null ? null : cast @:privateAccess runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		var list:Array<Dynamic> = cast @:privateAccess runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
 		return list == null ? 0 : list.length;
 	}
 

@@ -2124,7 +2124,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		order they run, leaving out the one this class attached for itself.
 	**/
 	@:noCompletion private function __refreshSharedConnect():Void {
-		var listed:Array<Dynamic> = __eventMap == null ? null : cast __eventMap.get(ServerSocketConnectEvent.CONNECT);
+		var listed = __listenersOf(ServerSocketConnectEvent.CONNECT);
 		if (listed == null || listed.length == 0) {
 			__sharedConnect = null;
 			return;
