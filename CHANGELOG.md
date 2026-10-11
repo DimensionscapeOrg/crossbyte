@@ -692,6 +692,10 @@ says how.
   one is not zeroed a second time. The bounds kept since
   (see Fixed) cost an index read 0.3 ns on Node, and reading `position`
   and `bytesAvailable` 1 ns on HashLink.
+- `TypedObject<T>` converts from and to its `T` and nothing else: a
+  `String`, an `Int` or a `TypedObject` of another type no longer compiles
+  as one, nor does one as an `Int`. A `Dynamic`, as `Json.parse` gives,
+  still converts, and `for (field in typed)` compiles. (Upgrading)
 
 #### TCP
 
@@ -1872,6 +1876,10 @@ an API added in this release has is not listed here.
 - `PrimitiveValue.toFloat` reads a string as a number only if the whole of
   it is one: `"12abc"` and `"1,5"` are `NaN`, where the number they began
   with was read. Strip what follows a number before converting.
+- A `TypedObject<T>` is made from a `T`, or from a `Dynamic` such as
+  `Json.parse`'s result, and becomes a `T` or a `Dynamic`: code that gave
+  one a value of another type, or took one as another type, `cast`s it
+  where that is meant (`var t:TypedObject<Point> = cast value`).
 
 #### TCP
 

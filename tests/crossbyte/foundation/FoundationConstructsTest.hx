@@ -5,6 +5,7 @@ import crossbyte.Object;
 import crossbyte.PrimitiveValue;
 import crossbyte.Seq32;
 import crossbyte.TypedObject;
+import crossbyte.ds.TypeCheck;
 import utest.Assert;
 
 private typedef SamplePayload = {
@@ -461,6 +462,43 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals("created", created.name);
 		Assert.equals(9, casted.id);
 		Assert.equals("cast", casted.name);
+	}
+
+	/**
+		A `TypedObject` converts from its `T` and to it, and from and to
+		nothing else. It converted from and to `Dynamic`, so a String or an
+		Int compiled as a `TypedObject<{id:Int, name:String}>` (its `id`
+		then null, or a cast that throws on the jvm), and one compiled as an
+		`Int`. A `Dynamic`, as `Json.parse` gives, is still taken, and with
+		the untyped conversion gone `for (field in typed)` compiles.
+	**/
+	public function testTypedObjectConvertsOnlyFromAndToItsType():Void {
+		Assert.notNull(TypeCheck.errorOf({
+			var typed:TypedObject<SamplePayload> = "hello";
+		}), "a String became a TypedObject");
+		Assert.notNull(TypeCheck.errorOf({
+			var typed:TypedObject<SamplePayload> = 42;
+		}), "an Int became a TypedObject");
+		Assert.notNull(TypeCheck.errorOf({
+			var typed:TypedObject<SamplePayload> = TypedObject.of("hello");
+		}), "a TypedObject of a String became one of a structure");
+		var parsed:TypedObject<SamplePayload> = haxe.Json.parse('{"id":3,"name":"p"}');
+		Assert.notNull(TypeCheck.errorOf({
+			var count:Int = parsed;
+		}), "a TypedObject became an Int");
+
+		Assert.equals(3, parsed.id);
+		var plain:SamplePayload = parsed;
+		var loose:Dynamic = parsed;
+		var object:Object = parsed;
+		var back:TypedObject<SamplePayload> = plain;
+		Assert.equals("p", plain.name);
+		Assert.equals(3, loose.id);
+		Assert.equals(3, object.id);
+		Assert.equals("p", back.name);
+		var seen:Array<String> = [for (field in parsed) field];
+		seen.sort(Reflect.compare);
+		Assert.same(["id", "name"], seen);
 	}
 
 	public function testTypedObjectSupportsOfBracketAccessAndFieldIteration():Void {
