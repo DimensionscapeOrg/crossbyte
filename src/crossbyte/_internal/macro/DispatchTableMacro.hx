@@ -93,6 +93,21 @@ class DispatchTableMacro {
 	public static function build():Array<Field> {
 		var fields:Array<Field> = Context.getBuildFields();
 		var local:ClassType = Context.getLocalClass().get();
+
+		// A class extending a table is built too, as anything implementing the
+		// interface is, and has no cases of its own: it keeps the table its
+		// parent made, whose `call` reaches a case's method it overrides. Cases
+		// of its own would need a second `call` its parent's cannot become.
+		if (__extendsTable(local)) {
+			for (field in fields) {
+				if (field.meta != null && Lambda.exists(field.meta, m -> m.name == ":case" || m.name == ":default")) {
+					Context.error('The cases of a table are all in one class, and ${local.superClass.t.get().name}\'s are: '
+						+ 'override its methods here to change what a key does', field.pos);
+				}
+			}
+			return null;
+		}
+
 		var cases:Array<{field:Field, fn:Function, keys:Array<Expr>}> = [];
 		var fallback:Null<{field:Field, fn:Function}> = null;
 		for (field in fields) {
@@ -147,7 +162,13 @@ class DispatchTableMacro {
 		for (c in cases) {
 			allKeys = allKeys.concat(c.keys);
 		}
-		var keyType:Type = __keyType(allKeys);
+		// A key may be one of this class's own `static inline var`s, as an
+		// opcode table's often are. The class is being built, so its fields
+		// cannot be typed yet: such a key is typed as the value it was given.
+		// The switch names it as written, which Haxe reads as that constant.
+		var own:Map<String, Expr> = __ownConstants(fields);
+		var path:Array<String> = local.pack.concat([local.name]);
+		var keyType:Type = __keyType(allKeys, [for (key in allKeys) __withOwnConstants(key, own, path, 0)]);
 		var keyCT:ComplexType = TypeTools.toComplexType(keyType);
 
 		// The table's signature: the first case's, whose arguments say their
@@ -241,13 +262,16 @@ class DispatchTableMacro {
 
 	/**
 		The keys' type, after checking each is a constant of it and no two
-		are the same value.
+		are the same value. `typing`, where given, is what each key is typed
+		as, the key itself being what the errors name.
 	**/
-	private static function __keyType(keys:Array<Expr>):Type {
+	private static function __keyType(keys:Array<Expr>, ?typing:Array<Expr>):Type {
 		var keyType:Null<Type> = null;
 		var seen:Map<String, Expr> = new Map();
-		for (key in keys) {
-			var typed:TypedExpr = try Context.typeExpr(key) catch (error:Dynamic) Context.error(Std.string(error), key.pos);
+		for (i in 0...keys.length) {
+			var key:Expr = keys[i];
+			var form:Expr = typing == null ? key : typing[i];
+			var typed:TypedExpr = try Context.typeExpr(form) catch (error:Dynamic) Context.error(Std.string(error), key.pos);
 			var value:Null<String> = __constant(typed);
 			if (value == null) {
 				Context.error('A DispatchTable key is a constant (a literal, an inline variable or an enum abstract value), and ${ExprTools.toString(key)} is not', key.pos);
@@ -268,6 +292,80 @@ class DispatchTableMacro {
 			seen.set(value, key);
 		}
 		return keyType;
+	}
+
+	/**
+		The class's own `static inline var`s, by name, each as the value it
+		was given, checked against its type where it states one.
+	**/
+	private static function __ownConstants(fields:Array<Field>):Map<String, Expr> {
+		var own:Map<String, Expr> = new Map();
+		for (field in fields) {
+			if (field.access == null || field.access.indexOf(AStatic) < 0 || field.access.indexOf(AInline) < 0) {
+				continue;
+			}
+			switch (field.kind) {
+				case FVar(type, value) | FProp(_, _, type, value) if (value != null):
+					own.set(field.name, type == null ? value : {expr: ECheckType(value, type), pos: value.pos});
+				default:
+			}
+		}
+		return own;
+	}
+
+	/**
+		`key` with each of the class's own constants in it, named alone or
+		through the class, replaced by its value, and those values' own in
+		turn (one constant made of another).
+	**/
+	private static function __withOwnConstants(key:Expr, own:Map<String, Expr>, path:Array<String>, depth:Int):Expr {
+		if (depth > 16) {
+			return key;
+		}
+		return switch (key.expr) {
+			case EConst(CIdent(name)) if (own.exists(name)):
+				__withOwnConstants(own.get(name), own, path, depth + 1);
+			case EField(owner, name) if (own.exists(name) && __namesClass(owner, path)):
+				__withOwnConstants(own.get(name), own, path, depth + 1);
+			default:
+				ExprTools.map(key, e -> __withOwnConstants(e, own, path, depth + 1));
+		}
+	}
+
+	/** Whether `e` names the class at `path`, by its name or in full. **/
+	private static function __namesClass(e:Expr, path:Array<String>):Bool {
+		var written:String = ExprTools.toString(e);
+		return written == path[path.length - 1] || written == path.join(".");
+	}
+
+	/**
+		Whether a class `local` extends is a table, so that `local` inherits
+		its members rather than making them.
+	**/
+	private static function __extendsTable(local:ClassType):Bool {
+		var parent = local.superClass;
+		while (parent != null) {
+			var cls:ClassType = parent.t.get();
+			for (i in cls.interfaces) {
+				if (__isTableInterface(i.t.get())) {
+					return true;
+				}
+			}
+			parent = cls.superClass;
+		}
+		return false;
+	}
+
+	private static function __isTableInterface(i:ClassType):Bool {
+		if (i.pack.join(".") == "crossbyte.ds" && i.name == "DispatchTable") {
+			return true;
+		}
+		for (inherited in i.interfaces) {
+			if (__isTableInterface(inherited.t.get())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** A key's value, tagged by kind, or null when it is not a constant. **/

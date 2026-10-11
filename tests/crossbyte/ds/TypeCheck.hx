@@ -27,11 +27,14 @@ class TypeCheck {
 	/**
 		The error a `DispatchTable` class of the functions in `block`
 		fails to build with, or null when it builds. Each function is a method
-		with the metadata written on it, static unless marked `@:instance`.
-		The class is a module of its own, so a key it names that is not a
-		literal is written with its full path.
+		with the metadata written on it, static unless marked `@:instance`;
+		a variable is a public field, or a `static inline var` marked
+		`@:static`. The class is a module of its own, so a key it names that
+		is not a literal or one of its own constants is written with its full
+		path. Given `parent`, a type path, the class extends that class rather
+		than implementing `DispatchTable` itself.
 	**/
-	public static macro function tableErrorOf(block:Expr):ExprOf<Null<String>> {
+	public static macro function tableErrorOf(block:Expr, ?parent:ExprOf<String>):ExprOf<Null<String>> {
 		var fields:Array<Field> = [];
 		var functions:Array<Expr> = switch (block.expr) {
 			case EBlock(exprs): exprs;
@@ -61,8 +64,9 @@ class TypeCheck {
 						pos: inner.pos
 					});
 				case EVars(vars):
+					var isStatic:Bool = Lambda.exists(meta, m -> m.name == ":static");
 					for (v in vars) {
-						fields.push({name: v.name, access: [APublic], kind: FVar(v.type, v.expr), pos: inner.pos});
+						fields.push({name: v.name, access: isStatic ? [APublic, AStatic, AInline] : [APublic], kind: FVar(v.type, v.expr), pos: inner.pos});
 					}
 				default:
 					Context.error("tableErrorOf takes named functions", inner.pos);
@@ -73,7 +77,22 @@ class TypeCheck {
 			pack: ["crossbyte", "ds"],
 			name: name,
 			pos: block.pos,
-			kind: TDClass(null, [{pack: ["crossbyte", "ds"], name: "DispatchTable"}]),
+			kind: switch (parent == null ? null : parent.expr) {
+				case EConst(CString(path)):
+					// A type of a module of another name, `pack.Module.Type`, is
+					// that module's sub-type.
+					var parts:Array<String> = path.split(".");
+					var last:String = parts.pop();
+					var module:String = parts[parts.length - 1];
+					if (module.charAt(0) == module.charAt(0).toUpperCase()) {
+						parts.pop();
+						TDClass({pack: parts, name: module, sub: last});
+					} else {
+						TDClass({pack: parts, name: last});
+					}
+				default:
+					TDClass(null, [{pack: ["crossbyte", "ds"], name: "DispatchTable"}]);
+			},
 			fields: fields
 		});
 		try {

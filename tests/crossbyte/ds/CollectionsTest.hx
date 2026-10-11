@@ -451,6 +451,55 @@ class CollectionsTest extends utest.Test {
 		}));
 	}
 
+	/**
+		A table keyed by its own `static inline var`s, named alone or through
+		the class, as an opcode table often is. They could not be typed while
+		the class was being built, so such a table failed to compile with
+		"Unknown identifier".
+	**/
+	public function testADispatchTableTakesItsOwnConstantsAsKeys():Void {
+		var table = new DispatchOwnKeys();
+		table.call(DispatchOwnKeys.PING, "ada");
+		table.call(2, "bob");
+		table.call(9, "cy");
+		Assert.equals("ping ada,login bob,other 9", table.seen.join(","));
+		Assert.isTrue(table.exists(DispatchOwnKeys.LOGIN));
+		Assert.isFalse(table.exists(3));
+		Assert.equals("1,2", DispatchOwnKeys.keys.join(","));
+
+		// The same value given twice, as a constant and as a literal, is still
+		// refused.
+		var error:Null<String> = TypeCheck.tableErrorOf({
+			@:static var PING:Int = 1;
+			@:case(PING) function one(v:Int):Void {}
+			@:case(1) function two(v:Int):Void {}
+		});
+		Assert.isTrue(error != null && error.indexOf("Two cases name the key") >= 0, error);
+	}
+
+	/**
+		A class extending a table keeps its parent's table, and its `call`
+		reaches a case's method the class overrides. Built as anything
+		implementing the interface is, such a class failed to compile, having
+		no cases of its own; one that has some is refused with a reason.
+	**/
+	public function testAClassExtendingADispatchTableKeepsItsTable():Void {
+		var table = new DispatchRecording();
+		table.call(1, 3);
+		table.call(2, 4);
+		var asParent:DispatchParent = table;
+		asParent.call(1, 5);
+		Assert.equals("recorded 3,two 4,recorded 5", table.seen.join(","));
+
+		Assert.isNull(TypeCheck.tableErrorOf({
+			@:instance function extra(v:Int):Void {}
+		}, "crossbyte.ds.CollectionsTest.DispatchParent"));
+		var error:Null<String> = TypeCheck.tableErrorOf({
+			@:instance @:case(3) function three(v:Int):Void {}
+		}, "crossbyte.ds.CollectionsTest.DispatchParent");
+		Assert.isTrue(error != null && error.indexOf("all in one class") >= 0, error);
+	}
+
 	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
 		var tree = new RadixTree<Int>();
 
@@ -2289,6 +2338,53 @@ private class DispatchOpcodes {
 
 	public static function thrice(v:Int):Int {
 		return v * 3;
+	}
+}
+
+/** A table keyed by its own constants. **/
+private class DispatchOwnKeys implements DispatchTable {
+	public static inline var PING:Int = 1;
+	public static inline var LOGIN:Int = 2;
+
+	public var seen:Array<String> = [];
+
+	public function new() {}
+
+	@:case(PING) function ping(name:String):Void {
+		seen.push("ping " + name);
+	}
+
+	@:case(DispatchOwnKeys.LOGIN) function login(name:String):Void {
+		seen.push("login " + name);
+	}
+
+	@:default function other(key:Int, name:String):Void {
+		seen.push("other " + key);
+	}
+}
+
+/** A table another class extends; public, for TypeCheck's probes to extend. **/
+class DispatchParent implements DispatchTable {
+	public var seen:Array<String> = [];
+
+	public function new() {}
+
+	@:case(1) function one(v:Int):Void {
+		seen.push("one " + v);
+	}
+
+	@:case(2) function two(v:Int):Void {
+		seen.push("two " + v);
+	}
+}
+
+private class DispatchRecording extends DispatchParent {
+	public function new() {
+		super();
+	}
+
+	override function one(v:Int):Void {
+		seen.push("recorded " + v);
 	}
 }
 

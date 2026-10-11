@@ -56,12 +56,17 @@ import haxe.macro.Expr;
 	```
 
 	Every case takes the same arguments, and every key is a constant (a
-	literal, an inline variable or an enum abstract value) of one type: an
-	`Int`, a `String`, or an enum abstract over either. A case that takes
-	other arguments, a key of another type or one that is not a constant,
-	and two keys of one value are compile errors. A method takes one key or
-	several, and the cases are all instance methods, as here, keeping the
-	table's state in its fields, or all static, for `Opcodes.call(...)`.
+	literal, an inline variable, the table's own `static inline var`s
+	included, or an enum abstract value) of one type: an `Int`, a `String`,
+	or an enum abstract over either. A case that takes other arguments, a
+	key of another type or one that is not a constant, and two keys of one
+	value are compile errors. A method takes one key or several, and the
+	cases are all instance methods, as here, keeping the table's state in
+	its fields, or all static, for `Opcodes.call(...)`.
+
+	A class extending a table keeps its table: its `call` reaches a case's
+	method the class overrides. The cases are all in the table itself; one
+	marked in a class extending it is a compile error.
 
 	A table makes these members:
 
