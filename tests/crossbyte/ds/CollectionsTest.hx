@@ -1599,6 +1599,124 @@ class CollectionsTest extends utest.Test {
 		Assert.isTrue(all.isEmpty);
 	}
 
+	/**
+		A loop over a `DenseSet` stays right through each kind of change its
+		body can make: removing the element it is on and adding another in
+		the same step, removing two in a row before the next, clearing the
+		set, and an empty set, of numbers and of objects. An element added
+		during the loop is visited by it; one moved behind the loop by the
+		removal of an element it had passed is skipped, as documented.
+	**/
+	public function testADenseSetLoopFollowsEveryChangeItsBodyMakes():Void {
+		// The element the loop is on removed, and a new one added, at once.
+		var set = new DenseSet<Int>();
+		for (i in 0...5) {
+			set.add(i);
+		}
+		var seen:Array<Int> = [];
+		for (x in set) {
+			seen.push(x);
+			if (x == 1) {
+				set.remove(1);
+				set.add(10);
+			}
+		}
+		seen.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 10], seen);
+
+		// The element the loop is on removed, then the one swapped into its
+		// place, before the loop moves on.
+		var twice = new DenseSet<Int>();
+		for (i in 0...6) {
+			twice.add(i);
+		}
+		var visits:Array<Int> = [];
+		for (x in twice) {
+			visits.push(x);
+			if (x == 2) {
+				twice.remove(2);
+				twice.remove(twice.valueAt(2));
+			}
+		}
+		visits.sort((a, b) -> a - b);
+		var left = twice.toArray();
+		left.sort((a, b) -> a - b);
+		for (x in left) {
+			Assert.equals(1, visits.filter(v -> v == x).length, x + " stayed in the set and was visited " + visits.filter(v -> v == x).length
+				+ " times");
+		}
+		Assert.equals(4, left.length);
+
+		// Cleared from inside the loop: the loop ends.
+		var cleared = new DenseSet<String>();
+		for (i in 0...4) {
+			cleared.add("c" + i);
+		}
+		var after:Int = 0;
+		for (x in cleared) {
+			after++;
+			cleared.clear();
+		}
+		Assert.equals(1, after);
+
+		// Empty, of numbers and of objects.
+		var none = new DenseSet<Int>();
+		var empty = new DenseSet<DenseThing>();
+		var steps:Int = 0;
+		for (_ in none) {
+			steps++;
+		}
+		for (_ in empty) {
+			steps++;
+		}
+		Assert.equals(0, steps);
+
+		// An element the loop has passed removed: the last one moves behind
+		// the loop, and is skipped.
+		var passed = new DenseSet<Int>();
+		for (i in 0...5) {
+			passed.add(i);
+		}
+		var order:Array<Int> = [];
+		for (x in passed) {
+			order.push(x);
+			if (x == 2) {
+				passed.remove(0);
+			}
+		}
+		Assert.same([0, 1, 2, 3], order);
+		Assert.isTrue(passed.contains(4));
+	}
+
+	/**
+		A loop over a `DenseSet` allocates nothing, natively and on the jvm.
+		Its iterator read a field nothing had written, which the compiler
+		will not keep in locals, so natively each loop allocated one, 40
+		bytes, and asked whether something had moved at every step.
+	**/
+	public function testALoopOverADenseSetAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var set = new DenseSet<DenseThing>();
+		for (i in 0...100) {
+			set.add(new DenseThing(i));
+		}
+		var sum:Int = 0;
+		var loop:Void->Void = () -> {
+			for (thing in set) {
+				sum += thing.id;
+			}
+		};
+		for (_ in 0...20000) {
+			loop();
+		}
+		var reading = crossbyte.test.AllocationMeter.measure(loop, 2000, 3);
+		Assert.equals(0.0, reading.perOperation, "a loop allocated " + reading);
+		Assert.isTrue(sum > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAHandleWithTheSignBitSetReachesNoEntry():Void {
 		// Its generation was read masked, so the sign bit fell away and the
 		// handle read as the live one beside it: SlotHandle.INVALID (-1) is
@@ -2329,6 +2447,14 @@ class CollectionsTest extends utest.Test {
 		Assert.notNull(graph.getNeighbors("mid"));
 		Assert.equals(0, graph.getNeighbors("mid").length);
 		Assert.equals(0, graph.getNeighbors("end").length);
+	}
+}
+
+private class DenseThing {
+	public final id:Int;
+
+	public function new(id:Int) {
+		this.id = id;
 	}
 }
 

@@ -1152,6 +1152,10 @@ Fixes to code new in this release are not listed.
   returns the error's own stack.
 - `ListedMap`, `DenseSet`, `OrderedMap`, `IndexedMap` and `PackedSlotMap`
   can have the entry a loop is on removed.
+- A loop over a `DenseSet` allocates nothing natively, where each loop
+  allocated its iterator (40 bytes), and looks for a moved element only
+  after a removal: over 1,000 elements 730 ns rather than 1,720 natively
+  and 2,160 rather than 2,620 on Node.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

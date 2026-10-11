@@ -15,7 +15,9 @@ import haxe.ds.Map;
  * **Removing while iterating.** Removing the element a loop is on is safe:
  * the element moved into its place is visited next, and every other one
  * once. Removing an element the loop has already passed moves one it has
- * not reached behind it, which is then skipped.
+ * not reached behind it, which is then skipped. An element added during the
+ * loop is visited by it. A loop allocates nothing natively or on the jvm,
+ * and looks for a moved element only after a removal.
  *
  * @param K The element type. Keys are compared using `Map` semantics.
  */
@@ -23,6 +25,8 @@ import haxe.ds.Map;
 final class DenseSet<K:Dynamic> {
 	@:noCompletion private var keys:Array<K>;
 	@:noCompletion private var pos:Map<K, Int>;
+	// Removals so far, so an iterator looks again only after one.
+	@:noCompletion private var __removals:Int = 0;
 
 	public var length(get, never):Int;
 	public var isEmpty(get, never):Bool;
@@ -99,6 +103,7 @@ final class DenseSet<K:Dynamic> {
 		}
 		keys.pop();
 		pos.remove(removed);
+		__removals++;
 		return true;
 	}
 
@@ -167,6 +172,7 @@ final class DenseSet<K:Dynamic> {
 	public inline function clear():Void {
 		keys.resize(0);
 		pos.clear();
+		__removals++;
 	}
 
 	public inline function toString():String {
@@ -184,34 +190,48 @@ final class DenseSet<K:Dynamic> {
 @:access(crossbyte.ds.DenseSet)
 class DenseSetIterator<K:Dynamic> {
 	private var __set:DenseSet<K>;
+	private var __keys:Array<K>;
 	private var __next:Int = 0;
+	private var __removals:Int;
 	private var __returnedAt:Int = -1;
 	private var __returned:K;
 
 	public inline function new(set:DenseSet<K>) {
 		__set = set;
+		__keys = set.keys;
+		__removals = set.__removals;
+		// Written here, though only read once next() has written it, so that
+		// a loop keeps the iterator in locals rather than allocating it: the
+		// compiler will not inline an object one of whose fields could be
+		// read unwritten.
+		__returned = __keys[0];
 	}
 
 	public inline function hasNext():Bool {
-		__settle();
-		return __next < __set.keys.length;
+		if (__set.__removals != __removals) {
+			__settle();
+		}
+		return __next < __keys.length;
 	}
 
 	public inline function next():K {
-		__settle();
-		var key:K = __set.keys[__next];
+		if (__set.__removals != __removals) {
+			__settle();
+		}
+		var key:K = __keys[__next];
 		__returned = key;
 		__returnedAt = __next++;
 		return key;
 	}
 
-	// The element returned last is no longer where it was: whatever is there
-	// now was swapped in from the end and has not been visited. Elements are
-	// distinct, so a different one there is a different element.
+	// Something was removed since the last look. If the element returned
+	// last is no longer where it was, whatever is there now was swapped in
+	// from the end and has not been visited. Elements are distinct, so a
+	// different one there is a different element.
 	private inline function __settle():Void {
+		__removals = __set.__removals;
 		if (__returnedAt >= 0) {
-			var keys:Array<K> = __set.keys;
-			if (__returnedAt >= keys.length || keys[__returnedAt] != __returned) {
+			if (__returnedAt >= __keys.length || __keys[__returnedAt] != __returned) {
 				__next = __returnedAt;
 			}
 			__returnedAt = -1;
