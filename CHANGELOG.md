@@ -1186,6 +1186,12 @@ Fixes to code new in this release are not listed.
   keys and allocates nothing rather than 32 bytes, and a replaced value
   32 ns and nothing rather than 56 ns and 82 bytes; on the jvm a replaced
   value allocates nothing rather than 14 bytes.
+- An `IndexedMap` boxes no key or index, natively or on the jvm: at 1,000
+  keys a `get` takes 4.0 ns rather than 8.6 natively and 3.1 rather than
+  6.4 on the jvm, allocating nothing rather than 18 and 14 bytes, and a
+  removal and an addition allocate nothing on the jvm rather than 61
+  bytes, and natively only the map's own entry for the key (24 bytes
+  rather than 65).
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

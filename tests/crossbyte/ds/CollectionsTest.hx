@@ -1429,6 +1429,135 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
+		An `IndexedMap` answers as a `Map` would through a long run of adds,
+		sets, removals and clears, keys crowded into a small range (so their
+		slots collide and a removal has neighbours to move back) and spread
+		over the whole of `Int`, its ends and zero included.
+	**/
+	public function testAnIndexedMapAgreesWithAMap():Void {
+		var seed:Int = 7;
+		function draw(bound:Int):Int {
+			seed = (crossbyte.utils.Hash.mul32(seed, 1103515245) + 12345) & 0x7FFFFFFF;
+			return Std.int(seed / 2147483648.0 * bound);
+		}
+		var spread:Array<Int> = [0, 1, -1, 0x7FFFFFFF, -0x7FFFFFFF - 1, 1 << 16, -(1 << 16), 255, 256, 127, 128];
+		for (round in 0...2) {
+			var map = new IndexedMap<String>();
+			var model = new Map<Int, String>();
+			var wrong:Array<String> = [];
+			for (step in 0...6000) {
+				var key:Int = round == 0 ? draw(300) - 40 : (draw(4) == 0 ? spread[draw(spread.length)] : draw(2000000000) - 1000000000);
+				switch (draw(10)) {
+					case 0 | 1 | 2:
+						map.add("a" + step, key);
+						model.set(key, "a" + step);
+					case 3 | 4:
+						map.set(key, "s" + step);
+						model.set(key, "s" + step);
+					case 5 | 6 | 7:
+						if (map.remove(key) != model.remove(key)) {
+							wrong.push("remove(" + key + ") at " + step);
+						}
+					case 8:
+						if (map.get(key) != model.get(key) || map.exists(key) != model.exists(key)) {
+							wrong.push("get(" + key + ") at " + step);
+						}
+					default:
+						if (draw(200) == 0) {
+							map.clear();
+							model.clear();
+						}
+				}
+			}
+			var count:Int = 0;
+			for (key in model.keys()) {
+				count++;
+				if (map.get(key) != model.get(key)) {
+					wrong.push("holds " + key + " as " + map.get(key) + ", not " + model.get(key));
+				}
+			}
+			if (map.length() != count) {
+				wrong.push("length " + map.length() + ", not " + count);
+			}
+			var keys = map.keys();
+			var values = map.toArray();
+			for (i in 0...keys.length) {
+				if (model.get(keys[i]) != values[i]) {
+					wrong.push("keys and values disagree at " + i);
+				}
+			}
+			var walked:Int = 0;
+			for (_ in map) {
+				walked++;
+			}
+			if (walked != count) {
+				wrong.push("a loop visited " + walked + " of " + count);
+			}
+			Assert.same([], wrong.slice(0, 10), "round " + round);
+		}
+	}
+
+	/**
+		Finding, adding and removing an `IndexedMap` entry box no key or
+		index, natively and on the jvm. Natively each read of an index past
+		255 was boxed (18 bytes a `get` at 1,000 keys), and on the jvm an index
+		past 127 was boxed for each read and write and a key past 127 for each
+		addition (61 bytes a removal and an addition). What is left natively
+		is the map's own entry for each key added, as at the front.
+	**/
+	public function testAnIndexedMapBoxesNoKeyOrIndex():Void {
+		#if (cpp || jvm)
+		var map = new IndexedMap<DenseThing>();
+		var things:Array<DenseThing> = [for (i in 0...1000) new DenseThing(i)];
+		for (i in 0...1000) {
+			map.add(things[i], i * 7);
+		}
+		var at:Int = 0;
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			() -> sum += map.get((at = (at + 7) % 1000) * 7).id,
+			() -> if (map.exists((at = (at + 7) % 1000) * 7 + 1)) sum++
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "an operation allocated " + reading);
+		}
+		var churn:Void->Void = () -> {
+			at = (at + 7) % 1000;
+			map.remove(at * 7);
+			map.add(things[at], at * 7);
+		};
+		var small = new IndexedMap<DenseThing>();
+		for (i in 0...8) {
+			small.add(things[i], i);
+		}
+		var front:Void->Void = () -> {
+			at = (at + 3) % 8;
+			small.remove(at);
+			small.add(things[at], at);
+		};
+		for (_ in 0...20000) {
+			churn();
+			front();
+		}
+		var near = crossbyte.test.AllocationMeter.measure(front, 2000, 3);
+		var far = crossbyte.test.AllocationMeter.measure(churn, 2000, 3);
+		Assert.isTrue(far.perOperation <= near.perOperation + 4,
+			"a removal and an addition past index 255 allocated " + far + ", against " + near + " at the front");
+		#if jvm
+		Assert.equals(0.0, far.perOperation, "a removal and an addition allocated " + far);
+		#end
+		Assert.equals(1000, map.length());
+		Assert.isTrue(sum > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		`PackedSlotMap` moves its last entry into a removed one's place. An
 		iterator over the value array would skip the entry moved in, and a
 		`forEach` that counted the entries before it began would read past the
