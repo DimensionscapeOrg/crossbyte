@@ -177,7 +177,7 @@ final class ConcurrencyLimiter {
 		__deliver();
 
 		var permit:ConcurrencyPermit = null;
-		if (!closed && queued == 0 && inFlight + cost <= __limit) {
+		if (!closed && queued == 0 && __fits(cost)) {
 			permit = new ConcurrencyPermit(this, cost, ConcurrencyPermit.HELD);
 			inFlight += cost;
 		}
@@ -212,7 +212,7 @@ final class ConcurrencyLimiter {
 			var now:Float = __clock();
 			__settle(now);
 
-			if (queued == 0 && inFlight + cost <= __limit) {
+			if (queued == 0 && __fits(cost)) {
 				__grant(permit);
 			} else if (queued < maxQueued) {
 				permit.__deadline = now + maxWait;
@@ -339,7 +339,7 @@ final class ConcurrencyLimiter {
 				__dead--;
 				continue;
 			}
-			if (inFlight + permit.cost > __limit) {
+			if (!__fits(permit.cost)) {
 				break;
 			}
 
@@ -442,6 +442,13 @@ final class ConcurrencyLimiter {
 		__outbox.resize(0);
 		__outboxAt = 0;
 		__delivering = false;
+	}
+
+	// Against what is left rather than by adding to what is held: with a
+	// limit past 2^30 (bytes, say) the sum passes 2^31 and wraps negative,
+	// which fits any limit, and the permit would be granted.
+	private inline function __fits(cost:Int):Bool {
+		return cost <= __limit - inFlight;
 	}
 
 	private inline function __requireCost(cost:Int):Void {

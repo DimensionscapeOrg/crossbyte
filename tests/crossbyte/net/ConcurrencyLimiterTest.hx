@@ -30,6 +30,40 @@ class ConcurrencyLimiterTest extends utest.Test {
 		Assert.notNull(limiter.tryAcquire());
 	}
 
+	/**
+		A limit past 2^30, in bytes say, holds where what is held and what is
+		asked for add up past 2^31. The sum wrapped negative, which fits any
+		limit: tryAcquire, acquire and a waiter let in by a release were each
+		granted beyond the limit, and inFlight went negative.
+	**/
+	public function testALimitPastTwoToTheThirtyHoldsWhereTheSumWouldWrap():Void {
+		var limiter = new ConcurrencyLimiter(2000000000, 2, 5.0, clock);
+		var held = limiter.tryAcquire(1500000000);
+		Require.notNull(held);
+		Assert.isNull(limiter.tryAcquire(1000000000), "tryAcquire went past the limit");
+
+		var granted:Int = 0;
+		var asked = limiter.acquire(_ -> granted++, null, 1000000000);
+		Assert.equals(0, granted, "acquire went past the limit");
+		Assert.equals(1, limiter.queued);
+		Assert.equals(1500000000, limiter.inFlight);
+		asked.release();
+
+		// Let in by a release: the first waiter fits, and the second, added
+		// to it, would pass 2^31.
+		var wide = new ConcurrencyLimiter(2100000000, 2, 5.0, clock);
+		var first = wide.tryAcquire(1200000000);
+		Require.notNull(first);
+		var letIn:Array<Int> = [];
+		wide.acquire(_ -> letIn.push(920000000), null, 920000000);
+		wide.acquire(_ -> letIn.push(1500000000), null, 1500000000);
+		Assert.equals(2, wide.queued);
+		first.release();
+		Assert.same([920000000], letIn, "a waiter was let in past the limit");
+		Assert.equals(920000000, wide.inFlight);
+		Assert.equals(1, wide.queued);
+	}
+
 	public function testReleasingTwiceReturnsTheCapacityOnce():Void {
 		// A counter that trusted every release would come out of this with a
 		// slot that was never returned, and the limit would stop holding.
