@@ -484,20 +484,26 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 		return this.__items().push(value);
 	}
 
+	/**
+		Removes the element at `index` and returns it. A negative `index`
+		counts back from the end, as ActionScript's does: `-1` is the last
+		element. One outside the vector either way throws `RangeError`, where
+		it answered `null` past the end and took the first element for one
+		before the start.
+	**/
 	public inline function removeAt(index:Int):T {
 		if (this.__fixed) {
 			VectorImpl.__lengthFixed();
 		}
 		var items:Array<T> = this.__items();
-		if (index < 0 || index >= items.length) {
-			// As `v[i]` does, rather than answering `null` for an index past
-			// the end and taking one off the end for a negative one.
+		var at:Int = index < 0 ? items.length + index : index;
+		if (at < 0 || at >= items.length) {
 			VectorImpl.__outOfRange(index, items.length);
 		}
 		#if (cpp && !cppia && !macro)
-		return untyped __cpp__("::crossbyte_vector_take({0}, {1})", items, index);
+		return untyped __cpp__("::crossbyte_vector_take({0}, {1})", items, at);
 		#else
-		return items.splice(index, 1)[0];
+		return items.splice(at, 1)[0];
 		#end
 	}
 

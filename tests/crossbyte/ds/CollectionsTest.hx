@@ -782,23 +782,35 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		`removeAt` takes an index in range, and refuses one outside it like
-		every other indexed access on the type. It used to answer `null` for an
-		index past the end, and to take one off the end for a negative one.
+		`removeAt` takes an index in range, counting a negative one back from
+		the end as ActionScript's does, and refuses one outside the vector
+		either way like every other indexed access on the type. It used to
+		answer `null` for an index past the end, and to take the first element
+		for a negative one before the start.
 	**/
 	public function testVectorRemoveAtRefusesAnIndexOutOfRange():Void {
 		var vector = new Vector<String>();
-		for (item in ["a", "b", "c"]) {
+		for (item in ["a", "b", "c", "d"]) {
 			vector.push(item);
 		}
 
-		Assert.raises(() -> vector.removeAt(3), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.removeAt(4), crossbyte.errors.RangeError);
 		Assert.raises(() -> vector.removeAt(9), crossbyte.errors.RangeError);
-		Assert.raises(() -> vector.removeAt(-1), crossbyte.errors.RangeError);
-		Assert.equals("a,b,c", vector.join(","));
+		Assert.raises(() -> vector.removeAt(-5), crossbyte.errors.RangeError);
+		Assert.equals("a,b,c,d", vector.join(","));
 
-		Assert.equals("b", vector.removeAt(1));
-		Assert.equals("a,c", vector.join(","));
+		Assert.equals("d", vector.removeAt(-1));
+		Assert.equals("a,b,c", vector.join(","));
+		Assert.equals("a", vector.removeAt(-3));
+		Assert.equals("b,c", vector.join(","));
+		Assert.equals("c", vector.removeAt(1));
+		Assert.equals("b", vector.join(","));
+
+		// Generic code and a vector held as Dynamic reach the same method.
+		var numbers:Vector<Int> = Vector.ofArray([1, 2, 3]);
+		var held:Dynamic = numbers;
+		Assert.equals(3, held.removeAt(-1));
+		Assert.equals("1,2", numbers.join(","));
 	}
 
 	/**

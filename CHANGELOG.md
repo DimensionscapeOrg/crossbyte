@@ -1232,10 +1232,11 @@ Fixes to code new in this release are not listed.
 - `Vector`: a negative length is refused with a `RangeError`, where the
   interpreter ended the process and the jvm dropped elements; `splice` with
   a negative start puts its items where the removal began; `removeAt`
-  refuses an index out of range rather than answering `null` or taking the
-  last element; a callback that shortens the vector is no longer handed
-  elements past its end; and on the jvm a method reached through `Reflect`
-  is called with the arguments it takes.
+  counts a negative index back from the end, as ActionScript's does, and
+  refuses one outside the vector rather than answering `null` past the end
+  or taking the first element; a callback that shortens the vector is no
+  longer handed elements past its end; and on the jvm a method reached
+  through `Reflect` is called with the arguments it takes.
 - A `Map<Int, T>` miss on the jvm costs what a hit does (a Haxe 4.3.7
   `IntMap` fault).
 
