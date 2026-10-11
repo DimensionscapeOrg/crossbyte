@@ -1159,6 +1159,12 @@ Fixes to code new in this release are not listed.
   allocated its iterator (40 bytes), and looks for a moved element only
   after a removal: over 1,000 elements 730 ns rather than 1,720 natively
   and 2,160 rather than 2,620 on Node.
+- Adding, removing and finding an element of a `DenseSet` box no position,
+  natively and on the jvm, where a position past 255 natively, or 127 on
+  the jvm, was boxed at each: at 1,000 elements a removal and an addition
+  allocate 40 bytes rather than 99 natively (the map's own entry) and take
+  79 ns rather than 101, and allocate nothing rather than 44 bytes on the
+  jvm. `toString()` lists the elements, where it printed their positions.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

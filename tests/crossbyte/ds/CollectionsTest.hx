@@ -1717,6 +1717,132 @@ class CollectionsTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A `DenseSet` of each kind of element finds every one at the position
+		it holds, past every position a map would box, after removals and
+		additions: strings, numbers (negative ones too), objects and enum
+		values. Natively each position is kept plus one, so the first is told
+		apart from a missing element.
+	**/
+	public function testADenseSetFindsEveryKindOfElementAtAnyPosition():Void {
+		Assert.same([], denseSetErrors([for (i in 0...1000) "s" + i]), "strings");
+		Assert.same([], denseSetErrors([for (i in 0...1000) i * 7 - 3500]), "numbers");
+		Assert.same([], denseSetErrors([for (i in 0...1000) new DenseThing(i)]), "objects");
+		var shades:Array<DenseShade> = [for (i in 0...300) Shade(i)];
+		shades.push(Plain);
+		Assert.same([], denseSetErrors(shades), "enum values");
+
+		var set = new DenseSet<String>();
+		set.add("a");
+		set.add("b");
+		Assert.equals(Std.string(["a", "b"]), set.toString(), "toString lists the elements");
+	}
+
+	@:generic
+	private static function denseSetErrors<K:Dynamic>(elements:Array<K>):Array<String> {
+		var set = new DenseSet<K>();
+		var wrong:Array<String> = [];
+		for (element in elements) {
+			if (!set.add(element)) {
+				wrong.push("refused at first: " + element);
+			}
+		}
+		// Every third taken out, and every ninth put back.
+		for (i in 0...elements.length) {
+			if (i % 3 == 0 && !set.remove(elements[i])) {
+				wrong.push("not removed: " + elements[i]);
+			}
+		}
+		for (i in 0...elements.length) {
+			if (i % 9 == 0 && !set.add(elements[i])) {
+				wrong.push("not put back: " + elements[i]);
+			}
+		}
+		var packed = set.readArray();
+		for (i in 0...packed.length) {
+			if (set.indexOf(packed[i]) != i) {
+				wrong.push(packed[i] + " at " + i + " answered " + set.indexOf(packed[i]));
+			}
+		}
+		var held:Int = 0;
+		for (i in 0...elements.length) {
+			var holds:Bool = i % 3 != 0 || i % 9 == 0;
+			if (holds) {
+				held++;
+			}
+			if (set.contains(elements[i]) != holds) {
+				wrong.push(elements[i] + " contained: " + set.contains(elements[i]));
+			}
+			if (!holds && (set.indexOf(elements[i]) != -1 || set.remove(elements[i]))) {
+				wrong.push(elements[i] + " found after it was removed");
+			}
+		}
+		if (set.length != held) {
+			wrong.push("holds " + set.length + ", not " + held);
+		}
+		return wrong;
+	}
+
+	/**
+		Finding, adding and removing an element of a `DenseSet` boxes no
+		position, natively and on the jvm. Through its map, natively a
+		position past 255 was boxed for each read and each write (48 bytes a
+		removal at 1,000 elements), and on the jvm one past 127 for each
+		write and each read (16 bytes each).
+	**/
+	public function testADenseSetBoxesNoPosition():Void {
+		#if (cpp || jvm)
+		var set = new DenseSet<DenseThing>();
+		var things = [for (i in 0...1000) new DenseThing(i)];
+		for (thing in things) {
+			set.add(thing);
+		}
+		var cursor:Int = 0;
+		var found:Int = 0;
+		var find:Void->Void = () -> {
+			cursor = (cursor + 7) % 1000;
+			found += set.indexOf(things[cursor]);
+		};
+		// An element near the end out and back in: its position, and the
+		// position of the one moved into its place, are past 255.
+		var churn:Void->Void = () -> {
+			cursor = (cursor + 7) % 1000;
+			var thing = things[cursor];
+			set.remove(thing);
+			set.add(thing);
+		};
+		for (_ in 0...20000) {
+			find();
+			churn();
+		}
+		var finding = crossbyte.test.AllocationMeter.measure(find, 2000, 3);
+		Assert.equals(0.0, finding.perOperation, "finding an element allocated " + finding);
+
+		// What a churn costs at the front, where no position is boxed: the
+		// map's own entry, natively.
+		var small = new DenseSet<DenseThing>();
+		for (i in 0...8) {
+			small.add(things[i]);
+		}
+		var at:Int = 0;
+		var front:Void->Void = () -> {
+			at = (at + 3) % 8;
+			small.remove(things[at]);
+			small.add(things[at]);
+		};
+		for (_ in 0...20000) {
+			front();
+		}
+		var near = crossbyte.test.AllocationMeter.measure(front, 2000, 3);
+		var far = crossbyte.test.AllocationMeter.measure(churn, 2000, 3);
+		Assert.isTrue(far.perOperation <= near.perOperation + 4,
+			"a removal and an addition past position 255 allocated " + far + ", against " + near + " at the front");
+		Assert.isTrue(found > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAHandleWithTheSignBitSetReachesNoEntry():Void {
 		// Its generation was read masked, so the sign bit fell away and the
 		// handle read as the live one beside it: SlotHandle.INVALID (-1) is
@@ -2456,6 +2582,15 @@ private class DenseThing {
 	public function new(id:Int) {
 		this.id = id;
 	}
+
+	public function toString():String {
+		return "thing " + id;
+	}
+}
+
+private enum DenseShade {
+	Plain;
+	Shade(n:Int);
 }
 
 private class DispatchOpcodes {

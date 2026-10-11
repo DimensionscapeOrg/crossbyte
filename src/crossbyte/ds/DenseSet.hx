@@ -2,6 +2,9 @@ package crossbyte.ds;
 
 import haxe.ds.ReadOnlyArray;
 import haxe.ds.Map;
+#if (cpp && !cppia)
+import crossbyte.ds._internal.NativeMap;
+#end
 
 /**
  * DenseSet is a packed set data structure offering **O(1)** operations
@@ -19,14 +22,25 @@ import haxe.ds.Map;
  * loop is visited by it. A loop allocates nothing natively or on the jvm,
  * and looks for a moved element only after a removal.
  *
+ * Adding, removing and finding an element box nothing, natively and on the
+ * jvm, at any position: each one's position is kept in a `Map`, which
+ * would box a position past 255 natively and past 127 on the jvm.
+ *
  * @param K The element type. Keys are compared using `Map` semantics.
  */
 @:generic
 final class DenseSet<K:Dynamic> {
 	@:noCompletion private var keys:Array<K>;
+	// Each element's position: natively plus one, so a map's 0 for a key it
+	// does not hold is told apart from the first position.
 	@:noCompletion private var pos:Map<K, Int>;
 	// Removals so far, so an iterator looks again only after one.
 	@:noCompletion private var __removals:Int = 0;
+	#if jvm
+	// Each position past 127 boxed once: the jvm's map holds an Integer for
+	// every element, and Integer.valueOf makes a new one past 127 each time.
+	@:noCompletion private var __boxes:haxe.ds.Vector<Dynamic> = null;
+	#end
 
 	public var length(get, never):Int;
 	public var isEmpty(get, never):Bool;
@@ -61,9 +75,9 @@ final class DenseSet<K:Dynamic> {
 	 * @return `true` if the element was added, `false` if it was already present.
 	 */
 	public inline function add(x:K):Bool {
-		var canAdd:Bool = !pos.exists(x);
+		var canAdd:Bool = !__holds(x);
 		if (canAdd) {
-			pos.set(x, keys.length);
+			__place(x, keys.length);
 			keys.push(x);
 		}
 		return canAdd;
@@ -76,8 +90,8 @@ final class DenseSet<K:Dynamic> {
 	 * @return `true` if the element was removed, `false` if it was not found.
 	 */
 	public inline function remove(x:K):Bool {
-		var idx = pos.get(x);
-		var ret:Bool = (idx == null) ? false : removeAt(idx);
+		var idx:Int = __positionOf(x);
+		var ret:Bool = idx < 0 ? false : removeAt(idx);
 		return ret;
 	}
 
@@ -99,10 +113,14 @@ final class DenseSet<K:Dynamic> {
 
 		if (index != last) {
 			keys[index] = lastVal;
-			pos.set(lastVal, index);
+			__place(lastVal, index);
 		}
 		keys.pop();
+		#if (cpp && !cppia)
+		NativeMap.remove(pos, removed);
+		#else
 		pos.remove(removed);
+		#end
 		__removals++;
 		return true;
 	}
@@ -114,7 +132,7 @@ final class DenseSet<K:Dynamic> {
 	 * @return `true` if the element exists in the set.
 	 */
 	public inline function contains(x:K):Bool {
-		return pos.exists(x);
+		return __holds(x);
 	}
 
 	/**
@@ -142,8 +160,7 @@ final class DenseSet<K:Dynamic> {
 	 * @return The index if found, or `-1` if not present.
 	 */
 	public inline function indexOf(x:K):Int {
-		var i = pos.get(x);
-		return (i == null) ? -1 : i;
+		return __positionOf(x);
 	}
 
 	/**
@@ -175,9 +192,67 @@ final class DenseSet<K:Dynamic> {
 		__removals++;
 	}
 
+	/** The elements, in packed order, as an `Array` prints them. **/
 	public inline function toString():String {
-		return pos.toString();
+		return Std.string(keys);
 	}
+
+	// Natively through the map's own class: through haxe.IMap a String key,
+	// or a position past 255, is boxed for every call.
+	private inline function __holds(x:K):Bool {
+		#if (cpp && !cppia)
+		return NativeMap.has(pos, x);
+		#else
+		return pos.exists(x);
+		#end
+	}
+
+	private inline function __positionOf(x:K):Int {
+		#if (cpp && !cppia)
+		return NativeMap.intOf(pos, x) - 1;
+		#elseif jvm
+		// Read as the Integer the map holds: read as a Null<Int> it would be
+		// unboxed and boxed again, past 127 a new one each time.
+		var held:Dynamic = (cast pos : haxe.Constraints.IMap<K, Dynamic>).get(x);
+		return held == null ? -1 : (held : Int);
+		#else
+		var i:Null<Int> = pos.get(x);
+		return i == null ? -1 : i;
+		#end
+	}
+
+	private inline function __place(x:K, index:Int):Void {
+		#if (cpp && !cppia)
+		NativeMap.set(pos, x, index + 1);
+		#elseif jvm
+		(cast pos : haxe.Constraints.IMap<K, Dynamic>).set(x, __boxed(index));
+		#else
+		pos.set(x, index);
+		#end
+	}
+
+	#if jvm
+	private function __boxed(index:Int):Dynamic {
+		if (index < 128) {
+			// Integer.valueOf's own cache.
+			return (index : Dynamic);
+		}
+		var boxes:haxe.ds.Vector<Dynamic> = __boxes;
+		if (boxes == null || index >= boxes.length) {
+			var grown:haxe.ds.Vector<Dynamic> = new haxe.ds.Vector<Dynamic>(index < 512 ? 1024 : index * 2);
+			if (boxes != null) {
+				haxe.ds.Vector.blit(boxes, 0, grown, 0, boxes.length);
+			}
+			__boxes = boxes = grown;
+		}
+		var box:Dynamic = boxes[index];
+		if (box == null) {
+			box = (index : Dynamic);
+			boxes[index] = box;
+		}
+		return box;
+	}
+	#end
 }
 
 /**
