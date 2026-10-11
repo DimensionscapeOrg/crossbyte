@@ -103,19 +103,23 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		return Std.string(this);
 	}
 
+	/**
+		The object's field names: a structure's or a class instance's. An
+		`Array`, a `String`, a number, a `Bool` or a function has none, on
+		every target, where each listed its own internals (`length`, `__a`,
+		`value`, a string's characters); read an `Array`'s elements as an
+		`Array`.
+	**/
 	public inline function keys():Array<String> {
-		var fields:Array<String> = this != null ? Reflect.fields(this) : null;
-		return fields == null ? [] : fields;
+		return __fieldsOf(this);
 	}
 
-	/**
-		The fields' values, in the order `keys()` gives the fields.
-	**/
+	/** The fields' values, in the order `keys()` gives the fields. **/
 	public function values():Array<Dynamic> {
-		var fields:Array<String> = keys();
+		var fields:Array<String> = __fieldsOf(this);
 		var out:Array<Dynamic> = [];
 		for (field in fields) {
-			out.push(Reflect.field(this, field));
+			out.push(__listed(this, field));
 		}
 		return out;
 	}
@@ -126,8 +130,62 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		asked for.
 	**/
 	public function entries():Iterator<KeyValuePair<String, Dynamic>> {
-		return new ObjectEntries(this, keys());
+		return new ObjectEntries(this, __fieldsOf(this));
 	}
+
+	// A structure's or a class instance's field names, and none for anything
+	// else. Each target's Reflect.fields lists something of its own for an
+	// Array, a String or a number (natively nothing; on the jvm length and
+	// __a, value and hash; on Node an Array's indices and a String's
+	// characters), so those are told apart, but a structure is listed first,
+	// at what Reflect.fields alone costs.
+	@:noCompletion private static inline function __fieldsOf(object:Dynamic):Array<String> {
+		#if cpp
+		// Natively an Array, a String, a number and a function list no fields.
+		var fields:Array<String> = object == null ? null : Reflect.fields(object);
+		return fields != null ? fields : [];
+		#elseif (jvm && !macro)
+		return jvm.Jvm.instanceof(object, jvm.DynamicObject) ? (cast object : jvm.DynamicObject)._hx_getFields() : __otherFields(object);
+		#elseif js
+		return object != null && js.Syntax.typeof(object) == "object" && !js.Syntax.code("Array.isArray({0})", object) ? __ownKeys(object) : [];
+		#else
+		return __otherFields(object);
+		#end
+	}
+
+	// The value of a field `keys()` listed, so one the object has: on
+	// JavaScript read straight, without the catch Reflect.field reads through.
+	@:noCompletion private static inline function __listed(object:Dynamic, field:String):Dynamic {
+		#if js
+		return js.Syntax.code("{0}[{1}]", object, field);
+		#else
+		return Reflect.field(object, field);
+		#end
+	}
+
+	#if js
+	// Object.keys, the builtin, without the two names Haxe keeps on an object
+	// for itself, as Reflect.fields leaves them out with a for-in loop.
+	@:noCompletion private static function __ownKeys(object:Dynamic):Array<String> {
+		var keys:Array<String> = js.lib.Object.keys(object);
+		for (key in keys) {
+			if (key == "__id__" || key == "hx__closures__") {
+				return [for (kept in keys) if (kept != "__id__" && kept != "hx__closures__") kept];
+			}
+		}
+		return keys;
+	}
+	#end
+
+	#if !(cpp || js)
+	@:noCompletion private static function __otherFields(object:Dynamic):Array<String> {
+		if (object == null || Std.isOfType(object, Array) || Std.isOfType(object, String) || !Reflect.isObject(object)) {
+			return [];
+		}
+		var fields:Array<String> = Reflect.fields(object);
+		return fields == null ? [] : fields;
+	}
+	#end
 
 	/**
 		What `for (name => value in object)` walks: the fields and their
@@ -188,6 +246,6 @@ private final class ObjectEntries {
 
 	public inline function next():KeyValuePair<String, Dynamic> {
 		var field:String = __fields[__next++];
-		return new KeyValuePair(field, Reflect.field(__object, field));
+		return new KeyValuePair(field, @:privateAccess Object.__listed(__object, field));
 	}
 }

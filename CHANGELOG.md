@@ -1327,6 +1327,14 @@ Fixes to code new in this release are not listed.
   documentation said, where the loop did not compile. So are an `Object`,
   where the loop compiled and threw on every target as it began, and a
   `TypedObject`.
+- An `Object` holding an `Array`, a `String`, a number, a `Bool` or a
+  function has no fields on any target: its `keys()`, `values()`,
+  `entries()` and loops are empty, where each target listed its own
+  internals (an `Array`'s `length` and `__a` on the jvm, its indices on
+  Node, `array` and `allowReinterpret` on HashLink; a `String`'s `value`
+  and `hash` on the jvm and its characters on Node). On Node they read
+  through `Object.keys`, so `keys()` takes 7% less time, `values()` 8%
+  and `entries()` 13%. (Upgrading)
 - `PrimitiveValue.isInt`, `isFloat` and `getValueType` take a whole
   `Float` within `Int`'s range (`1.0`) as an `Int` on every target, as
   JavaScript, the jvm and native did, where eval and neko called it a
@@ -1913,6 +1921,9 @@ an API added in this release has is not listed here.
   `isPrototypeOf`, `valueOf`, `toString` or `toLocaleString` is read from
   an `Object` with brackets, `payload["valueOf"]`: with a dot it is the
   method of that name.
+- An `Object` holding an `Array` or a `String` lists no fields, where on
+  Node it listed the indices or the characters: code that walked one so
+  reads it as the `Array` or `String` it is.
 
 #### TCP
 
