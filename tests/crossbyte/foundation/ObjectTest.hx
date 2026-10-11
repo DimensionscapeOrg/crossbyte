@@ -1,6 +1,7 @@
 package crossbyte.foundation;
 
 import crossbyte.Object;
+import crossbyte.TypedObject;
 import utest.Assert;
 
 /**
@@ -35,6 +36,45 @@ class ObjectTest extends utest.Test {
 		var instance:Object = new Sealed();
 		Assert.isFalse(instance.propertyIsEnumerable("field"), "a class instance's field was enumerable");
 		Assert.isFalse(instance.isPrototypeOf(new Sealed()));
+	}
+
+	/**
+		`for (name => value in object)` walks an `Object`'s fields, and a
+		`TypedObject`'s, as it does a map's. It compiled on an `Object`, and
+		on every target threw as it began: the loop looked for
+		`keyValueIterator` among the object's fields.
+	**/
+	public function testAKeyAndValueLoopWalksTheFields():Void {
+		var payload:Object = haxe.Json.parse('{"a":1,"b":"two","c":null}');
+		var seen:Array<String> = [];
+		var walked:Dynamic = null;
+		try {
+			for (name => value in payload) {
+				seen.push(name + "=" + Std.string(value));
+			}
+		} catch (e:Dynamic) {
+			walked = e;
+		}
+		Assert.isNull(walked, "the loop threw " + walked);
+		seen.sort(Reflect.compare);
+		Assert.same(["a=1", "b=two", "c=null"], seen);
+
+		var nothing:Object = null;
+		var none:Int = 0;
+		try {
+			for (name => value in nothing) {
+				none++;
+			}
+		} catch (_:Dynamic) {
+			none = -1;
+		}
+		Assert.equals(0, none, "a null Object's loop threw");
+
+		var typed:TypedObject<{id:Int, name:String}> = {id: 4, name: "t"};
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf(for (name => value in typed) {}), "a TypedObject could not be walked by a key and value loop");
+		var typedSeen:Array<String> = [for (name => value in typed) name + "=" + Std.string(value)];
+		typedSeen.sort(Reflect.compare);
+		Assert.same(["id=4", "name=t"], typedSeen);
 	}
 
 	/** The same of a null `Object`: no fields, and `"null"` as text. **/

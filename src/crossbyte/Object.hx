@@ -130,6 +130,14 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
+		What `for (name => value in object)` walks: the fields and their
+		values, as `entries()` gives them.
+	**/
+	public inline function keyValueIterator():Iterator<KeyValuePair<String, Dynamic>> {
+		return entries();
+	}
+
+	/**
 		The field `field`, or null if there is none. On JavaScript
 		`__proto__` and `constructor` are read as the object's own fields, as
 		everywhere else, rather than as its prototype and its class, through

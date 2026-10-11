@@ -11,9 +11,9 @@ package crossbyte;
  * `T` is a structure (a typedef or an anonymous type): the field helpers
  * (`exists`, `keys`, `values`, `entries` and `[]`) ask by reflection, as
  * `Object`'s do, and of a class instance each target answers its own way.
- * Walk the fields with `for (field in typed)`, `keys()` or `entries()`. A
- * field named like one of those methods is read with brackets, or through
- * `T`.
+ * Walk the fields with `for (field in typed)`, `for (name => value in
+ * typed)`, `keys()` or `entries()`. A field named like one of those methods
+ * is read with brackets, or through `T`.
  *
  * A `TypedObject<T>` converts from a `T` and to one, and from and to
  * nothing else: `var t:TypedObject<{id:Int}> = "hello"` does not compile,
@@ -56,6 +56,11 @@ abstract TypedObject<T>(T) from T to T {
 			key: field,
 			value: Reflect.field(this, field)
 		}).iterator();
+	}
+
+	/** What `for (name => value in typed)` walks, as `entries()` gives it. **/
+	public inline function keyValueIterator():Iterator<{key:String, value:Dynamic}> {
+		return entries();
 	}
 
 	/** The field `field`, or null; on JavaScript as `Object.get` reads it. **/

@@ -1324,7 +1324,9 @@ Fixes to code new in this release are not listed.
   NaN on eval and the jvm; and on eval and neko an `Int` it gives adds past
   2^31 without wrapping. (Upgrading)
 - A `FieldStruct` is walked by `for (name => value in fields)`, as its
-  documentation said, where the loop did not compile.
+  documentation said, where the loop did not compile. So are an `Object`,
+  where the loop compiled and threw on every target as it began, and a
+  `TypedObject`.
 - `PrimitiveValue.isInt`, `isFloat` and `getValueType` take a whole
   `Float` within `Int`'s range (`1.0`) as an `Int` on every target, as
   JavaScript, the jvm and native did, where eval and neko called it a
