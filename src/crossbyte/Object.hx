@@ -107,8 +107,8 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		The object's field names: a structure's or a class instance's. An
 		`Array`, a `String`, a number, a `Bool` or a function has none, on
 		every target, where each listed its own internals (`length`, `__a`,
-		`value`, a string's characters); read an `Array`'s elements as an
-		`Array`.
+		`value`, a string's characters); read an `Array`'s elements with
+		`[i]` and `length`.
 	**/
 	public inline function keys():Array<String> {
 		return __fieldsOf(this);
@@ -221,6 +221,45 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		Reflect.setField(this, field, value);
 		#end
 		return value;
+	}
+
+	/**
+		`object[index]`: of an `Array`, its element, or null outside it; of
+		anything else, the field named by the number, as ActionScript reads
+		`object[0]`.
+	**/
+	@:arrayAccess @:noCompletion @:dox(hide) public inline function __getIndex(index:Int):Dynamic {
+		return __elementAt(this, index);
+	}
+
+	/**
+		`object[index] = value`: of an `Array`, its element, the array
+		growing to it as an `Array` does (a negative index is a
+		`RangeError`); of anything else, the field named by the number.
+	**/
+	@:arrayAccess @:noCompletion @:dox(hide) public inline function __setIndex(index:Int, value:Dynamic):Dynamic {
+		__setElementAt(this, index, value);
+		return value;
+	}
+
+	@:noCompletion private static function __elementAt(object:Dynamic, index:Int):Dynamic {
+		if (Std.isOfType(object, Array)) {
+			var elements:Array<Dynamic> = object;
+			return index >= 0 && index < elements.length ? elements[index] : null;
+		}
+		return object == null ? null : (object : Object).get(Std.string(index));
+	}
+
+	@:noCompletion private static function __setElementAt(object:Dynamic, index:Int, value:Dynamic):Void {
+		if (Std.isOfType(object, Array)) {
+			if (index < 0) {
+				throw new crossbyte.errors.RangeError("An Array has no element " + index + ".");
+			}
+			var elements:Array<Dynamic> = object;
+			elements[index] = value;
+			return;
+		}
+		(object : Object).set(Std.string(index), value);
 	}
 
 	@:noCompletion @:dox(hide) public function iterator():Iterator<String> {

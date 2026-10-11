@@ -115,6 +115,44 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
+		`object[i]` reads and writes an `Array`'s elements, the array growing
+		to a write past its end as an `Array` does, and of anything else names
+		the field, as ActionScript's `object[0]` does. It did not compile: an
+		`Object` took a `String` in brackets and nothing else.
+	**/
+	public function testAnObjectIsIndexedByANumber():Void {
+		var list:Object = haxe.Json.parse("[7,8,9]");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf(list[1]), "an Object could not be indexed by a number");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf(list[1] = 2), "an Object could not be written by a number");
+	}
+
+	public function testAnArrayIsReadAndWrittenByIndex():Void {
+		var list:Object = haxe.Json.parse("[7,8,9]");
+		Assert.equals(8, list[1]);
+		Assert.isNull(list[3], "an element past the end was read");
+		Assert.isNull(list[-1]);
+		list[1] = 80;
+		list[4] = 10;
+		Assert.equals(80, list[1]);
+		Assert.equals(5, list.length);
+		Assert.same([7, 80, 9, null, 10], [for (i in 0...list.length) list[i]]);
+		Assert.raises(() -> list[-1] = 0, crossbyte.errors.RangeError);
+
+		// An Array<Int>, which HashLink keeps as an array of its own kind.
+		var numbers:Object = [1, 2, 3];
+		Assert.equals(2, numbers[1]);
+		Assert.isNull(numbers[3], "an Array<Int> was read past its end");
+
+		var record:Object = haxe.Json.parse('{"0":"zero"}');
+		Assert.equals("zero", record[0]);
+		record[1] = "one";
+		Assert.equals("one", record["1"]);
+		Assert.isNull(record[2]);
+		var nothing:Object = null;
+		Assert.isNull(nothing[0]);
+	}
+
+	/**
 		What Haxe keeps on an object for itself is not a field of it: on
 		JavaScript an object used as a key in an `ObjectMap` is given an
 		`__id__`.

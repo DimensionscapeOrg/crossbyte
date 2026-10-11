@@ -713,6 +713,11 @@ says how.
   fields, as they were, they answered only on JavaScript, whose objects
   have them on their prototype, and threw everywhere else; natively, on a
   null `Object`, the process ended. (Upgrading)
+- An `Object` is read and written by a number, `object[i]`, where only a
+  `String` compiled in brackets: an `Array`'s element (null outside it; a
+  write past the end grows it, and a negative index is a `RangeError`),
+  or of anything else the field named by the number, as ActionScript
+  reads `object[0]`.
 
 #### TCP
 
