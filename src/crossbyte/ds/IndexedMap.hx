@@ -12,7 +12,9 @@ package crossbyte.ds;
  * dense for performance.
  *
  * Removing the entry a loop is on is safe: the entry swapped into its place
- * is visited next, where the array's own iterator skipped it.
+ * is visited next, where the array's own iterator skipped it. Removing one
+ * the loop has already passed swaps the last entry, which it has not reached,
+ * into the place behind it, so that entry is skipped.
  *
  * @param T The type of the stored values.
  */

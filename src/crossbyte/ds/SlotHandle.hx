@@ -78,7 +78,11 @@ abstract SlotHandle(Int) from Int {
 	 * @return The generation (upper `GEN_BITS` bits).
 	 */
 	public inline function gen():Int {
-		return (this >>> INDEX_BITS) & GEN_MASK;
+		// Unmasked, so a handle with the sign bit set (INVALID, or anything
+		// read off a wire) reads a generation past GEN_MASK, which no slot
+		// holds. Masked, -1 read as slot 1,048,575 at generation 2047, and
+		// reached whatever lived there.
+		return this >>> INDEX_BITS;
 	}
 
 	/**

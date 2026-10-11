@@ -1,5 +1,8 @@
 package crossbyte.ds;
 
+import crossbyte.errors.RangeError;
+import haxe.ds.Vector;
+
 /**
  * A packed, growable slot map with fast O(1) insertion, removal, and access using generation-validated handles.
  * 
@@ -37,19 +40,24 @@ final class PackedSlotMap<T> {
 	public var growthChunk(default, null):Int;
 
 	@:noCompletion private var __values:Array<T> = [];
-	@:noCompletion private var __denseToSlot:Array<Int> = [];
+	// The numbers are kept in Vectors, which are primitive arrays on the jvm:
+	// there an `Array<Int>` holds boxed `Integer`s, and an insert and a
+	// remove allocated 64 bytes between them. Each is as long as the slots
+	// or longer; the dense one is read up to `length`.
+	@:noCompletion private var __denseToSlot:Vector<Int>;
 	// Per slot: where its value sits in the dense arrays, or, for a free
 	// slot, a negative number: -1 for the last free slot, and -2 - next
 	// for one the next free slot follows. So the free slots queue in the
 	// order they were freed without an array of their own, and a slot is
 	// free exactly when this is negative, as the rest of the class asks.
-	@:noCompletion private var __slotToDense:Array<Int> = [];
-	@:noCompletion private var __gen:Array<Int> = [];
+	@:noCompletion private var __slotToDense:Vector<Int>;
+	@:noCompletion private var __gen:Vector<Int>;
+	@:noCompletion private var __capacity:Int = 0;
 	@:noCompletion private var __freeHead:Int = -1;
 	@:noCompletion private var __freeTail:Int = -1;
 
 	@:noCompletion private inline function get_capacity():Int {
-		return __slotToDense.length;
+		return __capacity;
 	}
 
 	@:noCompletion private inline function get_length():Int {
@@ -79,6 +87,9 @@ final class PackedSlotMap<T> {
 		}
 
 		this.growthChunk = (growthChunk == null || growthChunk <= 0) ? 1 : growthChunk;
+		__denseToSlot = new Vector<Int>(0);
+		__slotToDense = new Vector<Int>(0);
+		__gen = new Vector<Int>(0);
 		__reserve(initialCapacity);
 	}
 
@@ -105,7 +116,7 @@ final class PackedSlotMap<T> {
 		var d:Int = __values.length;
 
 		__values.push(v);
-		__denseToSlot.push(slot);
+		__denseToSlot[d] = slot;
 		__slotToDense[slot] = d;
 
 		return SlotHandle.make(slot, __gen[slot]);
@@ -119,7 +130,7 @@ final class PackedSlotMap<T> {
 	 */
 	public inline function get(h:SlotHandle):Null<T> {
 		var slot = h.index();
-		if (slot < 0 || slot >= __slotToDense.length) {
+		if (slot < 0 || slot >= __capacity) {
 			return null;
 		}
 
@@ -140,7 +151,7 @@ final class PackedSlotMap<T> {
 	 */
 	public inline function set(h:SlotHandle, v:T):Bool {
 		var slot:Int = h.index();
-		if (slot < 0 || slot >= __slotToDense.length) {
+		if (slot < 0 || slot >= __capacity) {
 			return false;
 		}
 
@@ -167,7 +178,7 @@ final class PackedSlotMap<T> {
 	 */
 	public function remove(h:SlotHandle):Bool {
 		var slot:Int = h.index();
-		if (slot < 0 || slot >= __slotToDense.length) {
+		if (slot < 0 || slot >= __capacity) {
 			return false;
 		}
 
@@ -188,7 +199,6 @@ final class PackedSlotMap<T> {
 			__slotToDense[movedSlot] = d;
 		}
 		__values.pop();
-		__denseToSlot.pop();
 
 		__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
 		__queueFree(slot);
@@ -201,7 +211,10 @@ final class PackedSlotMap<T> {
 	 * Order is not guaranteed to be stable over time due to compaction on removal.
 	 *
 	 * Removing the entry the loop is on is safe: the entry moved into its
-	 * place is visited next.
+	 * place is visited next. Removing one the loop has already passed moves
+	 * the last entry, which it has not reached, into the place behind it, so
+	 * that entry is skipped: collect what to remove and remove it after the
+	 * loop when that matters.
 	 */
 	public inline function iterator():PackedSlotMapIterator<T> {
 		return new PackedSlotMapIterator<T>(this);
@@ -212,7 +225,8 @@ final class PackedSlotMap<T> {
 	 *
 	 * The callback may remove the entry it is given: the entry moved into its
 	 * place is called next. The loop counted the entries before it began, so
-	 * a removal left it reading past the end.
+	 * a removal left it reading past the end. Removing one already called
+	 * moves the last, not yet called, behind the loop, and it is skipped.
 	 *
 	 * @param f A callback function with signature (handle, value).
 	 */
@@ -223,7 +237,7 @@ final class PackedSlotMap<T> {
 			f(SlotHandle.make(slot, __gen[slot]), __values[i]);
 			// Still here: on to the next. Gone: whatever took its place, if
 			// anything did, has not been called yet.
-			if (i < __denseToSlot.length && __denseToSlot[i] == slot) {
+			if (i < __values.length && __denseToSlot[i] == slot) {
 				i++;
 			}
 		}
@@ -237,11 +251,11 @@ final class PackedSlotMap<T> {
 	 * @param target The minimum number of total slots required.
 	 */
 	public inline function ensureCapacity(target:Int):Void {
-		if (target <= __slotToDense.length) {
+		if (target <= __capacity) {
 			return;
 		}
 
-		__reserve(target - __slotToDense.length);
+		__reserve(target - __capacity);
 	}
 
     /**
@@ -250,18 +264,17 @@ final class PackedSlotMap<T> {
 	 * All handles are invalidated and future inserts will reuse freed slots.
 	 */
 	public function clear():Void {
-		var cap:Int = this.capacity;
-		for (slot in 0...cap) {
-			if (__slotToDense[slot] >= 0) {
-				__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
-			}
-
-			__slotToDense[slot] = slot + 1 < cap ? -2 - (slot + 1) : -1;
+		// Each held slot goes to the back of the free queue, behind those
+		// already free, as a removal puts it: the queue starting again from
+		// slot 0 handed out the slot just cleared first, and one entity
+		// cleared and made again each tick wrapped its slot's generation in
+		// 2048 ticks. Walking only what is held, it costs what is held.
+		for (d in 0...__values.length) {
+			var slot:Int = __denseToSlot[d];
+			__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
+			__queueFree(slot);
 		}
-		__freeHead = cap > 0 ? 0 : -1;
-		__freeTail = cap - 1;
 		__values.resize(0);
-		__denseToSlot.resize(0);
 	}
 
     /**
@@ -271,7 +284,18 @@ final class PackedSlotMap<T> {
 	 * @return The internal slot index.
 	 */
 	public inline function slotAtDense(i:Int):Int {
+		if (i < 0 || i >= __values.length) {
+			__outsideDense(i);
+		}
 		return __denseToSlot[i];
+	}
+
+	// Out of line, so slotAtDense stays a compare and a read. Unchecked, an
+	// index past the entries threw on the interpreter, read a slot still
+	// held on the jvm (whose removal then took a live entry) and read
+	// nothing on JavaScript.
+	@:noCompletion private function __outsideDense(i:Int):Void {
+		throw new RangeError('There is no entry at $i of ${__values.length}.');
 	}
 
     /**
@@ -281,7 +305,7 @@ final class PackedSlotMap<T> {
 	 * @return The current generation for the slot, or -1 if out of bounds.
 	 */
 	public inline function currentGen(slot:Int):Int {
-		return (slot >= 0 && slot < __gen.length) ? __gen[slot] : -1;
+		return (slot >= 0 && slot < __capacity) ? __gen[slot] : -1;
 	}
 
 	@:noCompletion private inline function __queueFree(slot:Int):Void {
@@ -295,12 +319,12 @@ final class PackedSlotMap<T> {
 	}
 
 	@:noCompletion private inline function __grow():Void {
-		if (__slotToDense.length >= maxCapacity) {
+		if (__capacity >= maxCapacity) {
 			return;
 		}
 
 		var add:Int = growthChunk;
-		var remaining:Int = maxCapacity - __slotToDense.length;
+		var remaining:Int = maxCapacity - __capacity;
 		if (add > remaining) {
 			add = remaining;
 		}
@@ -313,18 +337,34 @@ final class PackedSlotMap<T> {
 			return;
 		}
 			
-		var old:Int = __slotToDense.length;
-		var want:Int = old + additional;
-		if (want > maxCapacity) {
-			want = maxCapacity;
-		}
+		var old:Int = __capacity;
+		var want:Int = additional > maxCapacity - old ? maxCapacity : old + additional;
 		if (want <= old) {
 			return;
 		}
 
-		__slotToDense[want - 1] = 0;
-		__gen[want - 1] = 0;
+		// The vectors double, so growing a chunk at a time copies each entry a
+		// bounded number of times rather than once per chunk.
+		if (want > __gen.length) {
+			var room:Int = __gen.length * 2;
+			if (room < want) {
+				room = want;
+			}
+			if (room > maxCapacity) {
+				room = maxCapacity;
+			}
+			var dense:Vector<Int> = new Vector<Int>(room);
+			var slots:Vector<Int> = new Vector<Int>(room);
+			var gen:Vector<Int> = new Vector<Int>(room);
+			Vector.blit(__denseToSlot, 0, dense, 0, __values.length);
+			Vector.blit(__slotToDense, 0, slots, 0, old);
+			Vector.blit(__gen, 0, gen, 0, old);
+			__denseToSlot = dense;
+			__slotToDense = slots;
+			__gen = gen;
+		}
 
+		__capacity = want;
 		for (i in old...want) {
 			__gen[i] = 0;
 			__queueFree(i);
@@ -364,8 +404,7 @@ class PackedSlotMapIterator<T> {
 
 	private inline function __settle():Void {
 		if (__returnedAt >= 0) {
-			var slots:Array<Int> = __map.__denseToSlot;
-			if (__returnedAt >= slots.length || slots[__returnedAt] != __returnedSlot) {
+			if (__returnedAt >= __map.__values.length || __map.__denseToSlot[__returnedAt] != __returnedSlot) {
 				__next = __returnedAt;
 			}
 			__returnedAt = -1;
