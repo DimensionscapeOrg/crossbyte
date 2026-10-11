@@ -559,8 +559,9 @@ says how.
 - Natively, a runtime has SIGPIPE ignored, unless the application set it
   otherwise, as Node, the jvm and Python do: a write to a stdout nobody
   reads any more (piped into `head`, a log shipper that died) fails as any
-  other write does, where it ended the process with exit code 141. Sockets
-  never raised it. (Upgrading)
+  other write does, where it ended the process with exit code 141. Logging
+  there, and the runtime's flush of what was logged, let the failure go
+  rather than throwing into the frame. Sockets never raised it. (Upgrading)
 - Dispatching an event costs about half what it did, and adding or removing
   a listener copies the list only while a dispatch is walking it. A
   dispatcher keeps the listeners of the type it was last asked about, so
@@ -1744,9 +1745,10 @@ an API added in this release has is not listed here.
   with `setTimeout`.
 - Natively, a runtime has SIGPIPE ignored when the process still has it at
   its default, so a write to a pipe with no reader fails rather than ending
-  the process. A program that should end there (a tool whose output is
-  piped into `head`, say) sets SIGPIPE back to its default after making its
-  runtime.
+  the process: `Sys.stdout().flush()` throws a file error the program can
+  catch, and records logged there are lost. A program that should end
+  there (a tool whose output is piped into `head`, say) sets SIGPIPE back
+  to its default after making its runtime.
 - `ThreadEvent.UPDATE` is gone; nothing dispatched it.
 - `Random.seed` is no longer public: set the shared seed with
   `Random.reseed(value)`.

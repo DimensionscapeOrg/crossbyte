@@ -72,10 +72,19 @@ class LoggerTest extends utest.Test {
 	/**
 		A runtime ignores SIGPIPE natively, as Node, the jvm and Python do, so
 		a process whose stdout has no reader left (piped into head, a log
-		shipper that died) carries on, and logging there neither ends it nor
-		throws. SIGPIPE ended it, exit code 141 with no word of why, unless a
-		socket or a child process had been made first. A handler of the
-		application's own is left in place.
+		shipper that died) carries on. SIGPIPE ended it, exit code 141 with no
+		word of why, unless a socket or a child process had been made first. A
+		handler of the application's own is left in place.
+
+		With SIGPIPE ignored a write there fails instead. Logging throws into
+		no one, and neither does the runtime's flush of what was logged, which
+		it does after each frame's timers and ticks: thrown, it ended every
+		frame that had logged before its sockets were served. The C libraries
+		differ in what they keep of bytes they could not write (glibc drops
+		them, macOS keeps them and fails each flush after), so bytes are left
+		waiting in stdout's buffer for each flush to find. The application's
+		own write fails as any write may, with an error it can catch, as
+		Python raises BrokenPipeError.
 	**/
 	public function testAStdoutWithNoReaderEndsNothing():Void {
 		var harness = crossbyte.core.CrossByte.current();
@@ -88,18 +97,42 @@ class LoggerTest extends utest.Test {
 		// Only with SIGPIPE ignored: at its default, this would end the suite.
 		if (disposition == 1) {
 			var thrown:Dynamic = null;
+			var ownThrown:Dynamic = null;
+			// Records to stdout, whatever another case left set.
+			var level = Logger.level;
+			var sink = Logger.sink;
+			var recordSink = Logger.recordSink;
+			Logger.level = LogLevel.INFO;
+			Logger.sink = null;
+			Logger.recordSink = null;
 			var saved:Int = untyped __cpp__("crossbyte_test_stdout_to_closed_pipe()");
 			try {
 				Logger.info("to a stdout nobody reads");
+				// Part of a line, which waits in the buffer for the next flush.
+				Sys.stdout().writeString("part of a line");
+				runtime.__flushHeld();
+				Sys.stdout().writeString("part of another");
 				Logger.warn("a warning, flushed at once");
-				Logger.__flushStdout();
-				Sys.println("and a line of the application's own");
-				Sys.stdout().flush();
+				Logger.error("an error, flushed at once");
+				Logger.info("and a record for the frame's flush");
+				Sys.stdout().writeString("and more");
+				runtime.__flushHeld();
 			} catch (e:Dynamic) {
 				thrown = e;
 			}
+			try {
+				Sys.println("and a line of the application's own");
+				Sys.stdout().flush();
+			} catch (e:Dynamic) {
+				ownThrown = e;
+			}
 			untyped __cpp__("crossbyte_test_stdout_restore({0})", saved);
-			Assert.isNull(thrown, "writing to a stdout with no reader threw: " + thrown);
+			Logger.level = level;
+			Logger.sink = sink;
+			Logger.recordSink = recordSink;
+			Assert.isNull(thrown, "logging, or the runtime's flush, threw for a stdout with no reader: " + thrown);
+			Assert.isTrue(ownThrown == null || Std.string(ownThrown).indexOf("file_") >= 0,
+				"the application's own write failed with something other than a file error: " + ownThrown);
 		}
 
 		untyped __cpp__("crossbyte_test_sigpipe_set(2)");

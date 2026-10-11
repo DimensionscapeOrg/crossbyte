@@ -49,6 +49,9 @@ package crossbyte.utils;
  * next record is offered to the sink again. A record logged from inside a
  * sink, by it or by something it calls, goes to standard output rather than
  * into the sink a second time. Both as log4j2 and Python's `logging` do.
+ * Standard output that cannot be written (its reader gone, a full disk) loses
+ * the records sent there, and throws into no one either, the runtime's flush
+ * once a frame included; the jvm's `System.out` does the same.
  */
 class Logger {
 	/**
@@ -399,10 +402,28 @@ class Logger {
 		#elseif !js
 		if (__unflushed) {
 			__unflushed = false;
-			Sys.stdout().flush();
+			__flushQuietly();
 		}
 		#end
 	}
+
+	#if !js
+	/**
+		Flushes stdout, and lets a failure go. A stdout whose reader has gone
+		fails the flush (EPIPE, with SIGPIPE ignored as a native runtime has
+		it), and on macOS the C library keeps the bytes it could not write, so
+		every flush after fails too. Thrown, that reached whoever logged a
+		warning, and the runtime's own flush after a frame's timers and ticks,
+		which then ended any frame that had logged before its sockets were
+		served. Nothing can be said where nothing is read; the access log's
+		writer lets the same failure go.
+	**/
+	@:noCompletion private static function __flushQuietly():Void {
+		try {
+			Sys.stdout().flush();
+		} catch (_:Dynamic) {}
+	}
+	#end
 
 	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var buffer = new StringBuf();
@@ -768,11 +789,15 @@ class Logger {
 			}
 		}
 		#else
-		Sys.println(line);
+		// Caught, as a failing flush is: a target whose println reports a
+		// stdout that cannot be written would throw into whoever logged.
+		try {
+			Sys.println(line);
+		} catch (_:Dynamic) {}
 		if (urgent) {
 			// A warning or an error is often the last thing a process says.
 			__unflushed = false;
-			Sys.stdout().flush();
+			__flushQuietly();
 		} else {
 			__unflushed = true;
 		}
