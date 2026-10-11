@@ -1776,7 +1776,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// the text written as writeUTFBytes writes it, with no Bytes made of
 		// it to count.
 		#if cpp
-		if (!untyped __cpp__("{0}.isUTF16Encoded()", value) && value.length <= 0xFFFF) {
+		// Parenthesized: `untyped` takes everything after it, and unbracketed
+		// the length test went inside the negation, so a narrow string past
+		// 65535 bytes was written behind a wrapped length instead of refused.
+		if (!(untyped __cpp__("{0}.isUTF16Encoded()", value)) && value.length <= 0xFFFF) {
 			writeShort(value.length);
 			writeUTFBytes(value);
 			return;
