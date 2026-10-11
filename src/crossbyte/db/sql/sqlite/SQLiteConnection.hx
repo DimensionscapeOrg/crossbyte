@@ -408,9 +408,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var path:String = ":memory:";
 		if (reference != null && reference != ":memory:") {
 			if (Std.isOfType(reference, String)) {
-				path = new File(reference).nativePath;
+				path = new File(cast reference).nativePath;
 			} else if (Std.isOfType(reference, File)) {
-				var file:File = reference;
+				var file:File = cast reference;
 				path = file.nativePath;
 			} else {
 				throw new ArgumentError("The reference argument is neither a String to a path or a File Object.");
@@ -1372,12 +1372,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 			if (Std.isOfType(reference, String)) {
 				try {
-					file = new File(reference);
+					file = new File(cast reference);
 				} catch (e:Dynamic) {
 					throw new ArgumentError(Std.string(e));
 				}
 			} else if (Std.isOfType(reference, File)) {
-				file = reference;
+				file = cast reference;
 			} else {
 				throw new ArgumentError("The reference argument is neither a String to a path or a File Object.");
 			}

@@ -718,6 +718,13 @@ says how.
   write past the end grows it, and a negative index is a `RangeError`),
   or of anything else the field named by the number, as ActionScript
   reads `object[0]`.
+- An `Object` becomes a `Dynamic` on its own and nothing else: `var count:Int
+  = object`, `var socket:Socket = event.target`, `object + 1` and
+  `if (object)` no longer compile, where each target made its own of them
+  (one holding "12" as an `Int` was 12 natively, "12" on JavaScript, eval
+  and Neko, and a cast that threw on the jvm and HashLink; `if (object)` of
+  3 was taken on some targets, not on others, and threw on the jvm). A
+  field read with a dot is `Dynamic`, as before. (Upgrading)
 
 #### TCP
 
@@ -1934,6 +1941,12 @@ an API added in this release has is not listed here.
 - An `Object` holding an `Array` or a `String` lists no fields, where on
   Node it listed the indices or the characters: code that walked one so
   reads it as the `Array` or `String` it is.
+- An `Object`, `Event.target` and `currentTarget` among them, is cast to
+  the type it holds: `cast(event.target, Socket)` to have the type
+  checked, or `var socket:Socket = cast event.target`. A number or a flag
+  held in one is read through `PrimitiveValue.fromDynamic(object)`, and its
+  text with `object.toString()`. A field read (`payload.hits`) converts as
+  it did.
 
 #### TCP
 

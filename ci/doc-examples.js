@@ -52,6 +52,7 @@ const ROOT = path.join(__dirname, '..');
 
 const STANDALONE = [
   'src/crossbyte/Completer.hx',
+  'src/crossbyte/Object.hx',
   'src/crossbyte/PrimitiveValue.hx',
   'src/crossbyte/TypedObject.hx',
   'src/crossbyte/core/Config.hx',

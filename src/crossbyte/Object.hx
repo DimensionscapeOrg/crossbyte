@@ -3,30 +3,66 @@ package crossbyte;
 import crossbyte.ds.ListedMap.KeyValuePair;
 
 /**
- * A lightweight dynamic object bag for loosely structured CrossByte payloads.
+ * ActionScript's `Object`, for loosely structured values: parsed JSON, a
+ * `SharedObject`'s data, an event's target.
  *
- * `Object` keeps the loose feel of `Dynamic`, but gives CrossByte a named surface
- * for field-oriented payloads. It supports dot access, bracket access, field
- * iteration, and simple field introspection.
+ * Its fields are read and written with a dot or with brackets. A field read
+ * is `Dynamic`, so it converts, adds and compares as the value it holds
+ * does, and `payload.hits++` works. A number in brackets reads an `Array`'s
+ * element, or the field the number names. ActionScript's `hasOwnProperty`,
+ * `propertyIsEnumerable`, `isPrototypeOf`, `valueOf`, `toString` and
+ * `toLocaleString` are here, with `exists`, `remove`, `keys`, `values` and
+ * `entries`, and a loop walks the fields: `for (name in object)` or
+ * `for (name => value in object)`. As in ActionScript, an `Object` holding a
+ * function can be called.
  *
- * As in ActionScript, an `Object` holding a function can be called. Called
- * holding anything else it throws, except natively, where it does not.
+ * ```haxe
+ * var payload:Object = haxe.Json.parse('{"name":"ada","hits":3,"tags":["a","b"]}');
+ * payload.hits++;
+ * var hits:Int = payload.hits;
+ * var tags:Object = payload.tags;
+ * var first:String = tags[0];
+ * if (!payload.hasOwnProperty("score")) {
+ * 	payload["score"] = hits * 10;
+ * }
+ * for (name => value in payload) {
+ * 	trace(name + " = " + value);
+ * }
+ * var text:String = payload.toString();
+ * ```
  *
- * **What the field helpers see.** `exists`, `remove`, `keys`, `values`,
- * `entries`, `get` and `set` ask by reflection. Of an anonymous structure (a
- * literal, parsed JSON, `new Object()`) they answer alike on every target,
- * and a null `Object` answers as an empty one. Of a class instance each
- * target answers its own way: natively `exists` is false for a declared
- * field and `keys` lists properties too, on neko and Node `remove` deletes a
- * declared field, and on the jvm `get` of a property throws. Read a class's
- * fields through the class.
+ * **The same on every target.** Of a structure (a literal, parsed JSON,
+ * `new Object()`) every method answers alike everywhere, and a null
+ * `Object` answers as an empty one. An `Array`, a `String`, a number, a
+ * `Bool` or a function has no fields. Of a class instance each target
+ * answers its own way (natively `exists` is false for a declared field and
+ * `keys` lists properties too; on Neko and Node `remove` deletes a declared
+ * field; on the jvm `get` of a property throws), so read a class's fields
+ * through the class.
+ *
+ * **Conversions.** An `Object` takes any value, and on its own becomes only
+ * a `Dynamic`: `var count:Int = object`, `var socket:Socket = object`,
+ * `object + 1` and `if (object)` do not compile, where each target made its
+ * own of them (a "12" as an `Int` was 12 natively, "12" on JavaScript and a
+ * thrown cast on the jvm). Say what it is: `cast(object, Socket)` checks
+ * that, and throws on every target if it is not; `cast object` does not
+ * check; `toString()` gives it as text.
+ *
+ * **What still differs.** These are each target's own, and checking for
+ * them would cost every read:
+ * - A field of a null `Object` read or written with a dot is the target's
+ *   null access: natively it ends the process. Brackets answer null.
+ * - Called holding something that is not a function, an `Object` throws,
+ *   except natively, where it answers 0.
+ * - On JavaScript a null name in brackets throws a `TypeError`; a name of a
+ *   member every object has there (`toString`, `valueOf`) reads that member
+ *   where the object has no field of its own by that name; and an `Array`'s
+ *   elements are also its fields, named by their indices.
  *
  * **A field named like a method.** `exists`, `remove`, `keys`, `values`,
- * `entries`, `get`, `set` and `iterator` are these methods, and so are
- * ActionScript's `hasOwnProperty`, `propertyIsEnumerable`,
- * `isPrototypeOf`, `valueOf`, `toString` and `toLocaleString`, which answer
- * the same on every target. A payload's field of one of those names is read
- * with brackets: `payload["values"]`, where `payload.values` is the method.
+ * `entries`, `get`, `set`, `iterator`, `keyValueIterator` and ActionScript's
+ * methods above are methods, so a field of one of those names is read with
+ * brackets: `payload["values"]`, where `payload.values` is the method.
  *
  * **What it costs.** Every field of an `Object` is looked up by its name when
  * it is read. Built from a literal such as `{name: "a", hits: 3}`, the fields
@@ -39,7 +75,7 @@ import crossbyte.ds.ListedMap.KeyValuePair;
 @:transitive
 @:callable
 @:forward
-abstract Object(Dynamic) from Dynamic to Dynamic {
+abstract Object(Dynamic) from Dynamic {
 	public inline function new() {
 		this = {};
 	}

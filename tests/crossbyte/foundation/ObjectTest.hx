@@ -176,6 +176,80 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
+		An `Object` converts on its own to `Dynamic` and to nothing else, and
+		its own arithmetic does not compile. It converted to anything,
+		unchecked, and each target made its own of that: one holding "12" as
+		an `Int` was "12" on eval, Neko and Node (so `n + 1` was "121"), 12
+		natively, and a cast that threw on the jvm and HashLink; `if (object)`
+		of 3 was taken natively, on Node and HashLink, not on eval or Neko,
+		and threw on the jvm. Its fields are `Dynamic`, as they were; a value
+		is taken as a type with `cast`, and as text with `toString()`.
+	**/
+	public function testAnObjectConvertsOnlyToDynamic():Void {
+		var number:Object = "12";
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var n:Int = number;
+		}), "an Object became an Int");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var f:Float = number;
+		}), "an Object became a Float");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var b:Bool = number;
+		}), "an Object became a Bool");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var d:Date = number;
+		}), "an Object became a Date without a cast");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(number + 1), "an Object was added to");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(number * 2), "an Object was multiplied");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(-number), "an Object was negated");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(if (number) 1 else 0), "an Object was a condition");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var s:String = number;
+		}), "an Object became a String without a cast");
+		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
+			var structure:{} = number;
+		}), "an Object became a structure without a cast");
+
+		var three:Object = 3;
+		Assert.equals("3", three.toString());
+		Assert.equals(12, Std.parseInt(number.toString()));
+		var loose:Dynamic = three;
+		Assert.equals(3, loose);
+		var payload:Object = haxe.Json.parse('{"hits":3}');
+		var hits:Int = payload.hits;
+		Assert.equals(4, hits + 1);
+		var instance:Object = new Sealed();
+		var sealed:Sealed = cast instance;
+		Assert.equals(1, sealed.field);
+		Assert.equals(1, cast(instance, Sealed).field);
+	}
+
+	/** The documentation's example, as written there, run. **/
+	public function testTheDocumentedExample():Void {
+		var seen:Array<String> = [];
+		var payload:Object = haxe.Json.parse('{"name":"ada","hits":3,"tags":["a","b"]}');
+		payload.hits++;
+		var hits:Int = payload.hits;
+		var tags:Object = payload.tags;
+		var first:String = tags[0];
+		if (!payload.hasOwnProperty("score")) {
+			payload["score"] = hits * 10;
+		}
+		for (name => value in payload) {
+			seen.push(name + " = " + value);
+		}
+		var text:String = payload.toString();
+		Assert.equals(4, hits);
+		Assert.equals("a", first);
+		Assert.equals(40, payload["score"]);
+		Assert.equals(4, seen.length);
+		for (line in ["hits = 4", "name = ada", "score = 40"]) {
+			Assert.isTrue(seen.indexOf(line) >= 0, line + " not in " + seen);
+		}
+		Assert.isTrue(text.indexOf("ada") >= 0, text);
+	}
+
+	/**
 		What Haxe keeps on an object for itself is not a field of it: on
 		JavaScript an object used as a key in an `ObjectMap` is given an
 		`__id__`.
@@ -183,7 +257,7 @@ class ObjectTest extends utest.Test {
 	public function testKeysLeaveOutWhatHaxeKeepsOnAnObject():Void {
 		var payload:Object = haxe.Json.parse('{"a":1,"b":2}');
 		var map = new haxe.ds.ObjectMap<{}, Int>();
-		map.set(payload, 1);
+		map.set(cast payload, 1);
 		var keys:Array<String> = payload.keys();
 		keys.sort(Reflect.compare);
 		Assert.same(["a", "b"], keys);

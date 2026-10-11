@@ -99,11 +99,13 @@ class Event {
 		The dispatcher the event was dispatched on: always an
 		`IEventDispatcher`, typed `Object` as ActionScript types it.
 
-		Assign it to the type it is for typed access
-		(`var socket:Socket = event.target;`), which costs at most a type check
-		of a few nanoseconds, natively, and nothing elsewhere: the object is
-		the same one, and the assignment tells the compiler what it is. Reading
-		fields through `Object` instead looks each one up by its name.
+		Cast it to the type it is for typed access: `cast(event.target,
+		Socket)` checks the type, and throws on every target if it is not one;
+		`var socket:Socket = cast event.target` leaves the check out, for a
+		listener that knows what it listens to (a wrong type is then found
+		out differently on each target). Either way the object is the same
+		one, and the cast tells the compiler what it is. Reading fields
+		through `Object` instead looks each one up by its name.
 	**/
 	public var target(default, null):Object;
 	public var type(default, null):String;
