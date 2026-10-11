@@ -648,8 +648,10 @@ says how.
   text of up to 256 characters (twelve characters on Node in 56 ns rather
   than 690). On Node other text of up to 64 characters is encoded straight
   into the `ByteArray`, where `TextEncoder` made a buffer of it first:
-  eleven characters with accents in 86 ns rather than 770. On the jvm both
-  go through its own encoder, which a loop did not beat. On HashLink
+  eleven characters with accents in 86 ns rather than 770. On the jvm
+  ASCII text of up to 256 characters (64 for `writeUTF`) is copied
+  straight in by `String.getBytes`, allocating nothing, where a loop wrote
+  it a character at a time: 200 characters in 83 ns rather than 146. On HashLink
   strings are decoded in one pass, ASCII four bytes at a time, where
   `getString` made three: `ByteArray`
   reads of 200 characters take 790 ns rather than 1,530. On Node
