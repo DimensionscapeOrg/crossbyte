@@ -620,6 +620,9 @@ says how.
   no longer comes to name a new entity within seconds. (Upgrading)
 - `ObjectPool` keeps at most `maxFree` free objects, 10,000 unless set.
   (Upgrading)
+- `BitSet` refuses a negative index, and a negative `length`, with a
+  `RangeError`, as it refuses a bit past `MAX_INDEX`, where it threw the
+  String "Index out of bounds". (Upgrading)
 - `Version` compares part by part, so a part past 999 orders as written
   (2024.10.1 came after 2025.1.0, each held to 999), reads `v1.2.3` as
   1.2.3, and has `Version.compare` for sorting. `new Version` takes a part
@@ -1721,6 +1724,8 @@ an API added in this release has is not listed here.
 - An `ObjectPool` keeps 10,000 free objects unless told otherwise: set
   `maxFree` to `0x7FFFFFFF` for no bound, as before. A negative `maxFree`
   throws an `ArgumentError`.
+- Code that caught a `String` from a `BitSet` given a negative index or
+  length catches a `crossbyte.errors.RangeError`.
 - `ObjectRecycler.recycle` returns whether it took the object.
 - `Random.reseed(seed)` draws a different sequence from before, so a
   replay recorded with a seed draws differently; instances (`new

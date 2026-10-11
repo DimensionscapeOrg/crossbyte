@@ -37,7 +37,8 @@ class BitSet {
 	/**
 		The largest index a bit can be set at: a set's length is an `Int`, so
 		it holds at most `0x7FFFFFFF` bits. `set` and `flip` refuse one past it
-		with a `RangeError`.
+		with a `RangeError`, as every method taking an index refuses a
+		negative one.
 	**/
 	public static inline var MAX_INDEX:Int = 0x7FFFFFFE;
 
@@ -49,6 +50,8 @@ class BitSet {
 	/**
 	 * The length of the `BitSet`, representing the total number of bits it can handle.
 	 * This property can be used to get or set the size of the `BitSet`.
+	 *
+	 * Setting it to a negative number throws a `RangeError`.
 	 */
 	public var length(get, set):Int;
 
@@ -58,7 +61,7 @@ class BitSet {
 
 	private function set_length(value:Int):Int {
 		if (value < 0) {
-			throw "Index out of bounds";
+			throw new RangeError('A BitSet cannot be $value bits long.');
 		}
 		if (value < __size) {
 			__size = value;
@@ -96,7 +99,7 @@ class BitSet {
 	// its words) and on JavaScript made a length no Int holds.
 	private function __grow(bitIndex:Int):Void {
 		if (bitIndex > MAX_INDEX) {
-			throw new RangeError('A BitSet holds bits 0 to $MAX_INDEX, not $bitIndex.');
+			__refuse(bitIndex);
 		}
 		var wanted:Float = Math.max(__size * 2.0, bitIndex + 1.0);
 		__resize(wanted > MAX_INDEX + 1.0 ? MAX_INDEX + 1 : Std.int(wanted));
@@ -120,8 +123,14 @@ class BitSet {
 	}
 
 	private inline function __checkBounds(index:Int):Void {
-		if (index < 0)
-			throw "Index out of bounds";
+		if (index < 0) {
+			__refuse(index);
+		}
+	}
+
+	// Out of line, so that each method taking an index keeps only the test.
+	private static function __refuse(index:Int):Void {
+		throw new RangeError('A BitSet holds bits 0 to $MAX_INDEX, not $index.');
 	}
 
 	private inline function __wordCountForSize(size:Int):Int {
@@ -154,7 +163,7 @@ class BitSet {
 	 *
 	 * @param index The index of the bit to set or clear.
 	 * @param value `true` to set the bit, `false` to clear it.
-	 * @throws RangeError Setting a bit past `MAX_INDEX`.
+	 * @throws RangeError For a negative index, or setting a bit past `MAX_INDEX`.
 	 */
 	public inline function set(index:Int, value:Bool):Void {
 		__checkBounds(index);
@@ -178,6 +187,7 @@ class BitSet {
 	 *
 	 * @param index The index of the bit to retrieve.
 	 * @return `true` if the bit is set, `false` otherwise.
+	 * @throws RangeError For a negative index.
 	 */
 	public inline function get(index:Int):Bool {
 		__checkBounds(index);
@@ -195,6 +205,7 @@ class BitSet {
 	 * Clears the bit at the specified index.
 	 *
 	 * @param index The index of the bit to clear.
+	 * @throws RangeError For a negative index.
 	 */
 	public inline function clear(index:Int):Void {
 		__checkBounds(index);
@@ -233,6 +244,7 @@ class BitSet {
 	 * Toggles the bit at the specified index.
 	 *
 	 * @param index The index of the bit to toggle.
+	 * @throws RangeError For a negative index, or one past `MAX_INDEX`.
 	 */
 	public inline function flip(index:Int):Void {
 		__checkBounds(index);
@@ -275,6 +287,7 @@ class BitSet {
 	 *
 	 * @param from The index to start looking at.
 	 * @return The index of that bit, or `-1` if no bit from there on is set.
+	 * @throws RangeError For a negative `from`.
 	 */
 	public function nextSetBit(from:Int):Int {
 		__checkBounds(from);
@@ -307,6 +320,7 @@ class BitSet {
 	 *
 	 * @param from The index to start looking at.
 	 * @return The index of that bit.
+	 * @throws RangeError For a negative `from`.
 	 */
 	public function nextClearBit(from:Int):Int {
 		__checkBounds(from);

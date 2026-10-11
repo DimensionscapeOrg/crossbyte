@@ -230,6 +230,48 @@ class BitSetTest extends utest.Test {
 		}
 	}
 
+	/**
+		A negative index is a `RangeError` wherever a BitSet takes one, as one
+		past `MAX_INDEX` is, and so is a negative length; the set is left as
+		it was.
+	**/
+	public function testANegativeIndexIsARangeError():Void {
+		var bits = new BitSet(64);
+		bits.set(5, true);
+		var calls:Array<{name:String, call:Int->Void}> = [
+			{name: "set", call: i -> bits.set(i, true)},
+			{name: "set to false", call: i -> bits.set(i, false)},
+			{name: "get", call: i -> {
+				bits.get(i);
+			}},
+			{name: "clear", call: i -> bits.clear(i)},
+			{name: "flip", call: i -> bits.flip(i)},
+			{name: "nextSetBit", call: i -> {
+				bits.nextSetBit(i);
+			}},
+			{name: "nextClearBit", call: i -> {
+				bits.nextClearBit(i);
+			}},
+			{name: "length", call: i -> {
+				bits.length = i;
+			}},
+		];
+		for (index in [-1, -32, -2147483647 - 1]) {
+			for (entry in calls) {
+				var raised:Dynamic = null;
+				try {
+					entry.call(index);
+				} catch (e:Dynamic) {
+					raised = e;
+				}
+				Assert.isTrue(Std.isOfType(raised, crossbyte.errors.RangeError), entry.name + "(" + index + ") raised " + Std.string(raised));
+			}
+		}
+		Assert.equals(64, bits.length);
+		Assert.isTrue(bits.get(5));
+		Assert.equals(1, bits.countSetBits());
+	}
+
 	public function testASetCombinedWithItselfBehaves():Void {
 		var bits = new BitSet(40);
 		bits.set(3, true);
