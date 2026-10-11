@@ -246,8 +246,11 @@ class Arrivals {
 		var length:Int = payload.length;
 		var copy:ByteArray = new ByteArray();
 		if (length > 0) {
-			copy.length = length;
-			(copy : haxe.io.Bytes).blit(0, payload, 0, length);
+			// Exactly its size, and not zeroed first, as every byte of it is
+			// copied in: made `length` long, it was zeroed and then written.
+			var data:ByteArrayData = copy;
+			data.__reserve(length);
+			data.__writeRange(payload, 0, length);
 		}
 		copy.endian = payload.endian;
 		copy.objectEncoding = payload.objectEncoding;

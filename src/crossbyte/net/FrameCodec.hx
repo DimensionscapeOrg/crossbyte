@@ -79,6 +79,9 @@ class FrameCodec {
 		var length:Int = payload == null ? 0 : payload.length;
 		var out = new ByteArray();
 		out.endian = Endian.BIG_ENDIAN;
+		// One buffer the size of the frame: grown as it was written, the
+		// header alone made one of 64 bytes, and the payload another.
+		@:privateAccess (out : crossbyte.io.ByteArray.ByteArrayData).__reserve(HEADER_SIZE + length);
 		out.writeUnsignedInt(length);
 
 		if (length > 0) {
@@ -97,6 +100,17 @@ class FrameCodec {
 
 		__buffer.position = __buffer.length;
 		__buffer.writeBytes(bytes, 0, bytes.length);
+	}
+
+	/**
+		Takes what `socket` has received straight into the buffer: what
+		`feed` takes, with no ByteArray made of it to be copied out of again.
+	**/
+	@:noCompletion public function __feedFrom(socket:crossbyte.net.Socket):Void {
+		var count:Int = socket.bytesAvailable;
+		if (count > 0) {
+			socket.readBytes(__buffer, __buffer.length, count);
+		}
 	}
 
 	/**

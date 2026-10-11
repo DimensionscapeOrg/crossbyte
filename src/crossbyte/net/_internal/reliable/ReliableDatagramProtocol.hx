@@ -586,8 +586,10 @@ final class ReliableDatagramProtocol {
 		} else {
 			payload = new ByteArray();
 			if (payloadLength > 0) {
-				payload.length = payloadLength;
-				(payload : Bytes).blit(0, bytes, from + start, payloadLength);
+				// Its size exactly, and not zeroed before it is written over.
+				var data:crossbyte.io.ByteArray.ByteArrayData = payload;
+				data.__reserve(payloadLength);
+				data.__writeRange(bytes, from + start, payloadLength);
 			}
 		}
 		if (payload != null) {

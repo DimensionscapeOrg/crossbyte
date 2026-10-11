@@ -299,16 +299,14 @@ class NodeChannel implements crossbyte.core._internal.PassFlush {
 			return;
 		}
 
-		var incoming = new ByteArray();
-
+		// Straight into the codec's buffer: read into a ByteArray of its own
+		// and fed to the codec, every read was allocated and copied twice.
 		try {
-			__socket.readBytes(incoming, 0, __socket.bytesAvailable);
+			__frames.__feedFrom(__socket);
 		} catch (e:Dynamic) {
 			__scheduleRetry(Std.string(e));
 			return;
 		}
-
-		__frames.feed(incoming);
 
 		while (true) {
 			var message:ByteArray = null;
