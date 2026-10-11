@@ -1181,6 +1181,11 @@ Fixes to code new in this release are not listed.
   where it took 54 at 1,000 entries). `sweep(now)` is inline, so a time
   given in a local variable is not boxed, natively or on the jvm (24
   bytes a sweep).
+- A `ListedMap` boxes no key or index natively, nor an index on the jvm:
+  natively a `get` of a String key takes 22 ns rather than 27 at 1,000
+  keys and allocates nothing rather than 32 bytes, and a replaced value
+  32 ns and nothing rather than 56 ns and 82 bytes; on the jvm a replaced
+  value allocates nothing rather than 14 bytes.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

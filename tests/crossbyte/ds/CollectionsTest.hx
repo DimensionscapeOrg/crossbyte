@@ -1526,6 +1526,116 @@ class CollectionsTest extends utest.Test {
 		read past the end and throw on every target; a pair iterator that
 		re-read the count would skip the entry moved into the gap.
 	**/
+	/**
+		A `ListedMap` of each kind of key keeps every entry at the index its
+		list holds it at, past every index a map would box, through removals
+		and additions: strings, numbers (negative ones too), objects and enum
+		values. Natively each index is kept plus one, so the first is told
+		apart from a missing key.
+	**/
+	public function testAListedMapFindsEveryKindOfKeyAtAnyIndex():Void {
+		Assert.same([], listedMapErrors([for (i in 0...1000) "s" + i]), "strings");
+		Assert.same([], listedMapErrors([for (i in 0...1000) i * 7 - 3500]), "numbers");
+		Assert.same([], listedMapErrors([for (i in 0...1000) new DenseThing(i)]), "objects");
+		var shades:Array<DenseShade> = [for (i in 0...300) Shade(i)];
+		shades.push(Plain);
+		Assert.same([], listedMapErrors(shades), "enum values");
+	}
+
+	@:generic
+	private static function listedMapErrors<K:Dynamic>(keys:Array<K>):Array<String> {
+		var map = new ListedMap<K, Int>();
+		var wrong:Array<String> = [];
+		for (i in 0...keys.length) {
+			if (!map.set(keys[i], i)) {
+				wrong.push("not new: " + keys[i]);
+			}
+		}
+		// Every third taken out, every ninth put back, and every fifth given
+		// a new value.
+		for (i in 0...keys.length) {
+			if (i % 3 == 0 && !map.remove(keys[i])) {
+				wrong.push("not removed: " + keys[i]);
+			}
+		}
+		for (i in 0...keys.length) {
+			if (i % 9 == 0 && !map.set(keys[i], i)) {
+				wrong.push("not put back: " + keys[i]);
+			}
+			if (i % 5 == 0 && map.exists(keys[i]) && map.set(keys[i], -i)) {
+				wrong.push("a new value counted as a new key: " + keys[i]);
+			}
+		}
+		var pairs = map.keyValuePairs;
+		for (i in 0...pairs.length) {
+			if (map.get(pairs[i].key) != pairs[i].value || map.valueAt(i) != pairs[i].value) {
+				wrong.push(pairs[i].key + " at " + i + " reads " + map.get(pairs[i].key));
+			}
+		}
+		var held:Int = 0;
+		for (i in 0...keys.length) {
+			var holds:Bool = i % 3 != 0 || i % 9 == 0;
+			if (holds) {
+				held++;
+				var expected:Int = i % 5 == 0 ? -i : i;
+				if (map.get(keys[i]) != expected) {
+					wrong.push(keys[i] + " reads " + map.get(keys[i]) + ", not " + expected);
+				}
+			}
+			if (map.exists(keys[i]) != holds) {
+				wrong.push(keys[i] + " exists: " + map.exists(keys[i]));
+			}
+			if (!holds && (map.get(keys[i]) != null || map.remove(keys[i]))) {
+				wrong.push(keys[i] + " found after it was removed");
+			}
+		}
+		if (map.length != held) {
+			wrong.push("holds " + map.length + ", not " + held);
+		}
+		return wrong;
+	}
+
+	/**
+		Reading, testing, replacing and removing a key of a `ListedMap` boxes
+		nothing natively, and replacing one nothing on the jvm. Through
+		`haxe.IMap` natively a String key was boxed for every call to either
+		of its maps (32 bytes a `get`), and an index past 255 for each read and
+		write of one; on the jvm an index past 127 was boxed for each read
+		(14 bytes a replacement at 1,000 keys).
+	**/
+	public function testAListedMapBoxesNoKeyOrIndex():Void {
+		#if (cpp || jvm)
+		var map = new ListedMap<String, DenseThing>();
+		var keys:Array<String> = [for (i in 0...1000) "k" + i];
+		var things:Array<DenseThing> = [for (i in 0...1000) new DenseThing(i)];
+		for (i in 0...1000) {
+			map.set(keys[i], things[i]);
+		}
+		var at:Int = 0;
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			#if cpp
+			() -> sum += map.get(keys[(at = (at + 7) % 1000)]).id,
+			() -> if (map.exists(keys[(at = (at + 7) % 1000)])) sum++,
+			#end
+			() -> {
+				at = (at + 7) % 1000;
+				map.set(keys[at], things[at]);
+			}
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "an operation allocated " + reading);
+		}
+		Assert.equals(1000, map.length);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testListedMapRemovingWhileIteratingVisitsEachOnce():Void {
 		var map = new ListedMap<String, Int>();
 		for (i in 0...6) {

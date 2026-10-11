@@ -2,6 +2,9 @@ package crossbyte.ds;
 
 import haxe.ds.ReadOnlyArray;
 import haxe.ds.Map;
+#if (cpp && !cppia)
+import crossbyte.ds._internal.NativeMap;
+#end
 
 /**
  * ...
@@ -22,6 +25,10 @@ import haxe.ds.Map;
  * once. Removing an entry the loop has already passed moves one it has not
  * yet reached behind it, which is then skipped.
  *
+ * A value is kept in a map of its own as well as in the list, so `get` is
+ * one lookup. Natively and on the jvm no key, value or position is boxed to
+ * reach either map.
+ *
  * @param K The type of keys stored in the map.
  * @param V The type of values associated with the keys.
  */
@@ -31,8 +38,15 @@ final class ListedMap<K:Dynamic, V> {
 	private var __map:Map<K, V>;
 	// Array holding key–value entries.
 	private var __keyValuePairs:Array<KeyValuePair<K, V>>;
-	// Map from keys to indices in the __keyValuePairs array.
+	// Map from keys to indices in the __keyValuePairs array: natively plus
+	// one, so a map's 0 for a key it does not hold is told apart from the
+	// first index.
 	private var __indices:Map<K, Int>;
+	#if jvm
+	// Each index past 127 boxed once: the jvm's map holds an Integer for
+	// every key, and Integer.valueOf makes a new one past 127 each time.
+	private var __boxes:haxe.ds.Vector<Dynamic> = null;
+	#end
 
 	/**
 	 * Provides a read-only view of the internal key-value pairs.
@@ -79,7 +93,11 @@ final class ListedMap<K:Dynamic, V> {
 	 * @return `true` if the key exists, otherwise `false`.
 	 */
 	public function exists(key:K):Bool {
+		#if (cpp && !cppia)
+		return NativeMap.has(__map, key);
+		#else
 		return __map.exists(key);
+		#end
 	}
 
 	/**
@@ -92,15 +110,14 @@ final class ListedMap<K:Dynamic, V> {
 	 * @param value The value to associate with the key.
 	 */
 	public function set(key:K, value:V):Bool {
-		var idx:Null<Int> = __indices.get(key);
-		if (idx == null) {
-			__map.set(key, value);
+		var idx:Int = __indexOf(key);
+		__keep(key, value);
+		if (idx < 0) {
 			var entry:KeyValuePair<K, V> = new KeyValuePair(key, value);
-			__indices.set(key, __keyValuePairs.length);
+			__place(key, __keyValuePairs.length);
 			__keyValuePairs.push(entry);
 			return true;
 		} else {
-			__map.set(key, value);
 			__keyValuePairs[idx].value = value;
 			return false;
 		}
@@ -113,7 +130,11 @@ final class ListedMap<K:Dynamic, V> {
 	 * @return The associated value, or `null` if the key does not exist.
 	 */
 	public inline function get(key:K):Null<V> {
+		#if (cpp && !cppia)
+		return cast NativeMap.get(__map, key);
+		#else
 		return __map.get(key);
+		#end
 	}
 
 	/**
@@ -149,23 +170,31 @@ final class ListedMap<K:Dynamic, V> {
 	 * @return `true` if the key was found and removed, otherwise `false`.
 	 */
 	public function remove(key:K):Bool {
-		if (!__map.exists(key))
+		var index:Int = __indexOf(key);
+		if (index < 0)
 			return false;
 
+		#if (cpp && !cppia)
+		NativeMap.remove(__map, key);
+		#else
 		__map.remove(key);
-		var index = __indices.get(key);
+		#end
 		var lastIndex = __keyValuePairs.length - 1;
 
 		// If the entry is not the last, swap it with the last entry.
 		if (index != lastIndex) {
 			var lastEntry = __keyValuePairs[lastIndex];
 			__keyValuePairs[index] = lastEntry;
-			__indices.set(lastEntry.key, index);
+			__place(lastEntry.key, index);
 		}
 
 		// Remove the last element.
 		__keyValuePairs.pop();
+		#if (cpp && !cppia)
+		NativeMap.remove(__indices, key);
+		#else
 		__indices.remove(key);
+		#end
 		return true;
 	}
 
@@ -206,6 +235,63 @@ final class ListedMap<K:Dynamic, V> {
 	public inline function keyValueIterator():ListedMapPairIterator<K, V> {
 		return new ListedMapPairIterator<K, V>(this);
 	}
+
+	// Natively through each map's own class: through haxe.IMap a String
+	// key, or an Int key or index past 255, is boxed for every call.
+	private inline function __keep(key:K, value:V):Void {
+		#if (cpp && !cppia)
+		NativeMap.set(__map, key, value);
+		#else
+		__map.set(key, value);
+		#end
+	}
+
+	private inline function __indexOf(key:K):Int {
+		#if (cpp && !cppia)
+		return NativeMap.intOf(__indices, key) - 1;
+		#elseif jvm
+		// Read as the Integer the map holds: read as a Null<Int> it would be
+		// unboxed and boxed again, past 127 a new one each time.
+		var held:Dynamic = (cast __indices : haxe.Constraints.IMap<K, Dynamic>).get(key);
+		return held == null ? -1 : (held : Int);
+		#else
+		var index:Null<Int> = __indices.get(key);
+		return index == null ? -1 : index;
+		#end
+	}
+
+	private inline function __place(key:K, index:Int):Void {
+		#if (cpp && !cppia)
+		NativeMap.set(__indices, key, index + 1);
+		#elseif jvm
+		(cast __indices : haxe.Constraints.IMap<K, Dynamic>).set(key, __boxed(index));
+		#else
+		__indices.set(key, index);
+		#end
+	}
+
+	#if jvm
+	private function __boxed(index:Int):Dynamic {
+		if (index < 128) {
+			// Integer.valueOf's own cache.
+			return (index : Dynamic);
+		}
+		var boxes:haxe.ds.Vector<Dynamic> = __boxes;
+		if (boxes == null || index >= boxes.length) {
+			var grown:haxe.ds.Vector<Dynamic> = new haxe.ds.Vector<Dynamic>(index < 512 ? 1024 : index * 2);
+			if (boxes != null) {
+				haxe.ds.Vector.blit(boxes, 0, grown, 0, boxes.length);
+			}
+			__boxes = boxes = grown;
+		}
+		var box:Dynamic = boxes[index];
+		if (box == null) {
+			box = (index : Dynamic);
+			boxes[index] = box;
+		}
+		return box;
+	}
+	#end
 }
 
 /**
