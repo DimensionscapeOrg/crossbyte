@@ -2910,6 +2910,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		// then an empty final block: a sender flushing as zlib does never
 		// finishes its stream, and the decoder here reads to a final block.
 		var stream:ByteArray = new ByteArray();
+		// The message and the nine octets after it, in one buffer of that size.
+		(stream : ByteArrayData).__reserve(__incomingMessageBuffer.length + 9);
 		stream.writeBytes(__incomingMessageBuffer, 0, __incomingMessageBuffer.length);
 		for (octet in [0x00, 0x00, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0xFF, 0xFF]) {
 			stream.writeByte(octet);

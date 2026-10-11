@@ -678,8 +678,10 @@ says how.
   2.2 µs on Node rather than 10.4, and 1.0 on HashLink rather than 2.1. A
   `ByteArray` grows by half again what it holds, and to at least 64 bytes,
   so a 98-byte message written into a new one allocates three times rather
-  than six, and copies only what is readable as it does; on the jvm and
-  HashLink a new one is not zeroed a second time. The bounds kept since
+  than six, and copies only what is readable as it does. Bytes copied into
+  a new one (`writeBytes`, or `readBytes` into it) make it exactly their
+  size, as that is mostly all it will hold. On the jvm and HashLink a new
+  one is not zeroed a second time. The bounds kept since
   (see Fixed) cost an index read 0.3 ns on Node, and reading `position`
   and `bytesAvailable` 1 ns on HashLink.
 

@@ -1054,6 +1054,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// zeroing them all first (on JavaScript a byte at a time, a third of a
 		// Node server's working time taking uploads).
 		if ((bytes : ByteArrayData).length - offset < length) {
+			(bytes : ByteArrayData).__sizeForCopy(offset + length);
 			(bytes : ByteArrayData).__resize(offset + length, offset);
 		}
 
@@ -1513,6 +1514,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// The blit below covers [position, position + length), so only a gap
 		// left by seeking past the end needs zeroing. On an append there is
 		// no gap and the fill is skipped entirely.
+		__sizeForCopy(position + length);
 		__resize(position + length, position);
 		blit(position, (bytes : ByteArrayData), offset, length);
 
@@ -2096,7 +2098,23 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	// The least a ByteArray grows to: a few fields' worth, so a message
 	// written into a new one grows once or twice rather than at every field.
+	// A copy into a new one is made its exact size instead (__sizeForCopy).
 	private static inline var MIN_CAPACITY:Int = 64;
+
+	/**
+		Before bytes are copied in up to `end`: a ByteArray with no storage
+		yet is made exactly that big. A copy into a new ByteArray (a frame
+		read off a socket, a message kept or forwarded) is mostly all it will
+		ever hold, where the least a buffer grows to, MIN_CAPACITY, is for a
+		message written field by field. Anything appended later grows it as
+		usual. Past the largest ByteArray nothing is made here, and `__resize`
+		refuses it.
+	**/
+	@:noCompletion private inline function __sizeForCopy(end:Int):Void {
+		if (__length == 0 && end > 0 && end <= 0x7FFFFFFF) {
+			__reserve(end);
+		}
+	}
 
 	@:noCompletion private inline function __setData(bytes:Bytes):Void {
 		#if eval

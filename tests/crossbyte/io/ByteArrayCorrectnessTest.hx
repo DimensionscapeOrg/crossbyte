@@ -735,6 +735,59 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
+		A copy into a new ByteArray, by `writeBytes` or by `readBytes` into
+		it, takes the copy's size and no more: it is mostly all that
+		ByteArray will hold (a frame read off a socket, a message kept). A
+		message written field by field into a new one still starts at the
+		least a ByteArray grows to, so it does not grow at every field, and
+		bytes appended after a copy grow it as usual.
+	**/
+	public function testACopyIntoANewByteArrayTakesTheCopysSize():Void {
+		var source = new ByteArray();
+		for (i in 0...13) {
+			source.writeByte(i + 1);
+		}
+
+		var copied = new ByteArray();
+		copied.writeBytes(source, 0, 13);
+		Assert.equals(13, __capacityOf(copied), "writeBytes into a new ByteArray");
+
+		var read = new ByteArray();
+		source.position = 0;
+		source.readBytes(read, 0, 13);
+		Assert.equals(13, __capacityOf(read), "readBytes into a new ByteArray");
+
+		var placed = new ByteArray();
+		source.position = 0;
+		source.readBytes(placed, 3, 13);
+		Assert.equals(16, __capacityOf(placed), "readBytes into a new ByteArray at an offset");
+		Assert.equals(16, (placed.length : Int));
+		var same:Bool = placed[0] == 0 && placed[1] == 0 && placed[2] == 0;
+		for (i in 0...13) {
+			same = same && placed[3 + i] == i + 1;
+		}
+		Assert.isTrue(same, "the bytes read in at an offset, the gap before them zero");
+
+		var fields = new ByteArray();
+		fields.writeInt(1);
+		Assert.equals(64, __capacityOf(fields), "a field written into a new ByteArray");
+
+		copied.endian = BIG_ENDIAN;
+		copied.writeInt(0x0E0F1011);
+		copied.writeShort(0x1213);
+		Assert.equals(19, (copied.length : Int));
+		same = true;
+		for (i in 0...19) {
+			same = same && copied[i] == i + 1;
+		}
+		Assert.isTrue(same, "the bytes written after a copy");
+	}
+
+	private static function __capacityOf(bytes:ByteArray):Int {
+		return @:privateAccess (bytes : crossbyte.io.ByteArray.ByteArrayData).__length;
+	}
+
+	/**
 		A position is an Int: one from 2^31 up, which as a UInt is past the
 		largest ByteArray, is refused rather than kept as a negative number
 		every read and write then went wrong with.
