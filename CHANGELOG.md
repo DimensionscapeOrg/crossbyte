@@ -1585,6 +1585,10 @@ Fixes to code new in this release are not listed.
   `truncate()` truncates in place, `UPDATE` mode reads back on macOS, an
   asynchronous read hands out only what it has read, and `readObject` reads
   one object. A short `readBytes` throws `EOFError`. (Upgrading)
+- `FileStream.readBytes` refuses an offset and length that reach past the
+  largest `ByteArray` with a `RangeError`, leaving the destination as it
+  was, where an offset near 2^32 wrapped the sum: the read went to a
+  negative position, which ended the process on the interpreter.
 - Platform checks made at run time ask the machine: `System.PLATFORM`,
   `File.separator` and the storage directory were wrong on eval, the jvm
   and Node running on Windows.

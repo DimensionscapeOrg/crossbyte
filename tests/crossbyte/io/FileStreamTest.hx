@@ -465,6 +465,50 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	/**
+		An offset and a length that reach past the largest ByteArray are a
+		RangeError, with nothing read and the destination as it was. Added
+		as UInts, an offset near 2^32 wrapped the end round to a few bytes:
+		the destination was sized to them and the read went to a negative
+		position, which ended the process on the interpreter, threw neko's
+		file_read error and the jvm's IndexOutOfBoundsException.
+	**/
+	public function testAReadPastTheLargestByteArrayIsARangeError():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var input = new FileStream();
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeBytes(__pattern(16));
+			output.close();
+
+			input.open(file, FileMode.READ);
+			for (range in [[0xFFFFFFF0, 0x20], [0x7FFFFFF0, 0x20], [0x80000000, 1], [4, 0x7FFFFFFF]]) {
+				var target = new ByteArray();
+				var offset:UInt = range[0];
+				var length:UInt = range[1];
+				var thrown:Dynamic = null;
+				try {
+					input.readBytes(target, offset, length);
+				} catch (e:Dynamic) {
+					thrown = e;
+				}
+				var name:String = StringTools.hex(range[0]) + " for " + StringTools.hex(range[1]);
+				Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.RangeError), name + " raised " + Std.string(thrown));
+				Assert.equals(0, target.length, name + " resized the destination");
+				Assert.equals(0, input.position, name + " moved the stream");
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testAChunkedCopyIsExact():Void {
 		// Copying a file in chunks, the way AIR code does: read a chunk until
 		// EOFError, then take what is left. With short reads padded, a 1 MB

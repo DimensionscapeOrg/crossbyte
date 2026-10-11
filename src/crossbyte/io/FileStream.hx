@@ -663,6 +663,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * the open() method), the file cannot be read (for example, because the file is missing).
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
+	 * @throws 		RangeError `offset` and `length` reach past the largest ByteArray, 2^31 - 1 bytes.
+	 *              Nothing is read and `bytes` is left as it was.
 	 */
 	public function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
 		__checkIfReadable();
@@ -688,20 +690,30 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			__input.seek(at, FileSeek.SeekBegin);
 		}
 
+		// In Int, and against what the largest ByteArray leaves after the
+		// offset: added as UInts, an offset near 2^32 wrapped the end round to
+		// a few bytes, the destination was sized to that, and the read went
+		// to a negative position (ending the process on the interpreter).
+		var into:Int = offset;
+		var count:Int = length;
+		if (into < 0 || count < 0 || into > 0x7FFFFFFF - count) {
+			throw new RangeError("A ByteArray holds at most 2^31 - 1 bytes.");
+		}
+
 		var byteArrayData:ByteArrayData = bytes;
-		if (byteArrayData.length < offset + length) {
-			byteArrayData.__resize(offset + length, -1);
+		if (byteArrayData.length - into < count) {
+			byteArrayData.__resize(into + count, -1);
 		}
 
 		// Read straight into the destination, rather than into a fresh
 		// `Bytes` per call copied across, which at a 64 KB slice would be
 		// roughly sixteen thousand transient allocations and a second copy
 		// of every byte for each gigabyte streamed.
-		var read:Int = __readFully(byteArrayData, offset, length);
+		var read:Int = __readFully(byteArrayData, into, count);
 
 		__positionDirty = true;
 
-		if (read < length) {
+		if (read < count) {
 			// The contract above: not enough data is an EOFError, not a short
 			// read padded out with zeros and reported as success, which would
 			// leave a chunked copy longer than its file with nothing to say
