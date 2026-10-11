@@ -1203,6 +1203,13 @@ Fixes to code new in this release are not listed.
   between the halves, which natively turned each into U+FFFD, and the
   keys under it were lost. Labels now end only between characters, and a
   node's children are told apart by code point.
+- `QuadTree.clear` keeps the quads it takes down, and the next build uses
+  them again in the order they were made, so a tree rebuilt each tick
+  allocates nothing once it has held as many as a tick needs, where every
+  rebuild made them anew: 1,000 points in 7.8 us rather than 13.5
+  natively, 11.2 rather than 12.4 on the jvm (61 KB a rebuild before), and
+  a third faster on neko. On JavaScript, where a new quad measured the
+  cheaper, it is made anew as before.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

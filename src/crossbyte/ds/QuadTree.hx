@@ -17,6 +17,14 @@ import crossbyte.math.Rectangle;
  * which costs a descent per point per rebuild. For many things moving every
  * tick, queried at one radius, `SpatialGrid` moves each for a comparison.
  *
+ * `clear` keeps the quads it takes down, and the tree builds from them
+ * again in the order they were first made, so rebuilding it each tick
+ * allocates nothing once it has held as many quads as a tick needs, and
+ * lays the tree out in memory as building it anew would. The tree is the
+ * same shape as one built anew. The quads kept are the most the tree has
+ * held, until the tree itself is let go. On JavaScript, where a quad made
+ * anew measured the cheaper, each rebuild makes its quads anew.
+ *
  * @param T The type of elements stored in the QuadTree.
  */
 class QuadTree<T> {
@@ -44,6 +52,11 @@ class QuadTree<T> {
 	// pruned by the rounded edge missed a point filed in the sliver past it.
 	private var __right:Float;
 	private var __bottom:Float;
+
+	// Every quad under the root, in the order it was made, shared by every
+	// quad of one tree: `subdivide` takes the next unused one, and `clear`
+	// makes them all unused again.
+	private var __made:QuadTreeQuads<T>;
 
 	/**
 	 * Constructs a new QuadTree.
@@ -100,10 +113,10 @@ class QuadTree<T> {
 		var w = boundary.width / 2;
 		var h = boundary.height / 2;
 
-		northwest = new QuadTree<T>(new Rectangle(x, y, w, h), capacity);
-		northeast = new QuadTree<T>(new Rectangle(x + w, y, w, h), capacity);
-		southwest = new QuadTree<T>(new Rectangle(x, y + h, w, h), capacity);
-		southeast = new QuadTree<T>(new Rectangle(x + w, y + h, w, h), capacity);
+		northwest = __quad(x, y, w, h);
+		northeast = __quad(x + w, y, w, h);
+		southwest = __quad(x, y + h, w, h);
+		southeast = __quad(x + w, y + h, w, h);
 		northwest.depth = northeast.depth = southwest.depth = southeast.depth = depth + 1;
 		// The midlines are where insert files points; the outer edges are this
 		// quad's own.
@@ -193,13 +206,21 @@ class QuadTree<T> {
 	}
 
 	public function clear():Void {
+		__empty();
+		if (__made != null) {
+			__made.used = 0;
+		}
+	}
+
+	// Lets go of every node, so a quad kept for later holds none of them.
+	private function __empty():Void {
 		nodes.resize(0);
 
 		if (divided) {
-			northwest.clear();
-			northeast.clear();
-			southwest.clear();
-			southeast.clear();
+			northwest.__empty();
+			northeast.__empty();
+			southwest.__empty();
+			southeast.__empty();
 			northwest = null;
 			northeast = null;
 			southwest = null;
@@ -208,6 +229,40 @@ class QuadTree<T> {
 		}
 	}
 
+	// A child quad: the next one made before and not in use, or a new one.
+	// Its far edges and depth are set by `subdivide`, as a new one's are.
+	private #if js inline #end function __quad(x:Float, y:Float, width:Float, height:Float):QuadTree<T> {
+		#if js
+		// A young object is cheap there, and one kept is old: each write of
+		// a pointer into it pays the collector's barrier.
+		return new QuadTree<T>(new Rectangle(x, y, width, height), capacity);
+		#else
+		if (__made == null) {
+			__made = new QuadTreeQuads<T>();
+		}
+		var made:QuadTreeQuads<T> = __made;
+		if (made.used < made.quads.length) {
+			var quad:QuadTree<T> = made.quads[made.used++];
+			quad.boundary.setTo(x, y, width, height);
+			return quad;
+		}
+		var quad:QuadTree<T> = new QuadTree<T>(new Rectangle(x, y, width, height), capacity);
+		quad.__made = made;
+		made.quads.push(quad);
+		made.used++;
+		return quad;
+		#end
+	}
+
+}
+
+/** Every quad of one `QuadTree` but the root, and how many are in use. **/
+@:noCompletion
+private class QuadTreeQuads<T> {
+	public var quads:Array<QuadTree<T>> = [];
+	public var used:Int = 0;
+
+	public function new() {}
 }
 
 /**

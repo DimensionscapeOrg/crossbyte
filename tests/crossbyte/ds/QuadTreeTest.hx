@@ -141,6 +141,96 @@ class QuadTreeTest extends utest.Test {
 		Assert.same("2", sortedValues(tree.queryCircle(sliver, 1, 0)));
 	}
 
+	/**
+		A tree cleared and refilled tick after tick, from the quads its clears
+		kept, is the tree a new one built from the same points would be: the
+		same shape, quad for quad, and the same answers to every query, as the
+		points move and their crowd grows and shrinks.
+	**/
+	public function testARebuiltTreeIsTheTreeBuiltAnew():Void {
+		var bounds = new Rectangle(0, 0, 1000, 1000);
+		var kept = new QuadTree<Int>(bounds, 4);
+		var wrong:Array<String> = [];
+		for (tick in 0...30) {
+			var count:Int = tick % 10 == 9 ? 50 : 300 + tick * 40;
+			var points:Array<QuadTreeNode<Int>> = [];
+			for (i in 0...count) {
+				// A crowd that drifts, and a pile on one spot every few ticks.
+				var x:Float = tick % 7 == 3 && i % 3 == 0 ? 500 : (random(100000) / 100 + tick * 13) % 1000;
+				points.push(new QuadTreeNode<Int>(x, random(100000) / 100, i));
+			}
+			kept.clear();
+			var fresh = new QuadTree<Int>(bounds, 4);
+			for (point in points) {
+				kept.insert(point);
+				fresh.insert(point);
+			}
+			if (shape(kept) != shape(fresh)) {
+				wrong.push("tick " + tick + ": another shape");
+			}
+			for (q in 0...20) {
+				var x:Float = random(1000);
+				var y:Float = random(1000);
+				var range = new Rectangle(x, y, random(300), random(300));
+				var radius:Float = random(200);
+				if (sortedValues(kept.query(range)) != sortedValues(fresh.query(range))
+					|| sortedValues(kept.queryCircle(x, y, radius)) != sortedValues(fresh.queryCircle(x, y, radius))) {
+					wrong.push("tick " + tick + ": query " + q);
+				}
+			}
+		}
+		Assert.same([], wrong.slice(0, 10));
+
+		// Cleared and left, it holds none of what it held.
+		kept.clear();
+		Assert.equals(0, kept.query(bounds).length);
+	}
+
+	// The tree's quads, depth first: each one's bounds, depth and points.
+	private static function shape(tree:QuadTree<Int>):String {
+		var parts:Array<String> = [];
+		function walk(quad:QuadTree<Int>):Void {
+			var bounds:Rectangle = @:privateAccess quad.boundary;
+			parts.push(bounds.x + "," + bounds.y + "," + bounds.width + "," + bounds.height + "@" + @:privateAccess quad.depth + ":"
+				+ sortedValues(@:privateAccess quad.nodes));
+			if (@:privateAccess quad.divided) {
+				walk(@:privateAccess quad.northwest);
+				walk(@:privateAccess quad.northeast);
+				walk(@:privateAccess quad.southwest);
+				walk(@:privateAccess quad.southeast);
+			}
+		}
+		walk(tree);
+		return parts.join(" ");
+	}
+
+	/**
+		Rebuilding a tree, clear and every point inserted again, allocates
+		nothing natively or on the jvm once it has held as many quads as a
+		rebuild needs: each clear let its quads go and the next rebuild made
+		them again (61 KB a rebuild of 1,000 points on the jvm).
+	**/
+	public function testRebuildingATreeAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var tree = new QuadTree<Int>(new Rectangle(0, 0, 1000, 1000), 8);
+		var points:Array<QuadTreeNode<Int>> = [for (i in 0...100) new QuadTreeNode<Int>(random(100000) / 100, random(100000) / 100, i)];
+		var rebuild:Void->Void = () -> {
+			tree.clear();
+			for (point in points) {
+				tree.insert(point);
+			}
+		};
+		for (_ in 0...2000) {
+			rebuild();
+		}
+		var reading = crossbyte.test.AllocationMeter.measure(rebuild, 500, 3);
+		Assert.equals(0.0, reading.perOperation, "a rebuild allocated " + reading);
+		Assert.equals(100, tree.query(new Rectangle(0, 0, 1000, 1000)).length);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testACapacityOfZeroIsAnArgumentError():Void {
 		try {
 			new QuadTree<Int>(new Rectangle(0, 0, 10, 10), 0);
