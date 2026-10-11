@@ -19,10 +19,16 @@ class EnumUtil {
 	 *
 	 * @param e The enum value.
 	 * @return The parameters, in order: an empty array for a constructor
-	 *         that has none.
+	 *         that has none. A copy, to change as you like.
 	 */
 	public static inline function getValue(e:EnumValue):Array<Dynamic> {
+		// eval and neko answer the enum value's own parameters, so changing
+		// the array changed the value; the other targets copy them already.
+		#if (eval || neko)
+		return Type.enumParameters(e).copy();
+		#else
 		return Type.enumParameters(e);
+		#end
 	}
 
 	/**

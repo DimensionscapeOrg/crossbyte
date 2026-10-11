@@ -3,9 +3,9 @@ package crossbyte.utils;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.RangeError;
 import haxe.crypto.Adler32;
-import haxe.crypto.Crc32;
 import haxe.crypto.Md5;
 import haxe.crypto.Sha1;
+import haxe.ds.Vector;
 import haxe.io.Bytes;
 
 /**
@@ -59,9 +59,7 @@ final class Checksum {
 
 		return switch (algorithm) {
 			case CRC32:
-				var crc = new Crc32();
-				crc.update(bytes, offset, length);
-				__int32(crc.get());
+				__int32(__crc32(bytes, offset, length));
 			case ADLER32:
 				var adler = new Adler32();
 				adler.update(bytes, offset, length);
@@ -90,6 +88,70 @@ final class Checksum {
 	**/
 	public static function hex(algorithm:ChecksumAlgorithm, bytes:Bytes, offset:Int = 0, length:Int = -1):String {
 		return compute(algorithm, bytes, offset, length).toHex();
+	}
+
+	/**
+		Eight 256-entry tables for CRC-32, flat: table `k` starts at `k * 256`
+		and answers for a byte with `k` more to follow before the word is
+		done. Built on first use; two threads that both build it build the
+		same.
+	**/
+	private static var __crcTables:Vector<Int> = null;
+
+	/**
+		CRC-32 as zlib and PNG have it, eight bytes a step: Intel's slicing,
+		as `Crc32c` does for SCTP's polynomial. `haxe.crypto.Crc32` works out
+		each of a byte's eight bits in turn, a branchless step per bit, and
+		over a megabyte this is several times faster on every target.
+
+		Bytes are read with `Bytes.getInt32`, little-endian on every target,
+		which is what the reflected form of the algorithm wants.
+	**/
+	private static function __crc32(bytes:Bytes, offset:Int, length:Int):Int {
+		var tables:Vector<Int> = __crcTables;
+		if (tables == null) {
+			tables = __crcTables = __buildCrcTables();
+		}
+		var crc:Int = 0xFFFFFFFF;
+		var i:Int = offset;
+		var end:Int = offset + length;
+		while (i + 8 <= end) {
+			var low:Int = crc ^ bytes.getInt32(i);
+			var high:Int = bytes.getInt32(i + 4);
+			crc = tables[1792 + (low & 0xFF)]
+				^ tables[1536 + ((low >>> 8) & 0xFF)]
+				^ tables[1280 + ((low >>> 16) & 0xFF)]
+				^ tables[1024 + (low >>> 24)]
+				^ tables[768 + (high & 0xFF)]
+				^ tables[512 + ((high >>> 8) & 0xFF)]
+				^ tables[256 + ((high >>> 16) & 0xFF)]
+				^ tables[high >>> 24];
+			i += 8;
+		}
+		while (i < end) {
+			crc = tables[(crc ^ bytes.get(i)) & 0xFF] ^ (crc >>> 8);
+			i++;
+		}
+		return crc ^ 0xFFFFFFFF;
+	}
+
+	private static function __buildCrcTables():Vector<Int> {
+		var tables = new Vector<Int>(2048);
+		for (i in 0...256) {
+			var value:Int = i;
+			for (_ in 0...8) {
+				value = (value & 1) != 0 ? (value >>> 1) ^ 0xEDB88320 : value >>> 1;
+			}
+			tables[i] = value;
+		}
+		// Each further table is the one before advanced by a byte of zeros.
+		for (k in 1...8) {
+			for (i in 0...256) {
+				var previous:Int = tables[(k - 1) * 256 + i];
+				tables[k * 256 + i] = (previous >>> 8) ^ tables[previous & 0xFF];
+			}
+		}
+		return tables;
 	}
 
 	// MD5 and SHA-1 hash whole Bytes; a range is copied out for them, and

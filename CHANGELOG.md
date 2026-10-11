@@ -611,6 +611,17 @@ says how.
   no longer comes to name a new entity within seconds. (Upgrading)
 - `ObjectPool` keeps at most `maxFree` free objects, 10,000 unless set.
   (Upgrading)
+- `Version` compares part by part, so a part past 999 orders as written
+  (2024.10.1 came after 2025.1.0, each held to 999), reads `v1.2.3` as
+  1.2.3, and has `Version.compare` for sorting. `new Version` takes a part
+  past 999 and refuses one below zero, as the setters now do. (Upgrading)
+- `Random.reseed` spreads its seed over the generator's count, so seeds
+  next to each other draw unrelated sequences, and a seeded sequence of the
+  shared generator differs from before. (Upgrading)
+- `MathUtil.lerp` takes and answers `Float`, so `lerp(0, 10, 0.5)`
+  compiles. (Upgrading) `MathUtil.wrap` makes no `Int64` on JavaScript,
+  eval and neko: 30 times faster on Node and over a hundred times on eval
+  and neko.
 - `TaskPool.submit` returns `Task<Any>`, `UncaughtErrorEvent.origin` is
   `Any`, and `EnumUtil`, `ListedMap.KeyValuePair` and `Object.entries()`
   use classes rather than anonymous structures. (Upgrading)
@@ -1094,6 +1105,20 @@ Fixes to code new in this release are not listed.
 - `Array2D.get` and `set` refuse a cell outside the grid with a
   `RangeError`, where the same read gave null, 0 or undefined by target and
   a write past a row's end grew that row alone.
+- `ObjectRecycler` refuses an object it already holds on every build,
+  where a release build kept it twice and handed it to the next two
+  callers at once; `recycle` answers whether it took the object. A
+  recycled object is reset once, where `drain` reset it again.
+- `Version`'s `!=` agrees with `==` (`"1.2" != new Version(1, 2, 0)` was
+  true), and `==` and `!=` take `null`, where comparing one threw.
+- `Random.chooseWeighted` refuses a weight that is infinite or not a
+  number, where it returned the last item every time; `float` stays below
+  its maximum, which rounding reached where the range is small beside its
+  ends; `fillBytes` refuses a range outside the bytes with a `RangeError`;
+  and `randomString` draws an alphabet past ASCII a character at a time,
+  where it drew halves of a character (UTF-16) or bytes of one (neko).
+- `EnumUtil.getValue` answers a copy on eval and neko, where changing it
+  changed the enum value.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.
@@ -1602,6 +1627,20 @@ an API added in this release has is not listed here.
 - An `ObjectPool` keeps 10,000 free objects unless told otherwise: set
   `maxFree` to `0x7FFFFFFF` for no bound, as before. A negative `maxFree`
   throws an `ArgumentError`.
+- `ObjectRecycler.recycle` returns whether it took the object.
+- `Random.reseed(seed)` draws a different sequence from before, so a
+  replay recorded with a seed draws differently; instances (`new
+  Random(seed)`) draw what they did. `choose` and `chooseWeighted` throw
+  `ArgumentError` rather than a `String`, and `fillBytes` a `RangeError`
+  for a negative length other than -1 (to the end) or a range past the
+  bytes.
+- `Version.major`, `minor` and `patch` read a part past 999 as written,
+  not as 999 (`hash` still holds each to 999, and the comparisons no
+  longer use it). `new Version` takes a part past 999 and throws an
+  `ArgumentError`, not a `String`, for one below zero, as the setters now
+  do.
+- `MathUtil.lerp` answers a `Float`: where its result went into an `Int`,
+  take `Std.int` of it.
 - `crossbyte.Timer.setInterval` refuses an interval of zero or less with an
   `ArgumentError`, where it ran the timer once: arm a timer that runs once
   with `setTimeout`.

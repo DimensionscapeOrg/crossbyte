@@ -5,6 +5,8 @@ import haxe.atomic.AtomicInt;
 #elseif target.threaded
 import sys.thread.Mutex;
 #end
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.RangeError;
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 
@@ -14,6 +16,16 @@ import haxe.io.Bytes;
  * Includes methods for generating integers, floats, booleans, bytes, strings, dates, and more.
  * Static methods use a shared `AtomicInt` seed and are thread-safe.
  * Instance methods use internal state and are not thread-safe, but offer reproducible results when seeded.
+ *
+ * **Seeds.** A seed gives the same sequence on every target. The shared
+ * generator starts from the time unless `reseed` is called; an instance made
+ * with no seed, or with `0`, starts from one fixed seed, and so draws the same
+ * sequence on every run. Pass it a seed of your own (the time, say) for one
+ * that differs.
+ *
+ * **Resolution.** A float is drawn from 24 bits: `float01` gives one of 2^24
+ * evenly spaced values in [0, 1), and `float`, `normal` and `dateBetween` are
+ * drawn from those.
  *
  * **Security:** this is a fast, non-cryptographic PRNG. Its output is predictable
  * and MUST NOT be used for tokens, session ids, salts, keys, nonces, or any other
@@ -66,11 +78,16 @@ final class Random {
 
 	/**
 	 * Reseeds the shared static PRNG.
+	 *
+	 * Seeds next to each other draw unrelated sequences: the generator counts
+	 * up from where the seed puts it, and the seed is spread over the count
+	 * (times 0x9E3779B9) rather than being it, which had seeding 2 draw what
+	 * seeding 1 drew, one step later.
 	 * 
 	 * @param v The new seed value. If `0`, a default seed is used instead.
 	 */
 	public static inline function reseed(v:Int):Void {
-		var value:Int = v != 0 ? v : 0x9E3779B9;
+		var value:Int = Hash.mul32(v != 0 ? v : 0x9E3779B9, 0x9E3779B9);
 
 		#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 		__shared.store(value);
@@ -111,7 +128,7 @@ final class Random {
 	 * @return A float between `min` (inclusive) and `max` (exclusive).
 	 */
 	public static inline function float(min:Float, max:Float):Float {
-		return min + float01() * (max - min);
+		return __float(nextU32, min, max);
 	}
 
 	/**
@@ -155,11 +172,11 @@ final class Random {
 	 * 
 	 * @param a The array to choose from.
 	 * @return A random element from the array.
-	 * @throws If the array is `null` or empty.
+	 * @throws ArgumentError If the array is `null` or empty.
 	 */
 	public static inline function choose<T>(a:Array<T>):T {
 		if (a == null || a.length == 0) {
-			throw "Random.choose: empty array";
+			throw new ArgumentError("Random.choose: empty array");
 		}
 
 		return a[int(0, a.length - 1)];
@@ -169,9 +186,12 @@ final class Random {
 	 * Chooses a random element from the array using weighted probabilities.
 	 * 
 	 * @param items The elements to choose from.
-	 * @param w The weights associated with each item.
+	 * @param w The weights associated with each item. A weight at or below
+	 *        zero is never chosen.
 	 * @return A randomly chosen item, weighted by the associated probabilities.
-	 * @throws If inputs are invalid or all weights are <= 0.
+	 * @throws ArgumentError If either array is null or empty, they differ in
+	 *         length, a weight is infinite or not a number, or none is above
+	 *         zero.
 	 */
 	public static inline function chooseWeighted<T>(items:Array<T>, w:Array<Float>):T {
 		return __chooseWeighted(nextU32, items, w);
@@ -183,8 +203,12 @@ final class Random {
 	 * **Security:** not cryptographically secure; do not use for tokens, ids, or
 	 * secrets. Use `crossbyte.crypto.SecureRandom` for those.
 	 *
-	 * @param len The desired length of the string.
-	 * @param alphabet Optional custom alphabet. Defaults to A-Z, a-z, 0-9.
+	 * @param len The desired length of the string, in characters.
+	 * @param alphabet Optional custom alphabet. Defaults to A-Z, a-z, 0-9. It
+	 *        is drawn from a character (a code point) at a time, so one
+	 *        outside ASCII comes out whole on every target; a character
+	 *        built of several, such as a letter and a combining accent, is
+	 *        drawn as its parts.
 	 * @return A pseudo-random string of the specified length.
 	 */
 	public static inline function randomString(len:Int, ?alphabet:String):String {
@@ -252,13 +276,10 @@ final class Random {
 	 *
 	 * @param buf The `Bytes` buffer to fill.
 	 * @param pos Starting position in the buffer (default is 0).
-	 * @param len Number of bytes to write (default fills to end).
+	 * @param len Number of bytes to write (default, `-1`, fills to end).
+	 * @throws RangeError If the range falls outside `buf`.
 	 */
 	public static inline function fillBytes(buf:Bytes, pos:Int = 0, len:Int = -1):Void {
-		if (len < 0) {
-			len = buf.length - pos;
-		}
-
 		__nextBytes(nextU32, buf, pos, len);
 	}
 
@@ -324,6 +345,21 @@ final class Random {
 		return ((u >>> 8) & 0x00FFFFFF) / 16777216.0;
 	}
 
+	// min + a fraction of (max - min), drawn again in the rare case it rounds
+	// up to max: where max - min is small beside them (1e16 to 1e16 + 2),
+	// half of all draws would. At least about half of all draws land below
+	// max, rounding to the nearest Float as they do, so it is seldom drawn
+	// twice. An infinite span is left as it was: nothing below max is drawn
+	// from it.
+	@:noCompletion private static inline function __float(next:() -> Int, min:Float, max:Float):Float {
+		var span:Float = max - min;
+		var x:Float = min + __float01(next) * span;
+		while (x >= max && span > 0 && Math.isFinite(span)) {
+			x = min + __float01(next) * span;
+		}
+		return x;
+	}
+
 	@:pure @:noCompletion private static inline function __packRGB(r:Int, g:Int, b:Int):Int {
 		return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 	}
@@ -383,14 +419,68 @@ final class Random {
 		return u < 0 ? u + 4294967296.0 : u + 0.0;
 	}
 
-	@:noCompletion private static inline function __randomString(next:() -> Int, len:Int, ab:String):String {
+	@:noCompletion private static function __randomString(next:() -> Int, len:Int, ab:String):String {
 		var out:StringBuf = new StringBuf();
-		var l:Int = ab.length;
-		for (i in 0...len) {
-			out.add(ab.charAt(__int(next, 0, l - 1)));
+		var characters:Array<String> = __characters(ab);
+		if (characters == null) {
+			var l:Int = ab.length;
+			for (i in 0...len) {
+				out.add(ab.charAt(__int(next, 0, l - 1)));
+			}
+		} else {
+			var last:Int = characters.length - 1;
+			for (i in 0...len) {
+				out.add(characters[__int(next, 0, last)]);
+			}
 		}
 
 		return out.toString();
+	}
+
+	// The alphabet's characters, or null when each is one unit of the string
+	// already: below 0x80 on every target, and any on eval, whose strings are
+	// code points. Otherwise a character outside the Basic Multilingual Plane
+	// is two UTF-16 units on JavaScript, the jvm, hxcpp and hl, and one past
+	// ASCII is two to four bytes on neko, and a unit drawn alone is half of
+	// one.
+	@:noCompletion private static function __characters(ab:String):Array<String> {
+		var length:Int = ab.length;
+		#if (neko || !target.unicode || target.utf16)
+		var wide:Bool = false;
+		for (i in 0...length) {
+			if (StringTools.fastCodeAt(ab, i) >= 0x80) {
+				wide = true;
+				break;
+			}
+		}
+		if (!wide) {
+			return null;
+		}
+		var characters:Array<String> = [];
+		var at:Int = 0;
+		while (at < length) {
+			var code:Int = StringTools.fastCodeAt(ab, at);
+			var size:Int = 1;
+			#if (neko || !target.unicode)
+			size = code < 0xC0 ? 1 : (code < 0xE0 ? 2 : (code < 0xF0 ? 3 : 4));
+			#else
+			if (code >= 0xD800 && code < 0xDC00 && at + 1 < length) {
+				var low:Int = StringTools.fastCodeAt(ab, at + 1);
+				if (low >= 0xDC00 && low < 0xE000) {
+					size = 2;
+				}
+			}
+			#end
+			if (at + size > length) {
+				size = length - at;
+			}
+			characters.push(ab.substr(at, size));
+			at += size;
+		}
+		return characters;
+		#else
+		return null;
+		#end
 	}
 
 	@:noCompletion private static inline function __hex(next:() -> Int, lenBytes:Int):String {
@@ -414,7 +504,7 @@ final class Random {
 
 	@:noCompletion private static inline function __chooseWeighted<T>(next:() -> Int, items:Array<T>, weights:Array<Float>):T {
 		if (items == null || weights == null || items.length == 0 || items.length != weights.length) {
-			throw "Random.chooseWeighted: invalid inputs";
+			throw new ArgumentError("Random.chooseWeighted: invalid inputs");
 		}
 
 		var sum:Float = 0.0;
@@ -422,8 +512,15 @@ final class Random {
 			sum += (w <= 0 ? 0 : w);
 		}
 
+		// An infinite weight, or one not a number, makes the sum one too, and
+		// then every draw passed it and the last item came back every time.
+		// A sum of finite weights too large for a Float is refused alike.
+		if (!Math.isFinite(sum)) {
+			throw new ArgumentError("Random.chooseWeighted: a weight is infinite or not a number");
+		}
+
 		if (sum <= 0) {
-			throw "Random.chooseWeighted: all weights <= 0";
+			throw new ArgumentError("Random.chooseWeighted: all weights <= 0");
 		}
 
 		var r:Float = __float01(next) * sum;
@@ -447,6 +544,17 @@ final class Random {
 	}
 
 	@:noCompletion private static function __nextBytes(next:() -> Int, buf:Bytes, pos:Int, len:Int):Void {
+		if (buf == null) {
+			throw new ArgumentError("Random.fillBytes needs bytes to fill, and was given null.");
+		}
+		if (len == -1) {
+			len = buf.length - pos;
+		}
+		// Each against what is left, not by adding them, so no sum can wrap
+		// into a range that passes.
+		if (pos < 0 || pos > buf.length || len < 0 || len > buf.length - pos) {
+			throw new RangeError('Random.fillBytes was asked for $len bytes from $pos of ${buf.length}.');
+		}
 		var i:Int = 0;
 		while (i + 4 <= len) {
 			var v:Int = next();
@@ -478,6 +586,8 @@ final class Random {
 
 	/**
 	 * Creates a new instance-based random generator.
+	 *
+	 * With no seed it draws the same sequence on every run; see **Seeds**.
 	 * 
 	 * @param seed Optional seed. If `0`, a default constant is used.
 	 */
@@ -502,7 +612,7 @@ final class Random {
 	 * @return A float in [min, max).
 	 */
 	public inline function floati(min:Float, max:Float):Float {
-		return min + float01i() * (max - min);
+		return __float(__next32, min, max);
 	}
 
 	/**
@@ -555,11 +665,11 @@ final class Random {
 	 * 
 	 * @param a The array to choose from.
 	 * @return A random element from the array.
-	 * @throws If the array is null or empty.
+	 * @throws ArgumentError If the array is null or empty.
 	 */
 	public inline function choosei<T>(a:Array<T>):T {
 		if (a == null || a.length == 0) {
-			throw "Random.choose: empty array";
+			throw new ArgumentError("Random.choose: empty array");
 		}
 
 		return a[inti(0, a.length - 1)];
@@ -569,9 +679,12 @@ final class Random {
 	 * Chooses a weighted random element using the instance PRNG.
 	 * 
 	 * @param items The items to choose from.
-	 * @param w The weights corresponding to each item.
+	 * @param w The weights corresponding to each item. A weight at or below
+	 *        zero is never chosen.
 	 * @return A random element based on weights.
-	 * @throws If input is invalid or weights are non-positive.
+	 * @throws ArgumentError If either array is null or empty, they differ in
+	 *         length, a weight is infinite or not a number, or none is above
+	 *         zero.
 	 */
 	public inline function chooseWeightedi<T>(items:Array<T>, w:Array<Float>):T {
 		return __chooseWeighted(__next32, items, w);
@@ -580,8 +693,9 @@ final class Random {
 	/**
 	 * Generates a random string using the instance PRNG.
 	 * 
-	 * @param len Desired string length.
-	 * @param alphabet Optional character set to use.
+	 * @param len Desired string length, in characters.
+	 * @param alphabet Optional character set to use, drawn from a character
+	 *        at a time as `randomString`'s is.
 	 * @return A random string.
 	 */
 	public inline function randomStringi(len:Int, ?alphabet:String):String {
@@ -644,13 +758,10 @@ final class Random {
 	 * 
 	 * @param buf The buffer to fill.
 	 * @param pos Start position (default: 0).
-	 * @param len Number of bytes (default: remaining).
+	 * @param len Number of bytes (default, `-1`: remaining).
+	 * @throws RangeError If the range falls outside `buf`.
 	 */
 	public inline function fillBytesi(buf:Bytes, pos:Int = 0, len:Int = -1):Void {
-		if (len < 0) {
-			len = buf.length - pos;
-		}
-
 		__nextBytes(__next32, buf, pos, len);
 	}
 

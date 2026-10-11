@@ -153,6 +153,12 @@ final class ObjectPool<T:{}> {
 	 *         release, instead.
 	 */
 	public inline function release(obj:T):Bool {
+		return __release(obj, true);
+	}
+
+	// `release`, with the reset left out for an object reset already: one
+	// an `ObjectRecycler` held, reset as it came back to it.
+	@:noCompletion private inline function __release(obj:T, reset:Bool):Bool {
 		#if debug
 		if (obj == null)
 			throw "Released object cant be null";
@@ -162,7 +168,7 @@ final class ObjectPool<T:{}> {
 		var taken:Bool = __free.length < __created && (__free.length == 0 || __free.last() != obj);
 		if (taken) {
 			var func:T->Void = resetFunction;
-			if (func != null) {
+			if (reset && func != null) {
 				func(obj);
 			}
 
