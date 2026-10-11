@@ -1,6 +1,9 @@
 package crossbyte.ds;
 
 import crossbyte.errors.ArgumentError;
+#if (cpp && !cppia)
+import crossbyte.ds._internal.NativeMap;
+#end
 
 /**
 	A map whose entries stop being there after a while.
@@ -26,7 +29,9 @@ import crossbyte.errors.ArgumentError;
 	What it holds is one object per entry and nothing per `touch`. The
 	entries are kept on a list in the order their deadlines fall, and a
 	`touch` moves one to the end, so what the map holds follows its entries
-	rather than how often they are touched.
+	rather than how often they are touched. Reading, touching, replacing and
+	sweeping allocate nothing natively or on the jvm, but natively through
+	a `clock` of your own: a function answering a `Float` boxes it there.
 
 	```haxe
 	var sessions = new ExpiringMap<String, Session>(120, 50000);
@@ -90,7 +95,9 @@ final class ExpiringMap<K:Dynamic, V> {
 	private var __last:ExpiringEntry<K, V>;
 	private var __held:Int = 0;
 
-	private var __clock:Void->Float;
+	// Null for the default, read without a closure: natively a closure's
+	// Float answer is boxed.
+	private var __clock:Null<Void->Float>;
 
 	/**
 		@param ttl How long an entry lives, in seconds: more than zero.
@@ -114,12 +121,12 @@ final class ExpiringMap<K:Dynamic, V> {
 
 		this.ttl = ttl;
 		this.maxSize = maxSize;
-		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
+		this.__clock = clock;
 		this.__entries = new Map();
 	}
 
 	private function get_length():Int {
-		var now:Float = __clock();
+		var now:Float = __now();
 		var expired:Int = 0;
 		var entry:ExpiringEntry<K, V> = __first;
 		while (entry != null && now >= entry.deadline) {
@@ -131,12 +138,16 @@ final class ExpiringMap<K:Dynamic, V> {
 
 	/** Adds or replaces a value, and starts its life over. **/
 	public function set(key:K, value:V):Void {
-		var now:Float = __clock();
-		var entry = __entries.get(key);
+		var now:Float = __now();
+		var entry = __entryOf(key);
 
 		if (entry == null) {
 			entry = new ExpiringEntry(key, value, now + ttl);
+			#if (cpp && !cppia)
+			NativeMap.set(__entries, key, entry);
+			#else
 			__entries.set(key, entry);
+			#end
 			__append(entry);
 			__held++;
 		} else {
@@ -159,13 +170,13 @@ final class ExpiringMap<K:Dynamic, V> {
 		decisions rather than one being a side effect of the other.
 	**/
 	public function get(key:K):Null<V> {
-		var entry = __entries.get(key);
+		var entry = __entryOf(key);
 
 		if (entry == null) {
 			return null;
 		}
 
-		if (__clock() >= entry.deadline) {
+		if (__now() >= entry.deadline) {
 			__drop(entry);
 			return null;
 		}
@@ -180,13 +191,13 @@ final class ExpiringMap<K:Dynamic, V> {
 
 	/** Starts an entry's life over. Returns false if there was nothing live. **/
 	public function touch(key:K):Bool {
-		var entry = __entries.get(key);
+		var entry = __entryOf(key);
 
 		if (entry == null) {
 			return false;
 		}
 
-		var now:Float = __clock();
+		var now:Float = __now();
 
 		if (now >= entry.deadline) {
 			__drop(entry);
@@ -207,12 +218,12 @@ final class ExpiringMap<K:Dynamic, V> {
 		@return Whether anything was held, live or otherwise.
 	**/
 	public function remove(key:K):Bool {
-		var entry = __entries.get(key);
+		var entry = __entryOf(key);
 		if (entry == null) {
 			return false;
 		}
 
-		__entries.remove(key);
+		__forget(key);
 		__unlink(entry);
 		__held--;
 		return true;
@@ -225,15 +236,28 @@ final class ExpiringMap<K:Dynamic, V> {
 		so calling it every tick costs what has actually expired since the
 		last one.
 
+		Inline, so a time given in a local variable is not boxed on its way
+		in, as an optional `Float` otherwise is, natively and on the jvm. One
+		worked out in the call (`sweep(clock.now())`), or read from a field,
+		still is: put it in a local variable first.
+
 		@param now When, by the clock the map was made with; left out, it
 		       asks that clock.
 		@return How many went.
 		@throws ArgumentError For a `now` of NaN, which no deadline is at or
 		        past.
 	**/
-	public function sweep(?now:Float):Int {
-		var at:Float = now == null ? __clock() : now;
+	public inline function sweep(?now:Float):Int {
+		// Two calls rather than one taking `now == null ? __now() : now`,
+		// whose type is Null<Float>: the clock's answer would be boxed.
+		return now == null ? __sweepNow() : __sweepAt(now);
+	}
 
+	private function __sweepNow():Int {
+		return __sweepAt(__now());
+	}
+
+	private function __sweepAt(at:Float):Int {
 		if (Math.isNaN(at)) {
 			throw new ArgumentError("ExpiringMap.sweep was given a time of NaN.");
 		}
@@ -251,7 +275,7 @@ final class ExpiringMap<K:Dynamic, V> {
 	/** Every key with a live entry, the one due soonest first. **/
 	public function keys():Iterator<K> {
 		var live:Array<K> = [];
-		var now:Float = __clock();
+		var now:Float = __now();
 		var entry:ExpiringEntry<K, V> = __last;
 
 		// From the newest back: the live ones are all after the expired.
@@ -273,8 +297,30 @@ final class ExpiringMap<K:Dynamic, V> {
 
 	// ------------------------------------------------------------------
 
+	private inline function __now():Float {
+		return __clock == null ? haxe.Timer.stamp() : __clock();
+	}
+
+	// Natively through the map's own class: through haxe.IMap a String key,
+	// or an Int key past 255, is boxed for every call.
+	private inline function __entryOf(key:K):Null<ExpiringEntry<K, V>> {
+		#if (cpp && !cppia)
+		return cast NativeMap.get(__entries, key);
+		#else
+		return __entries.get(key);
+		#end
+	}
+
+	private inline function __forget(key:K):Void {
+		#if (cpp && !cppia)
+		NativeMap.remove(__entries, key);
+		#else
+		__entries.remove(key);
+		#end
+	}
+
 	private function __drop(entry:ExpiringEntry<K, V>):Void {
-		__entries.remove(entry.key);
+		__forget(entry.key);
 		__unlink(entry);
 		__held--;
 		onExpire(entry.key, entry.value);

@@ -2404,6 +2404,72 @@ class CollectionsTest extends utest.Test {
 	}
 	#end
 
+	/**
+		Reading, touching, replacing and sweeping an `ExpiringMap` on its own
+		clock allocate nothing, natively and on the jvm, and neither does a
+		sweep given the time. Natively each asked the clock through a closure,
+		which boxed its answer (24 bytes), a String key was boxed through
+		`haxe.IMap` (32 bytes), and `sweep(now)` boxed `now`, an optional
+		`Float` (24 bytes).
+	**/
+	public function testAnExpiringMapAllocatesNothingOnItsOwnClock():Void {
+		#if (cpp || jvm)
+		var map = new ExpiringMap<String, DenseThing>(1e9, 0);
+		var keys:Array<String> = [for (i in 0...1000) "tok" + i];
+		for (i in 0...keys.length) {
+			map.set(keys[i], new DenseThing(i));
+		}
+		var at:Int = 0;
+		var sum:Int = 0;
+		var later:Float = haxe.Timer.stamp() + 0.5;
+		var ops:Array<Void->Void> = [
+			() -> sum += map.get(keys[(at = (at + 7) % 1000)]).id,
+			() -> if (map.touch(keys[(at = (at + 7) % 1000)])) sum++,
+			() -> if (map.exists(keys[(at = (at + 7) % 1000)])) sum++,
+			() -> sum += map.sweep(),
+			() -> {
+				later += 0.001;
+				sum += map.sweep(later);
+			}
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "an operation allocated " + reading);
+		}
+		Assert.equals(1000, map.length);
+		Assert.isTrue(sum > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/** `sweep` without a time asks the map's own clock, and with one takes it, NaN refused. **/
+	public function testSweepTakesTheTimeOrAsksTheClock():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 0, () -> now);
+		map.set("a", 1);
+		now = 5;
+		map.set("b", 2);
+		Assert.equals(0, map.sweep());
+		Assert.equals(1, map.sweep(12));
+		Assert.isFalse(map.exists("a"));
+		now = 20;
+		Assert.equals(1, map.sweep());
+		Assert.equals(0, map.length);
+		var given:Float = Math.NaN;
+		Assert.raises(() -> map.sweep(given), crossbyte.errors.ArgumentError);
+
+		var own = new ExpiringMap<String, Int>(0.000001, 0);
+		own.set("gone", 1);
+		var until:Float = haxe.Timer.stamp() + 0.01;
+		while (haxe.Timer.stamp() < until) {}
+		Assert.equals(1, own.sweep());
+		Assert.isNull(own.get("gone"));
+	}
+
 	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
 		var map = new PackedSlotMap<String>(2, 3, 2);
 		var first = map.insert("alpha");

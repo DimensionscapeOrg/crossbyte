@@ -1175,6 +1175,12 @@ Fixes to code new in this release are not listed.
   asked for. Natively a lookup boxes no String key, or Int key past 255:
   `get` of a String key 13 ns rather than 18, and nothing rather than 32
   bytes.
+- `ExpiringMap.get`, `touch`, `exists`, `set` and `sweep` allocate nothing
+  natively on the map's own clock, where each asked it through a closure
+  that boxed its answer and boxed a String key, 56 bytes a `get` (39 ns
+  where it took 54 at 1,000 entries). `sweep(now)` is inline, so a time
+  given in a local variable is not boxed, natively or on the jvm (24
+  bytes a sweep).
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.
