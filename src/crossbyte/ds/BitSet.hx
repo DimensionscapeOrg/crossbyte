@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.RangeError;
 import haxe.ds.Vector;
 
 /**
@@ -32,6 +34,13 @@ import haxe.ds.Vector;
  * `clear` that left a word outside -128 to 127 would allocate one.
  */
 class BitSet {
+	/**
+		The largest index a bit can be set at: a set's length is an `Int`, so
+		it holds at most `0x7FFFFFFF` bits. `set` and `flip` refuse one past it
+		with a `RangeError`.
+	**/
+	public static inline var MAX_INDEX:Int = 0x7FFFFFFE;
+
 	// Every bit at `__size` or past it is zero, in the last word used and in
 	// every word after it, which `get`, `countSetBits` and the rest rely on.
 	private var __bits:Vector<Int>;
@@ -64,16 +73,33 @@ class BitSet {
 	 * Creates a new `BitSet` with an initial capacity.
 	 *
 	 * @param size The initial number of bits that the `BitSet` can handle.
+	 * @throws ArgumentError For a negative size, which was taken as the
+	 *         set's length.
 	 */
 	public function new(size:UInt = 32) {
+		if ((size : Int) < 0) {
+			throw new ArgumentError('A BitSet cannot hold ${(size : Int)} bits.');
+		}
 		this.__size = size;
 		this.__bits = __zeroed(__wordCountForSize(size));
 	}
 
 	private inline function __ensureCapacity(bitIndex:Int):Void {
 		if (bitIndex >= __size) {
-			__resize(Std.int(Math.max(__size * 2, bitIndex + 1)));
+			__grow(bitIndex);
 		}
+	}
+
+	// Doubled, or to the index, whichever is more, worked out in Floats: near
+	// the top the sum and the product pass 2^31, which natively and on the
+	// jvm wrapped negative (so the set did not grow, and the write went past
+	// its words) and on JavaScript made a length no Int holds.
+	private function __grow(bitIndex:Int):Void {
+		if (bitIndex > MAX_INDEX) {
+			throw new RangeError('A BitSet holds bits 0 to $MAX_INDEX, not $bitIndex.');
+		}
+		var wanted:Float = Math.max(__size * 2.0, bitIndex + 1.0);
+		__resize(wanted > MAX_INDEX + 1.0 ? MAX_INDEX + 1 : Std.int(wanted));
 	}
 
 	// A new length, keeping the bits below it. The words past the old length
@@ -128,9 +154,15 @@ class BitSet {
 	 *
 	 * @param index The index of the bit to set or clear.
 	 * @param value `true` to set the bit, `false` to clear it.
+	 * @throws RangeError Setting a bit past `MAX_INDEX`.
 	 */
 	public inline function set(index:Int, value:Bool):Void {
 		__checkBounds(index);
+		if (!value && index >= __size) {
+			// Clear already, as everything past the end reads: growing to it
+			// would only make room for a zero.
+			return;
+		}
 		__ensureCapacity(index);
 		var bitIndex:Int = index >> 5; // Divide by 32
 		var bitOffset:Int = index & 31; // Modulus 32

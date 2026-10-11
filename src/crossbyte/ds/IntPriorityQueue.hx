@@ -298,12 +298,15 @@ private class IdTable {
 	private var __mask:Int;
 	private var __shift:Int;
 	private var __count:Int = 0;
+	// What it was made with, which a clear goes back to after a spike.
+	private var __initialBuckets:Int;
 
 	public function new(capacity:Int) {
 		var buckets:Int = 16;
 		while (buckets < capacity * 2 && buckets < (1 << 30)) {
 			buckets <<= 1;
 		}
+		__initialBuckets = buckets;
 		__init(buckets);
 	}
 
@@ -368,7 +371,17 @@ private class IdTable {
 		__count--;
 	}
 
+	/**
+		Empties the table. One grown well past what it holds goes back to the
+		size it was made with, rather than zeroing every bucket a spike once
+		needed: a queue of two ids, cleared each tick after a million were
+		held, cost what clearing the million did.
+	**/
 	public function clear():Void {
+		if (__slots.length > __initialBuckets && __count < __slots.length >> 3) {
+			__init(__initialBuckets);
+			return;
+		}
 		for (i in 0...__slots.length) {
 			__slots[i] = 0;
 		}

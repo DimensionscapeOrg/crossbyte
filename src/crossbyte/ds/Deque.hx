@@ -10,9 +10,11 @@ import haxe.ds.Vector;
  * A double-ended queue: `add` and `pop` at the front, `push` and `remove` at
  * the back, each in constant time.
  *
- * The items sit in a ring that doubles when it fills, so adding one allocates
- * nothing once the ring has grown to fit. The ring keeps its size when
- * emptied.
+ * The items sit in a ring that doubles when it fills, so adding an object
+ * allocates nothing once the ring has grown to fit. An `Int`, `Float` or
+ * `Bool` is boxed as it goes in, natively and on the jvm, where the ring
+ * holds it as a nullable value: past -128 to 127 on the jvm that is an
+ * allocation a push. The ring keeps its size when emptied.
  *
  * `for (item in deque)` walks from the front to the back.
  */

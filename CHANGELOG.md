@@ -1042,6 +1042,18 @@ Fixes to code new in this release are not listed.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.
+- `BitSet` refuses a bit past `MAX_INDEX` with a `RangeError`, where
+  growing to it overflowed: a segfault on the interpreter, a write past the
+  set on the jvm, and every bit lost on JavaScript. A negative size is
+  refused, and clearing a bit past the end no longer grows the set.
+- A `PriorityQueue` whose comparator throws stays whole, every element held
+  once, where it held one twice and lost another. A `null` element is
+  refused.
+- `IntPriorityQueue.clear()` gives back the room a spike took, where every
+  later clear cost what clearing the spike did.
+- `BloomFilter` hashes a string as its UTF-8 bytes on every target, where a
+  string past ASCII set different bits on each, and refuses a byte range
+  outside its bytes.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.

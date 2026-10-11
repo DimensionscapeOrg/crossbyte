@@ -124,6 +124,49 @@ class BloomFilterTest extends utest.Test {
 		A filter at any size sets its bits in range and finds what it holds,
 		down to one bit and up past 2^30 positions stepped through.
 	**/
+	public function testAStringSetsTheBitsOfItsUtf8Bytes():Void {
+		// One definition on every target: a string is its UTF-8 bytes. Hashed
+		// by its characters, it was code points on the interpreter, UTF-16
+		// units on JavaScript and the jvm and bytes on neko, so a string past
+		// ASCII set different bits on each.
+		for (text in ["plain", "caf\u00E9", "\u65E5\u672C\u8A9E", "\u{1F600}", "a\u{1F600}b"]) {
+			var byString = new BloomFilter(10007, 5);
+			byString.add(text);
+			var byBytes = new BloomFilter(10007, 5);
+			byBytes.addBytes(haxe.io.Bytes.ofString(text, UTF8));
+			var stringBits = @:privateAccess byString.__words.toArray().join(",");
+			var byteBits = @:privateAccess byBytes.__words.toArray().join(",");
+			Assert.equals(byteBits, stringBits, 'a string of ${text.length} characters set other bits than its UTF-8 bytes');
+			Assert.isTrue(byBytes.contains(text));
+		}
+	}
+
+	public function testABadByteRangeIsRefused():Void {
+		// Unchecked, a range before the bytes read past them (thrown on the
+		// interpreter and the jvm, read as zeroes on JavaScript), and one past
+		// them was hashed as the empty item.
+		var filter = new BloomFilter(1024, 3);
+		var bytes = haxe.io.Bytes.alloc(4);
+		var refused = 0;
+		for (range in [[-2, 4], [9, -1], [2, 3], [0, 5], [5, 0], [0, -2]]) {
+			try {
+				filter.addBytes(bytes, range[0], range[1]);
+			} catch (e:crossbyte.errors.RangeError) {
+				refused++;
+			}
+			try {
+				filter.containsBytes(bytes, range[0], range[1]);
+			} catch (e:crossbyte.errors.RangeError) {
+				refused++;
+			}
+		}
+		Assert.equals(12, refused, "a range outside the bytes was taken");
+		filter.addBytes(bytes, 0, 4);
+		filter.addBytes(bytes, 4, 0);
+		filter.addBytes(bytes, 2);
+		Assert.isTrue(filter.containsBytes(bytes, 2, 2));
+	}
+
 	public function testOddSizesStayInRange():Void {
 		for (size in [1, 2, 31, 32, 33, 1000003]) {
 			var bf = new BloomFilter(size, 7);
