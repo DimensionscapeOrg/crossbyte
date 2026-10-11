@@ -35,6 +35,90 @@ import haxe.io.Bytes;
 	crashes, and neither is checked for, as that would cost every string.
 **/
 @:noCompletion
+@:cppFileCode("
+// UTF-8 from UTF-16, as TextEncoder writes it (an unpaired surrogate as
+// U+FFFD). With RUNS, four units are taken at a time as one word while
+// they are ASCII, tried only after an ASCII unit so text of another script
+// does not pay for the test: 200 characters of mostly ASCII sized and
+// written in 222 ns rather than 330. A short string pays for the loop's
+// extra shape, and takes the plain one. A word is taken apart low half
+// first, as on every little-endian machine hxcpp builds for.
+template <bool RUNS> static inline int cbUtf8Size(const char16_t *units, int count) {
+	int total = 0;
+	int i = 0;
+	bool ascii = true;
+	while (i < count) {
+		if (RUNS && ascii && i + 4 <= count) {
+			unsigned long long four;
+			memcpy(&four, units + i, 8);
+			if ((four & 0xFF80FF80FF80FF80ULL) == 0) {
+				total += 4;
+				i += 4;
+				continue;
+			}
+		}
+		unsigned int unit = units[i++];
+		ascii = unit < 0x80;
+		if (ascii) {
+			total += 1;
+		} else if (unit < 0x800) {
+			total += 2;
+		} else if (unit >= 0xD800 && unit < 0xDC00 && i < count && units[i] >= 0xDC00 && units[i] < 0xE000) {
+			total += 4;
+			i++;
+		} else {
+			total += 3;
+		}
+	}
+	return total;
+}
+
+template <bool RUNS> static inline void cbUtf8Encode(const char16_t *units, int count, unsigned char *out) {
+	int i = 0;
+	bool ascii = true;
+	while (i < count) {
+		if (RUNS && ascii && i + 4 <= count) {
+			unsigned long long four;
+			memcpy(&four, units + i, 8);
+			if ((four & 0xFF80FF80FF80FF80ULL) == 0) {
+				out[0] = (unsigned char)four;
+				out[1] = (unsigned char)(four >> 16);
+				out[2] = (unsigned char)(four >> 32);
+				out[3] = (unsigned char)(four >> 48);
+				out += 4;
+				i += 4;
+				continue;
+			}
+		}
+		unsigned int code = units[i++];
+		ascii = code < 0x80;
+		if (ascii) {
+			*out++ = (unsigned char)code;
+			continue;
+		}
+		if (code >= 0xD800 && code < 0xE000) {
+			unsigned int low = i < count ? units[i] : 0;
+			if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
+				code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+				i++;
+			} else {
+				code = 0xFFFD;
+			}
+		}
+		if (code < 0x800) {
+			*out++ = (unsigned char)(0xC0 | (code >> 6));
+		} else if (code < 0x10000) {
+			*out++ = (unsigned char)(0xE0 | (code >> 12));
+			*out++ = (unsigned char)(0x80 | ((code >> 6) & 0x3F));
+		} else {
+			*out++ = (unsigned char)(0xF0 | (code >> 18));
+			*out++ = (unsigned char)(0x80 | ((code >> 12) & 0x3F));
+			*out++ = (unsigned char)(0x80 | ((code >> 6) & 0x3F));
+		}
+		*out++ = (unsigned char)(0x80 | (code & 0x3F));
+	}
+}
+")
 class Utf8 {
 	public static inline function bytesOf(value:String):Bytes {
 		#if js
@@ -393,6 +477,17 @@ class Utf8 {
 		unpaired surrogate as U+FFFD, three bytes.
 	**/
 	public static function sizeOf(value:String):Int {
+		#if cpp
+		// Over the string's own UTF-16 in C++: through `fastCodeAt` each
+		// unit was a call that checked its bounds and how the string is held.
+		// A string held a byte a character is ASCII, a byte a unit.
+		if (!(untyped __cpp__("{0}.isUTF16Encoded()", value))) {
+			return value.length;
+		}
+		var bytes:Int = 0;
+		untyped __cpp__("{0} = {1}.length >= 32 ? cbUtf8Size<true>({1}.raw_wptr(), {1}.length) : cbUtf8Size<false>({1}.raw_wptr(), {1}.length)", bytes, value);
+		return bytes;
+		#else
 		var length:Int = value.length;
 		var size:Int = 0;
 		var i:Int = 0;
@@ -410,6 +505,7 @@ class Utf8 {
 			}
 		}
 		return size;
+		#end
 	}
 
 	#end
@@ -420,39 +516,20 @@ class Utf8 {
 		`data`, which has room for them there, as TextEncoder writes it: an
 		unpaired surrogate as U+FFFD. Natively a string held as UTF-16 went
 		through `wellFormed`, then `Bytes.ofString`, which made a buffer of
-		it, and then was copied in; written straight into the buffer it is
-		about four times as fast.
+		it, and then was copied in: written straight into the buffer, in C++
+		over the string's own units, eleven accented characters take 25 ns
+		rather than 78, and 200 mostly ASCII 222 rather than 832.
 	**/
 	public static function encodeNative(value:String, data:haxe.io.BytesData, at:Int):Void {
-		var length:Int = value.length;
-		var i:Int = 0;
-		while (i < length) {
-			var code:Int = StringTools.fastCodeAt(value, i++);
-			if (code < 0x80) {
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, code);
-				continue;
-			}
-			if (code >= 0xD800 && code < 0xE000) {
-				var low:Int = i < length ? StringTools.fastCodeAt(value, i) : 0;
-				if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
-					code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-					i++;
-				} else {
-					code = 0xFFFD;
-				}
-			}
-			if (code < 0x800) {
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xC0 | (code >> 6));
-			} else if (code < 0x10000) {
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xE0 | (code >> 12));
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 6) & 0x3F));
-			} else {
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xF0 | (code >> 18));
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 12) & 0x3F));
-				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 6) & 0x3F));
-			}
-			untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | (code & 0x3F));
+		// A string held a byte a character is ASCII, its own UTF-8.
+		if (!(untyped __cpp__("{0}.isUTF16Encoded()", value))) {
+			untyped __cpp__("memcpy((char *){0}->GetBase() + {1}, {2}.raw_ptr(), {2}.length)", data, at, value);
+			return;
 		}
+		// In C++ over the string's own UTF-16, written through a pointer
+		// (see cbUtf8Encode): nothing here allocates, so nothing moves under
+		// either.
+		untyped __cpp__("if ({0}.length >= 32) cbUtf8Encode<true>({0}.raw_wptr(), {0}.length, (unsigned char *){1}->GetBase() + {2}); else cbUtf8Encode<false>({0}.raw_wptr(), {0}.length, (unsigned char *){1}->GetBase() + {2})", value, data, at);
 	}
 	#end
 

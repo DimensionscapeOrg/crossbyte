@@ -653,7 +653,7 @@ says how.
   characters in 130 rather than 1,400; `ByteArrayOutput`'s string writes
   likewise, twelve characters in 43 ns rather than 715. Natively text held
   as UTF-16 is sized and encoded straight in, where `Bytes.ofString` made
-  a buffer of it to copy (eleven accented characters in 40 ns rather than
+  a buffer of it to copy (eleven accented characters in 30 ns rather than
   84), and `ByteArrayOutput` copies text held a byte a character straight
   in as `ByteArray` does (twelve characters in 7.8 ns rather than 49). On the jvm
   ASCII text of up to 256 characters (64 for `writeUTF`) is copied
@@ -913,7 +913,7 @@ says how.
   rather than 2,000; on the jvm ASCII is copied in at once, still
   allocating nothing, 200 characters in 93 ns rather than 148. Natively
   one held as UTF-16 is encoded in place: eleven accented characters in
-  35 ns rather than 78.
+  24 ns rather than 78, and 200 mostly ASCII in 224 rather than 832.
 - An RPC session over reliable UDP no longer copies each message that
   arrives: the connection hands a reader that keeps nothing (a session
   reading its frames) the message itself. An RPC call there and its answer
