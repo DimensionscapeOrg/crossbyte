@@ -33,8 +33,14 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 		return cast value;
 	}
 
+	/**
+		The value's type, as `Type.typeof` gives it, except that a whole
+		`Float` within `Int`'s range is `TInt` on every target, as `isInt`
+		says.
+	**/
 	public inline function getValueType():Type.ValueType {
-		return Type.typeof(this);
+		var type:Type.ValueType = Type.typeof(this);
+		return type == TFloat && __isWhole(this) ? TInt : type;
 	}
 
 	public inline function isString():Bool {
@@ -44,18 +50,30 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 		};
 	}
 
+	/**
+		Whether the value is an `Int`: one, or a `Float` with no fraction
+		within `Int`'s range (`1.0`, `-0.0`), on every target. JavaScript
+		cannot tell `1.0` from `1`, and natively and on the jvm `Type.typeof`
+		answers `TInt` for it too; eval and neko kept it a `Float`.
+	**/
 	public inline function isInt():Bool {
 		return switch (Type.typeof(this)) {
 			case TInt: true;
+			case TFloat: __isWhole(this);
 			default: false;
 		};
 	}
 
+	/** Whether the value is a `Float` that `isInt` does not take: one with a fraction, outside `Int`'s range, infinite or NaN. **/
 	public inline function isFloat():Bool {
 		return switch (Type.typeof(this)) {
-			case TFloat: true;
+			case TFloat: !__isWhole(this);
 			default: false;
 		};
+	}
+
+	@:noCompletion private static function __isWhole(value:Float):Bool {
+		return value >= -2147483648.0 && value <= 2147483647.0 && value == Math.ffloor(value);
 	}
 
 	public inline function isBool():Bool {

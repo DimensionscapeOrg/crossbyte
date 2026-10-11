@@ -324,6 +324,31 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(4000000000.0, half + half);
 	}
 
+	/**
+		A whole `Float` within `Int`'s range is an `Int` on every target.
+		JavaScript cannot tell `1.0` from `1`, and natively and on the jvm
+		`Type.typeof` answers `TInt` for it too, where eval and neko answered
+		`isFloat`.
+	**/
+	public function testPrimitiveValueTellsIntsFromFloatsTheSameOnEveryTarget():Void {
+		var whole:Array<PrimitiveValue> = [1.0, 0.0, -0.0, -2147483648.0, 2147483647.0, 42];
+		for (value in whole) {
+			Assert.isTrue(value.isInt(), value + " is not an Int");
+			Assert.isFalse(value.isFloat(), value + " is a Float");
+			Assert.isTrue(value.getValueType() == TInt, value + " is " + value.getValueType());
+		}
+		var fractional:Array<PrimitiveValue> = [1.5, -0.25, 2147483648.0, -2147483649.0, 1e21, Math.POSITIVE_INFINITY,
+			PrimitiveValue.fromDynamic(Math.NaN)];
+		for (value in fractional) {
+			Assert.isFalse(value.isInt(), value + " is an Int");
+			Assert.isTrue(value.isFloat(), value + " is not a Float");
+			Assert.isTrue(value.getValueType() == TFloat, value + " is " + value.getValueType());
+		}
+		var text:PrimitiveValue = "1";
+		Assert.isFalse(text.isInt());
+		Assert.isFalse(text.isFloat());
+	}
+
 	/** The documentation's example, as written there. **/
 	public function testPrimitiveValueDocumentedExample():Void {
 		var p:PrimitiveValue = 42;
