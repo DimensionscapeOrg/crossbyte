@@ -291,6 +291,11 @@ class RPCChunks implements PassFlush {
 			if (total < RPCWire.MIN_PAYLOAD_LEN || (maxLength > 0 && total > maxLength)) {
 				throw "RPC answer in pieces of " + total + " bytes passed the " + maxLength + "-byte frame limit";
 			}
+			// With no frame limit, one no buffer can hold with its length in
+			// front: the room for it, 4 + total, would wrap past 2^31.
+			if (total > 0x7FFFFFFF - 4) {
+				throw "RPC answer in pieces of " + total + " bytes is past the largest frame a buffer holds";
+			}
 			if (frameEnd - input.position < 1) {
 				throw "RPC answer in pieces began with nothing";
 			}
@@ -369,7 +374,8 @@ class RPCChunks implements PassFlush {
 		answer larger than any before.
 	**/
 	inline function mayHold(answer:IncomingAnswer, arrived:Int):Bool {
-		return answer.total <= largest || arrived * 4 >= answer.total;
+		// Four times in Float: past 512 MB arrived, in Int it wraps negative.
+		return answer.total <= largest || arrived * 4.0 >= answer.total;
 	}
 
 	/** Appends what has arrived of `answer`'s frame to its buffer, grown as `mayHold` lets it. **/

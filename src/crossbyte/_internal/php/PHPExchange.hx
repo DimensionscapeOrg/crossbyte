@@ -164,7 +164,10 @@ class PHPExchange {
 			}
 
 			if (type == STDOUT && contentLength > 0) {
-				if (maxResponseSize > 0 && stdout.length + contentLength > maxResponseSize) {
+				// In Int, against what is left: the sum was a UInt compared
+				// unsigned, which HashLink compares signed.
+				var held:Int = stdout.length;
+				if (maxResponseSize > 0 && contentLength > maxResponseSize - held) {
 					fail("PHP response exceeded " + maxResponseSize + " bytes");
 					return;
 				}

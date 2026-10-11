@@ -407,7 +407,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		// send: the write says so, and a failed one is asked why.
 		if (!__connected || pipe == null) {
 			failure = Error(Reason.Closed);
-		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __outQueued + length + 4 > maxQueuedBytes) {
+		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __passesQueueLimit(__outQueued, length, maxQueuedBytes)) {
 			// Only with something already waiting: a frame larger than the
 			// limit still goes to a peer that has kept up.
 			stuck = Reason.Error("Local transport peer is not reading: " + __outQueued + " bytes wait for it, and "
@@ -436,6 +436,17 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		}
 
 		outTimestamp = __timestamp();
+	}
+
+	/**
+		Whether a frame of `length` bytes, with its four-byte length, would
+		take `queued` waiting bytes past `limit`. Against what is left of the
+		limit: added to what waits, a frame under a limit near the largest
+		Int wrapped past 2^31 and was queued anyway. A frame is at most
+		`MAX_FRAME_SIZE`, so `length + 4` cannot wrap.
+	**/
+	@:noCompletion private static inline function __passesQueueLimit(queued:Int, length:Int, limit:Int):Bool {
+		return length + 4 > limit - queued;
 	}
 
 	/**

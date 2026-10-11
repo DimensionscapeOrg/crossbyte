@@ -1529,7 +1529,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		// A command may exceed a document's limit by the room the server
 		// allows for its own fields.
-		if (size > __maxBsonObjectSize + 16 * 1024) {
+		// The room taken from the size, not added to the server's limit, which
+		// a server advertising one near the largest Int would wrap.
+		if (size - 16 * 1024 > __maxBsonObjectSize) {
 			throw new ArgumentError('The command is $size bytes; the server takes at most ${__maxBsonObjectSize + 16 * 1024}.');
 		}
 	}

@@ -179,7 +179,9 @@ class SharedChannel extends EventDispatcher {
 
 		var methodBytes = Bytes.ofString(methodName);
 		var serializationBytes = Bytes.ofString(__serializer.toString());
-		if (8 + methodBytes.length + serializationBytes.length > MAX_MESSAGE_SIZE) {
+		// Against what is left of the limit, as arguments serialized past 2 GB
+		// would add up past 2^31 and wrap.
+		if (serializationBytes.length > MAX_MESSAGE_SIZE - 8 - methodBytes.length) {
 			dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", "error"));
 			return;
 		}

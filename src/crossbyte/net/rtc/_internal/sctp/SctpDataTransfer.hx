@@ -630,7 +630,10 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 				+ " the peer accepts in one message.");
 		}
 
-		if (__pendingBytes + (payload == null ? 0 : payload.length) > MAX_BUFFERED) {
+		// In Int, against what is left: the sum was a UInt compared unsigned,
+		// which HashLink compares signed, so a message past 2 GB passed there.
+		var adding:Int = payload == null ? 0 : payload.length;
+		if (adding > MAX_BUFFERED - __pendingBytes) {
 			throw new ArgumentError("The peer is not taking data fast enough to queue another "
 				+ (payload == null ? 0 : payload.length) + " bytes behind the " + __pendingBytes
 				+ " already waiting; watch bufferedAmount.");

@@ -454,6 +454,21 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
+		A queue limit near the largest Int holds where what waits and the next
+		frame add up past 2^31. Added, the sum wrapped negative and the frame
+		was queued past the limit. Asked of the check send() makes, since two
+		gigabytes would have to go unread first; send() refusing a peer that
+		is not reading is testSendDoesNotWaitForAPeerThatIsNotReading's.
+	**/
+	public function testAQueueLimitNearTheLargestIntHoldsWhereTheSumWouldWrap():Void {
+		Assert.isTrue(LocalConnection.__passesQueueLimit(0x7FFFFFFF - 10, 100, 0x7FFFFFFF), "a frame past the limit fitted");
+		Assert.isTrue(LocalConnection.__passesQueueLimit(2145000000, LocalConnection.MAX_FRAME_SIZE, 2147000000));
+		Assert.isFalse(LocalConnection.__passesQueueLimit(0x7FFFFFFF - 104, 100, 0x7FFFFFFF), "a frame to the limit exactly was refused");
+		Assert.isFalse(LocalConnection.__passesQueueLimit(1000, 100, 2000));
+		Assert.isTrue(LocalConnection.__passesQueueLimit(3000, 100, 2000), "a queue already over its limit took more");
+	}
+
+	/**
 		A connect to a listener that takes nobody ends at its deadline. On
 		Linux a connect to a listener whose backlog is full waits in the kernel
 		for it to take someone, past any `timeout`; on the calling thread, a

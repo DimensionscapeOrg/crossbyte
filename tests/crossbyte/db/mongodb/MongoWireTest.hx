@@ -235,6 +235,22 @@ class MongoWireTest extends utest.Test {
 		Assert.isFalse(connection.connected);
 	}
 
+	/**
+		A server advertising message and document sizes near the largest Int
+		is talked to. The slack for a reply's envelope, and the room for a
+		command's own fields, were added to those sizes, which wrapped
+		negative: every reply was refused as too long, and every command as
+		too large.
+	**/
+	public function testAServerAdvertisingSizesNearTheLargestIntIsTalkedTo():Void {
+		server.maxMessageSize = 0x7FFFFFFF - 100;
+		server.maxBsonObjectSize = 0x7FFFFFFF - 100;
+		server.start();
+		__open();
+		connection.insert("things", [{n: 1}, {n: 2}]);
+		Assert.equals(2, connection.count("things"));
+	}
+
 	public function testAReplyToAnotherRequestIsRefused():Void {
 		server.start();
 		__open();

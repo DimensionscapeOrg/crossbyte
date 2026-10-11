@@ -142,7 +142,9 @@ class MongoWire {
 
 		// Slack for the header and the envelope a batch of documents at the
 		// size limit travels in.
-		if (length < 21 || length > maxMessageSize + 16 * 1024) {
+		// The slack taken from the length rather than added to the limit,
+		// which a server advertising a size near the largest Int would wrap.
+		if (length < 21 || length - 16 * 1024 > maxMessageSize) {
 			throw new IOError('MongoDB at $peer sent a message claiming $length bytes; that is not a message this connection can be in step with.');
 		}
 
@@ -200,11 +202,13 @@ class MongoWire {
 				}
 
 				var size:Int = bytes.getInt32(position);
-				var sequenceEnd:Int = position + size;
 
-				if (size < 5 || sequenceEnd > end) {
+				// Against what is left: position + size wraps for a size near
+				// 2^31, and the sequence was refused only by luck, further on.
+				if (size < 5 || size > end - position) {
 					throw new IOError('MongoDB at $peer sent a document sequence claiming $size bytes.');
 				}
+				var sequenceEnd:Int = position + size;
 
 				var nameStart:Int = position + 4;
 				var nameEnd:Int = nameStart;

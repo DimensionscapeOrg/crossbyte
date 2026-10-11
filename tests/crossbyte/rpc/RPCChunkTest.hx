@@ -221,6 +221,26 @@ class RPCChunkTest extends utest.Test {
 		Assert.isFalse(pair.link.client.open, "an answer shorter than it said was read");
 	}
 
+	/**
+		With no frame limit, an answer in pieces too long for any buffer to
+		hold with its length in front ends the connection as it begins. The
+		room made for it, four bytes and its length, wrapped past 2^31. One
+		four bytes shorter can be held, and is begun.
+	**/
+	public function testWithNoFrameLimitAnAnswerNoBufferCanHoldEndsTheConnectionAtOnce():Void {
+		final pair = new ChunkPair();
+		pair.client.maxFrameLength = 0;
+		pair.link.server.send(ChunkPair.piece(1, false, [RPCWire.FLAG_RESPONSE, 1, 2, 3, 4], 0x7FFFFFFC));
+		pair.link.server.deliver();
+		Assert.isFalse(pair.link.client.open, "an answer no buffer can hold was begun");
+
+		final held = new ChunkPair();
+		held.client.maxFrameLength = 0;
+		held.link.server.send(ChunkPair.piece(1, false, [RPCWire.FLAG_RESPONSE, 1, 2, 3, 4], 0x7FFFFFFB));
+		held.link.server.deliver();
+		Assert.isTrue(held.link.client.open, "an answer a buffer can hold was refused");
+	}
+
 	public function testAnAnswerSayingItIsPastTheFrameLimitEndsTheConnectionAtOnce():Void {
 		final pair = new ChunkPair();
 		pair.link.server.send(ChunkPair.piece(1, false, [RPCWire.FLAG_RESPONSE, 1, 2, 3, 4], 0x7FFFFFF0));
