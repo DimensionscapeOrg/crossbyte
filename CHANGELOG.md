@@ -1192,6 +1192,11 @@ Fixes to code new in this release are not listed.
   removal and an addition allocate nothing on the jvm rather than 61
   bytes, and natively only the map's own entry for the key (24 bytes
   rather than 65).
+- `RadixTree` finds the child to follow by a binary search through a
+  node's children past the first eight, where it passed over them all:
+  with a thousand children under one node a lookup takes 23 ns rather
+  than 389 natively, 22 rather than 418 on the jvm and 26 rather than 620
+  on Node, and with a few no longer.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

@@ -11,7 +11,12 @@ package crossbyte.ds;
  * that the one given starts with: the route that serves
  * "/api/v1/users/123" when "/api/v1/users" is held.
  *
- * A lookup reads the key in place and allocates nothing.
+ * A lookup reads the key in place and allocates nothing. The child to follow
+ * is found by its first character, among a node's children kept in that
+ * character's order: by a pass over the first few, and a binary search past
+ * them, so a node with hundreds of children (keys that differ in their
+ * first character past a common prefix, a character set past ASCII) costs
+ * a few comparisons rather than one for each.
  *
  * The empty key, like `null`, is not held: `insert("", value)` does nothing,
  * and `search("")` is null. For a catch-all route, use what `longestPrefix`
@@ -58,7 +63,7 @@ class RadixTree<T> {
 
 			var child:RadixTreeNode<T> = node.childFor(StringTools.fastCodeAt(key, at));
 			if (child == null) {
-				node.children.push(new RadixTreeNode<T>(key.substr(at), value, true));
+				node.addChild(new RadixTreeNode<T>(key.substr(at), value, true));
 				return;
 			}
 
@@ -74,14 +79,15 @@ class RadixTree<T> {
 			// shared part becomes a node of its own above the child.
 			var split:RadixTreeNode<T> = new RadixTreeNode<T>(label.substr(0, common));
 			child.label = label.substr(common);
-			split.children.push(child);
-			node.children[node.children.indexOf(child)] = split;
+			split.addChild(child);
+			// The split begins with the character the child did.
+			node.replaceChild(child, split);
 			at += common;
 			if (at == key.length) {
 				split.value = value;
 				split.hasValue = true;
 			} else {
-				split.children.push(new RadixTreeNode<T>(key.substr(at), value, true));
+				split.addChild(new RadixTreeNode<T>(key.substr(at), value, true));
 			}
 			return;
 		}
@@ -203,8 +209,14 @@ class RadixTreeNode<T> {
 	// Whether a key ends here, apart from whether its value is null.
 	public var hasValue:Bool;
 	// No two begin with the same character, so the one to follow is found by
-	// its first; a node has few, so a pass beats a hash.
+	// its first. Kept in the order of that character, with the characters
+	// beside them in `__firsts`, so a search reads only those.
 	public var children:Array<RadixTreeNode<T>>;
+	private var __firsts:haxe.ds.Vector<Int>;
+
+	// Up to this many children, a pass over their characters beats a
+	// binary search through them.
+	private static inline var PASS_MOST:Int = 8;
 
 	/**
 	 * Constructs a new Node.
@@ -217,14 +229,62 @@ class RadixTreeNode<T> {
 		this.value = value;
 		this.hasValue = hasValue;
 		this.children = [];
+		this.__firsts = __NONE;
 	}
 
+	private static final __NONE:haxe.ds.Vector<Int> = new haxe.ds.Vector<Int>(0);
+
 	public function childFor(code:Int):Null<RadixTreeNode<T>> {
-		for (child in children) {
-			if (StringTools.fastCodeAt(child.label, 0) == code) {
-				return child;
+		var firsts:haxe.ds.Vector<Int> = __firsts;
+		var count:Int = firsts.length;
+		if (count <= PASS_MOST) {
+			for (i in 0...count) {
+				if (firsts[i] == code) {
+					return children[i];
+				}
+			}
+			return null;
+		}
+		var low:Int = 0;
+		var high:Int = count - 1;
+		while (low <= high) {
+			var middle:Int = (low + high) >> 1;
+			var first:Int = firsts[middle];
+			if (first < code) {
+				low = middle + 1;
+			} else if (first > code) {
+				high = middle - 1;
+			} else {
+				return children[middle];
 			}
 		}
 		return null;
+	}
+
+	/** Adds a child whose first character no other child's label begins with. **/
+	public function addChild(child:RadixTreeNode<T>):Void {
+		var code:Int = StringTools.fastCodeAt(child.label, 0);
+		var count:Int = children.length;
+		var at:Int = 0;
+		while (at < count && __firsts[at] < code) {
+			at++;
+		}
+		children.insert(at, child);
+		// Made again at its new length: children are added once each, and
+		// looked up for every key.
+		var firsts:haxe.ds.Vector<Int> = new haxe.ds.Vector<Int>(count + 1);
+		for (i in 0...at) {
+			firsts[i] = __firsts[i];
+		}
+		firsts[at] = code;
+		for (i in at...count) {
+			firsts[i + 1] = __firsts[i];
+		}
+		__firsts = firsts;
+	}
+
+	/** Puts `replacement`, whose label begins with the same character, where `child` was. **/
+	public function replaceChild(child:RadixTreeNode<T>, replacement:RadixTreeNode<T>):Void {
+		children[children.indexOf(child)] = replacement;
 	}
 }
