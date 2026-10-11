@@ -1233,6 +1233,10 @@ Fixes to code new in this release are not listed.
   half the range no longer reads as ahead of it.
 - `PrimitiveValue.toInt`, `Version` and every number a peer sends are read
   the same way on every target, through `IntParse`.
+- `PrimitiveValue.toFloat` reads text the same way on every target, where
+  `"0x10"` was 16 natively and on neko and 0 elsewhere, and `"Infinity"`
+  NaN on eval and the jvm; and on eval and neko an `Int` it gives adds past
+  2^31 without wrapping. (Upgrading)
 - A null `Object` or `TypedObject` answers as an empty one on every
   target, where `exists` threw on the jvm and Node, `keys`, `values` and
   `entries` on the jvm, and `remove` on Node and neko.
@@ -1783,6 +1787,9 @@ an API added in this release has is not listed here.
   `Random.reseed(value)`.
 - A `Dynamic` value no longer converts to a `URL` on its own: cast it,
   `(value : String)`, or build `new URL(value)`.
+- `PrimitiveValue.toFloat` reads a string as a number only if the whole of
+  it is one: `"12abc"` and `"1,5"` are `NaN`, where the number they began
+  with was read. Strip what follows a number before converting.
 
 #### TCP
 

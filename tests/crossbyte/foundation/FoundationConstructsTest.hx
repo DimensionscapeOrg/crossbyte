@@ -269,6 +269,61 @@ class FoundationConstructsTest extends utest.Test {
 		}
 	}
 
+	/**
+		A string reads as the same `Float` on every target, and as a number
+		only if it is one. Through `Std.parseFloat`, "0x10" was 16 natively
+		and on neko and 0 elsewhere, "Infinity" NaN on eval and the jvm and
+		"inf" Infinity only natively and on neko, and "12abc" was 12.
+	**/
+	public function testPrimitiveValueReadsFloatsTheSameOnEveryTarget():Void {
+		function float(text:String):Float {
+			var value:PrimitiveValue = text;
+			return value.toFloat();
+		}
+		var read:Array<{text:String, value:Float}> = [
+			{text: "42", value: 42.0},
+			{text: " 1.5 ", value: 1.5},
+			{text: "+5", value: 5.0},
+			{text: "-2.5e3", value: -2500.0},
+			{text: "1E3", value: 1000.0},
+			{text: "2e-3", value: 0.002},
+			{text: ".5", value: 0.5},
+			{text: "5.", value: 5.0},
+			{text: "007", value: 7.0},
+			{text: "\t9\n", value: 9.0},
+			{text: "0x10", value: 16.0},
+			{text: "-0X1f", value: -31.0},
+			{text: "0x100000000", value: 4294967296.0},
+			{text: "1e400", value: Math.POSITIVE_INFINITY},
+			{text: "-1e400", value: Math.NEGATIVE_INFINITY},
+			{text: "Infinity", value: Math.POSITIVE_INFINITY},
+			{text: "-infinity", value: Math.NEGATIVE_INFINITY},
+			{text: "+INF", value: Math.POSITIVE_INFINITY}
+		];
+		for (one in read) {
+			Assert.equals(one.value, float(one.text), '"${one.text}"');
+		}
+		// Not through the local function: natively its result is boxed, and
+		// a boxed -0.0 is an Int 0.
+		var negativeZero:PrimitiveValue = "-0";
+		var zero:Float = negativeZero.toFloat();
+		Assert.equals(Math.NEGATIVE_INFINITY, 1 / zero, "-0 lost its sign");
+		for (bad in ["abc", "", "   ", "12abc", "1,5", "1_000", "0x", "0x1p3", "0x-1", "1e", "1e+", ".", "-", "+", "e5", "NaN", "--1", "1.2.3",
+			"Infinityx", "1 2", "0b101"]) {
+			Assert.isTrue(Math.isNaN(float(bad)), '"$bad" was read as ' + float(bad));
+		}
+	}
+
+	/**
+		An `Int` read as a `Float` adds past 2^31. On eval and neko a Float
+		given an Int stayed one, and two of them added as Ints.
+	**/
+	public function testPrimitiveValueIntReadAsAFloatAddsPastTwoToTheThirtyOne():Void {
+		var value:PrimitiveValue = 2000000000;
+		var half:Float = value.toFloat();
+		Assert.equals(4000000000.0, half + half);
+	}
+
 	/** The documentation's example, as written there. **/
 	public function testPrimitiveValueDocumentedExample():Void {
 		var p:PrimitiveValue = 42;

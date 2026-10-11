@@ -119,22 +119,34 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 
 	/**
 	 * Converts the primitive to a `Float`.
-	 * 
-	 * - Strings are parsed as floats.
+	 *
+	 * - Strings are read as a number: surrounding spaces, an optional sign,
+	 *   then decimal digits with an optional fraction and exponent (`1.5`,
+	 *   `.5`, `2e-3`), `0x` and hex digits, or `Infinity` (or `inf`, in any
+	 *   case). Anything else, `""` and `"12abc"` included, is `NaN`. Every
+	 *   target reads the same text as the same number.
+	 * - An `Int` becomes the same number as a `Float`, which on eval and neko
+	 *   means one that adds past 2^31 without wrapping.
 	 * - `true` becomes `1.0`, `false` becomes `0.0`.
 	 * - `null` converts to `0.0`.
 	 *
 	 * @return The float representation of the primitive.
-	 * @throws If conversion is not possible.
+	 * @throws If the primitive holds something other than a string, a number,
+	 *         a `Bool` or null.
 	 */
 	@:to public inline function toFloat():Float {
 		switch (Type.typeof(this)) {
-			case TInt, TFloat:
+			case TInt:
+				// On eval and neko a Float given an Int stays one, and two of
+				// them add as Ints; `+ 0.0` on an Int makes it a Float there.
+				var whole:Int = this;
+				return whole + 0.0;
+			case TFloat:
 				return this;
 			case TBool:
 				return this ? 1.0 : 0.0;
 			case TClass(String):
-				return Std.parseFloat(this);
+				return __parseFloat(this);
 			case TNull:
 				return 0.0;
 			default:
@@ -214,6 +226,86 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			}
 		}
 		throw "Cannot convert \"" + text + "\" to Int";
+	}
+
+	// The text checked against one grammar before any target reads it, since
+	// each reads what is outside it its own way: Std.parseFloat gave "0x10"
+	// as 16 natively and on neko and 0 elsewhere, "Infinity" as NaN on eval
+	// and the jvm, and "12abc" as 12. Well-formed decimal text every target
+	// reads alike; hex is added up here.
+	@:noCompletion private static function __parseFloat(text:String):Float {
+		var s:String = StringTools.trim(text);
+		var length:Int = s.length;
+		var at:Int = 0;
+		var negative:Bool = false;
+		if (length > 0 && (StringTools.fastCodeAt(s, 0) == "-".code || StringTools.fastCodeAt(s, 0) == "+".code)) {
+			negative = StringTools.fastCodeAt(s, 0) == "-".code;
+			at = 1;
+		}
+		if (at == length) {
+			return Math.NaN;
+		}
+
+		var first:Int = StringTools.fastCodeAt(s, at);
+		if (first == "i".code || first == "I".code) {
+			var word:String = s.substr(at).toLowerCase();
+			if (word == "infinity" || word == "inf") {
+				return negative ? Math.NEGATIVE_INFINITY : Math.POSITIVE_INFINITY;
+			}
+			return Math.NaN;
+		}
+
+		if (length - at > 2 && first == "0".code && (StringTools.fastCodeAt(s, at + 1) | 0x20) == "x".code) {
+			var value:Float = 0.0;
+			for (i in at + 2...length) {
+				var digit:Int = __hexDigit(StringTools.fastCodeAt(s, i));
+				if (digit < 0) {
+					return Math.NaN;
+				}
+				value = value * 16.0 + digit;
+			}
+			return negative ? -value : value;
+		}
+
+		var i:Int = at;
+		var digits:Int = 0;
+		while (i < length && __isDigit(StringTools.fastCodeAt(s, i))) {
+			i++;
+			digits++;
+		}
+		if (i < length && StringTools.fastCodeAt(s, i) == ".".code) {
+			i++;
+			while (i < length && __isDigit(StringTools.fastCodeAt(s, i))) {
+				i++;
+				digits++;
+			}
+		}
+		if (digits == 0) {
+			return Math.NaN;
+		}
+		if (i < length && (StringTools.fastCodeAt(s, i) | 0x20) == "e".code) {
+			i++;
+			if (i < length && (StringTools.fastCodeAt(s, i) == "+".code || StringTools.fastCodeAt(s, i) == "-".code)) {
+				i++;
+			}
+			var exponent:Int = 0;
+			while (i < length && __isDigit(StringTools.fastCodeAt(s, i))) {
+				i++;
+				exponent++;
+			}
+			if (exponent == 0) {
+				return Math.NaN;
+			}
+		}
+		return i == length ? Std.parseFloat(s) : Math.NaN;
+	}
+
+	private static inline function __isDigit(code:Int):Bool {
+		return code >= "0".code && code <= "9".code;
+	}
+
+	private static inline function __hexDigit(code:Int):Int {
+		return __isDigit(code) ? code - "0".code : (code | 0x20) >= "a".code && (code | 0x20) <= "f".code ? (code | 0x20) - "a".code + 10 : -1;
 	}
 
 	private static function isValid(value:Dynamic):Bool {
