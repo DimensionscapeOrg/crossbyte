@@ -642,16 +642,34 @@ says how.
 - On JavaScript, text is encoded and decoded through the platform's
   `TextEncoder` and `TextDecoder`, about ten times faster, and a NUL byte no
   longer ends a string read from bytes (on HashLink too).
-- `ByteArray.writeUTFBytes` writes ASCII text without making bytes of it
-  first: natively by one copy, and on the jvm and JavaScript a character
-  at a time for text of up to 256 characters (twelve characters on Node
-  in 56 ns rather than 690). On HashLink strings are decoded in one pass,
-  ASCII four bytes at a time, where `getString` made three: `ByteArray`
+- `ByteArray.writeUTFBytes` and `writeUTF` write ASCII text without making
+  bytes of it first: natively by one copy (`writeUTF` of twelve characters
+  in 15 ns rather than 62), and on JavaScript a character at a time for
+  text of up to 256 characters (twelve characters on Node in 56 ns rather
+  than 690). On Node other text of up to 64 characters is encoded straight
+  into the `ByteArray`, where `TextEncoder` made a buffer of it first:
+  eleven characters with accents in 86 ns rather than 770. On the jvm both
+  go through its own encoder, which a loop did not beat. On HashLink
+  strings are decoded in one pass, ASCII four bytes at a time, where
+  `getString` made three: `ByteArray`
   reads of 200 characters take 790 ns rather than 1,530. On Node
   `ByteArrayInput` and `ByteArrayOutput` strings go through the platform's
   decoder and encoder, 144 ns rather than 1,456 for 200 characters, though
   a short string past ASCII read through `ByteArrayInput` costs about
   30 ns more (153 rather than 121 for eleven characters).
+- `ByteArray` reads and writes numbers straight from and to its memory
+  natively and on HashLink, and through its `DataView` on JavaScript,
+  rather than a byte at a time: natively `readDouble` takes 3.9 ns rather
+  than 20.7 and `writeInt` 3.0 rather than 9.3, and on HashLink a
+  big-endian `writeDouble` 23 rather than 70. Building a 98-byte message
+  takes 161 ns natively rather than 468, 125 on the jvm rather than 225,
+  2.2 µs on Node rather than 10.4, and 1.0 on HashLink rather than 2.1. A
+  `ByteArray` grows by half again what it holds, and to at least 64 bytes,
+  so a 98-byte message written into a new one allocates three times rather
+  than six, and copies only what is readable as it does; on the jvm and
+  HashLink a new one is not zeroed a second time. The bounds kept since
+  (see Fixed) cost an index read 0.3 ns on Node, and reading `position`
+  and `bytesAvailable` 1 ns on HashLink.
 
 #### TCP
 

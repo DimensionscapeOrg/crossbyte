@@ -395,55 +395,10 @@ class Utf8 {
 	static function __encode(value:String):Bytes {
 		// A short string here: TextEncoder costs a call into the platform and
 		// a buffer of its own however short the text, several times what a
-		// string of a few dozen characters takes. Written as TextEncoder
-		// writes it, an unpaired surrogate as U+FFFD.
-		var length:Int = value.length;
-		if (length <= SHORT) {
-			var size:Int = 0;
-			var i:Int = 0;
-			while (i < length) {
-				var unit:Int = StringTools.fastCodeAt(value, i++);
-				if (unit < 0x80) {
-					size++;
-				} else if (unit < 0x800) {
-					size += 2;
-				} else if (unit >= 0xD800 && unit < 0xDC00 && i < length && StringTools.fastCodeAt(value, i) >= 0xDC00 && StringTools.fastCodeAt(value, i) < 0xE000) {
-					size += 4;
-					i++;
-				} else {
-					size += 3;
-				}
-			}
-			var bytes:Bytes = Bytes.alloc(size);
-			var at:Int = 0;
-			i = 0;
-			while (i < length) {
-				var code:Int = StringTools.fastCodeAt(value, i++);
-				if (code < 0x80) {
-					bytes.set(at++, code);
-					continue;
-				}
-				if (code >= 0xD800 && code < 0xE000) {
-					var low:Int = i < length ? StringTools.fastCodeAt(value, i) : 0;
-					if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
-						code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-						i++;
-					} else {
-						code = 0xFFFD;
-					}
-				}
-				if (code < 0x800) {
-					bytes.set(at++, 0xC0 | (code >> 6));
-				} else if (code < 0x10000) {
-					bytes.set(at++, 0xE0 | (code >> 12));
-					bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
-				} else {
-					bytes.set(at++, 0xF0 | (code >> 18));
-					bytes.set(at++, 0x80 | ((code >> 12) & 0x3F));
-					bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
-				}
-				bytes.set(at++, 0x80 | (code & 0x3F));
-			}
+		// string of a few dozen characters takes.
+		if (value.length <= SHORT) {
+			var bytes:Bytes = Bytes.alloc(sizeOf(value));
+			encodeInto(value, bytes, 0);
 			return bytes;
 		}
 		if (__encoder == null) {
@@ -484,6 +439,73 @@ class Utf8 {
 	// Below this many characters text is encoded here rather than by the
 	// platform's encoder, which costs a call into the platform and a buffer
 	// of its own however short the text.
-	static inline var SHORT:Int = 64;
+	/**
+		The number of bytes `value` is in UTF-8, as TextEncoder writes it: an
+		unpaired surrogate as U+FFFD, three bytes.
+	**/
+	public static function sizeOf(value:String):Int {
+		var length:Int = value.length;
+		var size:Int = 0;
+		var i:Int = 0;
+		while (i < length) {
+			var unit:Int = StringTools.fastCodeAt(value, i++);
+			if (unit < 0x80) {
+				size++;
+			} else if (unit < 0x800) {
+				size += 2;
+			} else if (unit >= 0xD800 && unit < 0xDC00 && i < length && StringTools.fastCodeAt(value, i) >= 0xDC00 && StringTools.fastCodeAt(value, i) < 0xE000) {
+				size += 4;
+				i++;
+			} else {
+				size += 3;
+			}
+		}
+		return size;
+	}
+
+	/**
+		`value` in UTF-8 at `at` in `bytes`, which has `sizeOf(value)` bytes
+		of room there, written as TextEncoder writes it: an unpaired surrogate
+		as U+FFFD. For a short string, written where it is going with no
+		buffer of its own.
+	**/
+	public static function encodeInto(value:String, bytes:Bytes, at:Int):Void {
+		var length:Int = value.length;
+		var i:Int = 0;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(value, i++);
+			if (code < 0x80) {
+				bytes.set(at++, code);
+				continue;
+			}
+			if (code >= 0xD800 && code < 0xE000) {
+				var low:Int = i < length ? StringTools.fastCodeAt(value, i) : 0;
+				if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
+					code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+					i++;
+				} else {
+					code = 0xFFFD;
+				}
+			}
+			if (code < 0x800) {
+				bytes.set(at++, 0xC0 | (code >> 6));
+			} else if (code < 0x10000) {
+				bytes.set(at++, 0xE0 | (code >> 12));
+				bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
+			} else {
+				bytes.set(at++, 0xF0 | (code >> 18));
+				bytes.set(at++, 0x80 | ((code >> 12) & 0x3F));
+				bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
+			}
+			bytes.set(at++, 0x80 | (code & 0x3F));
+		}
+	}
+
+	/**
+		Up to this many characters a string is encoded by sizeOf and
+		encodeInto rather than by TextEncoder, whose fixed cost a call is
+		more than theirs up to that length.
+	**/
+	public static inline var SHORT:Int = 64;
 	#end
 }

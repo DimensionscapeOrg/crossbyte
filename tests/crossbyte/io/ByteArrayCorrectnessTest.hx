@@ -849,6 +849,44 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
+		Text of any length either side of where a ByteArray stops writing it
+		itself and hands it to the platform's encoder (64 characters for
+		anything but ASCII on JavaScript, 256 for ASCII), written over the
+		middle of what is there, is the same UTF-8 the platform makes, behind
+		the same length, and leaves the bytes after it as they were.
+	**/
+	public function testTextIsTheSameUTF8AtEveryLengthAndPosition():Void {
+		for (piece in ["a", "é", "日", "\u{1F600}"]) {
+			for (count in [0, 1, 63, 64, 65, 255, 256, 257]) {
+				var text:String = [for (_ in 0...count) piece].join("");
+				var expected:Bytes = Bytes.ofString(text);
+				var size:Int = expected.length;
+				var buffer = new ByteArray();
+				for (_ in 0...2 * size + 40) {
+					buffer.writeByte(0xAA);
+				}
+				var total:Int = buffer.length;
+				buffer.position = 5;
+				buffer.writeUTF(text);
+				buffer.writeUTFBytes(text);
+				var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}';
+				Assert.equals(5 + 2 + 2 * size, buffer.position, label);
+				Assert.equals(total, buffer.length, label);
+				buffer.position = 5;
+				Assert.equals(size, buffer.readUnsignedShort(), label);
+				var same:Bool = true;
+				for (i in 0...size) {
+					same = same && buffer[7 + i] == expected.get(i) && buffer[7 + size + i] == expected.get(i);
+				}
+				for (i in 7 + 2 * size...total) {
+					same = same && buffer[i] == 0xAA;
+				}
+				Assert.isTrue(same, label);
+			}
+		}
+	}
+
+	/**
 		Malformed UTF-8 reads with U+FFFD for each malformed sequence, as on
 		JavaScript and the jvm. HashLink dropped everything from the first bad
 		byte, and eval kept the bytes as they were, so the next operation on

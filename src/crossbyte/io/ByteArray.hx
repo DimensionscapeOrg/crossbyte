@@ -300,7 +300,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	// was there before the ByteArray was shortened, and past the buffer
 	// each target did something of its own.
 	@:arrayAccess @:noCompletion private inline function get(index:Int):Int {
-		return index >= 0 && index < this.length ? this.get(index) : 0;
+		return index >= 0 && index < this.length ? this.__rawGetU8(index) : 0;
 	}
 
 	/**
@@ -363,7 +363,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 						   is greater than the maximum for a uint.
 	**/
 	public inline function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
-		this.readBytes(bytes, offset, length);
+		this.__readBytes(bytes, offset, length);
 	}
 
 	/**
@@ -534,16 +534,21 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
+		// Inside the bytes, the common case, written in place.
+		if (index >= 0 && index < this.length) {
+			this.__rawSetU8(index, value);
+			return value;
+		}
 		if (index < 0) {
 			throw new RangeError('A ByteArray has no index $index.');
 		}
 		this.__resize(index + 1, -1);
-		this.set(index, value);
+		this.__rawSetU8(index, value);
 
 		return value;
 	}
 
-	@:to @:noCompletion private static function toBytes(byteArray:ByteArray):Bytes {
+	@:to @:noCompletion private static inline function toBytes(byteArray:ByteArray):Bytes {
 		return (byteArray : ByteArrayData);
 	}
 
@@ -628,7 +633,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 					  write.
 	**/
 	public inline function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
-		this.writeBytes(bytes, offset, length);
+		this.__writeBytes(bytes, offset, length);
 	}
 
 	/**
@@ -798,7 +803,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return this.endian = value;
 	}
 
-	@:noCompletion private function get_length():UInt {
+	@:noCompletion private inline function get_length():UInt {
 		return this == null ? 0 : this.length;
 	}
 
@@ -832,11 +837,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	@:noCompletion private inline function set_position(value:UInt):UInt {
 		// From 2^31 up a UInt is a negative Int, and every read and write
-		// went wrong from there, each target its own way.
+		// went wrong from there, each target its own way. The throw is out of
+		// line, keeping what is inlined at every assignment small.
 		if ((value : Int) < 0) {
-			throw new RangeError('A ByteArray position is below 2^31, and $value is not.');
+			__refusePosition(value);
 		}
 		return this.position = value;
+	}
+
+	@:noCompletion private static function __refusePosition(value:UInt):Void {
+		throw new RangeError('A ByteArray position is below 2^31, and $value is not.');
 	}
 }
 
@@ -860,6 +870,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public var position:Int;
 
 	@:noCompletion private var __endian:Endian;
+	// `__endian == LITTLE_ENDIAN`, kept by `set_endian`: Endian is a String,
+	// and comparing it was a call natively and on the jvm for every
+	// multi-byte read and write.
+	@:noCompletion private var __little:Bool;
 	@:noCompletion private var __length:Int;
 
 	private function new(length:Int = 0) {
@@ -884,7 +898,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		} else {
 			var bytes = Bytes.alloc(length);
 
-			#if sys
+			// Zeroed where Bytes.alloc does not promise to: the jvm's arrays
+			// are zero by definition, and HashLink's alloc fills them.
+			#if (sys && !(jvm || java || hl))
 			bytes.fill(0, length, 0);
 			#end
 			data = bytes.getData();
@@ -994,7 +1010,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function readBoolean():Bool {
 		if (position < length) {
-			return (get(position++) != 0);
+			return (__rawGetU8(position++) != 0);
 		} else {
 			throw new EOFError();
 			return false;
@@ -1012,6 +1028,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__readBytes(bytes, offset, length);
+	}
+
+	// What readBytes does, with no defaults: on the jvm an argument with one
+	// is an Integer, boxed at every call from 128 up.
+	@:noCompletion private function __readBytes(bytes:ByteArray, offset:Int, length:Int):Void {
 		if (length == 0)
 			length = this.length - position;
 
@@ -1047,14 +1069,50 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			throw new EOFError();
 		}
 		position = at + 8;
-		if (__endian == LITTLE_ENDIAN) {
-			return FPHelper.i64ToDouble(getInt32(at), getInt32(at + 4));
+		// One native read where there is one: the DataView takes the byte
+		// order, and natively and on HashLink a little-endian double is
+		// read in place.
+		#if js
+		initData();
+		return __little ? data.getFloat64(at, true) : data.getFloat64(at, false);
+		#elseif cpp
+		if (__little) {
+			return untyped __global__.__hxcpp_memory_get_double(b, at);
 		}
-		return FPHelper.i64ToDouble(__swap32(getInt32(at + 4)), __swap32(getInt32(at)));
+		#elseif hl
+		if (__little) {
+			return b.getF64(at);
+		}
+		#end
+		if (__little) {
+			return FPHelper.i64ToDouble(__rawGetI32(at), __rawGetI32(at + 4));
+		}
+		return FPHelper.i64ToDouble(__swap32(__rawGetI32(at + 4)), __swap32(__rawGetI32(at)));
 	}
 
 	public function readFloat():Float {
+		#if js
+		// As readInt reads it, reinterpreted: anything else measured slower
+		// on Node, DataView's getFloat32 included.
 		return FPHelper.i32ToFloat(readInt());
+		#else
+		var at = position;
+		if (at > __available() - 4) {
+			throw new EOFError();
+		}
+		position = at + 4;
+		#if cpp
+		if (__little) {
+			return untyped __global__.__hxcpp_memory_get_float(b, at);
+		}
+		#elseif hl
+		if (__little) {
+			return b.getF32(at);
+		}
+		#end
+		var value = __rawGetI32(at);
+		return FPHelper.i32ToFloat(__little ? value : __swap32(value));
+		#end
 	}
 
 	public function readInt():Int {
@@ -1067,27 +1125,26 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 
 		position = at + 4;
-		var value = getInt32(at);
-		return __endian == LITTLE_ENDIAN ? value : __swap32(value);
+		#if js
+		initData();
+		return data.getInt32(at, __little);
+		#else
+		var value = __rawGetI32(at);
+		return __little ? value : __swap32(value);
+		#end
 	}
 
 	public function readInt64():Int64 {
-		if (position > length - 8) {
+		// One check and two words, where it was three of each through readInt.
+		var at = position;
+		if (at > __available() - 8) {
 			throw new EOFError();
 		}
-
-		var high:Int;
-		var low:Int;
-
-		if (endian == LITTLE_ENDIAN) {
-			low = readUnsignedInt();
-			high = readUnsignedInt();
-		} else {
-			high = readUnsignedInt();
-			low = readUnsignedInt();
+		position = at + 8;
+		if (__little) {
+			return Int64.make(__rawGetI32(at + 4), __rawGetI32(at));
 		}
-
-		return Int64.make(high, low);
+		return Int64.make(__swap32(__rawGetI32(at)), __swap32(__rawGetI32(at + 4)));
 	}
 
 	public function readMultiByte(length:Int, charSet:String):String {
@@ -1263,7 +1320,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function readUnsignedByte():Int {
 		if (position < #if lime_bytes_length_getter l #else length #end) {
-			return get(position++);
+			return __rawGetU8(position++);
 		} else {
 			throw new EOFError();
 			return 0;
@@ -1285,8 +1342,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 
 		position = at + 2;
-		var value = getUInt16(at);
-		return __endian == LITTLE_ENDIAN ? value : (((value >> 8) & 0xFF) | ((value << 8) & 0xFF00));
+		#if js
+		initData();
+		return data.getUint16(at, __little);
+		#else
+		var value = __rawGetU16(at);
+		return __little ? value : __swap16(value);
+		#end
 	}
 
 	public function readUTF():String {
@@ -1326,7 +1388,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			if (at >= end) {
 				throw new EOFError();
 			}
-			var byte:Int = get(at++);
+			var byte:Int = __rawGetU8(at++);
 			// The fifth byte carries the last four bits of 32 and has to end
 			// the varint: anything above them would be shifted off the top
 			// (2^32 + 1 reading as 1), and a continuation bit here asks for a
@@ -1427,10 +1489,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			__resize(position + 1, position);
 		}
 
-		set(position++, value & 0xFF);
+		__rawSetU8(position++, value & 0xFF);
 	}
 
 	@:keep public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
+		__writeBytes(bytes, offset, length);
+	}
+
+	// What writeBytes does, with no defaults, as __readBytes.
+	@:noCompletion private function __writeBytes(bytes:ByteArray, offset:UInt, length:UInt):Void {
 		// Clamp offset/length to the source bounds so an out-of-range request
 		// cannot over-read past the end of `bytes`.
 		var available:UInt = bytes.length;
@@ -1451,6 +1518,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		position += length;
 	}
+
+	#if ((jvm || java) && !macro)
+	// Natively, as on JavaScript below: Haxe's fill sets a byte at a time.
+	override public function fill(pos:Int, len:Int, value:Int):Void {
+		java.util.Arrays.fill(b, pos, pos + len, cast value);
+	}
+	#end
 
 	#if js
 	// Natively. Haxe's fill sets a byte at a time, and a ByteArray zeroes
@@ -1497,10 +1571,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		var bytes = Bytes.alloc(capacity);
 		var cacheLength = length;
 
-		if (__length > 0) {
-			length = __length;
-			bytes.blit(0, this, 0, __length);
-			length = cacheLength;
+		// What is readable, and no more: past `length` nothing is live (the
+		// bytes there are zeroed as they are exposed), so copying all the
+		// old capacity carried dead bytes, up to 16 KB of them after a clear.
+		if (cacheLength > 0) {
+			bytes.blit(0, this, 0, cacheLength);
 		}
 
 		__setData(bytes);
@@ -1551,6 +1626,31 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeDouble(value:Float):Void {
+		// One native write where there is one, as readDouble reads.
+		#if (js || cpp || hl)
+		if (!__room(8)) {
+			__resize(position + 8, position);
+		}
+		var at = position;
+		#if js
+		initData();
+		data.setFloat64(at, value, __little);
+		position = at + 8;
+		return;
+		#elseif cpp
+		if (__little) {
+			untyped __global__.__hxcpp_memory_set_double(b, at, value);
+			position = at + 8;
+			return;
+		}
+		#elseif hl
+		if (__little) {
+			b.setF64(at, value);
+			position = at + 8;
+			return;
+		}
+		#end
+		#end
 		var int64 = FPHelper.doubleToI64(value);
 		__writeInt32Pair(int64.low, int64.high);
 	}
@@ -1564,19 +1664,42 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (!__room(8)) {
 			__resize(position + 8, position);
 		}
-		if (__endian == LITTLE_ENDIAN) {
-			setInt32(position, low);
-			setInt32(position + 4, high);
+		if (__little) {
+			__rawSetI32(position, low);
+			__rawSetI32(position + 4, high);
 		} else {
-			setInt32(position, __swap32(high));
-			setInt32(position + 4, __swap32(low));
+			__rawSetI32(position, __swap32(high));
+			__rawSetI32(position + 4, __swap32(low));
 		}
 		position += 8;
 	}
 
 	public function writeFloat(value:Float):Void {
-		var int = FPHelper.floatToI32(value);
-		writeInt(int);
+		#if (js || cpp || hl)
+		if (!__room(4)) {
+			__resize(position + 4, position);
+		}
+		var at = position;
+		#if js
+		initData();
+		data.setFloat32(at, value, __little);
+		position = at + 4;
+		return;
+		#elseif cpp
+		if (__little) {
+			untyped __global__.__hxcpp_memory_set_float(b, at, value);
+			position = at + 4;
+			return;
+		}
+		#elseif hl
+		if (__little) {
+			b.setF32(at, value);
+			position = at + 4;
+			return;
+		}
+		#end
+		#end
+		writeInt(FPHelper.floatToI32(value));
 	}
 
 	public function writeInt(value:Int):Void {
@@ -1584,7 +1707,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			__resize(position + 4, position);
 		}
 
-		setInt32(position, __endian == LITTLE_ENDIAN ? value : __swap32(value));
+		#if js
+		initData();
+		data.setInt32(position, value, __little);
+		#else
+		__rawSetI32(position, __little ? value : __swap32(value));
+		#end
 		position += 4;
 	}
 
@@ -1630,7 +1758,12 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			__resize(position + 2, position);
 		}
 
-		setUInt16(position, __endian == LITTLE_ENDIAN ? value : (((value >> 8) & 0xFF) | ((value << 8) & 0xFF00)));
+		#if js
+		initData();
+		data.setUint16(position, value & 0xFFFF, __little);
+		#else
+		__rawSetU16(position, __little ? value & 0xFFFF : __swap16(value));
+		#end
 		position += 2;
 	}
 
@@ -1639,6 +1772,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeUTF(value:String):Void {
+		// ASCII is its own UTF-8, a byte a character: the length is known and
+		// the text written as writeUTFBytes writes it, with no Bytes made of
+		// it to count.
+		#if cpp
+		if (!untyped __cpp__("{0}.isUTF16Encoded()", value) && value.length <= 0xFFFF) {
+			writeShort(value.length);
+			writeUTFBytes(value);
+			return;
+		}
+		#elseif js
+		// A short one as writeUTFBytes writes it, behind its length. Not on
+		// the jvm, whose encoder beats a loop at every length.
+		if (__writeAsciiUTF(value) || __writeShortText(value, true)) {
+			return;
+		}
+		#end
 		var bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		// The length prefix is sixteen bits: past 65535 it would wrap, and
@@ -1665,22 +1814,25 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 			return;
 		}
-		#elseif (jvm || java || js)
-		if (__writeAscii(value)) {
+		#elseif js
+		if (__writeAscii(value) || __writeShortText(value, false)) {
 			return;
 		}
 		#end
-		// Through the platform's encoder on JavaScript; see Utf8.
+		// Through the platform's encoder, which on the jvm beats a loop at
+		// every length; see Utf8.
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
 
-	#if (jvm || java || js)
+	#if js
 	/**
-		A short text that is all ASCII, written a character at a time: on the
-		jvm the platform's encoder makes an array and a Bytes for it, and on
-		JavaScript TextEncoder makes a buffer, and a loop beats either up to a
-		few hundred characters. False, having written nothing, for anything
-		else.
+		Up to ASCII_DIRECT_LIMIT characters of ASCII, copied a character at a
+		time rather than through TextEncoder, which makes a buffer of its own
+		for them. False, having written nothing, for anything else, which
+		__writeShortText then takes if it is short.
+
+		Kept apart from writeUTF's twin below and from the encoding: on Node,
+		either folded into this loop cost a short ASCII write 6 ns of its 55.
 	**/
 	@:noCompletion private function __writeAscii(value:String):Bool {
 		var count:Int = value.length;
@@ -1692,17 +1844,60 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				return false;
 			}
 		}
+		__writeAsciiChars(value);
+		return true;
+	}
+
+	// __writeAscii behind a 16-bit length, as writeUTF writes.
+	@:noCompletion private function __writeAsciiUTF(value:String):Bool {
+		var count:Int = value.length;
+		if (count > ASCII_DIRECT_LIMIT) {
+			return false;
+		}
+		for (i in 0...count) {
+			if (StringTools.fastCodeAt(value, i) >= 0x80) {
+				return false;
+			}
+		}
+		writeShort(count);
+		__writeAsciiChars(value);
+		return true;
+	}
+
+	/**
+		`value`, not all ASCII, encoded at the position if it is at most
+		Utf8.SHORT characters, behind its length when `prefixed` (at most
+		three bytes a character, well inside 16 bits). On Node allocating the
+		buffer TextEncoder makes is most of what a short string costs.
+	**/
+	@:noCompletion private function __writeShortText(value:String, prefixed:Bool):Bool {
+		if (value.length > crossbyte._internal.Utf8.SHORT) {
+			return false;
+		}
+		var size:Int = crossbyte._internal.Utf8.sizeOf(value);
+		if (prefixed) {
+			writeShort(size);
+		}
+		__resize(position + size, position);
+		crossbyte._internal.Utf8.encodeInto(value, this, position);
+		position += size;
+		return true;
+	}
+
+	// `value`, known to be ASCII, at the position.
+	@:noCompletion private inline function __writeAsciiChars(value:String):Void {
+		var count:Int = value.length;
 		if (count > 0) {
 			__resize(position + count, position);
 			var at:Int = position;
 			for (i in 0...count) {
-				set(at + i, StringTools.fastCodeAt(value, i));
+				__rawSetU8(at + i, StringTools.fastCodeAt(value, i));
 			}
 			position += count;
 		}
-		return true;
 	}
 
+	// Measured: on Node a loop still beats TextEncoder at 200 characters.
 	private static inline var ASCII_DIRECT_LIMIT:Int = 256;
 	#end
 
@@ -1791,20 +1986,25 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		var exposedFrom:Int = length;
 
 		if (size > __length) {
-			var capacity = ((size + 1) * 3) >> 1;
-			// Guard against integer overflow: if the geometric growth wraps
-			// around (producing a value <= size, possibly negative), fall back
-			// to exactly the requested size.
-			if (capacity <= size) {
+			// Half as much again as the buffer had, what was asked for if
+			// that is more, and never under MIN_CAPACITY. Grown from what was
+			// asked, a ByteArray filled to an exact size was made half as big
+			// again, and a 98-byte message written into a new one grew six
+			// times. Half again of a buffer past 1.4 GB wraps negative, and
+			// is then what was asked for.
+			var capacity:Int = __length + (__length >> 1);
+			if (capacity < size) {
 				capacity = size;
+			}
+			if (capacity < MIN_CAPACITY) {
+				capacity = MIN_CAPACITY;
 			}
 			var bytes = Bytes.alloc(capacity);
 			var cacheLength = length;
 
-			if (__length > 0) {
-				length = __length;
-				bytes.blit(0, this, 0, __length);
-				length = cacheLength;
+			// What is readable, and no more, as __reserve copies.
+			if (exposedFrom > 0) {
+				bytes.blit(0, this, 0, exposedFrom);
 			}
 
 			__setData(bytes);
@@ -1823,6 +2023,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			fill(exposedFrom, exposedTo - exposedFrom, 0);
 		}
 	}
+
+	// The least a ByteArray grows to: a few fields' worth, so a message
+	// written into a new one grows once or twice rather than at every field.
+	private static inline var MIN_CAPACITY:Int = 64;
 
 	@:noCompletion private inline function __setData(bytes:Bytes):Void {
 		#if eval
@@ -1931,6 +2135,77 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:noCompletion private inline function set_endian(value:Endian):Endian {
+		__little = value == LITTLE_ENDIAN;
 		return __endian = value;
+	}
+
+	// Bytes, halves, words and floats at a position the caller has already
+	// checked lies within `length`, and so within the buffer: hxcpp's
+	// Bytes.getInt32 and setInt32 are four bytes, each checked again (and a
+	// byte set past the end grows the array), and HashLink's are calls that
+	// check again. Little-endian natively and on HashLink, as every machine
+	// they run on is; elsewhere Bytes' own.
+	@:noCompletion private inline function __rawGetU8(at:Int):Int {
+		#if cpp
+		return untyped __global__.__hxcpp_memory_get_byte(b, at) & 0xFF;
+		#elseif hl
+		return b[at];
+		#else
+		return get(at);
+		#end
+	}
+
+	@:noCompletion private inline function __rawSetU8(at:Int, value:Int):Void {
+		#if cpp
+		untyped __global__.__hxcpp_memory_set_byte(b, at, value);
+		#elseif hl
+		b[at] = value;
+		#else
+		set(at, value);
+		#end
+	}
+
+	@:noCompletion private inline function __rawGetI32(at:Int):Int {
+		#if cpp
+		return untyped __global__.__hxcpp_memory_get_i32(b, at);
+		#elseif hl
+		return b.getI32(at);
+		#else
+		return getInt32(at);
+		#end
+	}
+
+	@:noCompletion private inline function __rawSetI32(at:Int, value:Int):Void {
+		#if cpp
+		untyped __global__.__hxcpp_memory_set_i32(b, at, value);
+		#elseif hl
+		b.setI32(at, value);
+		#else
+		setInt32(at, value);
+		#end
+	}
+
+	@:noCompletion private inline function __rawGetU16(at:Int):Int {
+		#if cpp
+		return untyped __global__.__hxcpp_memory_get_ui16(b, at);
+		#elseif hl
+		return b.getUI16(at);
+		#else
+		return getUInt16(at);
+		#end
+	}
+
+	@:noCompletion private inline function __rawSetU16(at:Int, value:Int):Void {
+		#if cpp
+		untyped __global__.__hxcpp_memory_set_ui16(b, at, value);
+		#elseif hl
+		b.setUI16(at, value);
+		#else
+		setUInt16(at, value);
+		#end
+	}
+
+	@:noCompletion private inline function __swap16(value:Int):Int {
+		return ((value >> 8) & 0xFF) | ((value << 8) & 0xFF00);
 	}
 }
