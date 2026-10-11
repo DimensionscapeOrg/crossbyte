@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.ds.DispatchTable;
 import crossbyte.ds.QuadTree.QuadTreeNode;
 import crossbyte.math.Rectangle;
 import utest.Assert;
@@ -271,18 +272,18 @@ class CollectionsTest extends utest.Test {
 	}
 
 	/**
-		`make` builds a switch into a function typed by its handlers: each key
+		`Dispatch.make` builds a switch into a function typed by its handlers: each key
 		reaches its own handler with the arguments, a handler can use and
 		change the variables around it and return early, and a key no case
 		names goes to the fallback with the key and the arguments, or without
 		one is an `ArgumentError`.
 	**/
-	public function testASwitchTableDispatchesEachKeyToItsHandler():Void {
+	public function testADispatchDispatchesEachKeyToItsHandler():Void {
 		var seen:Array<String> = [];
 		var total:Int = 0;
-		var dispatch = SwitchTable.make([
-			{key: SwitchTableOpcodes.PING, handler: (name:String, amount:Int) -> seen.push("pong " + name)},
-			{key: SwitchTableOpcodes.LOGIN, handler: (name:String, amount:Int) -> total += amount},
+		var dispatch = Dispatch.make([
+			{key: DispatchOpcodes.PING, handler: (name:String, amount:Int) -> seen.push("pong " + name)},
+			{key: DispatchOpcodes.LOGIN, handler: (name:String, amount:Int) -> total += amount},
 			{
 				key: 7,
 				handler: (name:String, amount:Int) -> {
@@ -294,9 +295,9 @@ class CollectionsTest extends utest.Test {
 			}
 		], (op:Int, name:String, amount:Int) -> seen.push("other " + op + " " + name));
 
-		dispatch(SwitchTableOpcodes.PING, "ada", 0);
-		dispatch(SwitchTableOpcodes.LOGIN, "ada", 5);
-		dispatch(SwitchTableOpcodes.LOGIN, "bob", 6);
+		dispatch(DispatchOpcodes.PING, "ada", 0);
+		dispatch(DispatchOpcodes.LOGIN, "ada", 5);
+		dispatch(DispatchOpcodes.LOGIN, "bob", 6);
 		dispatch(7, "cy", -1);
 		dispatch(7, "cy", 2);
 		dispatch(99, "dee", 0);
@@ -304,7 +305,7 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("pong ada,seven cy 2,other 99 dee", seen.join(","));
 		Assert.equals("(Int, String, Int) -> Void", TypeCheck.typeOf(dispatch));
 
-		var strict = SwitchTable.make([{key: "A", handler: () -> {}}]);
+		var strict = Dispatch.make([{key: "A", handler: () -> {}}]);
 		Assert.raises(() -> strict("B"), crossbyte.errors.ArgumentError);
 	}
 
@@ -313,17 +314,17 @@ class CollectionsTest extends utest.Test {
 		static method is called as one, and any other function value is
 		taken when the table is made, not looked up again at each dispatch.
 	**/
-	public function testASwitchTableHandlerIsAFunctionAMethodOrAValue():Void {
-		var made = SwitchTable.make([
+	public function testADispatchHandlerIsAFunctionAMethodOrAValue():Void {
+		var made = Dispatch.make([
 			{key: "TWICE", handler: function(v:Int):Int return v * 2},
-			{key: "THRICE", handler: SwitchTableOpcodes.thrice}
+			{key: "THRICE", handler: DispatchOpcodes.thrice}
 		], (op:String, v:Int) -> -v);
 		Assert.equals(8, made("TWICE", 4));
 		Assert.equals(12, made("THRICE", 4));
 		Assert.equals(-4, made("NONE", 4));
 
 		var current:Int->Int = v -> v + 100;
-		var byValue = SwitchTable.make([{key: 1, handler: current}]);
+		var byValue = Dispatch.make([{key: 1, handler: current}]);
 		current = v -> v + 200;
 		Assert.equals(101, byValue(1, 1));
 	}
@@ -335,15 +336,15 @@ class CollectionsTest extends utest.Test {
 		handlers that take different arguments, and a fallback that does not
 		take the key and then what they take.
 	**/
-	public function testASwitchTableRefusesWhatWouldGoWrongWhenItRuns():Void {
+	public function testADispatchRefusesWhatWouldGoWrongWhenItRuns():Void {
 		var variable:Int = 3;
 		var errors:Array<Null<String>> = [
-			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: SwitchTableOpcodes.PING, handler: (v:Int) -> {}}])),
-			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: "a", handler: (v:Int) -> {}}])),
-			TypeCheck.errorOf(SwitchTable.make([{key: variable, handler: (v:Int) -> {}}])),
-			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}, {key: 2, handler: (v:String) -> {}}])),
-			TypeCheck.errorOf(SwitchTable.make([{key: 1, handler: (v:Int) -> {}}], (op:Int) -> {})),
-			TypeCheck.errorOf(SwitchTable.make([{key: 1.5, handler: (v:Int) -> {}}]))
+			TypeCheck.errorOf(Dispatch.make([{key: 1, handler: (v:Int) -> {}}, {key: DispatchOpcodes.PING, handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(Dispatch.make([{key: 1, handler: (v:Int) -> {}}, {key: "a", handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(Dispatch.make([{key: variable, handler: (v:Int) -> {}}])),
+			TypeCheck.errorOf(Dispatch.make([{key: 1, handler: (v:Int) -> {}}, {key: 2, handler: (v:String) -> {}}])),
+			TypeCheck.errorOf(Dispatch.make([{key: 1, handler: (v:Int) -> {}}], (op:Int) -> {})),
+			TypeCheck.errorOf(Dispatch.make([{key: 1.5, handler: (v:Int) -> {}}]))
 		];
 		var expected:Array<String> = [
 			"Two cases name the key",
@@ -356,54 +357,54 @@ class CollectionsTest extends utest.Test {
 		for (i in 0...expected.length) {
 			Assert.isTrue(errors[i] != null && errors[i].indexOf(expected[i]) >= 0, 'case $i: ' + errors[i]);
 		}
-		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([
-			{key: SwitchTableOpcodes.PING, handler: (v:Int) -> {}},
-			{key: SwitchTableOpcodes.LOGIN, handler: (v:Int) -> {}}
+		Assert.isNull(TypeCheck.errorOf(Dispatch.make([
+			{key: DispatchOpcodes.PING, handler: (v:Int) -> {}},
+			{key: DispatchOpcodes.LOGIN, handler: (v:Int) -> {}}
 		])));
 	}
 
 	/**
-		A class of `@:case` methods gets `call`, a switch where it is
+		A class implementing `DispatchTable` gets `call`, a switch where it is
 		written calling the method directly, and `exists`, `get`, `keys`
 		and `size`; a method can take several keys.
 	**/
-	public function testAClassSwitchTableCallsItsCaseMethods():Void {
-		SwitchTableStatics.seen = [];
-		SwitchTableStatics.call(SwitchTableOpcodes.PING, "ada");
-		SwitchTableStatics.call(SwitchTableOpcodes.LOGIN, "bob");
-		SwitchTableStatics.call(3, "cy");
-		Assert.raises(() -> SwitchTableStatics.call(99, "dee"), crossbyte.errors.ArgumentError);
-		var login = SwitchTableStatics.get(SwitchTableOpcodes.LOGIN);
+	public function testADispatchTableCallsItsCaseMethods():Void {
+		DispatchStatics.seen = [];
+		DispatchStatics.call(DispatchOpcodes.PING, "ada");
+		DispatchStatics.call(DispatchOpcodes.LOGIN, "bob");
+		DispatchStatics.call(3, "cy");
+		Assert.raises(() -> DispatchStatics.call(99, "dee"), crossbyte.errors.ArgumentError);
+		var login = DispatchStatics.get(DispatchOpcodes.LOGIN);
 		login("eve");
-		Assert.equals("ping ada,login bob,login cy,login eve", SwitchTableStatics.seen.join(","));
-		Assert.isNull(SwitchTableStatics.get(99));
-		Assert.isTrue(SwitchTableStatics.exists(3));
-		Assert.isFalse(SwitchTableStatics.exists(99));
-		Assert.equals("1,2,3", SwitchTableStatics.keys.join(","));
-		Assert.equals(3, SwitchTableStatics.size);
+		Assert.equals("ping ada,login bob,login cy,login eve", DispatchStatics.seen.join(","));
+		Assert.isNull(DispatchStatics.get(99));
+		Assert.isTrue(DispatchStatics.exists(3));
+		Assert.isFalse(DispatchStatics.exists(99));
+		Assert.equals("1,2,3", DispatchStatics.keys.join(","));
+		Assert.equals(3, DispatchStatics.size);
 	}
 
 	/**
 		An instance table keeps its state in its fields, returns what its
 		cases return, and has a default that takes the key.
 	**/
-	public function testAnInstanceSwitchTableKeepsItsStateAndItsDefault():Void {
-		var counter = new SwitchTableCounter();
-		Assert.equals(5, counter.call(SwitchTableCounterKey.ADD, 5));
-		Assert.equals(3, counter.call(SwitchTableCounterKey.TAKE, 2));
-		Assert.equals(-1, counter.call(SwitchTableCounterKey.RESET, 0));
+	public function testAnInstanceDispatchTableKeepsItsStateAndItsDefault():Void {
+		var counter = new DispatchCounter();
+		Assert.equals(5, counter.call(DispatchCounterKey.ADD, 5));
+		Assert.equals(3, counter.call(DispatchCounterKey.TAKE, 2));
+		Assert.equals(-1, counter.call(DispatchCounterKey.RESET, 0));
 		Assert.equals("RESET", counter.unknown);
 		Assert.equals(3, counter.total);
-		Assert.equals(4, counter.get(SwitchTableCounterKey.ADD)(1));
-		Assert.isFalse(counter.exists(SwitchTableCounterKey.RESET));
+		Assert.equals(4, counter.get(DispatchCounterKey.ADD)(1));
+		Assert.isFalse(counter.exists(DispatchCounterKey.RESET));
 	}
 
 	/**
-		A class table is refused for what a made one is, and for what only a
+		A table of methods is refused for what a made one is, and for what only a
 		class can get wrong: static and instance cases together, no cases,
 		a member of a name the table makes, an argument without its type.
 	**/
-	public function testAClassSwitchTableRefusesWhatAMadeOneDoes():Void {
+	public function testADispatchTableRefusesWhatAMadeOneDoes():Void {
 		var errors:Array<Null<String>> = [
 			TypeCheck.tableErrorOf({
 				@:case(1) function one(v:Int):Void {}
@@ -2270,7 +2271,7 @@ class CollectionsTest extends utest.Test {
 	}
 }
 
-private class SwitchTableOpcodes {
+private class DispatchOpcodes {
 	public static inline var PING:Int = 1;
 	public static inline var LOGIN:Int = 2;
 
@@ -2280,42 +2281,40 @@ private class SwitchTableOpcodes {
 }
 
 /** A static table: one method takes two keys. **/
-@:build(crossbyte.ds.SwitchTable.build())
-private class SwitchTableStatics {
+private class DispatchStatics implements DispatchTable {
 	public static var seen:Array<String> = [];
 
-	@:case(SwitchTableOpcodes.PING) static function ping(name:String):Void {
+	@:case(DispatchOpcodes.PING) static function ping(name:String):Void {
 		seen.push("ping " + name);
 	}
 
-	@:case(SwitchTableOpcodes.LOGIN, 3) static function login(name:String):Void {
+	@:case(DispatchOpcodes.LOGIN, 3) static function login(name:String):Void {
 		seen.push("login " + name);
 	}
 }
 
-private enum abstract SwitchTableCounterKey(Int) {
+private enum abstract DispatchCounterKey(Int) {
 	var ADD = 1;
 	var TAKE = 2;
 	var RESET = 3;
 }
 
 /** An instance table, its state in its fields. **/
-@:build(crossbyte.ds.SwitchTable.build())
-private class SwitchTableCounter {
+private class DispatchCounter implements DispatchTable {
 	public var total:Int = 0;
 	public var unknown:String = "";
 
 	public function new() {}
 
-	@:case(SwitchTableCounterKey.ADD) function add(amount:Int):Int {
+	@:case(DispatchCounterKey.ADD) function add(amount:Int):Int {
 		return total += amount;
 	}
 
-	@:case(SwitchTableCounterKey.TAKE) function take(amount:Int):Int {
+	@:case(DispatchCounterKey.TAKE) function take(amount:Int):Int {
 		return total -= amount;
 	}
 
-	@:default function other(key:SwitchTableCounterKey, amount:Int):Int {
+	@:default function other(key:DispatchCounterKey, amount:Int):Int {
 		unknown = switch (key) {
 			case RESET: "RESET";
 			default: "?";

@@ -38,7 +38,7 @@ import haxe.Timer;
 	Scenarios: tick, scanmap, scanarr, echo, echo3, idle, blocked, udp,
 	fdisset, fdwalk, timerfire, timerfireint, timerreset, tasks, post,
 	worker, workerbacklog, mutex, mutexnew, locknew, tasknew, switchtable,
-	switchtyped, switchclass (B only), vectorforeach, vectorloop, logtext, logjson, logoff, throw,
+	switchtyped, dispatchclass (B only), vectorforeach, vectorloop, logtext, logjson, logoff, throw,
 	jsonread, jsonshaped (B only), mtime. Each is described where it is
 	written below.
 **/
@@ -98,9 +98,9 @@ class PerfCore {
 				modificationDate(seconds);
 			case "switchtable", "switchtyped":
 				switchTable(scenario == "switchtable", param, seconds);
-			case "switchclass":
+			case "dispatchclass":
 				#if perf_new
-				switchClass(seconds);
+				dispatchClass(seconds);
 				#end
 			case "vectorforeach", "vectorloop":
 				vector(scenario == "vectorforeach", param, seconds);
@@ -657,13 +657,13 @@ class PerfCore {
 	}
 
 	// ------------------------------------------------------------------
-	// An opcode dispatcher as SwitchTable's doc shows it (sixteen Int keys,
+	// An opcode dispatcher made in place (Dispatch.make; SwitchTable.make in A) (sixteen Int keys,
 	// one argument), called once per message with the opcodes spread
 	// evenly, against the typed `switch` it stands for. `param` is unused.
 
 	static function switchTable(useTable:Bool, param:Int, seconds:Float):Void {
 		var hits:Array<Int> = [for (_ in 0...16) 0];
-		var table = crossbyte.ds.SwitchTable.make([
+		var table = #if perf_new crossbyte.ds.DispatchTable.Dispatch.make #else crossbyte.ds.SwitchTable.make #end([
 			{key: 0, handler: (v:Int) -> hits[0] += v},
 			{key: 1, handler: (v:Int) -> hits[1] += v},
 			{key: 2, handler: (v:Int) -> hits[2] += v},
@@ -725,7 +725,7 @@ class PerfCore {
 	// where it is written, calling the method directly.
 
 	#if perf_new
-	static function switchClass(seconds:Float):Void {
+	static function dispatchClass(seconds:Float):Void {
 		PerfOpcodes.hits = [for (_ in 0...16) 0];
 		var calls = 0;
 		var c0 = cpu();
@@ -738,7 +738,7 @@ class PerfCore {
 		}
 		var used = cpu() - c0;
 		sink += PerfOpcodes.hits[3] & 1;
-		Sys.println('RESULT switchclass 16 calls=$calls cpu_s=${r(used)} ns_per_dispatch=${r(used / calls * 1e9)}');
+		Sys.println('RESULT dispatchclass 16 calls=$calls cpu_s=${r(used)} ns_per_dispatch=${r(used / calls * 1e9)}');
 	}
 	#end
 
@@ -1082,8 +1082,7 @@ extern interface OsBean extends JmxOsBean {
 #end
 
 #if perf_new
-@:build(crossbyte.ds.SwitchTable.build())
-private class PerfOpcodes {
+private class PerfOpcodes implements crossbyte.ds.DispatchTable {
 	public static var hits:Array<Int>;
 
 	@:case(0) static function op0(v:Int):Void hits[0] += v;
