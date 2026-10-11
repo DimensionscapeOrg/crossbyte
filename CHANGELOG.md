@@ -1945,10 +1945,11 @@ an API added in this release has is not listed here.
   reads it as the `Array` or `String` it is.
 - An `Object`, `Event.target` and `currentTarget` among them, is cast to
   the type it holds: `cast(event.target, Socket)` to have the type
-  checked, or `var socket:Socket = cast event.target`. A number or a flag
-  held in one is read through `PrimitiveValue.fromDynamic(object)`, and its
-  text with `object.toString()`. A field read (`payload.hits`) converts as
-  it did.
+  checked, or `var socket:Socket = cast event.target`, and so to a
+  `TypedObject` (`var player:TypedObject<Player> = cast payload`). A number
+  or a flag held in one is read through `PrimitiveValue.fromDynamic(object)`,
+  and its text with `object.toString()`. A field read (`payload.hits`)
+  converts as it did.
 
 #### TCP
 
