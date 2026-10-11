@@ -496,7 +496,11 @@ class StunMessage {
 		return value.length > 0 ? value.readUTFBytes(value.length) : "";
 	}
 
-	/** A 32-bit attribute such as `LIFETIME`, or a default when absent. **/
+	/**
+		An unsigned 32-bit attribute such as `LIFETIME`, or a default when
+		absent. Past an Int's range is taken as 2^31 - 1: as a count of
+		seconds, longer than anything here waits for.
+	**/
 	public function uintOf(attributeType:Int, orElse:Int = 0):Int {
 		var value = attribute(attributeType);
 
@@ -506,7 +510,8 @@ class StunMessage {
 
 		value.endian = Endian.BIG_ENDIAN;
 		value.position = 0;
-		return value.readInt();
+		var read:Int = value.readInt();
+		return read < 0 ? 0x7FFFFFFF : read;
 	}
 
 	/** The error a binding error response carries, or null. */

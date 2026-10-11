@@ -384,6 +384,46 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		A lifetime of 2^31 seconds or more is a long one, not an ended
+		allocation. LIFETIME is an unsigned 32-bit count of seconds (RFC 8656
+		section 18.2). Read signed it was negative: an allocation granted it
+		was refreshed at once, and a refresh granting it ended the allocation.
+	**/
+	public function testALifetimeOfTwoBillionSecondsOrMoreIsALongOne():Void {
+		if (unsupported()) return;
+
+		// As Ints: 0x80000000 and 0xFFFFFFFF.
+		for (granted in [-2147483648, -1]) {
+			var relay = new Relay();
+			relay.granted = granted;
+			var client = relay.client();
+			var lost:Int = 0;
+			client.onLost = _ -> lost++;
+			client.allocated.then(_ -> {}, _ -> {});
+			client.allocate(0);
+			relay.run(client, () -> client.active);
+			Assert.isTrue(client.active, "nothing was allocated");
+
+			// An hour on, nothing is due.
+			for (minute in 1...61) {
+				client.poll(minute * 60.0);
+				relay.pump(client, minute * 60.0);
+			}
+
+			Assert.equals(0, relay.refreshRequests, "an allocation granted " + granted + " was refreshed within the hour");
+
+			// And a refresh granting it keeps the allocation.
+			@:privateAccess client.__refreshAt = 0;
+			client.poll(3700.0);
+			relay.pump(client, 3700.0);
+
+			Assert.equals(1, relay.refreshRequests, "the refresh was never sent");
+			Assert.isTrue(client.active, "a refresh granting " + granted + " ended the allocation");
+			Assert.equals(0, lost, "a refresh granting " + granted + " reported the allocation lost");
+		}
+	}
+
+	/**
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
@@ -1840,6 +1880,9 @@ private class Relay {
 	/** Answer a refresh with a lifetime of zero, which ends the allocation. **/
 	public var endOnRefresh:Bool = false;
 
+	/** The lifetime an allocation or a refresh is granted, as the 32 bits on the wire. **/
+	public var granted:Int = 600;
+
 	private var nonce:String = "nonce-one";
 	private var staleSent:Bool = false;
 	private var seenAnyRequest:Bool = false;
@@ -1970,14 +2013,14 @@ private class Relay {
 				sign(new StunMessage(StunMessage.ALLOCATE_SUCCESS, request.transactionId, [
 					StunMessage.xorRelayed("203.0.113.10", 49152),
 					StunMessage.xorMappedAddress("198.51.100.77", 51000),
-					StunMessage.lifetime(600)
+					StunMessage.lifetime(granted)
 				]));
 			case StunMessage.REFRESH_REQUEST:
 				if (holdRefresh) {
 					held = request;
 					null;
 				} else {
-					sign(new StunMessage(StunMessage.REFRESH_SUCCESS, request.transactionId, [StunMessage.lifetime(endOnRefresh ? 0 : 600)]));
+					sign(new StunMessage(StunMessage.REFRESH_SUCCESS, request.transactionId, [StunMessage.lifetime(endOnRefresh ? 0 : granted)]));
 				}
 			case StunMessage.CREATE_PERMISSION_REQUEST:
 				sign(new StunMessage(StunMessage.CREATE_PERMISSION_SUCCESS, request.transactionId, []));

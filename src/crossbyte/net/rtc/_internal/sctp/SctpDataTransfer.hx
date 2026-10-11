@@ -1349,7 +1349,7 @@ class SctpDataTransfer implements crossbyte.core._internal.PassFlush {
 		value.position = 0;
 
 		var cumulative:Int = value.readInt();
-		var window:Int = value.readInt();
+		var window:Int = SctpAssociation.readWindow(value);
 		var gaps:Int = value.readUnsignedShort();
 		value.readUnsignedShort();
 

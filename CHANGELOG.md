@@ -274,7 +274,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   directions.
 - `DataChannel` and `DataChannelSet`, reliable or partially reliable
   (`maxRetransmits`, `maxPacketLifeTime`, RFC 3758), with SCTP flow and
-  congestion control and `bufferedAmount`.
+  congestion control and `bufferedAmount`. A peer advertising a receive
+  window of 2 GiB or more, as some do to mean no limit, is sent to as one
+  with that much room.
 - ICE: `IceAgent`, consent freshness (RFC 7675), role conflicts, ICE
   restart (`restartIce()`), trickle (`onLocalCandidate`,
   `addRemoteCandidate`) and `onSelectedPairChanged`.
@@ -284,7 +286,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `gatherRelayedFrom(servers)` with failover; `TurnClient` over UDP, TCP or
   TLS (`TurnTransport`), with RFC 8656 channels (`useChannels`), IPv6
   (`requestIPv6`), RFC 8489's SHA-256 credentials and 300 redirects;
-  `setRelayCredentials` for expiring credentials.
+  `setRelayCredentials` for expiring credentials. A relay granting a
+  lifetime of 2^31 seconds or more keeps the allocation that long.
 - `readyTimeout` (30 s), `maxPeerChannels` (512), `maxLabelSize`
   (1,024 bytes), `refusedChannels`, `maxMessageSize`, `onClose`, `closed`
   and `closeReason`.

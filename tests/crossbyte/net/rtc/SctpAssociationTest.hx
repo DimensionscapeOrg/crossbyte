@@ -542,6 +542,26 @@ class SctpAssociationTest extends utest.Test {
 		Assert.equals(SctpAssociation.RECEIVE_WINDOW, pair.client.peerReceiveWindow);
 		Assert.notEquals(0, pair.client.remoteTsn, "the peer's initial TSN was never read");
 	}
+
+	/**
+		A window of 2^31 bytes or more, advertised in an INIT or an INIT ACK,
+		is read as the unsigned number it is (RFC 9260 section 3.3.2), and
+		taken as the most an Int holds. Read signed it came out negative, and
+		some peers advertise 0xFFFFFFFF for no limit at all.
+	**/
+	public function testAWindowOfTwoGigabytesOrMoreIsReadUnsigned():Void {
+		if (unsupported()) return;
+
+		// As Ints: 0x80000000 and 0xFFFFFFFF.
+		for (window in [-2147483648, -1]) {
+			var pair = Pair.make(window);
+			pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+			Assert.equals(SctpAssociationState.ESTABLISHED, pair.client.state);
+			Assert.equals(0x7FFFFFFF, pair.client.peerReceiveWindow, "the INIT ACK's window read as " + pair.client.peerReceiveWindow);
+			Assert.equals(0x7FFFFFFF, pair.server.peerReceiveWindow, "the INIT's window read as " + pair.server.peerReceiveWindow);
+		}
+	}
 }
 
 /** A client and a server, and the queue between them. **/
@@ -555,23 +575,30 @@ private class Pair {
 	public var types:Array<Int> = [];
 	public var tags:Array<Int> = [];
 
+	/**
+		When set, the receive window each INIT and INIT ACK says, written over
+		what the sender wrote: a peer advertising more than this end would.
+	**/
+	public var advertise:Null<Int> = null;
+
 	private var toServer:Array<ByteArray> = [];
 	private var toClient:Array<ByteArray> = [];
 	private var now:Float = 0;
 
-	public static function make():Pair {
+	public static function make(?advertise:Int):Pair {
 		var pair = new Pair();
+		pair.advertise = advertise;
 		pair.client = new SctpAssociation();
 		pair.server = new SctpAssociation();
 
 		pair.client.onSend = payload -> {
 			pair.record(payload);
-			pair.toServer.push(payload);
+			pair.toServer.push(pair.rewritten(payload));
 		};
 
 		pair.server.onSend = payload -> {
 			pair.record(payload);
-			pair.toClient.push(payload);
+			pair.toClient.push(pair.rewritten(payload));
 		};
 
 		pair.server.listen();
@@ -580,6 +607,29 @@ private class Pair {
 	}
 
 	private function new() {}
+
+	/** The packet with `advertise` as its window, if it opens with an INIT or INIT ACK. **/
+	public function rewritten(payload:ByteArray):ByteArray {
+		var packet = SctpPacket.decode(payload);
+
+		if (advertise == null || packet == null || packet.chunks.length == 0) {
+			return payload;
+		}
+
+		var type:Int = packet.chunks[0].type;
+
+		if (type != SctpPacket.CHUNK_INIT && type != SctpPacket.CHUNK_INIT_ACK) {
+			return payload;
+		}
+
+		// The common header, the chunk's own, and the initiate tag before it.
+		payload.endian = Endian.BIG_ENDIAN;
+		payload.position = 12 + 4 + 4;
+		payload.writeInt(advertise);
+		SctpPacket.writeChecksum(payload);
+		payload.position = 0;
+		return payload;
+	}
 
 	public function record(payload:ByteArray):Void {
 		exchanged++;

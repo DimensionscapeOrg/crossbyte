@@ -757,11 +757,24 @@ class SctpAssociation {
 
 		return {
 			tag: chunk.value.readInt(),
-			window: chunk.value.readInt(),
+			window: readWindow(chunk.value),
 			outbound: chunk.value.readUnsignedShort(),
 			inbound: chunk.value.readUnsignedShort(),
 			tsn: chunk.value.readInt()
 		};
+	}
+
+	/**
+		A receive window as INIT, INIT ACK and SACK carry it: an unsigned
+		32-bit count of bytes (RFC 9260 section 3.3.2). Past an Int's range is
+		more room than this end could fill, and is taken as 2^31 - 1, as a
+		peer saying 0xFFFFFFFF for no limit means. Read signed, such a window
+		was negative, and one fragment at a time went to a peer with room for
+		all of them.
+	**/
+	@:noCompletion public static function readWindow(bytes:ByteArray):Int {
+		var window:Int = bytes.readInt();
+		return window < 0 ? 0x7FFFFFFF : window;
 	}
 
 	@:noCompletion private static function __sameBytes(a:ByteArray, b:ByteArray):Bool {

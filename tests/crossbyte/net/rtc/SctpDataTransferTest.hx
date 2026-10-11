@@ -1255,6 +1255,32 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		A peer saying it has room for 2^31 bytes or more is sent to as one
+		with that much room: many fragments in flight at once, as many as the
+		congestion window allows. The window is an unsigned 32-bit number (RFC
+		9260 section 3.3.4), and read as a signed one it came out negative,
+		which left one fragment in flight at a time however much room the peer
+		had. Some peers advertise 0xFFFFFFFF for no limit at all.
+	**/
+	public function testAWindowOfTwoGigabytesOrMoreKeepsManyFragmentsInFlight():Void {
+		if (unsupported()) return;
+
+		// As Ints: 0x80000000 and 0xFFFFFFFF.
+		for (window in [-2147483648, -1]) {
+			var pair = Pair.open();
+			pair.client.onSend = _ -> {};
+
+			// Acknowledging nothing yet, and offering the window.
+			pair.sackToClient(sack(@:privateAccess pair.clientData.__cumulativeAcked, window));
+			pair.clientData.send(0, filled(64 * 1024), SctpDataChunk.PPID_BINARY, true, pair.now);
+
+			var fragments:Int = @:privateAccess pair.clientData.__unacknowledged.length;
+			Assert.isTrue(fragments >= 4, fragments + " fragment(s) in flight under a window of " + window + " read as " + @:privateAccess pair.clientData.__peerWindow);
+			Assert.equals(0x7FFFFFFF, @:privateAccess pair.clientData.__peerWindow);
+		}
+	}
+
+	/**
 		A path that can carry only so much still delivers a large message.
 
 		The bottleneck here drains two hundred packets a second and queues
