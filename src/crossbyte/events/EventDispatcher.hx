@@ -2,6 +2,7 @@ package crossbyte.events;
 
 import haxe.ds.StringMap;
 import crossbyte.Function;
+import crossbyte.Object;
 
  /**
  * A basic event dispatcher that implements `IEventDispatcher` for managing listeners and dispatching events.
@@ -62,6 +63,17 @@ class EventDispatcher implements IEventDispatcher {
 	@:noCompletion private var __walking:Int;
 
 	/**
+		The type dispatched last, and its listeners as the map held them
+		then (null for none): a dispatcher mostly dispatches one type over
+		and over (a socket's data, a runtime's tick), and natively the map's
+		lookup was half of what dispatching to one listener cost. Forgotten
+		whenever a listener is added or removed.
+	**/
+	@:noCompletion private var __lastType:Null<String>;
+
+	@:noCompletion private var __lastList:Null<Array<ListenerEntry>>;
+
+	/**
 	 * Creates a new `EventDispatcher`, optionally bound to a target dispatcher.
 	 *
 	 * This class provides basic event listener management and event propagation.
@@ -74,6 +86,8 @@ class EventDispatcher implements IEventDispatcher {
 		__eventMap = null;
 		__nextListenerOrder = 0;
 		__walking = 0;
+		__lastType = null;
+		__lastList = null;
 	}
 
 	/**
@@ -104,6 +118,7 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		var entry:ListenerEntry = new ListenerEntry(cast listener, priority, __nextListenerOrder++);
+		__lastType = null;
 
 		var eventMap = __eventMap;
 		if (eventMap == null) {
@@ -175,6 +190,7 @@ class EventDispatcher implements IEventDispatcher {
 		if (list == null) {
 			return;
 		}
+		__lastType = null;
 
 		for (i in 0...list.length) {
 			final registered:Function = list[i].listener;
@@ -219,6 +235,11 @@ class EventDispatcher implements IEventDispatcher {
 	 * Listeners are invoked highest `priority` first, and those of equal priority in the
 	 * order they were added.
 	 *
+	 * An event a listener of another dispatcher hands on here keeps its `target`, and gets
+	 * its `currentTarget` back once this dispatch is done, so the listeners after that one
+	 * still see the dispatcher they listen to. Unlike ActionScript's, the event is not
+	 * cloned: the listeners here are handed the same object.
+	 *
 	 * @param event The event to dispatch. Must be a subclass of `Event`.
 	 * @return `true` if the event was handled by one or more listeners, `false` otherwise.
 	 *
@@ -233,15 +254,38 @@ class EventDispatcher implements IEventDispatcher {
 			return false;
 		}
 
+		var owner:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
+		var passingThrough:Object = null;
 		if (event.target == null) {
-			var tgt:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
-			event.target = tgt;
-			event.currentTarget = tgt;
+			event.target = owner;
 		} else {
-			event.currentTarget = (__targetDispatcher != null) ? __targetDispatcher : this;
+			passingThrough = event.currentTarget;
 		}
+		event.currentTarget = owner;
 
+		if (passingThrough != null) {
+			return __dispatchOnward(event, passingThrough, false);
+		}
 		return __dispatchEvent(event);
+	}
+
+	/**
+		Dispatches an event a listener of another dispatcher handed on here,
+		and gives it back its `currentTarget` when the dispatch is done, by
+		returning or by throwing: the dispatch it came from goes on to its
+		next listener, which is listening there, not here.
+	**/
+	@:noCompletion private function __dispatchOnward(event:Event, passingThrough:Object, contained:Bool):Bool {
+		var handled:Bool;
+		try {
+			handled = contained ? __walkContained(event) : __dispatchEvent(event);
+		} catch (error:Dynamic) {
+			event.currentTarget = passingThrough;
+			crossbyte.events._internal.Arrivals.rethrow(error);
+			return false;
+		}
+		event.currentTarget = passingThrough;
+		return handled;
 	}
 
 	/**
@@ -251,7 +295,7 @@ class EventDispatcher implements IEventDispatcher {
 	 * @return `true` if there are listeners for the given type, `false` otherwise.
 	 */
 	public function hasEventListener(type:String):Bool {
-		return __eventMap != null && __eventMap.get(type) != null;
+		return __listenersOf(type) != null;
 	}
 
 	/**
@@ -260,18 +304,14 @@ class EventDispatcher implements IEventDispatcher {
 	 * Use with caution: this clears the entire internal event map.
 	 */
 	public function removeAllListeners():Void {
+		__lastType = null;
 		if (__eventMap != null) {
 			__eventMap.clear();
 		}
 	}
 
 	private inline function __dispatchEvent(event:Event):Bool {
-		var eventMap = __eventMap;
-		if (eventMap == null) {
-			return false;
-		}
-
-		var list:Null<Array<ListenerEntry>> = eventMap.get(event.type);
+		var list:Null<Array<ListenerEntry>> = __listenersOf(event.type);
 		if (list == null) {
 			return false;
 		}
@@ -341,20 +381,24 @@ class EventDispatcher implements IEventDispatcher {
 			return false;
 		}
 
+		var owner:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
+		var passingThrough:Object = null;
 		if (event.target == null) {
-			var tgt:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
-			event.target = tgt;
-			event.currentTarget = tgt;
+			event.target = owner;
 		} else {
-			event.currentTarget = (__targetDispatcher != null) ? __targetDispatcher : this;
+			passingThrough = event.currentTarget;
 		}
+		event.currentTarget = owner;
 
-		var eventMap = __eventMap;
-		if (eventMap == null) {
-			return false;
+		if (passingThrough != null) {
+			return __dispatchOnward(event, passingThrough, true);
 		}
+		return __walkContained(event);
+	}
 
-		var list:Null<Array<ListenerEntry>> = eventMap.get(event.type);
+	/** `__dispatchContained`'s walk, its event's targets set. **/
+	@:noCompletion private function __walkContained(event:Event):Bool {
+		var list:Null<Array<ListenerEntry>> = __listenersOf(event.type);
 		if (list == null) {
 			return false;
 		}
@@ -386,7 +430,44 @@ class EventDispatcher implements IEventDispatcher {
 		crossbyte.utils.Logger.error("A " + event.type + " listener threw: " + Std.string(error));
 	}
 
+	/**
+		The listeners for `type`, or null: the last type's without a lookup.
+		A null `__lastType` is nothing remembered, so a null `type` is always
+		looked up, as it was before anything was.
+	**/
+	private inline function __listenersOf(type:String):Null<Array<ListenerEntry>> {
+		var eventMap = __eventMap;
+		var lastType:Null<String> = __lastType;
+		var list:Null<Array<ListenerEntry>> = null;
+		if (eventMap == null) {
+			// Nothing ever listened here.
+		} else if (lastType != null && __sameType(type, lastType)) {
+			list = __lastList;
+		} else {
+			list = eventMap.get(type);
+			__lastType = type;
+			__lastList = list;
+		}
+		return list;
+	}
+
+	/**
+		Whether two types are the same. Natively a dispatcher's repeated type
+		is mostly the very same string, which is checked first: hxcpp's `==`
+		on strings is a call that looks at their encodings before their
+		characters, 8 ns each time, where comparing where they point is free.
+	**/
+	private static inline function __sameType(a:String, b:Null<String>):Bool {
+		#if (cpp && !cppia && !macro)
+		var same:Bool = untyped __cpp__("({0}.raw_ptr() == {1}.raw_ptr())", a, b);
+		return same || a == b;
+		#else
+		return a == b;
+		#end
+	}
+
 	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
+		__lastType = null;
 		if (__eventMap == null) {
 			return;
 		}
