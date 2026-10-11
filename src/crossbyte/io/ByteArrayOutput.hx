@@ -394,6 +394,11 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeUTFBytes(value:String, reserved:Bool = false):Void {
+		#if (js || cpp)
+		if (__writeText(value, 0)) {
+			return;
+		}
+		#end
 		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 		if (!reserved) {
 			reserve(b.length);
@@ -412,6 +417,11 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @throws RangeError If the string is more than 65535 bytes as UTF-8.
 	 */
 	public inline function writeUTF(value:String, reserved:Bool = false):Void {
+		#if (js || cpp)
+		if (__writeText(value, 2)) {
+			return;
+		}
+		#end
 		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		// A sixteen-bit prefix cannot describe more, and past it the length
@@ -462,6 +472,11 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeVarUTF(value:String, reserved:Bool = false):Void {
+		#if (js || cpp)
+		if (__writeText(value, 1)) {
+			return;
+		}
+		#end
 		var b:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		if (!reserved) {
@@ -471,6 +486,90 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		writeVarUInt(b.length, true);
 		writeBytes(b);
 	}
+
+	#if js
+	/**
+		`value` in UTF-8 written straight into the output (see
+		Utf8.writeView), after its length when `head` asks for one (1 a
+		varint, 2 sixteen bits), where the platform's encoder made a buffer of
+		it to copy in: on Node twelve characters in about 43 ns rather than
+		715. Room is made for the most it can take, three bytes a unit, so it
+		goes into one chunk with its length, a varint as wide as that most and
+		narrowed after if the text took less. Past IN_PLACE_LIMIT units that
+		would make a chunk far larger than the text, and it is false, having
+		written nothing.
+	**/
+	@:noCompletion private function __writeText(value:String, head:Int):Bool {
+		var units:Int = value.length;
+		if (units > IN_PLACE_LIMIT) {
+			return false;
+		}
+		var most:Int = units * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT;
+		var width:Int = head == 2 ? 2 : (head == 1 ? varUIntSize(most) : 0);
+		__room(width + most);
+		var view:js.lib.Uint8Array = @:privateAccess current.b;
+		var at:Int = this.__outputPosition;
+		var size:Int = crossbyte._internal.Utf8.writeView(value, view, at + width, at + width + most);
+		if (head == 2) {
+			// Little-endian, as writeShort writes it.
+			view[at] = size & 0xFF;
+			view[at + 1] = (size >> 8) & 0xFF;
+		} else if (head == 1) {
+			var used:Int = varUIntSize(size);
+			if (used < width) {
+				view.copyWithin(at + used, at + width, at + width + size);
+				width = used;
+			}
+			var v:Int = size;
+			var p:Int = at;
+			while ((v & ~0x7F) != 0) {
+				view[p++] = (v & 0x7F) | 0x80;
+				v >>>= 7;
+			}
+			view[p] = v;
+		}
+		this.__outputPosition = at + width + size;
+		return true;
+	}
+
+	// The longest text written in place: at most 12 KB of room for it.
+	private static inline var IN_PLACE_LIMIT:Int = 4096;
+	#end
+
+	#if cpp
+	/**
+		`value` in UTF-8 written straight into the output after its length
+		when `head` asks for one (1 a varint, 2 sixteen bits): a string held
+		a byte a character copied as it stands, its bytes being its UTF-8,
+		and one held as UTF-16 sized and encoded in place (see
+		Utf8.encodeNative), where `Bytes.ofString` made a buffer of it to copy
+		in. False, having written nothing, for one past the 16-bit prefix,
+		which writeUTF refuses.
+	**/
+	@:noCompletion private function __writeText(value:String, head:Int):Bool {
+		var narrow:Bool = !(untyped __cpp__("{0}.isUTF16Encoded()", value));
+		var size:Int = narrow ? value.length : crossbyte._internal.Utf8.sizeOf(value);
+		if (head == 2) {
+			if (size > 0xFFFF) {
+				return false;
+			}
+			writeShort(size);
+		} else if (head == 1) {
+			writeVarUInt(size);
+		}
+		if (size > 0) {
+			__room(size);
+			var at:Int = this.__outputPosition;
+			if (narrow) {
+				untyped __cpp__("memcpy((char *){0}->GetBase() + {1}, {2}.raw_ptr(), {3})", current.getData(), at, value, size);
+			} else {
+				crossbyte._internal.Utf8.encodeNative(value, current.getData(), at);
+			}
+			this.__outputPosition = at + size;
+		}
+		return true;
+	}
+	#end
 
 	/**
 	 * Writes a ZigZag-encoded variable-length signed integer.

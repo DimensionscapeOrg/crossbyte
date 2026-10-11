@@ -1784,13 +1784,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			writeUTFBytes(value);
 			return;
 		}
+		if (untyped __cpp__("{0}.isUTF16Encoded()", value)) {
+			// Sized, refused or prefixed, then encoded in place: see Utf8.encodeNative.
+			var size:Int = crossbyte._internal.Utf8.sizeOf(value);
+			if (size > 0xFFFF) {
+				throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${size}. Use writeUTFBytes with a length of your own.');
+			}
+			writeShort(size);
+			__writeNative(value, size);
+			return;
+		}
 		#elseif ((jvm || java) && !macro)
 		if (__writeAsciiNative(value, true)) {
 			return;
 		}
 		#elseif js
-		// A short one as writeUTFBytes writes it, behind its length.
-		if (__writeAsciiUTF(value) || __writeShortText(value, true)) {
+		// Up to 21,845 units, which cannot pass the prefix's 65535 bytes, as
+		// writeUTFBytes writes them, the length patched in after.
+		if (value.length <= 0xFFFF / crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+			var start:Int = position;
+			writeShort(0);
+			var size:Int = __writeText(value);
+			initData();
+			data.setUint16(start, size, __little);
 			return;
 		}
 		#end
@@ -1820,14 +1836,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 			return;
 		}
+		__writeNative(value, crossbyte._internal.Utf8.sizeOf(value));
+		return;
 		#elseif ((jvm || java) && !macro)
 		if (__writeAsciiNative(value, false)) {
 			return;
 		}
 		#elseif js
-		if (__writeAscii(value) || __writeShortText(value, false)) {
-			return;
-		}
+		__writeText(value);
+		return;
 		#end
 		// Through the platform's encoder; see Utf8.
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
@@ -1870,81 +1887,49 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 	#end
 
+	#if cpp
+	// `value`, `size` bytes in UTF-8, encoded at the position: no buffer of
+	// it made and copied in, nor a pass looking for a lone surrogate.
+	@:noCompletion private function __writeNative(value:String, size:Int):Void {
+		if (size > 0) {
+			__resize(position + size, position);
+			crossbyte._internal.Utf8.encodeNative(value, b, position);
+			position += size;
+		}
+	}
+	#end
+
 	#if js
 	/**
-		Up to ASCII_DIRECT_LIMIT characters of ASCII, copied a character at a
-		time rather than through TextEncoder, which makes a buffer of its own
-		for them. False, having written nothing, for anything else, which
-		__writeShortText then takes if it is short.
-
-		Kept apart from writeUTF's twin below and from the encoding: on Node,
-		either folded into this loop cost a short ASCII write 6 ns of its 55.
+		`value` in UTF-8 at the position, written straight into the buffer
+		(see Utf8.writeView), where TextEncoder made a buffer of it to copy
+		in: 200 characters on Node in about 130 ns rather than 1,400. Into the
+		room there is first, and only past it into more, so a ByteArray made
+		to the size of what it will hold does not grow. The bytes written.
 	**/
-	@:noCompletion private function __writeAscii(value:String):Bool {
-		var count:Int = value.length;
-		if (count > ASCII_DIRECT_LIMIT) {
-			return false;
-		}
-		for (i in 0...count) {
-			if (StringTools.fastCodeAt(value, i) >= 0x80) {
-				return false;
+	@:noCompletion private function __writeText(value:String):Int {
+		var at:Int = position;
+		var size:Int = crossbyte._internal.Utf8.writeView(value, b, at, __length);
+		var read:Int = crossbyte._internal.Utf8.read;
+		if (read < value.length) {
+			// What is written so far made readable first: growing copies what
+			// is readable, and no more.
+			if (size > 0) {
+				__resize(at + size, at);
 			}
+			var rest:String = value.substring(read);
+			var end:Int = at + size + rest.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT;
+			__reserve(__grown(end));
+			size += crossbyte._internal.Utf8.writeView(rest, b, at + size, __length);
 		}
-		__writeAsciiChars(value);
-		return true;
+		// Readable to its end, and any gap before it zeroed, as a write is;
+		// nothing written past the end leaves the length where it was.
+		if (size > 0) {
+			__resize(at + size, at);
+			position = at + size;
+		}
+		return size;
 	}
-
-	// __writeAscii behind a 16-bit length, as writeUTF writes.
-	@:noCompletion private function __writeAsciiUTF(value:String):Bool {
-		var count:Int = value.length;
-		if (count > ASCII_DIRECT_LIMIT) {
-			return false;
-		}
-		for (i in 0...count) {
-			if (StringTools.fastCodeAt(value, i) >= 0x80) {
-				return false;
-			}
-		}
-		writeShort(count);
-		__writeAsciiChars(value);
-		return true;
-	}
-
-	/**
-		`value`, not all ASCII, encoded at the position if it is at most
-		Utf8.SHORT characters, behind its length when `prefixed` (at most
-		three bytes a character, well inside 16 bits). On Node allocating the
-		buffer TextEncoder makes is most of what a short string costs.
-	**/
-	@:noCompletion private function __writeShortText(value:String, prefixed:Bool):Bool {
-		if (value.length > crossbyte._internal.Utf8.SHORT) {
-			return false;
-		}
-		var size:Int = crossbyte._internal.Utf8.sizeOf(value);
-		if (prefixed) {
-			writeShort(size);
-		}
-		__resize(position + size, position);
-		crossbyte._internal.Utf8.encodeInto(value, this, position);
-		position += size;
-		return true;
-	}
-
-	// `value`, known to be ASCII, at the position.
-	@:noCompletion private inline function __writeAsciiChars(value:String):Void {
-		var count:Int = value.length;
-		if (count > 0) {
-			__resize(position + count, position);
-			var at:Int = position;
-			for (i in 0...count) {
-				__rawSetU8(at + i, StringTools.fastCodeAt(value, i));
-			}
-			position += count;
-		}
-	}
-
-	// Measured: on Node a loop still beats TextEncoder at 200 characters.
-	private static inline var ASCII_DIRECT_LIMIT:Int = 256;
 	#end
 
 	@:keep public inline function writeVarUInt(value:Int):Void {
@@ -2038,14 +2023,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			// again, and a 98-byte message written into a new one grew six
 			// times. Half again of a buffer past 1.4 GB wraps negative, and
 			// is then what was asked for.
-			var capacity:Int = __length + (__length >> 1);
-			if (capacity < size) {
-				capacity = size;
-			}
-			if (capacity < MIN_CAPACITY) {
-				capacity = MIN_CAPACITY;
-			}
-			var bytes = Bytes.alloc(capacity);
+			var bytes = Bytes.alloc(__grown(size));
 			var cacheLength = length;
 
 			// What is readable, and no more, as __reserve copies.
@@ -2068,6 +2046,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (exposedTo > exposedFrom) {
 			fill(exposedFrom, exposedTo - exposedFrom, 0);
 		}
+	}
+
+	// The capacity to grow to for `size` bytes: half as much again as the
+	// buffer had, `size` if that is more, and never under MIN_CAPACITY.
+	@:noCompletion private inline function __grown(size:Int):Int {
+		var capacity:Int = __length + (__length >> 1);
+		if (capacity < size) {
+			capacity = size;
+		}
+		return capacity < MIN_CAPACITY ? MIN_CAPACITY : capacity;
 	}
 
 	// The least a ByteArray grows to: a few fields' worth, so a message

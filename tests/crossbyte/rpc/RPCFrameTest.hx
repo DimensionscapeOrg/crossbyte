@@ -208,6 +208,40 @@ class RPCFrameTest extends utest.Test {
 		}
 		Assert.same(texts.map(t -> t), (cast server.handler : FrameHandler).shouted);
 	}
+
+	/**
+		A string is its UTF-8 after its byte count whatever room the frame
+		has left: one that only partly fits the room is finished in more, and
+		a count first made as wide as the most the text could take is
+		narrowed to what it took.
+	**/
+	public function testAStringIsWrittenWholeWhateverRoomIsLeft():Void {
+		for (piece in ["a", "\u00E9", "\u65E5", "\u{1F600}"]) {
+			for (count in [0, 1, 15, 16, 17, 42, 43, 100, 3000]) {
+				var text:String = [for (_ in 0...count) piece].join("");
+				var expected:Bytes = Bytes.ofString(text);
+				for (left in [-1, 3]) {
+					var frame = new RPCFrame(0);
+					frame.begin(0, 0, 1, 0);
+					var start:Int = left < 0 ? frame.position : frame.capacity - left;
+					frame.position = start;
+					frame.putString(text);
+					var end:Int = frame.position;
+					var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}, ${left < 0 ? "from the start" : '$left bytes left'}';
+					var data:ByteArray = frame;
+					data.position = start;
+					Assert.equals(expected.length, data.readVarUInt(), label);
+					var at:Int = data.position;
+					Assert.equals(at + expected.length, end, label);
+					var same:Bool = true;
+					for (i in 0...expected.length) {
+						same = same && data[at + i] == expected.get(i);
+					}
+					Assert.isTrue(same, label);
+				}
+			}
+		}
+	}
 }
 
 /** A linked connection that keeps what it was handed to send, and a copy of what it held then. **/

@@ -387,6 +387,75 @@ class Utf8 {
 	#end
 
 
+	#if (js || cpp)
+	/**
+		The number of bytes `value` is in UTF-8, as TextEncoder writes it: an
+		unpaired surrogate as U+FFFD, three bytes.
+	**/
+	public static function sizeOf(value:String):Int {
+		var length:Int = value.length;
+		var size:Int = 0;
+		var i:Int = 0;
+		while (i < length) {
+			var unit:Int = StringTools.fastCodeAt(value, i++);
+			if (unit < 0x80) {
+				size++;
+			} else if (unit < 0x800) {
+				size += 2;
+			} else if (unit >= 0xD800 && unit < 0xDC00 && i < length && StringTools.fastCodeAt(value, i) >= 0xDC00 && StringTools.fastCodeAt(value, i) < 0xE000) {
+				size += 4;
+				i++;
+			} else {
+				size += 3;
+			}
+		}
+		return size;
+	}
+
+	#end
+
+	#if cpp
+	/**
+		`value`, `size` bytes in UTF-8 (see sizeOf), written at `at` in
+		`data`, which has room for them there, as TextEncoder writes it: an
+		unpaired surrogate as U+FFFD. Natively a string held as UTF-16 went
+		through `wellFormed`, then `Bytes.ofString`, which made a buffer of
+		it, and then was copied in; written straight into the buffer it is
+		about four times as fast.
+	**/
+	public static function encodeNative(value:String, data:haxe.io.BytesData, at:Int):Void {
+		var length:Int = value.length;
+		var i:Int = 0;
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(value, i++);
+			if (code < 0x80) {
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, code);
+				continue;
+			}
+			if (code >= 0xD800 && code < 0xE000) {
+				var low:Int = i < length ? StringTools.fastCodeAt(value, i) : 0;
+				if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
+					code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+					i++;
+				} else {
+					code = 0xFFFD;
+				}
+			}
+			if (code < 0x800) {
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xC0 | (code >> 6));
+			} else if (code < 0x10000) {
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xE0 | (code >> 12));
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 6) & 0x3F));
+			} else {
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0xF0 | (code >> 18));
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 12) & 0x3F));
+				untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | ((code >> 6) & 0x3F));
+			}
+			untyped __global__.__hxcpp_memory_set_byte(data, at++, 0x80 | (code & 0x3F));
+		}
+	}
+	#end
+
 	#if js
 	static var __encoder:Dynamic = null;
 	static var __decoder:Dynamic = null;
@@ -398,7 +467,7 @@ class Utf8 {
 		// string of a few dozen characters takes.
 		if (value.length <= SHORT) {
 			var bytes:Bytes = Bytes.alloc(sizeOf(value));
-			encodeInto(value, bytes, 0);
+			__loop(value, @:privateAccess bytes.b, 0);
 			return bytes;
 		}
 		if (__encoder == null) {
@@ -440,42 +509,53 @@ class Utf8 {
 	// platform's encoder, which costs a call into the platform and a buffer
 	// of its own however short the text.
 	/**
-		The number of bytes `value` is in UTF-8, as TextEncoder writes it: an
-		unpaired surrogate as U+FFFD, three bytes.
+		`value` in UTF-8 into `view` from `at` up to `end`, as much as fits
+		without half a character: the bytes written, and in `read` the UTF-16
+		units of `value` they hold, so a writer short of room can grow and
+		write the rest. As TextEncoder writes it, an unpaired surrogate as
+		U+FFFD.
+
+		Up to DIRECT units with room for all of them, by a loop; past that by
+		TextEncoder.encodeInto, straight into the view. That costs a call and a
+		view, about 75 ns on Node, and little a character after, where a loop
+		costs 4 to 7 ns a character, and `encode` makes a buffer for every
+		string (about 830 ns for 200 characters, against 92).
 	**/
-	public static function sizeOf(value:String):Int {
+	public static function writeView(value:String, view:js.lib.Uint8Array, at:Int, end:Int):Int {
 		var length:Int = value.length;
-		var size:Int = 0;
-		var i:Int = 0;
-		while (i < length) {
-			var unit:Int = StringTools.fastCodeAt(value, i++);
-			if (unit < 0x80) {
-				size++;
-			} else if (unit < 0x800) {
-				size += 2;
-			} else if (unit >= 0xD800 && unit < 0xDC00 && i < length && StringTools.fastCodeAt(value, i) >= 0xDC00 && StringTools.fastCodeAt(value, i) < 0xE000) {
-				size += 4;
-				i++;
-			} else {
-				size += 3;
-			}
+		if (length <= DIRECT && end - at >= length * 3) {
+			read = length;
+			return __loop(value, view, at) - at;
 		}
-		return size;
+		if (__encoder == null) {
+			__encoder = js.Syntax.code("new TextEncoder()");
+		}
+		var result:Dynamic = __encoder.encodeInto(value, view.subarray(at, end > at ? end : at));
+		read = result.read;
+		return result.written;
 	}
 
+	/** The UTF-16 units of the string the last `writeView` wrote. **/
+	public static var read:Int = 0;
+
 	/**
-		`value` in UTF-8 at `at` in `bytes`, which has `sizeOf(value)` bytes
-		of room there, written as TextEncoder writes it: an unpaired surrogate
-		as U+FFFD. For a short string, written where it is going with no
-		buffer of its own.
+		Up to this many units `writeView` writes by a loop, which below it
+		beats TextEncoder.encodeInto's fixed cost (on Node 60 ns against 77
+		for twelve characters, even at sixteen).
 	**/
-	public static function encodeInto(value:String, bytes:Bytes, at:Int):Void {
+	public static inline var DIRECT:Int = 16;
+
+	/** At most this many bytes a UTF-16 unit takes in UTF-8. **/
+	public static inline var MAX_BYTES_PER_UNIT:Int = 3;
+
+	// `value`, which fits, into `view` from `at`: where it ends.
+	static function __loop(value:String, view:js.lib.Uint8Array, at:Int):Int {
 		var length:Int = value.length;
 		var i:Int = 0;
 		while (i < length) {
 			var code:Int = StringTools.fastCodeAt(value, i++);
 			if (code < 0x80) {
-				bytes.set(at++, code);
+				view[at++] = code;
 				continue;
 			}
 			if (code >= 0xD800 && code < 0xE000) {
@@ -488,23 +568,24 @@ class Utf8 {
 				}
 			}
 			if (code < 0x800) {
-				bytes.set(at++, 0xC0 | (code >> 6));
+				view[at++] = 0xC0 | (code >> 6);
 			} else if (code < 0x10000) {
-				bytes.set(at++, 0xE0 | (code >> 12));
-				bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
+				view[at++] = 0xE0 | (code >> 12);
+				view[at++] = 0x80 | ((code >> 6) & 0x3F);
 			} else {
-				bytes.set(at++, 0xF0 | (code >> 18));
-				bytes.set(at++, 0x80 | ((code >> 12) & 0x3F));
-				bytes.set(at++, 0x80 | ((code >> 6) & 0x3F));
+				view[at++] = 0xF0 | (code >> 18);
+				view[at++] = 0x80 | ((code >> 12) & 0x3F);
+				view[at++] = 0x80 | ((code >> 6) & 0x3F);
 			}
-			bytes.set(at++, 0x80 | (code & 0x3F));
+			view[at++] = 0x80 | (code & 0x3F);
 		}
+		return at;
 	}
 
 	/**
-		Up to this many characters a string is encoded by sizeOf and
-		encodeInto rather than by TextEncoder, whose fixed cost a call is
-		more than theirs up to that length.
+		Up to this many characters `bytesOf` sizes and encodes a string itself
+		rather than through TextEncoder, which makes a buffer of its own
+		whose cost is more than theirs up to that length.
 	**/
 	public static inline var SHORT:Int = 64;
 	#end

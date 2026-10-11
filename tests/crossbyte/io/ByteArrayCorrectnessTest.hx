@@ -887,6 +887,71 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
+		Text that only partly fits the room a ByteArray has left is written
+		whole, the rest into more room, keeping what was written before it;
+		text written past the end has zeros before it; text that fits a
+		ByteArray made to its size does not grow it; and nothing written past
+		the end leaves the length where it was.
+	**/
+	public function testTextIsWrittenWholeWhateverRoomIsLeft():Void {
+		for (piece in ["a", "\u00E9", "\u{1F600}"]) {
+			for (count in [1, 15, 16, 17, 100]) {
+				var text:String = [for (_ in 0...count) piece].join("");
+				var expected:Bytes = Bytes.ofString(text);
+				var size:Int = expected.length;
+				var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}';
+
+				// The room a new ByteArray grows to, nearly all of it used.
+				var partly = new ByteArray();
+				for (_ in 0...60) {
+					partly.writeByte(0x11);
+				}
+				partly.position = 58;
+				partly.writeUTFBytes(text);
+				Assert.equals(58 + size > 60 ? 58 + size : 60, partly.length, label);
+				var same:Bool = true;
+				for (i in 0...58) {
+					same = same && partly[i] == 0x11;
+				}
+				for (i in 0...size) {
+					same = same && partly[58 + i] == expected.get(i);
+				}
+				for (i in 58 + size...60) {
+					same = same && partly[i] == 0x11;
+				}
+				Assert.isTrue(same, 'partly: $label');
+
+				var past = new ByteArray();
+				past.writeByte(1);
+				past.position = 6;
+				past.endian = LITTLE_ENDIAN;
+				past.writeUTF(text);
+				Assert.equals(8 + size, past.length, label);
+				same = past[0] == 1;
+				for (i in 1...6) {
+					same = same && past[i] == 0;
+				}
+				past.position = 6;
+				Assert.equals(size, past.readUnsignedShort(), label);
+				for (i in 0...size) {
+					same = same && past[8 + i] == expected.get(i);
+				}
+				Assert.isTrue(same, 'past: $label');
+
+				var exact = new ByteArray(size);
+				exact.writeUTFBytes(text);
+				Assert.equals(size, exact.length, label);
+				Assert.equals(size, @:privateAccess (exact : crossbyte.io.ByteArray.ByteArrayData).__length, 'grown: $label');
+			}
+		}
+		var empty = new ByteArray();
+		empty.writeByte(1);
+		empty.position = 4;
+		empty.writeUTFBytes("");
+		Assert.equals(1, empty.length);
+	}
+
+	/**
 		Malformed UTF-8 reads with U+FFFD for each malformed sequence, as on
 		JavaScript and the jvm. HashLink dropped everything from the first bad
 		byte, and eval kept the bytes as they were, so the next operation on

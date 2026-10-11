@@ -370,4 +370,43 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.pass();
 		#end
 	}
+
+	/**
+		Every string writer writes the same UTF-8 the platform makes, behind
+		the same length, for text either side of where it changes how it
+		writes it (16 and 4,096 units on JavaScript), into an output that
+		starts a chunk in the middle of it.
+	**/
+	public function testStringsAreTheSameUTF8AtEveryLength():Void {
+		for (piece in ["a", "\u00E9", "\u65E5", "\u{1F600}"]) {
+			for (count in [0, 1, 15, 16, 17, 42, 43, 200, 4096, 4097]) {
+				var text:String = [for (_ in 0...count) piece].join("");
+				var expected:Bytes = Bytes.ofString(text);
+				var size:Int = expected.length;
+				var output = new ByteArrayOutput(3);
+				output.writeByte(0x55);
+				output.writeUTF(text);
+				output.writeVarUTF(text);
+				output.writeUTFBytes(text);
+				var bytes:ByteArray = output.copy();
+				var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}';
+				var head:Int = size < 0x80 ? 1 : (size < 0x4000 ? 2 : 3);
+				Assert.equals(1 + 2 + size + head + size + size, bytes.length, label);
+				bytes.position = 1;
+				Assert.equals(size, bytes.readUnsignedShort(), label);
+				var same:Bool = true;
+				for (i in 0...size) {
+					same = same && bytes[3 + i] == expected.get(i);
+				}
+				var input:ByteArrayInput = bytes;
+				input.position = 3 + size;
+				Assert.equals(size, input.readVarUInt(), label);
+				var at:Int = 3 + size + head;
+				for (i in 0...size) {
+					same = same && bytes[at + i] == expected.get(i) && bytes[at + size + i] == expected.get(i);
+				}
+				Assert.isTrue(same, label);
+			}
+		}
+	}
 }

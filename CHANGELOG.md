@@ -646,9 +646,16 @@ says how.
   bytes of it first: natively by one copy (`writeUTF` of twelve characters
   in 15 ns rather than 62), and on JavaScript a character at a time for
   text of up to 256 characters (twelve characters on Node in 56 ns rather
-  than 690). On Node other text of up to 64 characters is encoded straight
-  into the `ByteArray`, where `TextEncoder` made a buffer of it first:
-  eleven characters with accents in 86 ns rather than 770. On the jvm
+  than 690). On Node all other text is written straight into the
+  `ByteArray`, by a loop up to 16 characters and past that by
+  `TextEncoder.encodeInto`, where `TextEncoder` made a buffer of it first:
+  eleven characters with accents in 48 ns rather than 770, and 200 ASCII
+  characters in 130 rather than 1,400; `ByteArrayOutput`'s string writes
+  likewise, twelve characters in 43 ns rather than 715. Natively text held
+  as UTF-16 is sized and encoded straight in, where `Bytes.ofString` made
+  a buffer of it to copy (eleven accented characters in 40 ns rather than
+  84), and `ByteArrayOutput` copies text held a byte a character straight
+  in as `ByteArray` does (twelve characters in 7.8 ns rather than 49). On the jvm
   ASCII text of up to 256 characters (64 for `writeUTF`) is copied
   straight in by `String.getBytes`, allocating nothing, where a loop wrote
   it a character at a time: 200 characters in 83 ns rather than 146. On HashLink
@@ -901,6 +908,12 @@ says how.
 
 #### RPC
 
+- A string argument is written straight into the frame: on Node a short
+  one in 22 to 45 ns rather than 660 to 910, and 200 characters in 130
+  rather than 2,000; on the jvm ASCII is copied in at once, still
+  allocating nothing, 200 characters in 93 ns rather than 148. Natively
+  one held as UTF-16 is encoded in place: eleven accented characters in
+  35 ns rather than 78.
 - An RPC session over reliable UDP no longer copies each message that
   arrives: the connection hands a reader that keeps nothing (a session
   reading its frames) the message itself. An RPC call there and its answer

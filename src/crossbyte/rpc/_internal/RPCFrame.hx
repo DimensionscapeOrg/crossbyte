@@ -243,10 +243,11 @@ class RPCFrame extends ByteArrayData {
 
 	/**
 		`value` as its UTF-8 bytes after their count, as a varint: what
-		`ByteArrayOutput.writeVarUTF` writes, without the `Bytes` it makes of
-		the string first. Natively a string held a byte a character is copied
-		as it stands (those bytes are its UTF-8), and on the jvm a short
-		ASCII one a character at a time; anything else is encoded to UTF-8.
+		`ByteArrayOutput.writeVarUTF` writes, with no `Bytes` made of the
+		string first. Natively a string held a byte a character is copied as
+		it stands (those bytes are its UTF-8) and one held as UTF-16 is
+		encoded in place; on the jvm a short ASCII one is copied in at once;
+		on JavaScript any is written straight into the frame.
 
 		@throws ArgumentError For `null`, which only an optional value (a
 		        presence byte before it) can carry.
@@ -266,14 +267,46 @@ class RPCFrame extends ByteArrayData {
 			position += count;
 			return;
 		}
-		#elseif (jvm || java)
+		// Held as UTF-16: sized and encoded in place, with no buffer made of
+		// it, nor a pass looking for a lone surrogate (see Utf8.encodeNative).
+		final size:Int = crossbyte._internal.Utf8.sizeOf(value);
+		putVarUInt(size);
+		__fit(size);
+		crossbyte._internal.Utf8.encodeNative(value, getData(), position);
+		position += size;
+		return;
+		#elseif js
+		// Straight into the frame (see Utf8.writeView), where the platform's
+		// encoder made a buffer of it to copy in: on Node twelve characters
+		// in about 40 ns rather than 740. Its count goes first, as wide as
+		// the most the text can take (three bytes a unit), and is narrowed
+		// once it is written if the text took less.
+		final start:Int = position;
+		final width:Int = __varSize(value.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT);
+		__fit(width);
+		final at:Int = start + width;
+		var size:Int = crossbyte._internal.Utf8.writeView(value, b, at, __length);
+		if (crossbyte._internal.Utf8.read < value.length) {
+			// Into what room there was, and the rest into more.
+			final rest:String = value.substring(crossbyte._internal.Utf8.read);
+			position = at + size;
+			__fit(rest.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT);
+			size += crossbyte._internal.Utf8.writeView(rest, b, at + size, __length);
+		}
+		final used:Int = __varSize(size);
+		if (used < width) {
+			b.copyWithin(start + used, at, at + size);
+		}
+		position = start;
+		putVarUInt(size);
+		position = start + used + size;
+		return;
+		#elseif ((jvm || java) && !macro)
 		final count:Int = value.length;
 		if (count <= DIRECT_TEXT_LIMIT && __ascii(value, count)) {
 			putVarUInt(count);
 			__fit(count);
-			for (i in 0...count) {
-				set(position + i, StringTools.fastCodeAt(value, i));
-			}
+			__copyAscii(value, count);
 			position += count;
 			return;
 		}
@@ -283,9 +316,23 @@ class RPCFrame extends ByteArrayData {
 		__putAll(bytes);
 	}
 
-	#if (jvm || java)
-	/** The longest string the jvm copies a character at a time: past a few hundred, its encoder is no slower. **/
+	#if js
+	// The bytes `value`'s varint takes.
+	private static inline function __varSize(value:Int):Int {
+		return (value & ~0x7F) == 0 ? 1 : ((value & ~0x3FFF) == 0 ? 2 : ((value & ~0x1FFFFF) == 0 ? 3 : ((value & ~0xFFFFFFF) == 0 ? 4 : 5)));
+	}
+	#end
+
+	#if ((jvm || java) && !macro)
+	/** The longest ASCII string the jvm copies in at once, allocating nothing: past a few hundred, finding it ASCII costs more than its encoder. **/
 	private static inline final DIRECT_TEXT_LIMIT:Int = 256;
+
+	// ASCII `value` copied in at the position at once, rather than a
+	// character at a time; as ByteArray copies it.
+	@:haxe.warning("-WDeprecated")
+	private function __copyAscii(value:String, count:Int):Void {
+		(cast value : java.NativeString).getBytes(0, count, b, position);
+	}
 
 	private static function __ascii(value:String, count:Int):Bool {
 		for (i in 0...count) {
