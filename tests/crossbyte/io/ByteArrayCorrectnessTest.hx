@@ -963,6 +963,126 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
+		Text of mixed scripts is written as the Encoding Standard has it (an
+		unpaired surrogate as U+FFFD), byte for byte, by every writer that
+		encodes it itself: natively the C++ encoder, which takes ASCII four
+		units at a time from 32 units on, and on JavaScript the loop and
+		`encodeInto`. Strings of one kind of character each, as the tests
+		above write, never move from ASCII to anything else inside a word, nor
+		put half a pair at the edge of a word or of the string, which these
+		do, at every length either side of 32. Nothing is written past the
+		bytes the text takes: the bytes after it stay as they were.
+	**/
+	public function testMixedTextIsWrittenAsTheEncodingStandardWritesIt():Void {
+		#if (cpp || js)
+		var seed:Int = 0x2545F491;
+		var units:Array<Int> = [0x41, 0x7A, 0x20, 0xE9, 0x7FF, 0x800, 0x65E5, 0xFFFD, 0xFFFF];
+		for (round in 0...1500) {
+			var length:Int = round % 80;
+			var parts:Array<String> = [];
+			for (_ in 0...length) {
+				seed ^= seed << 13;
+				seed ^= seed >>> 17;
+				seed ^= seed << 5;
+				var pick:Int = (seed >>> 8) % 16;
+				// Mostly ASCII, so the word-at-a-time path runs and is left
+				// inside a word.
+				parts.push(switch (pick) {
+					case 9: String.fromCharCode(units[3 + ((seed >>> 4) & 3)]);
+					case 10: String.fromCharCode(units[7 + ((seed >>> 4) & 1)]);
+					case 11: "\u{1F600}";
+					case 12: String.fromCharCode(0xD83D);
+					case 13: String.fromCharCode(0xDE00);
+					default: String.fromCharCode(units[pick % 3]);
+				});
+			}
+			var text:String = parts.join("");
+			var expected:Array<Int> = __referenceUtf8(text);
+			var size:Int = expected.length;
+			var label:String = 'round $round: ' + [for (i in 0...text.length) StringTools.hex(StringTools.fastCodeAt(text, i), 4)].join(" ");
+
+			// Over bytes already there, so nothing grows: what follows the
+			// text must be as it was.
+			var buffer = new ByteArray();
+			for (_ in 0...size + 2 + 16) {
+				buffer.writeByte(0xEE);
+			}
+			buffer.position = 0;
+			buffer.writeUTF(text);
+			buffer.position = 0;
+			Assert.equals(size, buffer.readUnsignedShort(), label);
+			var same:Bool = true;
+			for (i in 0...size) {
+				same = same && buffer[2 + i] == expected[i];
+			}
+			for (i in 2 + size...buffer.length) {
+				same = same && buffer[i] == 0xEE;
+			}
+			Assert.isTrue(same, 'writeUTF, $label');
+
+			// Into a new one, which grows as the text needs, part of it into
+			// the room there was.
+			var grown = new ByteArray();
+			grown.writeInt(0);
+			grown.writeUTFBytes(text);
+			same = grown.length == 4 + size;
+			for (i in 0...size) {
+				same = same && grown[4 + i] == expected[i];
+			}
+			Assert.isTrue(same, 'writeUTFBytes, $label');
+
+			var output = new ByteArrayOutput();
+			output.writeUTF(text);
+			output.writeVarUTF(text);
+			var written:ByteArray = output;
+			var varint:Int = size < 0x80 ? 1 : 2;
+			same = written.length == 2 + size + varint + size;
+			for (i in 0...size) {
+				same = same && written[2 + i] == expected[i] && written[2 + size + varint + i] == expected[i];
+			}
+			Assert.isTrue(same, 'ByteArrayOutput, $label');
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	// UTF-8 as the Encoding Standard writes UTF-16: a pair as one character,
+	// and any other surrogate as U+FFFD.
+	private static function __referenceUtf8(text:String):Array<Int> {
+		var out:Array<Int> = [];
+		var i:Int = 0;
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i++);
+			if (code >= 0xD800 && code < 0xE000) {
+				var low:Int = i < text.length ? StringTools.fastCodeAt(text, i) : 0;
+				if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
+					code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+					i++;
+				} else {
+					code = 0xFFFD;
+				}
+			}
+			if (code < 0x80) {
+				out.push(code);
+			} else if (code < 0x800) {
+				out.push(0xC0 | (code >> 6));
+				out.push(0x80 | (code & 0x3F));
+			} else if (code < 0x10000) {
+				out.push(0xE0 | (code >> 12));
+				out.push(0x80 | ((code >> 6) & 0x3F));
+				out.push(0x80 | (code & 0x3F));
+			} else {
+				out.push(0xF0 | (code >> 18));
+				out.push(0x80 | ((code >> 12) & 0x3F));
+				out.push(0x80 | ((code >> 6) & 0x3F));
+				out.push(0x80 | (code & 0x3F));
+			}
+		}
+		return out;
+	}
+
+	/**
 		Malformed UTF-8 reads with U+FFFD for each malformed sequence, as on
 		JavaScript and the jvm. HashLink dropped everything from the first bad
 		byte, and eval kept the bytes as they were, so the next operation on
