@@ -300,6 +300,50 @@ class WebSocketSessionTest extends utest.Test {
 	}
 
 	/**
+		`bytesTotal` counts on past 2^31, as a session that carries more than
+		2 GB needs, on every target: eval and neko keep a Float set from an
+		Int an Int and add Ints to it in 32 bits, so the count has to start
+		as a Float and stay one. The first 2 GB are counted in, not sent.
+	**/
+	@:timeout(15000)
+	public function testBytesTotalCountsPastTwoToTheThirtyOne(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var opened:Bool = false;
+			var received:Int = 0;
+			var total:Float = -1;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) total = e.bytesTotal);
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+				sessions[0].addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) received += e.data.length);
+
+				var earlier:Int = 0x7FFFFFFF;
+				@:privateAccess client.__webSocket.bytesSent += earlier;
+				total = -1;
+				var message = new ByteArray();
+				message.length = 4;
+				client.writeBytes(message, 0, 4);
+				client.flush();
+
+				NetPump.until(() -> received >= 4 && total >= 0, 5.0, function(_) {
+					Assert.equals(4, received);
+					// The frame's header and mask go with the four bytes.
+					Assert.isTrue(total >= 2147483651.0 && total < 2147483651.0 + 1024, "bytesTotal past 2^31 was " + total);
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
 		A WebSocket tells its writer as what it sent reaches the network,
 		down to nothing left waiting, as a Socket does: it is one.
 	**/
@@ -1032,6 +1076,7 @@ class WebSocketSessionTest extends utest.Test {
 		return listeners == null ? 0 : listeners.length;
 	}
 	#end
+
 }
 
 private typedef OverflowOutcome = {

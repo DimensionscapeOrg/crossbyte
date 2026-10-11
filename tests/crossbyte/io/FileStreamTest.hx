@@ -262,6 +262,49 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	/**
+		An asynchronous write's `bytesTotal` counts on past 2^31, as a file
+		written past 2 GB needs: eval and neko keep a Float set from an Int an
+		Int and add Ints to it in 32 bits, so the total has to start as a
+		Float and stay one. The first 2 GB are counted in, not written.
+	**/
+	public function testAnAsyncWritesTotalCountsPastTwoToTheThirtyOne():Void {
+		#if !target.threaded
+		Assert.pass();
+		return;
+		#end
+
+		var file = File.createTempFile();
+		var stream = new FileStream();
+		var closeSeen = false;
+		var lastBytesTotal = -1.0;
+
+		try {
+			stream.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, (event:OutputProgressEvent) -> lastBytesTotal = event.bytesTotal);
+			stream.addEventListener(Event.CLOSE, (_:Event) -> closeSeen = true);
+			stream.openAsync(file, FileMode.WRITE);
+			var session = @:privateAccess stream.__async;
+			var earlier:Int = 0x7FFFFFFF;
+			session.mutex.acquire();
+			session.written += earlier;
+			session.mutex.release();
+			stream.writeUTFBytes("async-write");
+			stream.close();
+
+			pumpUntil(() -> closeSeen, 2.0);
+
+			Assert.isTrue(closeSeen);
+			Assert.equals(2147483658.0, lastBytesTotal, "bytesTotal past 2^31 was " + lastBytesTotal);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try stream.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testOpenAsyncWriteFlushesOnCloseAndDispatchesClose():Void {
 		#if !target.threaded
 		Assert.pass();

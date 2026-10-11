@@ -768,6 +768,23 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		}
 	}
 
+	#if !(js && !nodejs)
+	/**
+		A session's own `bytesSent` starts as a Float and stays one, so it
+		counts on past 2^31: on eval and neko a Float set from an Int stays an
+		Int, and Ints added to it wrap in 32 bits. Two gigabytes and then four
+		bytes are added as a session's sends add them, as Ints.
+	**/
+	public function testASessionsBytesSentCountsPastTwoGigabytes():Void {
+		var session = @:privateAccess new crossbyte._internal.websocket.WebSocket.AcceptedWebSocket();
+		var earlier:Int = 0x7FFFFFFF;
+		var sent:Int = 4;
+		@:privateAccess session.bytesSent += earlier;
+		@:privateAccess session.bytesSent += sent;
+		Assert.equals(2147483651.0, session.bytesSent);
+	}
+	#end
+
 	/** The one session `server` is waiting on to upgrade, or null. **/
 	private static function __upgrading(server:ServerWebSocket):Null<crossbyte._internal.websocket.WebSocket> {
 		var pending:Array<Dynamic> = @:privateAccess server.__pendingUpgrades;
