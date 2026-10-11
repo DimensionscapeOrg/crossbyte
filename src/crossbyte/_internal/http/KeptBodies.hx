@@ -85,7 +85,10 @@ final class KeptBodies {
 		if (old != null) {
 			__drop(old);
 		}
-		while (__bytes + body.length > budget && __tail != null) {
+		// Against what is left rather than the sum: with a budget near the
+		// largest Int, what is kept and the new body add up past 2^31, and
+		// the sum wrapped negative, under any budget, so nothing was let go.
+		while (body.length > budget - __bytes && __tail != null) {
 			__drop(__tail);
 		}
 		var entry:KeptBody = new KeptBody(slot, path, size, modified, body);

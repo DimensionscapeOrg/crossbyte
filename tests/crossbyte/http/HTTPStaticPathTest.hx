@@ -118,6 +118,22 @@ class HTTPStaticPathTest extends utest.Test {
 		});
 	}
 
+	/**
+		A body that would take what is kept past a budget near the largest
+		Int still makes room, the least recently used going first. Added up,
+		what was kept and the new body passed 2^31 and wrapped negative, under
+		any budget, so nothing was let go: natively, on the jvm, on HashLink
+		and on neko. The two gigabytes kept are counted in, not kept.
+	**/
+	public function testABudgetNearTheLargestIntStillMakesRoom():Void {
+		var kept = new crossbyte._internal.http.KeptBodies(0x7FFFFFFF);
+		kept.put(0, "/first", 1000, 0, haxe.io.Bytes.alloc(1000));
+		@:privateAccess kept.__bytes += 0x7FFFFFFF - 1500;
+		kept.put(0, "/second", 2000, 0, haxe.io.Bytes.alloc(2000));
+		Assert.isNull(kept.get(0, "/first", 1000, 0), "nothing was let go to make room");
+		Assert.notNull(kept.get(0, "/second", 2000, 0));
+	}
+
 	/** `fileCacheSize` 0 keeps nothing. **/
 	public function testFileCacheSizeZeroKeepsNothing(async:Async):Void {
 		var server:HTTPServer = __serve(config -> config.fileCacheSize = 0);
