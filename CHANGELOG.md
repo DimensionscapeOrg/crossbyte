@@ -707,6 +707,12 @@ says how.
   `fromDynamic` given one, where it threw a `String`. (Upgrading)
 - `PrimitiveValue.toBool` of NaN is `false`, as JavaScript's
   `Boolean(NaN)` is, where it was `true`. (Upgrading)
+- `Object` has ActionScript's `hasOwnProperty`, `propertyIsEnumerable`,
+  `isPrototypeOf`, `valueOf`, `toString` and `toLocaleString`, and they
+  answer the same on every target. Called through the object's own
+  fields, as they were, they answered only on JavaScript, whose objects
+  have them on their prototype, and threw everywhere else; natively, on a
+  null `Object`, the process ended. (Upgrading)
 
 #### TCP
 
@@ -1901,6 +1907,10 @@ an API added in this release has is not listed here.
   `crossbyte.errors.Error` both extend.
 - `PrimitiveValue.toBool` of NaN (a value from `fromDynamic`) is `false`:
   code that took it as `true` asks `Math.isNaN` of the number first.
+- A payload field named `hasOwnProperty`, `propertyIsEnumerable`,
+  `isPrototypeOf`, `valueOf`, `toString` or `toLocaleString` is read from
+  an `Object` with brackets, `payload["valueOf"]`: with a dot it is the
+  method of that name.
 
 #### TCP
 

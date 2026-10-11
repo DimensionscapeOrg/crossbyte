@@ -22,9 +22,11 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * fields through the class.
  *
  * **A field named like a method.** `exists`, `remove`, `keys`, `values`,
- * `entries`, `get`, `set` and `iterator` are these methods, so a payload's
- * field of one of those names is read with brackets: `payload["values"]`,
- * where `payload.values` is the method.
+ * `entries`, `get`, `set` and `iterator` are these methods, and so are
+ * ActionScript's `hasOwnProperty`, `propertyIsEnumerable`,
+ * `isPrototypeOf`, `valueOf`, `toString` and `toLocaleString`, which answer
+ * the same on every target. A payload's field of one of those names is read
+ * with brackets: `payload["values"]`, where `payload.values` is the method.
  *
  * **What it costs.** Every field of an `Object` is looked up by its name when
  * it is read. Built from a literal such as `{name: "a", hits: 3}`, the fields
@@ -48,6 +50,57 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 
 	public inline function remove(field:String):Bool {
 		return this != null && Reflect.deleteField(this, field);
+	}
+
+	/**
+		Whether the object has a field `name` of its own: `exists`, by the
+		name ActionScript gives it. Called through the object's own fields,
+		as a field read with a dot is, it answered only on JavaScript, which
+		has it on every object's prototype, and threw everywhere else.
+	**/
+	public inline function hasOwnProperty(name:String):Bool {
+		return exists(name);
+	}
+
+	/**
+		Whether a loop over the object reaches its field `name`, as
+		ActionScript asks of a dynamic property: true for a field of a
+		structure (a literal, parsed JSON, `new Object()`), false for a
+		class instance's, which are declared as a sealed class's are, and
+		for a name it does not have.
+	**/
+	public inline function propertyIsEnumerable(name:String):Bool {
+		return exists(name) && Type.getClass(this) == null;
+	}
+
+	/**
+		Whether this object is in `value`'s prototype chain, as ActionScript
+		asks: never, since a Haxe value has no prototype chain to be in. To
+		ask whether a value is an instance of a class, use
+		`Std.isOfType(value, SomeClass)`.
+	**/
+	public inline function isPrototypeOf(value:Dynamic):Bool {
+		return false;
+	}
+
+	/** The object itself, as ActionScript's `valueOf` gives an `Object`. **/
+	public inline function valueOf():Object {
+		return this;
+	}
+
+	/**
+		The object as text, as `Std.string` and `trace` give it: a string as
+		itself, a number or a `Bool` as it is written, and `"null"` for null.
+		A structure is printed in each target's own form of
+		`{name: value}`, so compare fields rather than this text.
+	**/
+	public inline function toString():String {
+		return Std.string(this);
+	}
+
+	/** `toString()`, by the other name ActionScript gives it. **/
+	public inline function toLocaleString():String {
+		return Std.string(this);
 	}
 
 	public inline function keys():Array<String> {

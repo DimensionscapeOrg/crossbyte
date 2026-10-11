@@ -344,6 +344,9 @@ class PortableSuite {
 		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
 		// differently on each target.
 		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
+		// Object, whose fields JavaScript reads through every object's
+		// prototype and the other targets do not.
+		runner.addCase(new crossbyte.foundation.ObjectTest());
 		// The MongoDB driver's public types, decided at compile time.
 		runner.addCase(new crossbyte.db.mongodb.MongoApiTest());
 		// The types of JWT claims, audiences and key records, alike everywhere.
