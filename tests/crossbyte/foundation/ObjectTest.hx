@@ -153,6 +153,29 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
+		A null name has no field: `get` reads null, `exists` and `remove`
+		answer false, and `set` throws an `ArgumentError`. Natively each
+		ended the process; elsewhere each target answered its own way (a
+		thrown "Null Access" on eval, "Invalid field access" on Neko, a
+		`set` that did nothing on the jvm).
+	**/
+	public function testANullNameHasNoField():Void {
+		var payload:Object = haxe.Json.parse('{"a":1,"null":2}');
+		var name:Null<String> = null;
+		#if !js
+		Assert.isNull(payload.get(name), "a null name read a field");
+		#end
+		Assert.isFalse(payload.exists(name));
+		Assert.isFalse(payload.remove(name));
+		Assert.raises(() -> payload.set(name, 3), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> payload[name] = 3, crossbyte.errors.ArgumentError);
+		var keys:Array<String> = payload.keys();
+		keys.sort(Reflect.compare);
+		Assert.same(["a", "null"], keys, "a null name changed the fields");
+		Assert.equals(2, payload["null"]);
+	}
+
+	/**
 		What Haxe keeps on an object for itself is not a field of it: on
 		JavaScript an object used as a key in an `ObjectMap` is given an
 		`__id__`.

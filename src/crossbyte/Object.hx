@@ -44,12 +44,14 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		this = {};
 	}
 
+	/** Whether the object has a field `field`; false for a null name. **/
 	public inline function exists(field:String):Bool {
-		return this != null && Reflect.hasField(this, field);
+		return this != null && field != null && Reflect.hasField(this, field);
 	}
 
+	/** Removes the field `field`, and says whether there was one. **/
 	public inline function remove(field:String):Bool {
-		return this != null && Reflect.deleteField(this, field);
+		return this != null && field != null && Reflect.deleteField(this, field);
 	}
 
 	/**
@@ -196,16 +198,18 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		The field `field`, or null if there is none. On JavaScript
-		`__proto__` and `constructor` are read as the object's own fields, as
-		everywhere else, rather than as its prototype and its class, through
-		which a path of names a peer chose could reach `Object.prototype`.
+		The field `field`, or null if there is none or the object is null. A
+		null name reads null too, but on JavaScript, where it throws a
+		`TypeError`. On JavaScript `__proto__` and `constructor` are read as
+		the object's own fields, as everywhere else, rather than as its
+		prototype and its class, through which a path of names a peer chose
+		could reach `Object.prototype`.
 	**/
 	@:arrayAccess public inline function get(field:String):Dynamic {
 		#if js
 		return crossbyte._internal.js.OwnField.get(this, field);
 		#else
-		return Reflect.field(this, field);
+		return field == null ? null : Reflect.field(this, field);
 		#end
 	}
 
@@ -213,14 +217,22 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		Sets the field `field`. On JavaScript `__proto__` is set as the
 		object's own field, as everywhere else, rather than replacing its
 		prototype.
+		@throws ArgumentError For a null name.
 	**/
 	@:arrayAccess public inline function set(field:String, value:Dynamic):Dynamic {
+		if (field == null) {
+			__refuseNullName();
+		}
 		#if js
 		crossbyte._internal.js.OwnField.set(this, field, value);
 		#else
 		Reflect.setField(this, field, value);
 		#end
 		return value;
+	}
+
+	@:noCompletion private static function __refuseNullName():Void {
+		throw new crossbyte.errors.ArgumentError("A field is set by its name, and null was given.");
 	}
 
 	/**

@@ -1340,6 +1340,11 @@ Fixes to code new in this release are not listed.
   and `hash` on the jvm and its characters on Node). On Node they read
   through `Object.keys`, so `keys()` takes 7% less time, `values()` 8%
   and `entries()` 13%. (Upgrading)
+- A null name no longer ends the process natively: `Object.get` reads
+  null, `exists` and `remove` answer false and `set` throws an
+  `ArgumentError`, on every target (but `get` on JavaScript, where a null
+  name is a `TypeError`). On Node `exists(null)` found, and `remove(null)`
+  deleted, a field named `"null"`.
 - `PrimitiveValue.isInt`, `isFloat` and `getValueType` take a whole
   `Float` within `Int`'s range (`1.0`) as an `Int` on every target, as
   JavaScript, the jvm and native did, where eval and neko called it a
