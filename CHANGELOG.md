@@ -718,13 +718,14 @@ says how.
   write past the end grows it, and a negative index is a `RangeError`),
   or of anything else the field named by the number, as ActionScript
   reads `object[0]`.
-- An `Object` becomes a `Dynamic` on its own and nothing else: `var count:Int
-  = object`, `var socket:Socket = event.target`, `object + 1` and
-  `if (object)` no longer compile, where each target made its own of them
-  (one holding "12" as an `Int` was 12 natively, "12" on JavaScript, eval
-  and Neko, and a cast that threw on the jvm and HashLink; `if (object)` of
-  3 was taken on some targets, not on others, and threw on the jvm). A
-  field read with a dot is `Dynamic`, as before. (Upgrading)
+- An `Object` becomes a `Dynamic` on its own and nothing else:
+  `var count:Int = object`, `var socket:Socket = event.target`,
+  `object + 1` and `if (object)` no longer compile, where each target made
+  its own of them (one holding "12" as an `Int` was 12 natively, "12" on
+  JavaScript, eval and Neko, and a cast that threw on the jvm and
+  HashLink; `if (object)` of 3 was taken on some targets, not on others,
+  and threw on the jvm). A field read with a dot is `Dynamic`, as before.
+  (Upgrading)
 
 #### TCP
 

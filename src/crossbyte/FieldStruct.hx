@@ -17,6 +17,13 @@ private typedef BaseStruct<T = Dynamic> = StringMap<T>;
  * like a member (`keys`, `values`, `entries`, `toObject`,
  * `keyValueIterator`) is read and written with brackets, `fields["keys"]`,
  * where `fields.keys` is the method.
+ *
+ * A field read with a dot is a `Null<T>`: a key not there reads null, which
+ * as an `Int` is 0 natively, on the jvm and on HashLink, and null elsewhere
+ * (one more than it is NaN on JavaScript and throws on eval and Neko), so
+ * ask `FieldStruct.exists(fields, name)` first where that matters. Add
+ * to a field with `fields.count += 1`: `fields.count++` does not compile, as
+ * Haxe has no increment through a field it reads and writes by name.
  */
 @:generic
 @:callable
