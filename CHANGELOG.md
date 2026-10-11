@@ -1165,6 +1165,16 @@ Fixes to code new in this release are not listed.
   allocate 40 bytes rather than 99 natively (the map's own entry) and take
   79 ns rather than 101, and allocate nothing rather than 44 bytes on the
   jvm. `toString()` lists the elements, where it printed their positions.
+- A `for` loop over an `OrderedMap`'s values, keys or pairs allocates
+  nothing natively or on the jvm, and `for (key => value in map)` walks it
+  (`keyValueIterator()`). `iterator()`, `keysIterator()` and
+  `keyValuePairs()` answered an `Iterator` structure, through which
+  natively every `hasNext` and `next` made a closure: over eight entries a
+  loop took 16 ns rather than 144 and allocates nothing rather than 728
+  bytes. They answer iterator classes, which fit where an `Iterator` is
+  asked for. Natively a lookup boxes no String key, or Int key past 255:
+  `get` of a String key 13 ns rather than 18, and nothing rather than 32
+  bytes.
 - `Stack` and `ObjectPool` refuse a negative size with an `ArgumentError`,
   where the interpreter ended the process, the jvm ignored it and
   JavaScript threw its own `RangeError`.

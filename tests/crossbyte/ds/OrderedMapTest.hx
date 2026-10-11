@@ -177,4 +177,107 @@ class OrderedMapTest extends utest.Test {
 		Assert.equals(0, map.length());
 		Assert.isTrue(took < 0.15, n + " removals took " + took + " s");
 	}
+
+	/**
+		`for (key => value in map)` walks the pairs in insertion order, and
+		follows removals as the other loops do. The iterators still fit where
+		an `Iterator` is asked for, and so do the functions making them.
+	**/
+	public function testAKeyValueLoopWalksTheOrder():Void {
+		var map = new crossbyte.ds.OrderedMap<String, Int>();
+		for (i in 0...5) {
+			map.set('k$i', i);
+		}
+		map.remove("k1");
+		map.set("k1", 10);
+		var walked:Array<String> = [];
+		for (key => value in map) {
+			walked.push(key + "=" + value);
+			if (key == "k2") {
+				map.remove("k3");
+			}
+		}
+		Assert.same(["k0=0", "k2=2", "k4=4", "k1=10"], walked);
+
+		var values:Iterator<Int> = map.iterator();
+		var keys:Iterator<String> = map.keysIterator();
+		var pairs:Iterator<crossbyte.ds.ListedMap.KeyValuePair<String, Int>> = map.keyValuePairs();
+		var making:Void->Iterator<Int> = map.iterator;
+		Assert.equals(0, values.next());
+		Assert.equals("k0", keys.next());
+		Assert.equals("k0", pairs.next().key);
+		Assert.equals(0, making().next());
+	}
+
+	/**
+		A `for` loop over the values, the keys or the pairs of an `OrderedMap`
+		allocates nothing, natively and on the jvm. Each returned an
+		`Iterator` structure made of two objects, which natively also made a
+		closure for every `hasNext` and `next` called through it: 728 bytes a
+		loop over eight entries.
+	**/
+	public function testALoopOverAnOrderedMapAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var map = new crossbyte.ds.OrderedMap<String, Int>();
+		for (i in 0...100) {
+			map.set('k$i', i);
+		}
+		var sum:Int = 0;
+		var loops:Array<Void->Void> = [
+			() -> for (value in map) sum += value,
+			() -> for (key in map.keysIterator()) sum += key.length,
+			() -> for (key => value in map) sum += key.length + value
+		];
+		for (loop in loops) {
+			for (_ in 0...20000) {
+				loop();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(loop, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "a loop allocated " + reading);
+		}
+		Assert.isTrue(sum > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Reading, testing and replacing a held key allocates nothing natively:
+		through `haxe.IMap` a String key, or an Int one past 255, was boxed for
+		every call (32 bytes a `get` of a String key). An `Int` value is held
+		boxed, so setting one past 255 still boxes it, and reading it does not.
+	**/
+	public function testAnOrderedMapLookupAllocatesNothingNatively():Void {
+		#if cpp
+		var strings = new crossbyte.ds.OrderedMap<String, Int>();
+		var ints = new crossbyte.ds.OrderedMap<Int, Int>();
+		var named = new crossbyte.ds.OrderedMap<String, Array<Int>>();
+		var keys:Array<String> = [for (i in 0...1000) 'k$i'];
+		var held:Array<Int> = [1];
+		for (i in 0...1000) {
+			strings.set(keys[i], i);
+			ints.set(i * 7, i);
+			named.set(keys[i], held);
+		}
+		var at:Int = 0;
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			() -> sum += strings.get(keys[(at = (at + 7) % 1000)]),
+			() -> if (strings.exists(keys[(at = (at + 7) % 1000)])) sum++,
+			() -> named.set(keys[(at = (at + 7) % 1000)], held),
+			() -> sum += ints.get((at = (at + 7) % 1000) * 7),
+			() -> if (ints.exists((at = (at + 7) % 1000) * 7)) sum++
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "a lookup allocated " + reading);
+		}
+		Assert.isTrue(sum > 0);
+		#else
+		Assert.pass();
+		#end
+	}
 }

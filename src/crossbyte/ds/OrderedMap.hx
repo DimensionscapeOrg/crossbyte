@@ -1,6 +1,9 @@
 package crossbyte.ds;
 
 import crossbyte.ds.ListedMap.KeyValuePair;
+#if (cpp && !cppia)
+import crossbyte.ds._internal.NativeMap;
+#end
 
 /**
  * ...
@@ -19,6 +22,10 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * **Removing while iterating** is safe: an entry removed before the loop
  * reaches it is not visited, and every other entry is visited once. An
  * entry added while iterating may or may not be visited.
+ *
+ * A `for` loop over the values, the keys (`keysIterator()`) or the pairs
+ * (`for (key => value in map)`) allocates nothing natively or on the jvm;
+ * `keyValuePairs()` hands out a `KeyValuePair` for each entry.
  *
  * @param K The type of keys used in the map.
  * @param V The type of values stored in the map.
@@ -45,14 +52,18 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @param value The value to associate with the key.
 	 */
 	public function set(key:K, value:V):Void {
-		var entry = __map.get(key);
+		var entry = __entryOf(key);
 		if (entry != null) {
 			entry.value = value;
 			return;
 		}
 
 		entry = new OrderedMapEntry<K, V>(key, value);
+		#if (cpp && !cppia)
+		NativeMap.set(__map, key, entry);
+		#else
 		__map.set(key, entry);
+		#end
 		entry.previous = __last;
 		if (__last == null) {
 			__first = entry;
@@ -70,7 +81,7 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @return The value associated with the key, or `null` if not found.
 	 */
 	public function get(key:K):Null<V> {
-		var entry = __map.get(key);
+		var entry = __entryOf(key);
 		return entry == null ? null : entry.value;
 	}
 
@@ -81,7 +92,7 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @return `true` if the key exists, `false` otherwise.
 	 */
 	public function exists(key:K):Bool {
-		return __map.exists(key);
+		return __holds(key);
 	}
 
 	/**
@@ -91,12 +102,16 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @return `true` if the key existed and was removed, `false` otherwise.
 	 */
 	public function remove(key:K):Bool {
-		var entry = __map.get(key);
+		var entry = __entryOf(key);
 		if (entry == null) {
 			return false;
 		}
 
+		#if (cpp && !cppia)
+		NativeMap.remove(__map, key);
+		#else
 		__map.remove(key);
+		#end
 		// Out of the list, but its own `next` is left as it was: an iterator
 		// standing on it still finds its way on.
 		if (entry.previous == null) {
@@ -118,23 +133,25 @@ final class OrderedMap<K:Dynamic, V> {
 	/**
 	 * Returns an iterator over the keys in insertion order.
 	 *
-	 * @return An iterator of keys.
+	 * @return An iterator of keys, which fits where an `Iterator<K>` is
+	 *         asked for.
 	 */
-	public function keysIterator():Iterator<K> {
+	public inline function keysIterator():OrderedMapKeyIterator<K, V> {
 		return new OrderedMapKeyIterator<K, V>(__first);
 	}
 
 	/**
 	 * Returns an iterator over the values in insertion order.
 	 *
-	 * @return An iterator of values.
+	 * @return An iterator of values, which fits where an `Iterator<V>` is
+	 *         asked for.
 	 */
-	public function iterator():Iterator<V> {
+	public inline function iterator():OrderedMapValueIterator<K, V> {
 		return new OrderedMapValueIterator<K, V>(__first);
 	}
 
 	/** The values, in insertion order as it happens. **/
-	public inline function unorderedIterator():Iterator<V> {
+	public inline function unorderedIterator():OrderedMapValueIterator<K, V> {
 		return iterator();
 	}
 
@@ -142,10 +159,19 @@ final class OrderedMap<K:Dynamic, V> {
 	 * Returns an iterator over `{ key, value }` pairs in insertion order.
 	 *
 	 * @return An iterator of `KeyValuePair`s: classes, which fit where
-	 *         `{key, value}` structures are asked for.
+	 *         `{key, value}` structures are asked for. Each `next()` makes
+	 *         one, which a `for (key => value in map)` loop does not.
 	 */
-	public function keyValuePairs():Iterator<KeyValuePair<K, V>> {
+	public inline function keyValuePairs():OrderedMapPairIterator<K, V> {
 		return new OrderedMapPairIterator<K, V>(__first);
+	}
+
+	/**
+	 * What `for (key => value in map)` walks: the pairs in insertion order,
+	 * as `keyValuePairs()` hands them out, but in a loop allocating none.
+	 */
+	public inline function keyValueIterator():OrderedMapPairIterator<K, V> {
+		return keyValuePairs();
 	}
 
 	/**
@@ -195,7 +221,7 @@ final class OrderedMap<K:Dynamic, V> {
 	 * `Array.indexOf` counts it).
 	 */
 	public function indexOf(key:K, ?fromIndex:Int):Int {
-		if (!__map.exists(key)) {
+		if (!__holds(key)) {
 			return -1;
 		}
 		var from:Int = fromIndex == null ? 0 : fromIndex;
@@ -216,9 +242,36 @@ final class OrderedMap<K:Dynamic, V> {
 		}
 		return -1;
 	}
+
+	// Natively through the map's own class: through haxe.IMap a String key,
+	// or an Int key past 255, is boxed for every call.
+	private inline function __entryOf(key:K):Null<OrderedMapEntry<K, V>> {
+		#if (cpp && !cppia)
+		return cast NativeMap.get(__map, key);
+		#else
+		return __map.get(key);
+		#end
+	}
+
+	private inline function __holds(key:K):Bool {
+		#if (cpp && !cppia)
+		return NativeMap.has(__map, key);
+		#else
+		return __map.exists(key);
+		#end
+	}
 }
 
-/** One entry of an `OrderedMap`, and its neighbours in insertion order. **/
+/**
+ * One entry of an `OrderedMap`, and its neighbours in insertion order.
+ *
+ * Not generic, on purpose: natively a primitive value is held boxed, so
+ * `get`, which answers a `Null<V>`, hands back the box it holds. Held as an
+ * `Int`, every `get` past 255 would box it again, where now only a `set`
+ * does. (On the jvm a `get` of an `Int` past 127 boxes it again either way:
+ * the jvm target reads a `Null<Int>` out of a generic value by unboxing it
+ * and boxing it anew.)
+ */
 @:noCompletion
 private class OrderedMapEntry<K, V> {
 	public var key:K;
@@ -231,15 +284,32 @@ private class OrderedMapEntry<K, V> {
 		this.key = key;
 		this.value = value;
 	}
+
+	/**
+		The first entry still held from `entry` on, or null. A removed entry
+		keeps its `next`, and the chain from it reaches the live entries
+		after it. Out of line, so a loop's step holds no loop of its own.
+	**/
+	public static function liveFrom<K, V>(entry:OrderedMapEntry<K, V>):Null<OrderedMapEntry<K, V>> {
+		while (entry != null && entry.removed) {
+			entry = entry.next;
+		}
+		return entry;
+	}
 }
 
 // The iterators walk the entries themselves and do no Map operation, so
 // Map's @:multiType key-type selection is never resolved through an
-// unspecialized K.
+// unspecialized K. Each is one object whose one field its constructor
+// writes, and all of it inline, so a `for` loop keeps it in locals rather
+// than allocating it.
 
-/** The entries of an `OrderedMap` from `first` on, skipping removed ones. **/
+/**
+ * Walks an `OrderedMap`'s values in insertion order, skipping entries removed
+ * since. Made by `OrderedMap.iterator()`.
+ */
 @:noCompletion
-private class OrderedMapWalk<K, V> {
+class OrderedMapValueIterator<K, V> {
 	private var __at:OrderedMapEntry<K, V>;
 
 	public inline function new(first:OrderedMapEntry<K, V>) {
@@ -247,71 +317,73 @@ private class OrderedMapWalk<K, V> {
 	}
 
 	public inline function hasNext():Bool {
-		// A removed entry keeps its `next`, and the chain from it reaches the
-		// live entries after it.
-		while (__at != null && __at.removed) {
-			__at = __at.next;
+		if (__at != null && __at.removed) {
+			__at = OrderedMapEntry.liveFrom(__at);
 		}
 		return __at != null;
 	}
 
-	public inline function take():OrderedMapEntry<K, V> {
-		hasNext();
-		var entry:OrderedMapEntry<K, V> = __at;
-		__at = entry.next;
-		return entry;
-	}
-}
-
-@:noCompletion
-private class OrderedMapValueIterator<K, V> {
-	private var __walk:OrderedMapWalk<K, V>;
-
-	public inline function new(first:OrderedMapEntry<K, V>) {
-		__walk = new OrderedMapWalk<K, V>(first);
-	}
-
-	public inline function hasNext():Bool {
-		return __walk.hasNext();
-	}
-
 	public inline function next():V {
-		return __walk.take().value;
+		var entry:OrderedMapEntry<K, V> = __at;
+		if (entry.removed) {
+			entry = OrderedMapEntry.liveFrom(entry);
+		}
+		__at = entry.next;
+		return entry.value;
 	}
 }
 
+/** `OrderedMapValueIterator`, answering the keys. Made by `OrderedMap.keysIterator()`. **/
 @:noCompletion
-private class OrderedMapKeyIterator<K, V> {
-	private var __walk:OrderedMapWalk<K, V>;
+class OrderedMapKeyIterator<K, V> {
+	private var __at:OrderedMapEntry<K, V>;
 
 	public inline function new(first:OrderedMapEntry<K, V>) {
-		__walk = new OrderedMapWalk<K, V>(first);
+		__at = first;
 	}
 
 	public inline function hasNext():Bool {
-		return __walk.hasNext();
+		if (__at != null && __at.removed) {
+			__at = OrderedMapEntry.liveFrom(__at);
+		}
+		return __at != null;
 	}
 
 	public inline function next():K {
-		return __walk.take().key;
+		var entry:OrderedMapEntry<K, V> = __at;
+		if (entry.removed) {
+			entry = OrderedMapEntry.liveFrom(entry);
+		}
+		__at = entry.next;
+		return entry.key;
 	}
 }
 
-/** The `{ key, value }` pair is built only when `next()` is called. **/
+/**
+ * `OrderedMapValueIterator`, answering `{ key, value }` pairs, each built
+ * only when `next()` is called. Made by `OrderedMap.keyValuePairs()`.
+ */
 @:noCompletion
-private class OrderedMapPairIterator<K, V> {
-	private var __walk:OrderedMapWalk<K, V>;
+class OrderedMapPairIterator<K, V> {
+	private var __at:OrderedMapEntry<K, V>;
 
 	public inline function new(first:OrderedMapEntry<K, V>) {
-		__walk = new OrderedMapWalk<K, V>(first);
+		__at = first;
 	}
 
 	public inline function hasNext():Bool {
-		return __walk.hasNext();
+		if (__at != null && __at.removed) {
+			__at = OrderedMapEntry.liveFrom(__at);
+		}
+		return __at != null;
 	}
 
 	public inline function next():KeyValuePair<K, V> {
-		var entry:OrderedMapEntry<K, V> = __walk.take();
-		return new KeyValuePair(entry.key, entry.value);
+		var entry:OrderedMapEntry<K, V> = __at;
+		if (entry.removed) {
+			entry = OrderedMapEntry.liveFrom(entry);
+		}
+		__at = entry.next;
+		return new KeyValuePair<K, V>(entry.key, entry.value);
 	}
 }
