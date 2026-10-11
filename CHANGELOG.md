@@ -705,6 +705,8 @@ says how.
   for (`"4294967296"` or `3e9` as an `Int`), and an `ArgumentError` for
   text that is not a number, a value that is not a primitive, and
   `fromDynamic` given one, where it threw a `String`. (Upgrading)
+- `PrimitiveValue.toBool` of NaN is `false`, as JavaScript's
+  `Boolean(NaN)` is, where it was `true`. (Upgrading)
 
 #### TCP
 
@@ -1897,6 +1899,8 @@ an API added in this release has is not listed here.
   `PrimitiveValue.fromDynamic` catches a `crossbyte.errors.RangeError` (a
   number out of range) or an `ArgumentError` (anything else), or the
   `crossbyte.errors.Error` both extend.
+- `PrimitiveValue.toBool` of NaN (a value from `fromDynamic`) is `false`:
+  code that took it as `true` asks `Math.isNaN` of the number first.
 
 #### TCP
 

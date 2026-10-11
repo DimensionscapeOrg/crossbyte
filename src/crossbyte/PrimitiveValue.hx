@@ -197,8 +197,9 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	/**
 	 * Converts the primitive to a `Bool`.
 	 *
-	 * - `0` or `0.0` converts to `false`, any other number (NaN, which only
-	 *   `fromDynamic` can hold, included) is `true`.
+	 * - `0`, `0.0` and NaN (which only `fromDynamic` can hold) convert to
+	 *   `false`, any other number to `true`, as JavaScript's `Boolean` and
+	 *   ActionScript's do.
 	 * - A string converts to `false` when, without its surrounding spaces and
 	 *   in any case, it is `""`, `"0"` or `"false"`, and to `true` otherwise.
 	 * - `null` converts to `false`.
@@ -212,7 +213,8 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TInt:
 				return this != 0;
 			case TFloat:
-				return this != 0.0;
+				var f:Float = this;
+				return f != 0.0 && !Math.isNaN(f);
 			case TBool:
 				return this;
 			case TClass(String):

@@ -477,6 +477,20 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(((cast null : PrimitiveValue)).toBool());
 	}
 
+	/**
+		NaN converts to `false`, as JavaScript's `Boolean(NaN)` and
+		ActionScript's do. It was `true`, as any number but 0 is.
+	**/
+	public function testPrimitiveValueNaNIsFalse():Void {
+		var nan:PrimitiveValue = PrimitiveValue.fromDynamic(Math.NaN);
+		Assert.isFalse(nan.toBool(), "NaN was true");
+		var implicit:Bool = nan;
+		Assert.isFalse(implicit);
+		Assert.isFalse(PrimitiveValue.fromDynamic(-0.0).toBool());
+		Assert.isTrue(PrimitiveValue.fromDynamic(Math.POSITIVE_INFINITY).toBool());
+		Assert.isTrue(PrimitiveValue.fromDynamic(1e-300).toBool());
+	}
+
 	public function testPrimitiveValueRejectsUnsupportedDynamicConversions():Void {
 		var value:PrimitiveValue = cast { nested: true };
 
