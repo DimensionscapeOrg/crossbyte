@@ -294,6 +294,53 @@ class CollectionsTest extends utest.Test {
 		rather than only literals (a table keyed on opcodes repeating their
 		numbers) and "Case not found" thrown for an unmatched key.
 	**/
+	public function testASwitchTableKeyHeldInAVariableNamedKeyOrArgsIsItsOwn():Void {
+		// The dispatcher's parameters were named key and args, so a case key
+		// held in a variable of either name read the dispatcher's argument:
+		// every dispatch went to the first case, or none to its own.
+		var seen:Array<String> = [];
+		var key:String = "LOGIN";
+		var byKey = SwitchTable.make([
+			{key: key, handler: () -> seen.push("login")},
+			{key: "PING", handler: () -> seen.push("ping")}
+		], (k, a) -> seen.push("other " + k));
+		byKey("LOGIN");
+		byKey("PING");
+		byKey("NOPE");
+		Assert.equals("login,ping,other NOPE", seen.join(","));
+
+		seen = [];
+		var args:String = "X";
+		var byArgs = SwitchTable.make([{key: args, handler: () -> seen.push("x")}], (k, a) -> seen.push("other " + k));
+		byArgs("X");
+		byArgs("Y");
+		Assert.equals("x,other Y", seen.join(","));
+	}
+
+	public function testASwitchTableHandlerGivenTheWrongNumberOfArgumentsIsRefused():Void {
+		// Unchecked, the same dispatch threw on the interpreter, ran on
+		// JavaScript and was dropped without a word on the jvm.
+		var calls:Int = 0;
+		var dispatch = SwitchTable.make([
+			{key: "ZERO", handler: () -> calls++},
+			{key: "ONE", handler: (n:Int) -> calls += n}
+		]);
+		var refused:Int = 0;
+		for (wrong in [() -> dispatch("ZERO", 1), () -> dispatch("ONE"), () -> dispatch("ONE", 1, 2)]) {
+			try {
+				wrong();
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(3, refused, "a dispatch with the wrong number of arguments was taken");
+		Assert.equals(0, calls);
+
+		dispatch("ZERO");
+		dispatch("ONE", 5);
+		Assert.equals(1 + 5, calls);
+	}
+
 	public function testSwitchTableTakesNamedKeysAndAFallback():Void {
 		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([{key: SwitchTableOpcodes.PING, handler: () -> {}}])), "a named constant was refused as a key");
 		Assert.notNull(TypeCheck.errorOf(SwitchTable.make([{key: "A", handler: () -> {}}, {key: "A", handler: () -> {}}])), "a duplicate key was accepted");
@@ -2028,6 +2075,24 @@ class CollectionsTest extends utest.Test {
 
 		tree.clear();
 		Assert.equals(0, tree.query(new Rectangle(0, 0, 100, 100)).length);
+	}
+
+	public function testAWeightedGraphRefusesANaNNode():Void {
+		// NaN equals nothing, itself included: each use of it added a node
+		// on the interpreter and JavaScript, found again on the jvm.
+		var graph = new WeightedGraph<Float>();
+		var refused:Int = 0;
+		for (add in [() -> graph.addNode(Math.NaN), () -> graph.addEdge(Math.NaN, 1.5, 1), () -> graph.addEdge(1.5, Math.NaN, 1)]) {
+			try {
+				add();
+			} catch (e:crossbyte.errors.ArgumentError) {
+				refused++;
+			}
+		}
+		Assert.equals(3, refused, "a NaN node was taken");
+		Assert.isNull(graph.getNeighbors(Math.NaN));
+		graph.addEdge(1.5, 2.5, 1);
+		Assert.equals(1, graph.getNeighbors(1.5).length);
 	}
 
 	public function testWeightedGraphSupportsStringNodes():Void {

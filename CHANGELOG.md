@@ -1065,6 +1065,19 @@ Fixes to code new in this release are not listed.
   `RangeError`, a `SlotMap` with a `growthChunk` near 2^31 still grows, and
   on the jvm a `PackedSlotMap` insert and remove no longer allocate 64 bytes
   between them.
+- `SwitchTable.make`: a case key held in a variable named `key` or `args`
+  is that variable, where it read the dispatcher's own argument and every
+  dispatch went to the first case; and a handler whose type says how many
+  arguments it takes is refused another number with an `ArgumentError` on
+  every target, where the interpreter threw, JavaScript ran it and the jvm
+  dropped the call without a word.
+- `BitmapData`: `fillRect`, `copyPixels` and `threshold` clip to the
+  bitmaps, as Flash's do, where they threw part way through; a copy within
+  one bitmap whose regions overlap moves the region whole, where it smeared;
+  a negative size, or one of more pixels than an `Int` counts, is refused;
+  and a pixel of no alpha holds no colour however it is set.
+- `WeightedGraph` refuses NaN as a node, which equals nothing and added
+  another node at every use.
 - `PriorityQueue` serves equal priorities first come, first served.
 - `QuadTree.insert` never refuses a point inside its bounds, and stops
   subdividing 32 levels down.
