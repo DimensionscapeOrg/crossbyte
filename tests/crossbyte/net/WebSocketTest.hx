@@ -370,6 +370,43 @@ class WebSocketTest extends utest.Test {
 		Assert.equals(0, ws.__inputPosition);
 	}
 
+	/**
+		With messages of any size taken, a masked frame whose length is
+		within its mask's four bytes of 2^31 is waited for, like any frame
+		not yet in. The mask and the length were added before comparing with
+		what had arrived, and the sum wrapped negative: the session read a
+		payload that had not come.
+	**/
+	public function testAFrameJustUnderTwoToTheThirtyOneIsWaitedFor():Void {
+		for (length in [0x7FFFFFFC, 0x7FFFFFFE, 0x7FFFFFFF]) {
+			var ws = openParser();
+			ws.maxMessageSize = 0;
+			var calls:Int = 0;
+			var closed:Null<Int> = null;
+			ws.onmessage = _ -> calls++;
+			ws.onclose = e -> closed = e.code;
+
+			var frame = new ByteArray();
+			frame.endian = BIG_ENDIAN;
+			frame.writeByte(0x82);
+			writePayloadLength(frame, length, true);
+			for (i in 0...4) {
+				frame.writeByte(0x11 * (i + 1));
+			}
+			for (i in 0...16) {
+				frame.writeByte(i);
+			}
+			frame.position = 0;
+			ws.__input = frame;
+			ws.__onData();
+
+			Assert.equals(0, calls, StringTools.hex(length) + " was dispatched");
+			Assert.isNull(closed, StringTools.hex(length) + " closed the session");
+			Assert.equals(InternalWebSocket.OPEN, ws.readyState);
+			Assert.equals(0, ws.__inputPosition, StringTools.hex(length) + " was read before it arrived");
+		}
+	}
+
 	public function testExtendedPayloadLength126DispatchesPayload():Void {
 		var ws = openParser();
 		var received:ByteArray = null;

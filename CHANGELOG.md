@@ -1610,6 +1610,9 @@ Fixes to code new in this release are not listed.
   crashes in debug builds (hxcpp fork).
 - HashLink and Neko compile and run again, sockets included; hl TLS reads
   no longer stop every other thread; and neko's temporary files work.
+- On HashLink a socket read or write, or a datagram's, whose position and
+  length add past 2^31 is refused, where the sum wrapped, passed the check
+  and reached outside the buffer.
 - Native builds on Linux and macOS compile cleanly, and `-D final` builds
   compile.
 - No `trace` calls remain in library code.

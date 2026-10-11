@@ -1870,8 +1870,13 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 					return;
 				}
 
+				// In Int, and against what is left after the mask: the sum wraps
+				// for a length within four bytes of 2^31, which only an unsigned
+				// compare of bytesAvailable with it caught, and HashLink compares
+				// a UInt with an Int signed.
 				var maskBytes:Int = isMasked ? 4 : 0;
-				if (__input.bytesAvailable < maskBytes + payloadLength) {
+				var arrived:Int = __input.bytesAvailable;
+				if (payloadLength > arrived - maskBytes) {
 					__input.position = frameStart;
 					break;
 				}

@@ -59,7 +59,7 @@ private class SocketOutput extends haxe.io.Output {
 	}
 
 	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
-		if (pos < 0 || len < 0 || pos + len > buf.length)
+		if (pos < 0 || len < 0 || pos > buf.length - len)
 			throw haxe.io.Error.OutsideBounds;
 		var n = Socket.socket_send(sock.__s, (buf : hl.Bytes), pos, len);
 		if (n < 0) {
@@ -107,7 +107,7 @@ private class SocketInput extends haxe.io.Input {
 		the connection was reset partway through it.
 	**/
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
-		if (pos < 0 || len < 0 || pos + len > buf.length)
+		if (pos < 0 || len < 0 || pos > buf.length - len)
 			throw haxe.io.Error.OutsideBounds;
 		var r = Socket.socket_recv(sock.__s, (buf : hl.Bytes), pos, len);
 		if (r <= 0) {

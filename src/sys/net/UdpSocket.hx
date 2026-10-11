@@ -42,7 +42,7 @@ class UdpSocket extends Socket {
 	}
 
 	public function sendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
-		if (pos < 0 || len < 0 || pos + len > buf.length)
+		if (pos < 0 || len < 0 || pos > buf.length - len)
 			throw OutsideBounds;
 		var ret = socket_send_to(__s, (buf : hl.Bytes).offset(pos), len, addr.host, addr.port);
 		if (ret < 0) {
@@ -65,7 +65,7 @@ class UdpSocket extends Socket {
 	/** `readFrom` answering -1 for "would block" rather than throwing; see the cpp form. **/
 	@:noCompletion private function __tryReadFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
 		var host = 0, port = 0;
-		if (pos < 0 || len < 0 || pos + len > buf.length)
+		if (pos < 0 || len < 0 || pos > buf.length - len)
 			throw OutsideBounds;
 		var ret = socket_recv_from(__s, (buf : hl.Bytes).offset(pos), len, host, port);
 		if (ret == -1)
@@ -79,7 +79,7 @@ class UdpSocket extends Socket {
 
 	/** `sendTo` answering -1 for a full send buffer rather than throwing. **/
 	@:noCompletion private function __trySendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
-		if (pos < 0 || len < 0 || pos + len > buf.length)
+		if (pos < 0 || len < 0 || pos > buf.length - len)
 			throw OutsideBounds;
 		var ret = socket_send_to(__s, (buf : hl.Bytes).offset(pos), len, addr.host, addr.port);
 		if (ret == -1)
