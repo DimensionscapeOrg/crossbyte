@@ -286,6 +286,24 @@ class BsonTest extends utest.Test {
 		Assert.equals(withNul, Bson.decode(Bson.encode({s: withNul})).s);
 	}
 
+	/**
+		A field has a name, and a null one is refused as it is added. It was
+		taken: natively it became the empty name, written and read back as
+		one, and every other target failed later, on a null access in
+		whatever read the document (`toString`, `Bson.encode`).
+	**/
+	public function testANullFieldNameIsRefused():Void {
+		var name:Null<String> = null;
+		Assert.raises(() -> new BsonDocument().add(name, 1), ArgumentError);
+		Assert.raises(() -> new BsonDocument().set(name, 1), ArgumentError);
+		var document = new BsonDocument().add("a", 1);
+		Assert.raises(() -> document.set(name, 2), ArgumentError);
+		Assert.equals(1, document.length);
+		Assert.isNull(document.get(name));
+		Assert.isFalse(document.exists(name));
+		Assert.isFalse(document.remove(name));
+	}
+
 	public function testMalformedDocumentsAreRefusedNotReadPastTheirEnd():Void {
 		var good:Bytes = Bson.encode({hello: "world"});
 

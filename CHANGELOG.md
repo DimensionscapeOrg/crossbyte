@@ -1684,6 +1684,10 @@ Fixes to code new in this release are not listed.
   accepts any `typ` in `acceptedTypes` (`JWT` and `at+jwt`) and none;
   `secureCompare` answers `false` for a null; a header with `crit` is
   refused; and a deeply nested token no longer ends the process.
+- A null name no longer ends the process natively in `JWTPayload`:
+  `claim` reads null, `hasClaim` answers false and `setClaim` throws an
+  `ArgumentError`, on every target, where on Node `setClaim` set a claim
+  named `"null"`.
 - BCrypt on a worker thread no longer stalls garbage collection, and
   `SecureRandom` initialises safely from two threads.
 

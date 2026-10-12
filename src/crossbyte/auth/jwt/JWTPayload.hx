@@ -116,23 +116,27 @@ abstract JWTPayload(JWTPayloadData) {
 
 	/**
 	 * Any claim by name, registered or not, as the token carried it; `null`
-	 * when absent.
+	 * when absent, and for a null name.
 	 */
 	public inline function claim(name:String):Dynamic {
-		return Reflect.field(this, name);
+		return name == null ? null : Reflect.field(this, name);
 	}
 
-	/** Whether the claims include `name`. */
+	/** Whether the claims include `name`; false for a null name. */
 	public inline function hasClaim(name:String):Bool {
-		return Reflect.hasField(this, name);
+		return name != null && Reflect.hasField(this, name);
 	}
 
 	/**
 	 * Sets a claim by name, for claims added after the payload was built.
 	 *
 	 * @return This payload, so calls chain.
+	 * @throws ArgumentError For a null name.
 	 */
 	public function setClaim(name:String, value:Dynamic):JWTPayload {
+		if (name == null) {
+			throw new crossbyte.errors.ArgumentError("A claim is set by its name, and null was given.");
+		}
 		Reflect.setField(this, name, value);
 		return new JWTPayload(this);
 	}

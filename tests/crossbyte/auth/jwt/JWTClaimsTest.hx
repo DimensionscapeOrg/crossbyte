@@ -95,6 +95,22 @@ class JWTClaimsTest extends utest.Test {
 		Assert.equals("refresh", verified.claim("scope"));
 	}
 
+	/**
+		A null name has no claim: `claim` reads null, `hasClaim` is false and
+		`setClaim` throws an `ArgumentError`, on every target. Natively each
+		ended the process; eval and Neko threw a null access, HashLink did
+		from `setClaim`, and on Node `setClaim` set a claim named "null".
+	**/
+	public function testANullClaimNameHasNoClaim():Void {
+		var payload:JWTPayload = {sub: "a", exp: 2000000000.0};
+		var name:Null<String> = null;
+		Assert.isNull(payload.claim(name), "a null name read a claim");
+		Assert.isFalse(payload.hasClaim(name), "a null name was a claim");
+		Assert.raises(() -> payload.setClaim(name, 1), ArgumentError);
+		Assert.isFalse(payload.hasClaim("null"), "a claim named null was set");
+		Assert.equals("a", payload.subject);
+	}
+
 	public function testTimesAndRegisteredClaimsKeepTheirTypes():Void {
 		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]));
 

@@ -76,15 +76,21 @@ class BsonDocument {
 		Appends a field without looking for one of the same name, and returns
 		this document so calls chain. BSON allows repeated names, but MongoDB
 		reads only one of them; use `set` unless the name is known to be new.
+		@throws ArgumentError For a null name.
 	**/
 	public function add(name:String, value:Dynamic):BsonDocument {
+		__checkName(name);
 		__keys.push(name);
 		__values.push(value);
 		return this;
 	}
 
-	/** Replaces the field named `name`, or appends it; returns this document. **/
+	/**
+		Replaces the field named `name`, or appends it; returns this document.
+		@throws ArgumentError For a null name.
+	**/
 	public function set(name:String, value:Dynamic):BsonDocument {
+		__checkName(name);
 		var index:Int = __keys.indexOf(name);
 
 		if (index >= 0) {
@@ -151,6 +157,15 @@ class BsonDocument {
 
 	public function toString():String {
 		return ExtendedJson.stringify(this);
+	}
+
+	// A field is named, and BSON has no null name: natively one became the
+	// empty name, and every other target failed later, on a null access
+	// in whatever read the document.
+	@:noCompletion private static inline function __checkName(name:String):Void {
+		if (name == null) {
+			throw new crossbyte.errors.ArgumentError("A BSON field is added by its name, and null was given.");
+		}
 	}
 
 	@:noCompletion private static function __plain(value:Dynamic):Dynamic {
