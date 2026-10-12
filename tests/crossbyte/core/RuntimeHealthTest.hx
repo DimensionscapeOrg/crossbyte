@@ -294,6 +294,24 @@ class RuntimeHealthTest extends utest.Test {
 		Assert.equals(0.0, dropped);
 	}
 
+	/**
+		`frameOverruns` is a `Float`, so it does not wrap past 2^31 into a
+		negative number: as an `Int`, 2,147,483,647 overruns and one more
+		read -2,147,483,648 (natively, on the jvm, the interpreter, Neko and
+		HashLink).
+	**/
+	public function testFrameOverrunsAreCountedPastTwoToTheThirtyOne():Void {
+		var runtime = new CrossByte(false, DEFAULT, true);
+		runtime.tps = 20;
+		runtime.__frameOverruns += 2147483647;
+		runtime.__frameDeadline = Timer.stamp() - 0.030;
+		runtime.__defaultMainLoop();
+		var overruns = runtime.frameOverruns;
+		runtime.exit();
+
+		Assert.isTrue(overruns == 2147483648.0, "2,147,483,647 overruns and one more read " + overruns);
+	}
+
 	public function testAFrameWithTimeToSpareIsNotAnOverrun():Void {
 		var runtime = new CrossByte(false, DEFAULT, true);
 		runtime.tps = 20;
@@ -369,6 +387,12 @@ class RuntimeHealthTest extends utest.Test {
 		js.Syntax.code("setTimeout({0}, 20)", check);
 	}
 	#end
+
+	/** The loop's counts since it started are `Float`s on every target. **/
+	public function testTheLoopsCountsAreFloats():Void {
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : CrossByte).frameOverruns));
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : CrossByte).timerOverruns));
+	}
 
 	public function testMemoryUsageIsReportedWhereThePlatformHasAFigure():Void {
 		// Non-zero on every target, and natively not the collector's 32-bit

@@ -118,6 +118,31 @@ class RuntimeTimersTest extends utest.Test {
 		Assert.isTrue(firedAt >= 10.0 && firedAt <= 10.0 + frame + 1e-9, "a 10 second timeout fired at " + firedAt + "s");
 	}
 
+	/**
+		`timerOverruns` is a `Float`, so a runtime that runs out of timer
+		budget for long enough does not wrap it past 2^31 into a negative
+		number: as an `Int`, 2,147,483,647 overruns and one more read
+		-2,147,483,648 (natively, on the jvm, the interpreter, Neko and
+		HashLink). At 1,000 ticks a second of constant overruns that was
+		24.8 days.
+	**/
+	public function testTimerOverrunsAreCountedPastTwoToTheThirtyOne():Void {
+		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : CrossByte).timerOverruns));
+		var runtime = new CrossByte(false, DEFAULT, true);
+		runtime.tps = 500;
+		runtime.__timerOverruns += 2147483647;
+		for (_ in 0...100) {
+			runtime.__timer.setTimeout(0.05, () -> {
+				var end = haxe.Timer.stamp() + 0.0005;
+				while (haxe.Timer.stamp() < end) {}
+			});
+		}
+		runtime.pump(0.1, 0);
+		var overruns = runtime.timerOverruns;
+		runtime.exit();
+		Assert.isTrue(overruns == 2147483648.0, "2,147,483,647 overruns and one more read " + overruns);
+	}
+
 	public function testABurstBeyondTheBudgetIsCountedAndCaughtUp():Void {
 		// A frame's timers get one tick interval of wall time; what that
 		// leaves is backlog, fired on the frames after.

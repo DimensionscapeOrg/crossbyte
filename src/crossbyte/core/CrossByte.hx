@@ -377,9 +377,10 @@ final class CrossByte extends EventDispatcher {
 
 	/**
 	 * How many frames have run out of timer budget with timers still due,
-	 * since the runtime started.
+	 * since the runtime started. A `Float`, exact to 2^53, so it does not
+	 * wrap at 2^31 however long the runtime runs.
 	 */
-	public var timerOverruns(get, never):Int;
+	public var timerOverruns(get, never):Float;
 
 	/**
 	 * How far past its deadline the last frame ended, in seconds. A few
@@ -397,9 +398,9 @@ final class CrossByte extends EventDispatcher {
 	 * A frame that ends late because a wait did is late, which `loopLag`
 	 * says, but not an overrun: the `POLL` loop waits in poll until its
 	 * deadline, and on Windows that wait ends on the system timer's tick,
-	 * up to a millisecond or two past it.
+	 * up to a millisecond or two past it. A `Float`, as `timerOverruns` is.
 	 */
-	public var frameOverruns(get, never):Int;
+	public var frameOverruns(get, never):Float;
 
 	/**
 	 * Seconds of schedule the loop has given up since the runtime started. A
@@ -469,9 +470,9 @@ final class CrossByte extends EventDispatcher {
 	#end
 	@:noCompletion private var __tps:UInt;
 	@:noCompletion private var __dt:Float = 0.0;
-	@:noCompletion private var __timerOverruns:Int = 0;
+	@:noCompletion private var __timerOverruns:Float = 0.0;
 	@:noCompletion private var __loopLag:Float = 0.0;
-	@:noCompletion private var __frameOverruns:Int = 0;
+	@:noCompletion private var __frameOverruns:Float = 0.0;
 	@:noCompletion private var __droppedScheduleDebt:Float = 0.0;
 
 	/**
@@ -1361,7 +1362,7 @@ final class CrossByte extends EventDispatcher {
 		return behind > 0 ? behind : 0.0;
 	}
 
-	@:noCompletion private inline function get_timerOverruns():Int {
+	@:noCompletion private inline function get_timerOverruns():Float {
 		return __timerOverruns;
 	}
 
@@ -1369,7 +1370,7 @@ final class CrossByte extends EventDispatcher {
 		return __loopLag;
 	}
 
-	@:noCompletion private inline function get_frameOverruns():Int {
+	@:noCompletion private inline function get_frameOverruns():Float {
 		return __frameOverruns;
 	}
 

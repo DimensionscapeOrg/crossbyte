@@ -69,7 +69,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   the heap stays the default.
 - Loop health: `CrossByte.loopLag`, `frameOverruns`,
   `droppedScheduleDebt`, `postQueueDepth`, `timerBacklog`, `timerLag` and
-  `timerOverruns`.
+  `timerOverruns`. The two overrun counts are `Float`s, exact to 2^53, so
+  a runtime that keeps overrunning cannot wrap one past 2^31 into a
+  negative number.
 - `CrossByte.collectWhenIdle`, off by default: natively, a runtime running
   its own loop collects garbage in the gap before its next tick when a
   collection is due, rather than in the middle of a tick.

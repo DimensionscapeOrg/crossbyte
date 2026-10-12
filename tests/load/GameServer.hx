@@ -106,7 +106,7 @@ class GameServer {
 	var connects:Int = 0;
 	var closes:Int = 0;
 	var serverErrors:Int = 0;
-	var overrunsAtStart:Int = 0;
+	var overrunsAtStart:Float = 0.0;
 	var debtAtStart:Float = 0;
 	var maxLag:Float = 0;
 	var runMaxLag:Float = 0;
@@ -266,7 +266,7 @@ class GameServer {
 			tickGap: runGaps.summary(),
 			worldEntities: world != null ? world.entities.length : 0,
 			frameWork: runFrame.summary(),
-			overruns: runtime.frameOverruns - overrunsAtStart,
+			overruns: Std.int(runtime.frameOverruns - overrunsAtStart),
 			droppedScheduleSeconds: round(runtime.droppedScheduleDebt - debtAtStart),
 			loopLagMaxMs: round(runMaxLag * 1000),
 			snapshotsPerSecond: Math.round(runSnapshots / wall),
@@ -446,7 +446,7 @@ class GameServer {
 			tick: tickTimes.summary(),
 			tickGap: tickGaps.summary(),
 			frameWork: frameWork.summary(),
-			overruns: runtime.frameOverruns - overrunsAtStart,
+			overruns: Std.int(runtime.frameOverruns - overrunsAtStart),
 			loopLagMaxMs: round(maxLag * 1000),
 			snapshotsPerSecond: Math.round(windowSnapshots / wall),
 			inputsPerSecond: Math.round(windowInputs / wall),
