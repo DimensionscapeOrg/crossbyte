@@ -869,7 +869,7 @@ final class File extends EventDispatcher {
 	/**
 		Copies the file or directory at the location specified by this File object to the location
 		specified by the newLocation parameter. The copy process creates any required parent directories
-		(if possible). Only the contents are copied, not the attributes AIR copies: a new copy gets the
+		(if possible). Only the contents are copied, not the attributes: a new copy gets the
 		permissions a new file gets, one written over a file keeps that file's, and either was modified now.
 
 		The source and destination are compared as files, not only as names: a name for the same file in
@@ -1869,7 +1869,7 @@ final class File extends EventDispatcher {
 		the desktop of the user the program runs as, and does nothing visible for a service with no
 		desktop.
 
-		As in AIR, a file the operating system would run rather than open is refused: one with an
+		A file the operating system would run rather than open is refused: one with an
 		executable's extension (`exe`, `bat`, `cmd`, `com`, `msi`, `ps1`, `vbs`, `js`, `jar`, `lnk`,
 		`sh`, `app`, `command`, `desktop` and the like), and on Linux and macOS a file marked
 		executable.
@@ -2849,8 +2849,8 @@ final class File extends EventDispatcher {
 		// Taken literally: a %NAME% in a path is not replaced from the
 		// environment, so a name sent by a peer ("%SystemRoot%" or
 		// "%USERPROFILE%") cannot reach a directory the caller never named,
-		// out of a server's root among them. AIR's File expands nothing, and
-		// neither does the operating system's own file API.
+		// out of a server's root among them. The operating system's own file
+		// API expands nothing either.
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}

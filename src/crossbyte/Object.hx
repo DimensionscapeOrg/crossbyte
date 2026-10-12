@@ -3,8 +3,9 @@ package crossbyte;
 import crossbyte.ds.ListedMap.KeyValuePair;
 
 /**
- * ActionScript's `Object`, for loosely structured values: parsed JSON, a
- * `SharedObject`'s data, an event's target.
+ * A loosely structured value: parsed JSON, a `SharedObject`'s data, an
+ * event's target. From ActionScript: it is `Object` there, and keeps that
+ * one's methods.
  *
  * Its fields are read and written with a dot or with brackets. A field read
  * is `Dynamic`, so it converts, adds and compares as the value it holds
@@ -13,8 +14,8 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * `propertyIsEnumerable`, `isPrototypeOf`, `valueOf`, `toString` and
  * `toLocaleString` are here, with `exists`, `remove`, `keys`, `values` and
  * `entries`, and a loop walks the fields: `for (name in object)` or
- * `for (name => value in object)`. As in ActionScript, an `Object` holding a
- * function can be called.
+ * `for (name => value in object)`. An `Object` holding a function can be
+ * called.
  *
  * ```haxe
  * var payload:Object = haxe.Json.parse('{"name":"ada","hits":3,"tags":["a","b"]}');
@@ -40,8 +41,8 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * field; on the jvm `get` of a property throws), so read a class's fields
  * through the class.
  *
- * **Conversions.** As in ActionScript, an `Object` takes any value and
- * converts on its own to any type: `var socket:Socket = event.target`.
+ * **Conversions.** An `Object` takes any value and converts on its own to
+ * any type: `var socket:Socket = event.target`.
  * Nothing checks that conversion. An object of another class is kept as it
  * is on JavaScript, eval and Neko, becomes null natively, and throws on the
  * jvm and HashLink; `cast(object, Socket)` checks, and throws on every
@@ -98,19 +99,16 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		Whether the object has a field `name` of its own: `exists`, by the
-		name ActionScript gives it. Called through the object's own fields,
-		as a field read with a dot is, it answered only on JavaScript, which
-		has it on every object's prototype, and threw everywhere else.
+		Whether the object has a field `name` of its own: `exists`, by
+		ActionScript's name for it.
 	**/
 	public inline function hasOwnProperty(name:String):Bool {
 		return exists(name);
 	}
 
 	/**
-		Whether a loop over the object reaches its field `name`, as
-		ActionScript asks of a dynamic property: true for a field of a
-		structure (a literal, parsed JSON, `new Object()`), false for a
+		Whether a loop over the object reaches its field `name`: true for a
+		field of a structure (a literal, parsed JSON, `new Object()`), false for a
 		class instance's, which are declared as a sealed class's are, and
 		for a name it does not have.
 	**/
@@ -119,8 +117,8 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		Whether this object is in `value`'s prototype chain, as ActionScript
-		asks: never, since a Haxe value has no prototype chain to be in. To
+		Whether this object is in `value`'s prototype chain: never, since a
+		Haxe value has no prototype chain to be in. To
 		ask whether a value is an instance of a class, use
 		`Std.isOfType(value, SomeClass)`.
 	**/
@@ -128,7 +126,7 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		return false;
 	}
 
-	/** The object itself, as ActionScript's `valueOf` gives an `Object`. **/
+	/** The object itself. **/
 	public inline function valueOf():Object {
 		return this;
 	}
@@ -280,8 +278,7 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 
 	/**
 		`object[index]`: of an `Array`, its element, or null outside it; of
-		anything else, the field named by the number, as ActionScript reads
-		`object[0]`.
+		anything else, the field named by the number.
 	**/
 	@:arrayAccess @:noCompletion @:dox(hide) public inline function __getIndex(index:Int):Dynamic {
 		return __elementAt(this, index);

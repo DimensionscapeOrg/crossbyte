@@ -827,7 +827,7 @@ class System {
 		var path:String = __storagePath();
 
 		if (!__appStorageDirMade) {
-			// AIR's "created when you first access it".
+			// Made the first time it is asked for.
 			try {
 				if (!sys.FileSystem.exists(path)) {
 					sys.FileSystem.createDirectory(path);

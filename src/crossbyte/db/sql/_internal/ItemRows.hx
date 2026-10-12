@@ -5,11 +5,10 @@ import crossbyte.events.SQLEvent;
 import haxe.ds.StringMap;
 
 /**
-	A statement's rows made instances of its `itemClass`, as AIR's
-	`SQLStatement.itemClass` makes them: each created with no arguments,
-	which runs its constructor, and each field set from the column of its
-	name. The class needs a field, or a property with a setter, for every
-	column; a column it has none for is an error, as in AIR. Only runs when
+	A statement's rows made instances of its `itemClass`: each created with
+	no arguments, which runs its constructor, and each field set from the
+	column of its name. The class needs a field, or a property with a
+	setter, for every column; a column it has none for is an error. Only runs when
 	a statement has an `itemClass`, so rows that need none cost nothing more.
 
 	Fields are set by reflection, so under `-dce full` keep the class

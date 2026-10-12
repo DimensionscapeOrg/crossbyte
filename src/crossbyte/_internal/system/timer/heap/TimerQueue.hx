@@ -6,7 +6,7 @@ import haxe.ds.Vector;
 /**
  * Min-heap of timer nodes ordered by due time, and among those due at the
  * same time by when they were armed: first armed, first fired, as
- * JavaScript's and ActionScript's timers are. Ordered by time alone, the heap
+ * JavaScript's timers are. Ordered by time alone, the heap
  * fired a run of timers armed together the first and then the rest
  * backwards.
  *

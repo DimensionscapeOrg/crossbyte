@@ -37,10 +37,10 @@ class SQLiteStatement extends EventDispatcher {
 	@:noCompletion private var __cancels:Int = 0;
 
 	/**
-		A class each row is made an instance of, as AIR's `itemClass`: made
-		with no arguments, and each field set from the column of its name. A
-		column the class has no field for fails the statement with an
-		`SQLError`. Null, the default, leaves rows anonymous objects.
+		A class each row is made an instance of: made with no arguments, and
+		each field set from the column of its name. A column the class has no
+		field for fails the statement with an `SQLError`. Null, the default,
+		leaves rows anonymous objects.
 	**/
 	public var itemClass:Class<Dynamic>;
 
@@ -99,7 +99,7 @@ class SQLiteStatement extends EventDispatcher {
 	}
 
 	/**
-		Stops this statement, and only it, as AIR's `cancel()` does: its work
+		Stops this statement, and only it: its work
 		that has not run is dropped, its work running now is interrupted
 		(SQLite stops it at its next step), and the rows it had left unread
 		are let go of, which ends the read it held open. `executing` is
@@ -447,8 +447,8 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		The rows a write changed: SQLite's own count for a statement with no
-		result columns, and 0 for one that returns rows, as AIR's
-		`SQLResult.rowsAffected` has it. Taken where the statement ran, before
+		result columns, and 0 for one that returns rows. Taken where the
+		statement ran, before
 		its rows are read, rather than from the result set's length, which
 		for a SELECT steps through the rest of its rows.
 	**/
@@ -494,8 +494,7 @@ class SQLiteStatement extends EventDispatcher {
 	**/
 	@:noCompletion private function __receive(message:SQLiteStatementMessage):Void {
 		if (message.epoch != __cancels) {
-			// Sent for work cancel() has stopped since: not heard, as AIR's
-			// cancel() has it.
+			// Sent for work cancel() has stopped since: not heard.
 			return;
 		}
 

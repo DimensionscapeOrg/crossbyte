@@ -61,9 +61,9 @@ import sys.net.Socket as SysSocket;
 	- `connect` once it is up (and, for a `secure` one, its TLS handshake
 	  done).
 	- `ioError` for a connect that failed (refused, a name that does not
-	  resolve, a handshake that failed, or not made within `connectTimeout`, whose
-	  event's `errorId` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and nothing
-	  after it, since no connection came up: no `close` follows, as in AIR.
+	  resolve, a handshake that failed, or not made within `connectTimeout`,
+	  whose event's `errorId` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and
+	  nothing after it, since no connection came up: no `close` follows.
 	  Once connected, for a write that failed; the connection's `close`
 	  follows.
 	- `close` once, when a connection that came up ends, whichever end ended
@@ -905,9 +905,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		The `close` event is dispatched for it, before this returns, if the
 		connection had come up (once, as for a close by the peer), so code
 		that lets go of a connection's resources on `close` does so whichever
-		end closed it. AIR dispatches `close` only for the peer's close;
-		CrossByte dispatches it for every end of a connection. A connect still
-		under way is abandoned, with no event.
+		end closed it. A connect still under way is abandoned, with no event.
+		(From AIR: AIR dispatches `close` only for the peer's close.)
 
 		What was written and not yet sent goes first, as far as the system
 		takes it without waiting; to know all of it reached the network,

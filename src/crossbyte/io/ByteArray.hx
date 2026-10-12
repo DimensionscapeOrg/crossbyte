@@ -187,8 +187,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Clears the contents of the byte array and resets the `length`
 		and `position` properties to 0.
 
-		The memory the bytes took is kept, unlike AIR's `clear()`, which
-		frees it: a byte array cleared and filled again reuses its buffer and
+		The memory the bytes took is kept (where AIR's `clear()` frees it): a
+		byte array cleared and filled again reuses its buffer and
 		allocates nothing, which is what a buffer reused for every message
 		wants, and what `Socket` relies on for its own. To give the memory
 		back, drop the byte array and let the collector take it.

@@ -5,11 +5,12 @@ import crossbyte.Object;
 import crossbyte.errors.RangeError;
 
 /**
- * ActionScript's `Vector`: a dense, typed array whose length can be fixed.
+ * A dense, typed array whose length can be fixed. From ActionScript: it is
+ * `Vector` there, with the same methods.
  *
- * `v[i]` reads and writes an element on every target. As in ActionScript,
- * reading at or past `length` throws `RangeError`, writing at `length`
- * appends, and writing past it throws.
+ * `v[i]` reads and writes an element on every target. Reading at or past
+ * `length` throws `RangeError`, writing at `length` appends, and writing
+ * past it throws.
  *
  * **`fixed`** is enforced: while it is set, anything that would change the
  * length (`push`, `pop`, `shift`, `unshift`, `insertAt`, `removeAt`, a
@@ -38,8 +39,7 @@ import crossbyte.errors.RangeError;
  * is `0` natively and on the jvm but `null` on the interpreter and
  * JavaScript. So `new Vector<Int>(3)` is three zeroes on one target and three
  * nulls on another: adding them throws on the interpreter and quietly gives
- * `NaN` on JavaScript, where ActionScript would fill a numeric vector with 0.
- * Write every element before reading it. A negative length is refused on
+ * `NaN` on JavaScript. Write every element before reading it. A negative length is refused on
  * every target with `RangeError`.
  *
  * **What it costs.** Reading, writing, `length`, `for` loops and the methods
@@ -61,7 +61,7 @@ import crossbyte.errors.RangeError;
  *
  * Natively the elements are kept as the type the code reaching them names,
  * and converted to another when code naming that one reaches them. So a
- * `Vector<Int>` holds ints, as in ActionScript: a `null` put into one
+ * `Vector<Int>` holds ints: a `null` put into one
  * through a `Vector<Dynamic>` or generic code reads back as `0` natively,
  * where other targets keep the `null`.
  */
@@ -82,8 +82,8 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	}
 
 	/**
-		A new vector of `array`'s elements, as ActionScript's `Vector.<T>(array)`
-		makes one. The array is copied, so neither changes the other.
+		A new vector of `array`'s elements. The array is copied, so neither
+		changes the other.
 	**/
 	public static inline function ofArray<T>(array:Array<T>):Vector<T> {
 		return new VectorImpl<T>(array.copy(), false);
@@ -129,8 +129,7 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	/**
 		A new vector of what `callback` returns for each element, in order.
 		Typed by what the callback returns: an `Int` vector mapped to text is
-		a `Vector<String>`. ActionScript's `map` keeps the element type, which
-		a callback returning that type still does here.
+		a `Vector<String>`; a callback returning the element type keeps it.
 	**/
 	public macro function map(ethis:haxe.macro.Expr, callback:haxe.macro.Expr, ?thisObject:haxe.macro.Expr):haxe.macro.Expr {
 		return crossbyte._internal.macro.VectorMacro.call(ethis, "__map", "__mapBy", callback, thisObject);
@@ -316,7 +315,7 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 	// What the five above become where they are called (see VectorMacro):
 	// a loop calling a function of (item, index, vector), or the vector's
 	// own method. Each loop walks the vector as that method does: never
-	// past the length it started with, as in ActionScript, and never past
+	// past the length it started with, and never past
 	// the length it has now, so a callback that shortens it is not handed
 	// the elements that are no longer there.
 
@@ -486,10 +485,8 @@ abstract Vector<T>(VectorImpl<T>) from VectorImpl<T> to VectorImpl<T> {
 
 	/**
 		Removes the element at `index` and returns it. A negative `index`
-		counts back from the end, as ActionScript's does: `-1` is the last
-		element. One outside the vector either way throws `RangeError`, where
-		it answered `null` past the end and took the first element for one
-		before the start.
+		counts back from the end: `-1` is the last element. One outside the
+		vector either way throws `RangeError`.
 	**/
 	public inline function removeAt(index:Int):T {
 		if (this.__fixed) {
@@ -869,8 +866,7 @@ class VectorImpl<T> {
 	}
 
 	/**
-		A new vector of this one's items followed by each of `vectors`', as
-		ActionScript's `concat` takes them.
+		A new vector of this one's items followed by each of `vectors`'.
 	**/
 	public function concat(...vectors:Vector<T>):Vector<T> {
 		var out:Array<T> = __items().copy();
@@ -890,8 +886,8 @@ class VectorImpl<T> {
 		var f:Dynamic = __callback(callback);
 		var arity:Int = __arityOf(callback, f, thisObject);
 		// `every`, `filter`, `forEach`, `map` and `some` all walk the vector
-		// this way: never past the length they started with, as in
-		// ActionScript, and never past the length it has now, so a callback
+		// this way: never past the length they started with, and never past
+		// the length it has now, so a callback
 		// that shortens it under the loop is not handed the elements that are
 		// no longer there.
 		var count:Int = items.length;
@@ -948,8 +944,7 @@ class VectorImpl<T> {
 	/**
 		A new vector of what `callback` returns for each item, in order. Typed
 		by what the callback returns: an `Int` vector mapped to text is a
-		`Vector<String>`. ActionScript's `map` keeps the element type, which a
-		callback returning that type still does here.
+		`Vector<String>`; a callback returning the element type keeps it.
 	**/
 	public function map<R>(callback:VectorCallback<T, R>, thisObject:Object = null):Vector<R> {
 		var items:Array<T> = __items();

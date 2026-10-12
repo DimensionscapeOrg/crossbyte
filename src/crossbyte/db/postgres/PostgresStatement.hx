@@ -23,10 +23,10 @@ class PostgresStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 
 	/**
-		A class each row is made an instance of, as AIR's `itemClass`: made
-		with no arguments, and each field set from the column of its name. A
-		column the class has no field for fails the statement with an
-		`SQLError`. Null, the default, leaves rows anonymous objects.
+		A class each row is made an instance of: made with no arguments, and
+		each field set from the column of its name. A column the class has no
+		field for fails the statement with an `SQLError`. Null, the default,
+		leaves rows anonymous objects.
 	**/
 	public var itemClass:Class<Dynamic>;
 	/**

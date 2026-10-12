@@ -912,8 +912,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		The rows the statement just answered with `result` changed, as the
 		server counts them, for a `MySQLStatement` to keep before another
 		statement replaces the count: a `Float`, exact to 2^53, and 0 for a
-		statement that returns rows, as AIR's `SQLResult.rowsAffected` has
-		it. Natively from the statement's own answer, at no cost. Elsewhere
+		statement that returns rows. Natively from the statement's own
+		answer, at no cost. Elsewhere
 		the driver's count, an `Int`, where it can be right, and otherwise
 		(negative, held at 2^31 - 1, or none at all, as Haxe's JDBC binding
 		keeps none) asked in SQL as text. On hl and neko, whose drivers read

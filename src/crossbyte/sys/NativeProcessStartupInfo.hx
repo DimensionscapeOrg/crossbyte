@@ -1,10 +1,10 @@
 package crossbyte.sys;
 
 /**
- * A lightweight startup description for `NativeProcess`.
+ * What `NativeProcess.start` starts: the executable and its arguments.
  *
- * This mirrors the common parts of AIR's `NativeProcessStartupInfo` in a
- * compact, modern Haxe form.
+ * From AIR: those two of `NativeProcessStartupInfo`'s members, by the same
+ * names.
  */
 class NativeProcessStartupInfo {
 	public var executable:String;

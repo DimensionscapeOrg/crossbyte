@@ -41,8 +41,8 @@ class BitmapData {
 	}
 
 	// A colour as this bitmap holds it: opaque ones always at full alpha, and
-	// in a transparent one, a pixel of no alpha holds no colour either, as
-	// Flash's premultiplied pixels hold none.
+	// in a transparent one, a pixel of no alpha holds no colour either, as a
+	// premultiplied pixel holds none.
 	private inline function __stored(color:Int):Int {
 		return transparent ? ((color & 0xFF000000) == 0 ? 0 : color) : ((0xFF << 24) | (color & 0xFFFFFF));
 	}
@@ -81,8 +81,8 @@ class BitmapData {
 	}
 
 	/**
-		Fills the part of `rect` inside the bitmap with `color`, as Flash's
-		does: the rest is clipped away, where it threw part way through.
+		Fills the part of `rect` inside the bitmap with `color`; the rest is
+		clipped away.
 	**/
 	public function fillRect(rect:Rectangle, color:Int):Void {
 		__ensureNotDisposed();
@@ -135,9 +135,9 @@ class BitmapData {
 
 		It reads from the start of `byteArray`, whatever its position, which
 		it moves to just after the last pixel read; so pixels written into a
-		ByteArray are read back without moving its position first. (Flash's
-		`setPixels` reads from the position instead.) Bytes past the pixels
-		are left unread.
+		ByteArray are read back without moving its position first. Bytes past
+		the pixels are left unread. (From Flash: its `setPixels` reads from the
+		position instead.)
 
 		@throws EOFError When `byteArray` holds fewer than `width * height`
 		        pixels.
@@ -157,9 +157,8 @@ class BitmapData {
 
 	/**
 		Copies the pixels of `sourceRect` in `sourceBitmap` to `destPoint`,
-		as Flash's does: clipped to both bitmaps, where it threw part way
-		through, and whole when the two regions are in the same bitmap and
-		overlap, where it read pixels it had already written.
+		clipped to both bitmaps, and whole when the two regions are in the
+		same bitmap and overlap: no pixel is read after it has been written.
 	**/
 	public function copyPixels(sourceBitmap:BitmapData, sourceRect:Rectangle, destPoint:Point):Void {
 		__ensureNotDisposed();
@@ -213,8 +212,8 @@ class BitmapData {
 		`copySource` is set and left as they are otherwise.
 
 		The test is `(pixel & mask) operation (threshold & mask)`, compared
-		as unsigned 32-bit values as ActionScript's `uint`s are, so an alpha
-		of 0xFF is above one of 0x7F rather than below it. It returns the
+		as unsigned 32-bit values, so an alpha of 0xFF is above one of 0x7F
+		rather than below it. It returns the
 		number of pixels that passed.
 
 		@param operation One of `<`, `<=`, `>`, `>=`, `==` and `!=`.

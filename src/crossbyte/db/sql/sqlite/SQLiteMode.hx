@@ -1,8 +1,10 @@
 package crossbyte.db.sql.sqlite;
 
 /**
-	How `SQLiteConnection.open()` and `openAsync()` open a database file, as
-	AIR's `SQLMode`. An in-memory database is always opened as `CREATE`.
+	How `SQLiteConnection.open()` and `openAsync()` open a database file. An
+	in-memory database is always opened as `CREATE`.
+
+	From AIR: these are `SQLMode`'s three, by the same names.
 
 	@author Christopher Speciale
 **/

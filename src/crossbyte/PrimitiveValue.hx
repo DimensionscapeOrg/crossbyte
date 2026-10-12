@@ -199,7 +199,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 * Converts the primitive to a `Bool`.
 	 *
 	 * - `0`, `0.0` and NaN convert to `false`, any other number to `true`,
-	 *   as JavaScript's `Boolean` and ActionScript's do.
+	 *   as JavaScript's `Boolean` does.
 	 * - A string converts to `false` when, without its surrounding spaces and
 	 *   in any case, it is `""`, `"0"` or `"false"`, and to `true` otherwise.
 	 * - `null` converts to `false`.

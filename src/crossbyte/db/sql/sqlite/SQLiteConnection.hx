@@ -65,7 +65,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		Whether the database gives the space of deleted rows back to the
 		file system at every commit, so its file shrinks: SQLite's FULL
 		`auto_vacuum`, set when `open()` creates the database with
-		`autoCompact`, as AIR's is. A database whose `auto_vacuum` is
+		`autoCompact`. A database whose `auto_vacuum` is
 		INCREMENTAL keeps its free pages until `PRAGMA incremental_vacuum`
 		runs, and reads `false`; `compact()` reclaims the space of any
 		database.
@@ -75,7 +75,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		How much of the database the connection keeps in memory, as SQLite's
 		`PRAGMA cache_size` has it: a positive number of pages, or a negative
 		number of KiB: `-2000` is about 2 MB, SQLite's own default. `open()`
-		sets 2000 pages, as AIR's does.
+		sets 2000 pages.
 	**/
 	public var cacheSize(get, set):Int;
 	// public var columnNameStyle(get, set):String;
@@ -731,8 +731,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	/**
-		Refuses what needs an open connection, as AIR's `SQLConnection`
-		does.
+		Refuses what needs an open connection.
 	**/
 	@:noCompletion private inline function __requireOpen():Void {
 		if (!__isOpen()) {
@@ -756,7 +755,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Refuses an open while one is open, or an asynchronous close is not yet
-		over, as AIR's `open()` does, so the handle it has is never replaced
+		over, so the handle it has is never replaced
 		and left open (unreachable, holding whatever locks it held), and no
 		second worker starts on an asynchronous connection.
 	**/
@@ -812,9 +811,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		Removes the statistics `analyze()` gathered (the rows of
 		`sqlite_stat1`, and of `sqlite_stat4` where SQLite keeps one) from
 		every database the connection has open, attached ones included, and
-		has the query planner read them again, so it plans without them, as
-		AIR's `deanalyze()` does. Dispatches `SQLEvent.DEANALYZE` once that is
-		done.
+		has the query planner read them again, so it plans without them.
+		Dispatches `SQLEvent.DEANALYZE` once that is done.
 	**/
 	public function deanalyze():Void {
 		__perform(SQLEvent.DEANALYZE, __removeStatistics);
@@ -857,8 +855,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 		Stops what this connection is doing and what it has been asked to do,
-		then dispatches `SQLEvent.CANCEL` once that has taken effect, as AIR's
-		`cancel()` does. The connection stays open and usable: what is asked
+		then dispatches `SQLEvent.CANCEL` once that has taken effect. The
+		connection stays open and usable: what is asked
 		of it after the call runs as usual.
 
 		On an asynchronous connection the work running now is interrupted
@@ -1399,7 +1397,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			if (openMode == READ) {
 				// hxcpp's glue opens every file to read and write, so READ alone
 				// would only check that the file exists, and an INSERT through
-				// it would succeed. Held to reading here instead, as AIR's READ is.
+				// it would succeed. Held to reading here instead, which is what
+				// READ promises.
 				__connection.request("PRAGMA query_only = 1;");
 			}
 		}

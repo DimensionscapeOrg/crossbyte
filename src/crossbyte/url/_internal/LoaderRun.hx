@@ -210,7 +210,7 @@ class LoaderRun {
 
 			var requestData:Dynamic = null;
 			var contentType:Null<String> = null;
-			// `URLRequest.data` is AIR's Object, told apart here once: a body
+			// `URLRequest.data` is `Dynamic`, told apart here once: a body
 			// of text or bytes, typed from here on, or a form's fields.
 			var bodyData:Null<crossbyte.http.HTTPRequestBody> = null;
 

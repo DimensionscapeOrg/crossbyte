@@ -97,7 +97,8 @@ class Event {
 
 	/**
 		The dispatcher the event was dispatched on: always an
-		`IEventDispatcher`, typed `Object` as ActionScript types it.
+		`IEventDispatcher`, typed `Object` so it can be assigned to its own
+		type.
 
 		Assign it to the type it is for typed access
 		(`var socket:Socket = event.target;`): the object is the same one, and

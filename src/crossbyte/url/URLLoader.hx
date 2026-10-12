@@ -214,7 +214,7 @@ class URLLoader extends EventDispatcher {
 			}
 			__busy = false;
 			var unreadable:Null<String> = __parseData(dataBytes);
-			// The native client's contract, and AS3's: a 4xx or 5xx is an
+			// The native client's contract: a 4xx or 5xx is an
 			// IO_ERROR, with its body in `data`. This completed, so one status
 			// meant two outcomes depending on the target.
 			if (finalStatus >= 400) {

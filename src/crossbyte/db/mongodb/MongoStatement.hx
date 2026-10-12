@@ -44,10 +44,9 @@ class MongoStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 
 	/**
-		A class each document is made an instance of, as AIR's `itemClass`
-		makes rows: made with no arguments, and each field set from the
-		document's field of its name, `_id` included, so the class needs
-		one. A field the class does not have fails the command with an
+		A class each document is made an instance of: made with no
+		arguments, and each field set from the document's field of its name,
+		`_id` included, so the class needs one. A field the class does not have fails the command with an
 		`SQLError`. Null, the default, leaves documents anonymous objects.
 	**/
 	public var itemClass:Class<Dynamic>;

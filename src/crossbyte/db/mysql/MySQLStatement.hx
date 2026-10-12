@@ -23,10 +23,10 @@ class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 
 	/**
-		A class each row is made an instance of, as AIR's `itemClass`: made
-		with no arguments, and each field set from the column of its name. A
-		column the class has no field for fails the statement with an
-		`SQLError`. Null, the default, leaves rows anonymous objects.
+		A class each row is made an instance of: made with no arguments, and
+		each field set from the column of its name. A column the class has no
+		field for fails the statement with an `SQLError`. Null, the default,
+		leaves rows anonymous objects.
 	**/
 	public var itemClass:Class<Dynamic>;
 	/**
@@ -291,8 +291,7 @@ class MySQLStatement extends EventDispatcher {
 
 		Its `rowsAffected` is the rows the statement changed, as the server
 		counts them (a `Float`, exact to 2^53), and 0 for a statement that
-		returns rows, as AIR's has it. Natively it comes from the statement's
-		own answer. Elsewhere it is the driver's count where that can be
+		returns rows. Natively it comes from the statement's own answer. Elsewhere it is the driver's count where that can be
 		right, and is asked in SQL otherwise: after every write on the jvm,
 		whose binding keeps no count. On hl and neko, whose drivers read it
 		in 32 bits, a count past 2^32 wraps back into range there and is
