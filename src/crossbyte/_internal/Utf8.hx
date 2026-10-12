@@ -133,16 +133,25 @@ class Utf8 {
 	}
 
 	#if hl
-	// Whether the last unit is anything but the high half of a pair, which
-	// HashLink's encoder runs past the end of the string looking for the low
-	// half of: one comparison, and the only one of these that crashes.
+	// Whether HashLink's encoder stops where the string does. It takes every
+	// surrogate, high or low, with the unit after it, whatever that is, so it
+	// runs past the end of a string whose last unit it reaches as the first
+	// of two, and crashes the process (an access violation, and the heap
+	// left broken): the last of a run of surrogates at the end an odd number
+	// long, a lone low half included, since the first of such a run is always
+	// reached as the first of two. Mostly one comparison: the last unit is
+	// not a surrogate.
 	static inline function __endsWhole(value:String):Bool {
 		var length:Int = value.length;
-		if (length == 0) {
-			return true;
+		var i:Int = length;
+		while (i > 0) {
+			var unit:Int = StringTools.fastCodeAt(value, i - 1);
+			if (unit < 0xD800 || unit >= 0xE000) {
+				break;
+			}
+			i--;
 		}
-		var last:Int = StringTools.fastCodeAt(value, length - 1);
-		return last < 0xD800 || last >= 0xDC00;
+		return ((length - i) & 1) == 0;
 	}
 	#end
 

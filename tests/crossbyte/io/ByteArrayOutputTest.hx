@@ -409,4 +409,42 @@ class ByteArrayOutputTest extends utest.Test {
 			}
 		}
 	}
+
+	#if hl
+	/**
+		Text whose last unit HashLink's encoder would take with the unit after
+		the string is written without reading past it: each half of a pair
+		alone there as U+FFFD. That encoder takes every surrogate, high or low,
+		with the unit after it, so it ran past the end of a string ending in a
+		run of them an odd number long, a lone low half among them, with an
+		access violation and the heap left broken; only a lone high half at
+		the very end was caught.
+	**/
+	public function testTextEndingInHalfAPairIsWrittenWithinItOnHashLink():Void {
+		var high:String = "\u{1F600}".substr(0, 1);
+		var low:String = "\u{1F600}".substr(1, 1);
+		var cases:Array<Array<String>> = [
+			["x" + low, "78 EF BF BD"],
+			[low, "EF BF BD"],
+			["x" + high, "78 EF BF BD"],
+			["\u{1F600}" + low, "F0 9F 98 80 EF BF BD"],
+			[high + high + low, "EF BF BD F0 9F 98 80"],
+			["ab" + low + "\u{1F600}", "61 62 EF BF BD F0 9F 98 80"],
+			["\u{1F600}", "F0 9F 98 80"]
+		];
+		for (pair in cases) {
+			var text:String = pair[0];
+			var label:String = [for (i in 0...text.length) StringTools.hex(StringTools.fastCodeAt(text, i), 4)].join(" ");
+			var written:String = try {
+				var output = new ByteArrayOutput();
+				output.writeUTFBytes(text);
+				var bytes:ByteArray = output;
+				[for (i in 0...bytes.length) StringTools.hex(bytes[i], 2)].join(" ");
+			} catch (e:Dynamic) {
+				"threw " + Std.string(e);
+			}
+			Assert.equals(pair[1], written, label);
+		}
+	}
+	#end
 }

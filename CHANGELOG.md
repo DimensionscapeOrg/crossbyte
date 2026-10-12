@@ -1175,10 +1175,10 @@ Fixes to code new in this release are not listed.
   read what was there before the array was shortened (natively and on the
   jvm), and a negative index written is a `RangeError`. `bytesAvailable`
   is 0 with the position past the end, not about four billion.
-- Writing a string that ends in half of a surrogate pair no longer crashes
-  HashLink (its encoder ran past the end of the string), and natively no
-  longer throws "Invalid UTF16": the half is written as U+FFFD, as on
-  JavaScript. A malformed UTF-8 sequence reads as U+FFFD on HashLink and
+- Writing a string that ends in half of a surrogate pair, either half, no
+  longer crashes HashLink (its encoder ran past the end of the string), and
+  natively no longer throws "Invalid UTF16": the half is written as U+FFFD,
+  as on JavaScript. A malformed UTF-8 sequence reads as U+FFFD on HashLink and
   eval, where HashLink dropped everything from it on and eval kept the
   bytes, which the next operation on the string aborted the process over.
 - `ByteArrayInput.readBytes` refuses a destination range that does not fit
