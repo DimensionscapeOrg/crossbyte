@@ -227,6 +227,57 @@ class SysSocketContractTest extends utest.Test {
 	}
 	#end
 
+	#if hl
+	/**
+		A range outside the buffer is refused before anything is sent or read,
+		a position and a length whose sum passes 2^31 included. hl's natives
+		take any range and read or write wherever it points, so this check is
+		all that keeps them in the buffer; added before comparing, such a sum
+		wrapped negative and passed.
+
+		The sockets are never connected or bound, so a range that got past
+		the check reaches the system and fails there, saying something else.
+	**/
+	public function testARangeOutsideTheBufferIsRefusedOnHashLink():Void {
+		var buffer = Bytes.alloc(16);
+		var stream = new Socket();
+		var datagram = new UdpSocket();
+		var to = new Address();
+		to.setHost(new Host(LOOPBACK));
+		to.port = 9;
+		try {
+			stream.setBlocking(false);
+			datagram.setBlocking(false);
+		} catch (_:Dynamic) {}
+
+		for (range in [[0x7FFFFFF0, 0x20], [8, 0x7FFFFFFC], [0x7FFFFFFF, 1], [17, 0], [0, 17], [-1, 1], [0, -1]]) {
+			var pos:Int = range[0];
+			var len:Int = range[1];
+			var what:String = "[" + pos + ", " + len + "]";
+			refusedAsOutside(() -> stream.output.writeBytes(buffer, pos, len), "a write of " + what);
+			refusedAsOutside(() -> stream.input.readBytes(buffer, pos, len), "a read into " + what);
+			refusedAsOutside(() -> datagram.sendTo(buffer, pos, len, to), "a datagram sent from " + what);
+			refusedAsOutside(() -> datagram.readFrom(buffer, pos, len, to), "a datagram read into " + what);
+			refusedAsOutside(() -> @:privateAccess datagram.__trySendTo(buffer, pos, len, to), "a datagram tried from " + what);
+			refusedAsOutside(() -> @:privateAccess datagram.__tryReadFrom(buffer, pos, len, to), "a datagram tried into " + what);
+		}
+
+		closeQuietly(stream);
+		closeQuietly(datagram);
+	}
+
+	static function refusedAsOutside(operation:Void->Void, what:String, ?pos:haxe.PosInfos):Void {
+		var error:Dynamic = null;
+		try {
+			operation();
+		} catch (e:Dynamic) {
+			error = e;
+		}
+		var outside:Bool = Std.isOfType(error, haxe.io.Error) && Type.enumEq(error, haxe.io.Error.OutsideBounds);
+		Assert.isTrue(outside, what + " was not refused as outside the buffer: " + Std.string(error), pos);
+	}
+	#end
+
 	static function connectedPair():Null<SocketPair> {
 		var listener = new Socket();
 		var client = new Socket();
