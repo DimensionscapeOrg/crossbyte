@@ -1,5 +1,7 @@
 package crossbyte;
 
+import crossbyte.Object.ObjectEntries;
+
 /**
  * A typed dynamic record wrapper for loosely structured payloads that still have
  * a known structural shape.
@@ -52,16 +54,18 @@ abstract TypedObject<T>(T) from T to T {
 		return keys().map(field -> Reflect.field(this, field));
 	}
 
-	public inline function entries():Iterator<{key:String, value:Dynamic}> {
-		return keys().map(field -> {
-			key: field,
-			value: Reflect.field(this, field)
-		}).iterator();
+	/**
+		The fields as `key`/`value` pairs, each made when the iteration reaches
+		it as a `KeyValuePair`, which fits where a `{key, value}` structure is
+		asked for, as `Object.entries()` gives them.
+	**/
+	public inline function entries():ObjectEntries {
+		return new ObjectEntries(this, keys());
 	}
 
 	/** What `for (name => value in typed)` walks, as `entries()` gives it. **/
-	public inline function keyValueIterator():Iterator<{key:String, value:Dynamic}> {
-		return entries();
+	public inline function keyValueIterator():ObjectEntries {
+		return new ObjectEntries(this, keys());
 	}
 
 	/**

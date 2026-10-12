@@ -174,7 +174,7 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		it as a `KeyValuePair`, which fits where a `{key, value}` structure is
 		asked for.
 	**/
-	public function entries():Iterator<KeyValuePair<String, Dynamic>> {
+	public function entries():ObjectEntries {
 		return new ObjectEntries(this, __fieldsOf(this));
 	}
 
@@ -236,8 +236,8 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 		What `for (name => value in object)` walks: the fields and their
 		values, as `entries()` gives them.
 	**/
-	public inline function keyValueIterator():Iterator<KeyValuePair<String, Dynamic>> {
-		return entries();
+	public inline function keyValueIterator():ObjectEntries {
+		return new ObjectEntries(this, __fieldsOf(this));
 	}
 
 	/**
@@ -322,9 +322,13 @@ abstract Object(Dynamic) from Dynamic to Dynamic {
 	}
 }
 
-/** `Object.entries()`'s iterator: each field's pair made as it is reached. **/
-@:noCompletion
-private final class ObjectEntries {
+/**
+ * What `Object.entries()` and `TypedObject.entries()` give, and what a
+ * `for (name => value in object)` loop walks: each field's
+ * `KeyValuePair`, made as the iteration reaches it. An `Iterator` of
+ * them, typed as this class so a loop calls it directly.
+ */
+final class ObjectEntries {
 	private var __object:Dynamic;
 	private var __fields:Array<String>;
 	private var __next:Int = 0;

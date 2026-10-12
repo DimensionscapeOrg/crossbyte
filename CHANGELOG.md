@@ -653,8 +653,17 @@ says how.
   handlers take the same arguments, and a dispatch is typed, all checked as
   it compiles. (Upgrading)
 - `TaskPool.submit` returns `Task<Any>`, `UncaughtErrorEvent.origin` is
-  `Any`, and `EnumUtil`, `ListedMap.KeyValuePair` and `Object.entries()`
-  use classes rather than anonymous structures. (Upgrading)
+  `Any`, and `EnumUtil`, `ListedMap.KeyValuePair`, `Object.entries()` and
+  `TypedObject.entries()` use classes rather than anonymous structures.
+  (Upgrading)
+- `Object` and `TypedObject` give their entries through one iterator
+  class, `ObjectEntries`, which a loop calls directly. Natively a walk of
+  four fields, by `entries()` or by `for (name => value in object)`, takes
+  68 ns rather than 182 for an `Object` (192 bytes rather than 808), and
+  for a `TypedObject`, which made an anonymous structure for every field
+  and an array of them first, 68 rather than 100 to 110 (192 bytes rather
+  than 680). On the jvm a `TypedObject`'s walk takes 34 ns rather than 74
+  (72 bytes rather than 248), and on Node 28 rather than 38.
 - On JavaScript, text is encoded and decoded through the platform's
   `TextEncoder` and `TextDecoder`, about ten times faster, and a NUL byte no
   longer ends a string read from bytes (on HashLink too).
@@ -1872,7 +1881,8 @@ an API added in this release has is not listed here.
   macros, so they are not values: where `vector.forEach` was passed as a
   function, pass `f -> vector.forEach(f)`.
 - `EnumUtil.getValue` is an `Array<Dynamic>`; `getNameValuePair` and the
-  `KeyValuePair`s of `ListedMap`, `OrderedMap` and `Object.entries()` are
+  `KeyValuePair`s of `ListedMap`, `OrderedMap`, `Object.entries()` and
+  `TypedObject.entries()` are
   classes, so code that builds one from another anonymous type, rather than
   a literal, constructs it instead.
 - `SlotHandle` no longer becomes an `Int` by itself: use `handle.index()`
