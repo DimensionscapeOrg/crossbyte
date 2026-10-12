@@ -752,10 +752,15 @@ says how.
   `ArgumentError` naming it, with what is wrong or the schemes that would
   work, where it threw a bare string such as "Protocol error" or
   "missing host". (Upgrading)
-- On the jvm under Java 8 a select allocates nothing: the selector puts
-  the sockets it finds ready in an array CrossByte gives it, as Netty
-  does, where it added each to a set. A TCP echo, a datagram and a
-  reliable UDP message allocate 0 to 48 B where they took 72 to 160.
+- On the jvm a select allocates nothing, under Java 8 and from Java 11:
+  under Java 8 the selector puts the sockets it finds ready in an array
+  CrossByte gives it, as Netty does, and from Java 11 it hands each to
+  CrossByte as it finds it (`Selector.select` with an action), where it
+  added each to a set. A TCP echo, a datagram and a reliable UDP message
+  allocate 0 to 48 B where they took 72 to 160 (on Java 17, 0 where they
+  took 72 to 144). The JDK's own selector still boxes a socket's
+  descriptor past 127 each time it is ready, 16 B, which a busy server's
+  sockets all are; HotSpot's `-XX:AutoBoxCacheMax=65536` removes that.
 - Natively a TCP message allocates nothing once a connection is under way,
   and an idle connection lets go of its buffers' storage after five quiet
   seconds: 1.7 KB where it kept 51 KB after a 16 KB message each way.

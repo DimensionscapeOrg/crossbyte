@@ -23,6 +23,10 @@ Each runtime is a thread, and they run at once. MySQL goes through Connector/J o
 limit settings of the native client. Reliable UDP encryption uses CrossByte's own ChaCha20-Poly1305, since Java 8
 has none. ALPN, and so HTTP/2 over TLS, works natively and on the jvm only.
 
+A TCP, UDP or reliable UDP message allocates nothing on a runtime's side, under Java 8 and from Java 11, but for one
+thing in the JDK: its selector boxes the descriptor of each socket it finds ready once the number is past 127, as a
+busy server's all are, 16 bytes each time. HotSpot's `-XX:AutoBoxCacheMax=65536` keeps those boxes made once.
+
 ## Node.js
 
 Needs `hxnodejs`. Every runtime shares Node's one thread, so a server spread over runtimes is refused: run several

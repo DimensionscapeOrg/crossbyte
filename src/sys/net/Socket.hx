@@ -2493,6 +2493,8 @@ class Socket {
 	**/
 	@:noCompletion public var __connectFailure:Null<String> = null;
 	@:noCompletion private var __selectPass:Int = 0;
+	// What this call's select has reported this socket ready for so far.
+	@:noCompletion private var __collectedOps:Int = 0;
 	// Where this socket's key sits in a ReadyKeys, plus one, and which.
 	@:noCompletion private var __readyAt:Int = 0;
 	@:noCompletion private var __readyIn:Null<ReadyKeys> = null;
@@ -2815,8 +2817,13 @@ class Socket {
 
 		var selected = selector.selectedKeys();
 		// The main selector's ready keys, in an array where Java 8 lets the
-		// selector be given one; see ReadyKeys.
+		// selector be given one; see ReadyKeys. From Java 11 the selector
+		// hands each ready key to an action instead; see ReadyAction.
 		var ready:Null<ReadyKeys> = selector == state.main ? state.ready : null;
+		var action:Null<ReadyAction> = selector == state.main ? state.action : null;
+		if (action != null) {
+			action.begin(state, pass, resRead, resWrite, resOthers);
+		}
 		var wait:Float = polling ? 0.0 : timeout;
 		var deadline:Float = polling ? 0.0 : haxe.Timer.stamp() + timeout;
 
@@ -2828,28 +2835,44 @@ class Socket {
 					selected.clear();
 				}
 
-				if (polling) {
-					selector.selectNow();
-				} else {
-					// select(0) waits for ever; the shortest real wait is 1 ms.
-					var millis:Int = Std.int(wait * 1000);
-					selector.select(haxe.Int64.ofInt(millis < 1 ? 1 : millis));
+				// select(0) waits for ever; the shortest real wait is 1 ms.
+				var millis:Int = polling ? 0 : Std.int(wait * 1000);
+				if (millis < 1) {
+					millis = 1;
 				}
 
 				var strays:Int = 0;
-				if (ready != null) {
-					// Walked by index: no iterator, and nothing was added to a
-					// map to find them.
-					for (i in 0...ready.count) {
-						strays += __collect(ready.keys[i], state, pass, resRead, resWrite, resOthers);
+				if (action != null) {
+					// Collected as the selector finds them.
+					action.strays = 0;
+					var selects:ActionSelector = cast selector;
+					if (polling) {
+						selects.selectNow(action);
+					} else {
+						selects.select(action, haxe.Int64.ofInt(millis));
 					}
-					ready.clear();
-				} else if (!selected.isEmpty()) {
-					var it = selected.iterator();
-					while (it.hasNext()) {
-						strays += __collect(it.next(), state, pass, resRead, resWrite, resOthers);
+					strays = action.strays;
+				} else {
+					if (polling) {
+						selector.selectNow();
+					} else {
+						selector.select(haxe.Int64.ofInt(millis));
 					}
-					selected.clear();
+
+					if (ready != null) {
+						// Walked by index: no iterator, and nothing was added to a
+						// map to find them.
+						for (i in 0...ready.count) {
+							strays += __collect(ready.keys[i], state, pass, resRead, resWrite, resOthers);
+						}
+						ready.clear();
+					} else if (!selected.isEmpty()) {
+						var it = selected.iterator();
+						while (it.hasNext()) {
+							strays += __collect(it.next(), state, pass, resRead, resWrite, resOthers);
+						}
+						selected.clear();
+					}
 				}
 
 				// Woken only by sockets nobody asked about, which are not
@@ -2865,6 +2888,9 @@ class Socket {
 			}
 		} catch (_:Dynamic) {
 			// Whatever was collected is the answer.
+		}
+		if (action != null) {
+			action.end();
 		}
 
 		if (transients.length > 0) {
@@ -2910,11 +2936,17 @@ class Socket {
 		} catch (_:Dynamic) {
 			0;
 		}
-		if ((ready & SelectionKey.OP_CONNECT) != 0)
+		// Each readiness once: Java 11's select with an action may hand the
+		// same key over more than once in one select (Windows looks at the
+		// read, write and exception sets in turn), each time with some of
+		// what it is ready for.
+		var fresh:Int = ready & ~s.__collectedOps;
+		s.__collectedOps |= ready;
+		if ((fresh & SelectionKey.OP_CONNECT) != 0)
 			__settleConnect(s, resWrite, resOthers);
-		if ((ready & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
+		if ((fresh & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
 			resRead.push(s);
-		if ((ready & SelectionKey.OP_WRITE) != 0)
+		if ((fresh & SelectionKey.OP_WRITE) != 0)
 			resWrite.push(s);
 		return 0;
 	}
@@ -2925,6 +2957,7 @@ class Socket {
 			s.__selectState = state;
 			s.__selectPass = pass;
 			s.__selectOps = ops;
+			s.__collectedOps = 0;
 			state.asked.push(s);
 		} else {
 			s.__selectOps |= ops;
@@ -3050,6 +3083,9 @@ class Socket {
 	/** The main selector's ready keys, where it could be given an array of them; see ReadyKeys. **/
 	public var ready:Null<ReadyKeys> = null;
 
+	/** What the main selector hands each ready key to, from Java 11; see ReadyAction. **/
+	public var action:Null<ReadyAction> = null;
+
 	public var pass:Int = 0;
 	public var asked:Array<Socket> = [];
 	public var transients:Array<Socket> = [];
@@ -3076,7 +3112,11 @@ class Socket {
 	public function mainSelector():Selector {
 		if (main == null) {
 			main = Selector.open();
-			ready = ReadyKeys.install(main);
+			if (ReadyAction.SUPPORTED) {
+				action = new ReadyAction();
+			} else {
+				ready = ReadyKeys.install(main);
+			}
 		}
 		return main;
 	}
@@ -3105,7 +3145,9 @@ class Socket {
 	by index and let go of in place.
 
 	Java 8 only. Later Javas refuse the reflection, or warn about it on the
-	console (9 to 15), and the selector keeps its own set there.
+	console (9 to 15), and the selector keeps its own set there: Java 9 and
+	10 walk it, and from Java 11 the selector hands each key to a
+	`ReadyAction` instead.
 **/
 @:noCompletion @:access(sys.net.Socket)
 private class ReadyKeys extends java.util.AbstractSet<SelectionKey> {
@@ -3262,6 +3304,79 @@ private class ReadyKeysIterator implements java.util.Iterator<SelectionKey> {
 		}
 		__keys.removeAt(--__at);
 	}
+}
+
+/**
+	What the thread's main selector hands each ready key to, from Java 11,
+	whose `select(action, timeout)` and `selectNow(action)` add nothing to
+	the selector's set of ready keys. That set is a `HashSet` there, which a
+	key found ready joins as a map node, and walking it takes an iterator:
+	on Java 17, 72 bytes a select with a socket ready on Linux and 48 on
+	Windows, on every message a runtime sends or receives. This is the way
+	Java offers past it; Java 8, which has no such select, is given an array
+	of its own instead (see `ReadyKeys`).
+
+	One per thread's select state, told what each call collects into.
+**/
+@:noCompletion @:access(sys.net.Socket)
+private class ReadyAction implements java.util.function.Consumer<SelectionKey> {
+	/** Whether this Java has the select operations that take an action: 11 or later. **/
+	public static final SUPPORTED:Bool = __javaVersion() >= 11;
+
+	public var strays:Int = 0;
+
+	var __state:SelectState = null;
+	var __pass:Int = 0;
+	var __read:Array<Socket> = null;
+	var __write:Array<Socket> = null;
+	var __others:Array<Socket> = null;
+
+	public function new() {}
+
+	public function begin(state:SelectState, pass:Int, read:Array<Socket>, write:Array<Socket>, others:Array<Socket>):Void {
+		__state = state;
+		__pass = pass;
+		__read = read;
+		__write = write;
+		__others = others;
+		strays = 0;
+	}
+
+	/** Lets go of the call's arrays, which hold its sockets. **/
+	public function end():Void {
+		__state = null;
+		__read = null;
+		__write = null;
+		__others = null;
+	}
+
+	@:overload public function accept(key:SelectionKey):Void {
+		strays += Socket.__collect(key, __state, __pass, __read, __write, __others);
+	}
+
+	/** The Java the process runs on: 8 for "1.8", 17 for "17". **/
+	static function __javaVersion():Int {
+		var version:Null<String> = java.lang.System.getProperty("java.specification.version");
+		if (version == null) {
+			return 8;
+		}
+		if (StringTools.startsWith(version, "1.")) {
+			version = version.substr(2);
+		}
+		var major:Null<Int> = Std.parseInt(version);
+		return major == null ? 8 : major;
+	}
+}
+
+/**
+	Java 11's select operations that take an action, on `Selector`: absent
+	from the Java 8 library the jvm build is typed against, and called only
+	where `ReadyAction.SUPPORTED`.
+**/
+@:native("java.nio.channels.Selector")
+private extern class ActionSelector {
+	function select(action:java.util.function.Consumer<SelectionKey>, timeout:haxe.Int64):Int;
+	function selectNow(action:java.util.function.Consumer<SelectionKey>):Int;
 }
 
 /** Haxe ships no extern for it. Typed by what it holds, as Java's is. **/
