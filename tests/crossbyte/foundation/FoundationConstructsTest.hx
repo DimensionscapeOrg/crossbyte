@@ -233,7 +233,7 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals("42", asString);
 		Assert.equals(123, asInt);
 		Assert.isFalse(asBool);
-		Assert.floatEquals(0.0, asFloat);
+		Assert.isTrue(Math.isNaN(asFloat), "NaN converted to " + asFloat);
 		Assert.isFalse(nullAsBool);
 	}
 
@@ -489,6 +489,31 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(PrimitiveValue.fromDynamic(-0.0).toBool());
 		Assert.isTrue(PrimitiveValue.fromDynamic(Math.POSITIVE_INFINITY).toBool());
 		Assert.isTrue(PrimitiveValue.fromDynamic(1e-300).toBool());
+	}
+
+	/**
+		A `Float` that is NaN stays NaN, as a null `String` stays null and as
+		NaN through `fromDynamic` does. It was held as `0.0`, so it read as a
+		whole number: `isInt()` true, `toFloat()` 0 and `toInt()` 0, where NaN
+		is not a number to give.
+	**/
+	public function testPrimitiveValueKeepsNaN():Void {
+		var nan:PrimitiveValue = Math.NaN;
+		Assert.isTrue(Math.isNaN(nan.toFloat()), "NaN read as " + nan.toFloat());
+		var asFloat:Float = nan;
+		Assert.isTrue(Math.isNaN(asFloat), "NaN converted to " + asFloat);
+		Assert.isTrue(nan.isFloat(), "NaN was not a Float");
+		Assert.isFalse(nan.isInt(), "NaN was an Int");
+		Assert.isTrue(nan.getValueType() == TFloat, "NaN is " + nan.getValueType());
+		Assert.isFalse(nan.toBool());
+		var refused:Dynamic = null;
+		try {
+			nan.toInt();
+		} catch (e:Dynamic) {
+			refused = e;
+		}
+		Assert.isTrue(Std.isOfType(refused, ArgumentError), "NaN as an Int gave " + refused);
+		Assert.equals(PrimitiveValue.fromDynamic(Math.NaN).toString(), nan.toString());
 	}
 
 	public function testPrimitiveValueRejectsUnsupportedDynamicConversions():Void {

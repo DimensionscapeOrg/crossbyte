@@ -19,8 +19,9 @@ import crossbyte.utils.IntParse;
  *
  * A null `String` stays null, as a null `Dynamic` through `fromDynamic`
  * does: `isNull()` is true, and it converts as null does, to `0`, `0.0`,
- * `false` and back to a null `String`. A `Float` that is NaN is held as
- * `0.0`.
+ * `false` and back to a null `String`. A `Float` that is NaN stays NaN,
+ * as it does through `fromDynamic`: `toFloat()` is NaN, `toBool()` false,
+ * and `toInt()` an `ArgumentError`.
  *
  * A conversion that cannot be made throws a `crossbyte.errors.RangeError`
  * for a number outside the range of the type asked for (`3e9`, or
@@ -197,9 +198,8 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	/**
 	 * Converts the primitive to a `Bool`.
 	 *
-	 * - `0`, `0.0` and NaN (which only `fromDynamic` can hold) convert to
-	 *   `false`, any other number to `true`, as JavaScript's `Boolean` and
-	 *   ActionScript's do.
+	 * - `0`, `0.0` and NaN convert to `false`, any other number to `true`,
+	 *   as JavaScript's `Boolean` and ActionScript's do.
 	 * - A string converts to `false` when, without its surrounding spaces and
 	 *   in any case, it is `""`, `"0"` or `"false"`, and to `true` otherwise.
 	 * - `null` converts to `false`.
@@ -236,7 +236,7 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	}
 
 	@:from private static inline function fromFloat(f:Float):PrimitiveValue {
-		return cast (!Math.isNaN(f) ? f : 0.0);
+		return cast f;
 	}
 
 	@:from private static inline function fromBool(b:Bool):PrimitiveValue {

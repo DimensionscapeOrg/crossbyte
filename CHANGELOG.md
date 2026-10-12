@@ -709,6 +709,10 @@ says how.
   `fromDynamic` given one, where it threw a `String`. (Upgrading)
 - `PrimitiveValue.toBool` of NaN is `false`, as JavaScript's
   `Boolean(NaN)` is, where it was `true`. (Upgrading)
+- A NaN `Float` in a `PrimitiveValue` stays NaN, as it does through
+  `fromDynamic`, where it became `0.0`: `toFloat()` is NaN, `isFloat()`
+  true and `toInt()` an `ArgumentError`, where they were `0.0`, `false`
+  and `0`. (Upgrading)
 - `Object` has ActionScript's `hasOwnProperty`, `propertyIsEnumerable`,
   `isPrototypeOf`, `valueOf`, `toString` and `toLocaleString`, and they
   answer the same on every target. Called through the object's own
@@ -1928,8 +1932,11 @@ an API added in this release has is not listed here.
   `PrimitiveValue.fromDynamic` catches a `crossbyte.errors.RangeError` (a
   number out of range) or an `ArgumentError` (anything else), or the
   `crossbyte.errors.Error` both extend.
-- `PrimitiveValue.toBool` of NaN (a value from `fromDynamic`) is `false`:
-  code that took it as `true` asks `Math.isNaN` of the number first.
+- `PrimitiveValue.toBool` of NaN is `false`: code that took it as `true`
+  asks `Math.isNaN` of the number first.
+- A `PrimitiveValue` made from a NaN `Float` is NaN rather than `0.0`:
+  code that used the `0` it gave makes the value from
+  `Math.isNaN(number) ? 0.0 : number`.
 - A payload field named `hasOwnProperty`, `propertyIsEnumerable`,
   `isPrototypeOf`, `valueOf`, `toString` or `toLocaleString` is read from
   an `Object` with brackets, `payload["valueOf"]`: with a dot it is the
