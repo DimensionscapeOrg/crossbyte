@@ -2,6 +2,7 @@ package crossbyte._internal.http.h2;
 
 import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
+import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import haxe.io.Eof;
@@ -323,7 +324,7 @@ class H2ServerTest extends utest.Test {
 		// slot; otherwise, after as many 204s, 304s or HEADs as the limit allows,
 		// every new stream on the connection would be refused.
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		settings.maxConcurrentStreams = 2;
 		var server = new H2ServerConnection(out.write, settings);
@@ -349,7 +350,7 @@ class H2ServerTest extends utest.Test {
 		// header it added to the HPACK table would be missing from this side's,
 		// and the next block to refer to it would decode wrongly.
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		settings.maxConcurrentStreams = 1;
 		var server = new H2ServerConnection(out.write, settings);
@@ -434,7 +435,7 @@ class H2ServerTest extends utest.Test {
 
 		var frames = Collector.parse(out.bytes());
 		Assert.equals(H2FrameType.SETTINGS, frames[0].type);
-		var advertised = new H2Settings();
+		var advertised = new HTTP2Settings();
 		advertised.applyPayload(frames[0].payload);
 		Assert.equals(16384, advertised.initialWindowSize, "the first window was not made to fit the budget");
 		Assert.equals(H2FrameType.WINDOW_UPDATE, frames[1].type);
@@ -447,7 +448,7 @@ class H2ServerTest extends utest.Test {
 		large.maxRequestBodySize = 1024 * 1024;
 		large.requestBodyBudget = 16 * 1024 * 1024;
 		large.receive(Bytes.ofString(H2Connection.PREFACE));
-		var said = new H2Settings();
+		var said = new HTTP2Settings();
 		said.applyPayload(Collector.parse(roomy.bytes())[0].payload);
 		Assert.equals(65535, said.initialWindowSize);
 	}
@@ -457,7 +458,7 @@ class H2ServerTest extends utest.Test {
 		// 32 bits whatever the type said, so it wrapped negative and fitted a
 		// 4 MB budget: every stream could send 64 KB unasked. It is 16 KB,
 		// and the budget is raised to hold them and one whole body.
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.maxConcurrentStreams = 40000;
 		var out = new Collector();
 		var server = new H2ServerConnection(out.write, settings);
@@ -466,7 +467,7 @@ class H2ServerTest extends utest.Test {
 		server.receive(Bytes.ofString(H2Connection.PREFACE));
 
 		var frames = Collector.parse(out.bytes());
-		var advertised = new H2Settings();
+		var advertised = new HTTP2Settings();
 		advertised.applyPayload(frames[0].payload);
 		Assert.equals(16384, advertised.initialWindowSize, "the first window was not made to fit the budget: " + advertised.initialWindowSize);
 		Assert.equals(H2FrameType.WINDOW_UPDATE, frames[1].type);
@@ -478,7 +479,7 @@ class H2ServerTest extends utest.Test {
 		// what the client may yet send unasked already takes all of it, so
 		// nothing more is opened. In 32 bits, as eval and neko did it, the
 		// 4.9 GB wrapped to 0.6 GB and left 1.5 GB to grant.
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.maxConcurrentStreams = 300000;
 		var server = new Budgeted(4 * 1024 * 1024, 1024 * 1024, settings);
 		server.open(1, 1024 * 1024);
@@ -606,7 +607,7 @@ class H2ServerTest extends utest.Test {
 		// set aside, and four streams' 64 KB fill a 256 KB budget with each a
 		// body short of done. The oldest has to finish: the newest gives way,
 		// REFUSED_STREAM, and what it held opens the oldest's window.
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		settings.maxConcurrentStreams = -1;
 		var server = new Budgeted(4 * 65535, 102400, settings);
@@ -920,7 +921,7 @@ class H2ServerTest extends utest.Test {
 		// The window is not the only bound: 4.2 caps a frame at the peer's
 		// SETTINGS_MAX_FRAME_SIZE, which defaults to 16384.
 		for (frame in link.dataFrames()) {
-			if (frame.payload.length > H2Settings.DEFAULT_MAX_FRAME_SIZE) {
+			if (frame.payload.length > HTTP2Settings.DEFAULT_MAX_FRAME_SIZE) {
 				Assert.fail('DATA frame of ${frame.payload.length} bytes exceeds the frame size limit');
 				return;
 			}
@@ -948,7 +949,7 @@ class H2ServerTest extends utest.Test {
 		// 6.9.2: a raised INITIAL_WINDOW_SIZE retunes every open stream, which
 		// releases a queue exactly as a WINDOW_UPDATE would. A server that
 		// only listened for the latter would sit on the body forever.
-		link.settings(H2Settings.DEFAULT_INITIAL_WINDOW_SIZE + 50000);
+		link.settings(HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE + 50000);
 
 		Assert.equals(100000, link.dataSent());
 		Assert.isTrue(link.sawEndStream());
@@ -961,7 +962,7 @@ class H2ServerTest extends utest.Test {
 		var server = new H2ServerConnection(out.write);
 		server.receive(Bytes.ofString(H2Connection.PREFACE));
 
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.applyPayload(Collector.parse(out.bytes())[0].payload);
 
 		// §6.5.2 sets no default cap, so silence means "unlimited", and each
@@ -973,7 +974,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testStreamsPastTheLimitAreRefused():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		settings.maxConcurrentStreams = 2;
 
@@ -1003,7 +1004,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testAFinishedStreamReleasesItsSlot():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		settings.maxConcurrentStreams = 1;
 
@@ -1069,7 +1070,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testResettingAnAnsweredStreamIsNotHeldAgainstThePeer():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1109,7 +1110,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testAnEndlessHeaderBlockIsRefused():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1152,7 +1153,7 @@ class H2ServerTest extends utest.Test {
 
 		// A header block.
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 		var server = new H2ServerConnection(out.write, settings);
 		server.maxHeaderBlockSize = 0x7FFFFFFF;
@@ -1167,7 +1168,7 @@ class H2ServerTest extends utest.Test {
 
 		// Headers held for bodies still arriving.
 		var heldOut = new Collector();
-		var heldSettings = new H2Settings();
+		var heldSettings = new HTTP2Settings();
 		heldSettings.enablePush = false;
 		heldSettings.maxHeaderListSize = 0x7FFFFFFF;
 		var held = new H2ServerConnection(heldOut.write, heldSettings);
@@ -1291,7 +1292,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testAPingFloodIsRefused():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1314,7 +1315,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testASettingsFloodIsRefused():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1362,7 +1363,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testAnAcknowledgementDoesNotSpendTheBudget():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1385,7 +1386,7 @@ class H2ServerTest extends utest.Test {
 
 	public function testOrdinaryControlTrafficIsNotHeldAgainstThePeer():Void {
 		var out = new Collector();
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		var server = new H2ServerConnection(out.write, settings);
@@ -1549,7 +1550,7 @@ private class Loopback {
 		__clientIn = new QueueInput();
 		__clientOut = new QueueOutput();
 
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		__client = new H2Connection(__clientIn, __clientOut, settings);
@@ -1841,7 +1842,7 @@ private class Budgeted {
 	private final __encoder:HpackEncoder = new HpackEncoder(4096);
 	private final __frames:Array<H2Frame> = [];
 
-	public function new(budget:Int, maxBody:Int, ?settings:H2Settings, acknowledged:Bool = true) {
+	public function new(budget:Int, maxBody:Int, ?settings:HTTP2Settings, acknowledged:Bool = true) {
 		connection = new H2ServerConnection(__collector.write, settings);
 		connection.requestBodyBudget = budget;
 		connection.maxRequestBodySize = maxBody;
@@ -1977,7 +1978,7 @@ private class ResetFlood {
 	public function new(budget:Int, ?window:Float) {
 		__collector = new Collector();
 
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		settings.enablePush = false;
 
 		connection = new H2ServerConnection(__collector.write, settings);

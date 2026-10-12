@@ -632,7 +632,7 @@ class HTTPServerTLSTest extends utest.Test {
 				socket.connect(new sys.net.Host("127.0.0.1"), server.port);
 				socket.setTimeout(0);
 				socket.tracer = new TracingInput(socket.input);
-				var settings = new crossbyte._internal.http.h2.H2Settings();
+				var settings = new crossbyte.http.HTTP2Settings();
 				settings.enablePush = false;
 				var connection = new crossbyte._internal.http.h2.H2Connection(socket.tracer, socket.output, settings);
 				session = new crossbyte._internal.http.h2.H2ClientSession('https://127.0.0.1:${server.port}', socket, connection);

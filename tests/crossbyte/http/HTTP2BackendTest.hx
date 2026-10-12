@@ -10,7 +10,6 @@ import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Flags;
 import crossbyte._internal.http.h2.H2Frame;
 import crossbyte._internal.http.h2.H2FrameType;
-import crossbyte._internal.http.h2.H2Settings;
 import crossbyte._internal.http.h2.hpack.HpackDecoder;
 import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
@@ -1525,7 +1524,7 @@ class HTTP2BackendTest extends utest.Test {
 		var socket = new crossbyte._internal.socket.FlexSocket(false);
 		socket.connect("127.0.0.1", server.port);
 		var session = new crossbyte._internal.http.h2.H2ClientSession('http://127.0.0.1:${server.port}', socket,
-			new H2Connection(socket.input, socket.output, new H2Settings()));
+			new H2Connection(socket.input, socket.output, new HTTP2Settings()));
 		var direct:String;
 		try {
 			var stream = session.execute("GET", "http", '127.0.0.1:${server.port}', "/late", [], null, 0);
@@ -1801,7 +1800,7 @@ class HTTP2BackendTest extends utest.Test {
 	private static function __holdingSession(port:Int):{session:H2ClientSession, socket:HoldingSocket} {
 		var socket = new HoldingSocket();
 		socket.connect(new Host("127.0.0.1"), port);
-		var session = new H2ClientSession('http://127.0.0.1:$port', socket, new H2Connection(socket.input, socket.output, new H2Settings()));
+		var session = new H2ClientSession('http://127.0.0.1:$port', socket, new H2Connection(socket.input, socket.output, new HTTP2Settings()));
 		// Answered, so the preface and everything else queued has gone.
 		var warm = session.execute("GET", "http", '127.0.0.1:$port', "/warm", [], null, 5);
 		Assert.isTrue(warm.endOfStream, "the first request was not answered");
@@ -2133,8 +2132,8 @@ private class H2ScriptServer {
 private class H2ScriptPeer {
 	public final socket:SysSocket;
 	public final server:H2ScriptServer;
-	public final encoder:HpackEncoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
-	public final decoder:HpackDecoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+	public final encoder:HpackEncoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
+	public final decoder:HpackDecoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 
 	public function new(socket:SysSocket, server:H2ScriptServer) {
 		this.socket = socket;
@@ -2195,8 +2194,8 @@ private class H2ScriptPeer {
 		sent, or that negated if the client reset the stream first.
 	**/
 	public function sendBody(id:Int, length:Int):Int {
-		var streamWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
-		var connectionWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var streamWindow:Int = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var connectionWindow:Int = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 		var chunk = Bytes.alloc(16384);
 		var sent:Int = 0;
 		while (sent < length) {
@@ -2372,8 +2371,8 @@ private class H2EarlyResponseServer {
 
 		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
 
-		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
-		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var decoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		var uploadId:Int = -1;
 		var uploaded:Int = 0;
 		var answered:Bool = false;
@@ -2421,7 +2420,7 @@ private class H2EarlyResponseServer {
 				uploaded += length;
 				// All the window there is: the client cannot send another byte
 				// of the body, so it is waiting now.
-				if (uploaded >= H2Settings.DEFAULT_INITIAL_WINDOW_SIZE && !answered) {
+				if (uploaded >= HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE && !answered) {
 					answered = true;
 					__windowUsed.release();
 
@@ -2542,7 +2541,7 @@ private class H2TruncatedResponseServer {
 			}
 		}
 
-		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, encoder.encode([new HpackHeader(":status", "200")]));
 		__writeFrame(peer, H2FrameType.DATA, 0, streamId, Bytes.ofString("the first half"));
 
@@ -2825,8 +2824,8 @@ private class H2cServer {
 
 		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
 
-		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
-		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var decoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		var streamId:Int = 0;
 		var sawHeaders:Bool = false;
 		var bodyIn = new BytesBuffer();
@@ -3044,8 +3043,8 @@ private class H2MuxServer {
 
 		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
 
-		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
-		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var decoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		var pending:Array<{id:Int, path:String}> = [];
 
 		while (pending.length < __expected) {
@@ -3258,7 +3257,7 @@ private class H2HeadersFirstServer {
 			}
 		}
 
-		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, encoder.encode([new HpackHeader(":status", "200")]));
 		__writeFrame(peer, H2FrameType.PING, 0, 0, Bytes.ofHex("0102030405060708"));
 
@@ -3390,7 +3389,7 @@ private class H2GoAwayServer {
 		peer.input.readFullBytes(preface, 0, preface.length);
 		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
 
-		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var decoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 		while (true) {
 			var header = Bytes.alloc(H2Frame.HEADER_SIZE);
 			peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
@@ -3422,7 +3421,7 @@ private class H2GoAwayServer {
 				__writeFrame(peer, H2FrameType.GOAWAY, 0, 0, goAway);
 			}
 
-			var block = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
+			var block = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
 			__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, block);
 			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(path));
 			return path;
@@ -3566,7 +3565,7 @@ private class H2ShutdownServer {
 	}
 
 	private function __answer(peer:SysSocket, id:Int, body:String):Void {
-		var block = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
+		var block = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, block);
 		__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(body));
 	}
@@ -3700,8 +3699,8 @@ private class H2RouteServer {
 			peer.input.readFullBytes(preface, 0, preface.length);
 			__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
 
-			var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
-			var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+			var decoder = new HpackDecoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
+			var encoder = new HpackEncoder(HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE);
 			var open:Map<Int, H2RouteRequest> = new Map();
 
 			while (true) {

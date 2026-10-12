@@ -12,7 +12,6 @@ import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionPool;
 import crossbyte._internal.http.h2.H2ConnectionError;
 import crossbyte._internal.http.h2.H2ErrorCode;
-import crossbyte._internal.http.h2.H2Settings;
 import crossbyte._internal.http.h2.H2Stream;
 import crossbyte._internal.http.h2.H2StreamError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
@@ -92,14 +91,16 @@ class HTTP2Backend implements HTTPBackend {
 	public static var isSupported(default, null):Bool = true;
 
 	/**
-		Our SETTINGS, sent at the head of every connection. Push is refused
-		whatever these say (nothing here takes a pushed stream), and a
-		connection's HPACK encoder holds no more than the protocol's default
-		4 KB, whatever table the server offers.
+		The settings this client advertises, sent at the head of every
+		connection it makes from then on. Unless given, the protocol's
+		defaults with `enablePush` false and `maxHeaderListSize` 64 KiB.
+		Push is refused whatever these say (nothing here takes a pushed
+		stream), and a connection's HPACK encoder holds no more than the
+		protocol's default 4 KB, whatever table the server offers.
 	**/
-	public var settings:H2Settings;
+	public var settings:HTTP2Settings;
 
-	public function new(?settings:H2Settings) {
+	public function new(?settings:HTTP2Settings) {
 		this.settings = settings != null ? settings : __defaultSettings();
 	}
 
@@ -652,8 +653,8 @@ class HTTP2Backend implements HTTPBackend {
 		return out;
 	}
 
-	private static function __defaultSettings():H2Settings {
-		var settings = new H2Settings();
+	private static function __defaultSettings():HTTP2Settings {
+		var settings = new HTTP2Settings();
 		// Nothing here can consume a promised stream, and §8.4 lets us make
 		// one a connection error by saying so up front.
 		settings.enablePush = false;

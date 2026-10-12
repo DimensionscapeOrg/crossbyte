@@ -2,6 +2,7 @@ package crossbyte._internal.http.h2;
 
 import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
+import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import haxe.io.BytesInput;
@@ -64,7 +65,7 @@ class H2Test extends utest.Test {
 	// -------------------------------------------------------------- settings
 
 	public function testSettingsPayloadOnlyCarriesChangedValues():Void {
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		Assert.equals(0, settings.toPayload().length);
 
 		settings.enablePush = false;
@@ -74,12 +75,12 @@ class H2Test extends utest.Test {
 	}
 
 	public function testSettingsRoundTripAndUnknownIdentifiersAreIgnored():Void {
-		var sent = new H2Settings();
+		var sent = new HTTP2Settings();
 		sent.enablePush = false;
 		sent.initialWindowSize = 100000;
 		sent.maxFrameSize = 32768;
 
-		var received = new H2Settings();
+		var received = new HTTP2Settings();
 		received.applyPayload(sent.toPayload());
 
 		Assert.isFalse(received.enablePush);
@@ -94,11 +95,11 @@ class H2Test extends utest.Test {
 
 	public function testSettingsRejectsOutOfRangeValues():Void {
 		// Below the 16384 floor.
-		Assert.raises(() -> new H2Settings().applyPayload(Bytes.ofHex("000500000100")), H2ConnectionError);
+		Assert.raises(() -> new HTTP2Settings().applyPayload(Bytes.ofHex("000500000100")), H2ConnectionError);
 		// ENABLE_PUSH must be 0 or 1.
-		Assert.raises(() -> new H2Settings().applyPayload(Bytes.ofHex("000200000002")), H2ConnectionError);
+		Assert.raises(() -> new HTTP2Settings().applyPayload(Bytes.ofHex("000200000002")), H2ConnectionError);
 		// A payload that is not a multiple of six.
-		Assert.raises(() -> new H2Settings().applyPayload(Bytes.ofHex("0005000001")), H2ConnectionError);
+		Assert.raises(() -> new HTTP2Settings().applyPayload(Bytes.ofHex("0005000001")), H2ConnectionError);
 	}
 
 	// ------------------------------------------------------------ connection
@@ -411,17 +412,17 @@ class H2Test extends utest.Test {
 			connection.request("GET", "http", "example.com", "/", [new HpackHeader("x-request-id", 'request-$i-' + StringTools.rpad("", "x", 40))]);
 		}
 		var held:Int = @:privateAccess connection.__encoder.tableSize;
-		Assert.isTrue(held <= H2Settings.DEFAULT_HEADER_TABLE_SIZE, 'the client\'s table held $held bytes for a server that would take a megabyte');
+		Assert.isTrue(held <= HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE, 'the client\'s table held $held bytes for a server that would take a megabyte');
 	}
 
 	public function testTheClientRefusesPushWhateverItsSettingsSay():Void {
 		// Nothing in the client can take a pushed stream, and a PUSH_PROMISE
-		// is a connection error here. H2Settings allows push unless told
+		// is a connection error here. HTTP2Settings allows push unless told
 		// otherwise, so a client given settings of its own must still say it
 		// takes no pushes, rather than fail the connection over the first one.
 		var server = new ServerScript();
 		server.settings();
-		var connection = new H2Connection(new haxe.io.BytesInput(Bytes.alloc(0)), server.sink(), new H2Settings());
+		var connection = new H2Connection(new haxe.io.BytesInput(Bytes.alloc(0)), server.sink(), new HTTP2Settings());
 		connection.start();
 
 		var frames:Array<H2Frame> = ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length);
@@ -803,7 +804,7 @@ class H2Test extends utest.Test {
 		}
 		// Credit is returned once half the window is spent, and only the
 		// discarded body could have spent it: stream 3 carried two bytes.
-		Assert.isTrue(connectionCredit > H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1, 'connection window credited $connectionCredit bytes');
+		Assert.isTrue(connectionCredit > HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1, 'connection window credited $connectionCredit bytes');
 	}
 
 	public function testAResponseBeforeTheWholeBodyEndsTheUpload():Void {
@@ -1040,7 +1041,7 @@ private class ServerScript {
 	public function connect():H2Connection {
 		__sink = new BytesOutput();
 
-		var settings = new H2Settings();
+		var settings = new HTTP2Settings();
 		// Matches the client default and keeps PUSH_PROMISE a protocol error.
 		settings.enablePush = false;
 

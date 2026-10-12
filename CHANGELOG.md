@@ -314,8 +314,9 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   and bounds request bodies per connection
   (`http2MaxRequestBodyBuffer`, 4 MB). The client shares its connections
   per origin and closes one after 90 s with nothing in flight, also when the
-  program has stopped making requests. `-D crossbyte_no_http2` leaves it
-  out of a build.
+  program has stopped making requests; `HTTP2Backend.settings`, an
+  `HTTP2Settings`, says what it advertises. `-D crossbyte_no_http2` leaves
+  it out of a build.
 - HTTP/1.1 keep-alive and pipelining: `keepAlive` (on),
   `keepAliveTimeout` (5 s) and `keepAliveMaxRequests` (1,000).
 - `crossbyte.http.Router`: method and path routing with `:param` and

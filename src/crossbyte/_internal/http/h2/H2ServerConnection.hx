@@ -5,6 +5,7 @@ import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte._internal.http.h2.hpack.HpackStaticTable;
+import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 
@@ -92,7 +93,7 @@ class H2ServerConnection {
 
 	// The first window each stream may be given, largest first: see
 	// __fixBudget.
-	private static final PREREAD_WINDOWS:Array<Int> = [H2Settings.DEFAULT_INITIAL_WINDOW_SIZE, 32768, 16384];
+	private static final PREREAD_WINDOWS:Array<Int> = [HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE, 32768, 16384];
 
 	/**
 	 * Streams the peer may abandon before their response within
@@ -297,8 +298,8 @@ class H2ServerConnection {
 	/** Response bytes this connection's streams hold that their windows have not let go. */
 	public var queuedBytes(get, never):Int;
 
-	public final localSettings:H2Settings;
-	public final remoteSettings:H2Settings;
+	public final localSettings:HTTP2Settings;
+	public final remoteSettings:HTTP2Settings;
 
 	/** True once a GOAWAY has been written and the connection is finished. */
 	public var closed(default, null):Bool = false;
@@ -340,7 +341,7 @@ class H2ServerConnection {
 	private var __bodyLimit:Int = 0;
 	// What the client may still send on the connection: the window this side
 	// opened, less what has arrived. Given back only for bytes let go.
-	private var __recvWindow:Int = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+	private var __recvWindow:Int = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 	// Across the streams still receiving a body (H2Stream.budgeted): how many,
 	// what they hold, and the windows they have open. Kept as they change.
 	private var __budgeted:Int = 0;
@@ -420,11 +421,11 @@ class H2ServerConnection {
 	 *        copied out of the stream's queue into a frame of its own before
 	 *        the owner copies it again into its socket.
 	 */
-	public function new(write:Bytes->Void, ?settings:H2Settings, ?writeFrame:H2FrameSink) {
+	public function new(write:Bytes->Void, ?settings:HTTP2Settings, ?writeFrame:H2FrameSink) {
 		__write = write;
 		__writeFrameTo = writeFrame;
 		localSettings = settings != null ? settings : __defaultSettings();
-		remoteSettings = new H2Settings();
+		remoteSettings = new HTTP2Settings();
 
 		__decoder = new HpackDecoder(localSettings.headerTableSize,
 			localSettings.maxHeaderListSize >= 0 ? localSettings.maxHeaderListSize : 8 * 1024 * 1024);
@@ -435,7 +436,7 @@ class H2ServerConnection {
 		__abandoned = new Map();
 
 		__prefaceRemaining = H2Connection.PREFACE.length;
-		__connectionSendWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		__connectionSendWindow = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 		idleSince = haxe.Timer.stamp();
 	}
 
@@ -1032,7 +1033,7 @@ class H2ServerConnection {
 		__retiring = true;
 		__retireDeadline = haxe.Timer.stamp() + RETIRE_GRACE_SECONDS;
 		try {
-			__writeGoAway(H2Settings.MAX_WINDOW_SIZE);
+			__writeGoAway(HTTP2Settings.MAX_WINDOW_SIZE);
 			__writeFrame(H2FrameType.PING, 0, 0, RETIRE_PING);
 		} catch (_:Dynamic) {}
 		onRetiring();
@@ -1272,8 +1273,8 @@ class H2ServerConnection {
 				opened.openedAt = haxe.Timer.stamp();
 				// Until the client has acknowledged the SETTINGS that made it
 				// smaller, it may be using the protocol's first window (6.9.2).
-				if (!__settingsAcked && opened.recvWindow < H2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
-					opened.recvWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+				if (!__settingsAcked && opened.recvWindow < HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
+					opened.recvWindow = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 				}
 				// Its first window is the client's to use unasked, so it is
 				// counted against the budget from here.
@@ -1752,7 +1753,7 @@ class H2ServerConnection {
 	**/
 	private function __acknowledged():Void {
 		__settingsAcked = true;
-		var delta:Int = localSettings.initialWindowSize - H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var delta:Int = localSettings.initialWindowSize - HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 		if (delta >= 0) {
 			return;
 		}
@@ -1791,7 +1792,7 @@ class H2ServerConnection {
 		if (delta != 0) {
 			for (target in __streams) {
 				var adjusted:Float = target.sendWindow + delta;
-				if (adjusted > H2Settings.MAX_WINDOW_SIZE) {
+				if (adjusted > HTTP2Settings.MAX_WINDOW_SIZE) {
 					throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, 'INITIAL_WINDOW_SIZE change overflows stream ${target.id}');
 				}
 				target.sendWindow += delta;
@@ -1895,7 +1896,7 @@ class H2ServerConnection {
 
 		if (frame.streamId == 0) {
 			var updated:Float = __connectionSendWindow + increment;
-			if (updated > H2Settings.MAX_WINDOW_SIZE) {
+			if (updated > HTTP2Settings.MAX_WINDOW_SIZE) {
 				throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, "Connection send window overflowed");
 			}
 			__connectionSendWindow += increment;
@@ -1911,7 +1912,7 @@ class H2ServerConnection {
 		}
 
 		var updated:Float = target.sendWindow + increment;
-		if (updated > H2Settings.MAX_WINDOW_SIZE) {
+		if (updated > HTTP2Settings.MAX_WINDOW_SIZE) {
 			throw new H2StreamError(frame.streamId, H2ErrorCode.FLOW_CONTROL_ERROR, "Stream send window overflowed");
 		}
 		target.sendWindow += increment;
@@ -1942,18 +1943,18 @@ class H2ServerConnection {
 		trip only between 16 and 64 KB.
 	**/
 	private function __fixBudget():Void {
-		var budget:Float = requestBodyBudget > 0 ? requestBodyBudget : H2Settings.MAX_WINDOW_SIZE;
+		var budget:Float = requestBodyBudget > 0 ? requestBodyBudget : HTTP2Settings.MAX_WINDOW_SIZE;
 		if (maxRequestBodySize >= budget) {
 			// One body of the largest size taken always fits, and the byte
 			// past it, which is how a body over the limit is told.
 			budget = maxRequestBodySize + 1.0;
 		}
-		if (budget < H2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
+		if (budget < HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
 			// The client may send this much before it hears anything.
-			budget = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+			budget = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 		}
-		if (budget > H2Settings.MAX_WINDOW_SIZE) {
-			budget = H2Settings.MAX_WINDOW_SIZE;
+		if (budget > HTTP2Settings.MAX_WINDOW_SIZE) {
+			budget = HTTP2Settings.MAX_WINDOW_SIZE;
 		}
 		__bodyLimit = maxRequestBodySize >= 0 && maxRequestBodySize < budget ? maxRequestBodySize : Std.int(budget) - 1;
 
@@ -1972,8 +1973,8 @@ class H2ServerConnection {
 			}
 			if (whole + streams * (first + 0.0) > budget) {
 				budget = whole + streams * (first + 0.0);
-				if (budget > H2Settings.MAX_WINDOW_SIZE) {
-					budget = H2Settings.MAX_WINDOW_SIZE;
+				if (budget > HTTP2Settings.MAX_WINDOW_SIZE) {
+					budget = HTTP2Settings.MAX_WINDOW_SIZE;
 				}
 			}
 			if (first < localSettings.initialWindowSize) {
@@ -2350,8 +2351,8 @@ class H2ServerConnection {
 		onConnectionError(e);
 	}
 
-	private static function __defaultSettings():H2Settings {
-		var settings = new H2Settings();
+	private static function __defaultSettings():HTTP2Settings {
+		var settings = new HTTP2Settings();
 		// Nothing here pushes, and saying so lets a client stop reserving for
 		// promises it will never receive.
 		settings.enablePush = false;

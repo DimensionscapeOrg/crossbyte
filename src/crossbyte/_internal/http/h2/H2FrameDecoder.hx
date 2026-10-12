@@ -1,5 +1,6 @@
 package crossbyte._internal.http.h2;
 
+import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 
 /**
@@ -22,7 +23,7 @@ class H2FrameDecoder {
 	private var __length:Int = 0;
 	private var __position:Int = 0;
 
-	public function new(maxFrameSize:Int = H2Settings.DEFAULT_MAX_FRAME_SIZE) {
+	public function new(maxFrameSize:Int = HTTP2Settings.DEFAULT_MAX_FRAME_SIZE) {
 		this.maxFrameSize = maxFrameSize;
 		__buffer = Bytes.alloc(H2Frame.HEADER_SIZE + maxFrameSize);
 	}

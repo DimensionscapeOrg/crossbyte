@@ -5,6 +5,7 @@ import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.utils.IntParse;
+import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import haxe.io.Eof;
@@ -71,13 +72,13 @@ class H2Connection {
 		The most the HPACK table this side encodes with may hold, whatever
 		the peer's SETTINGS_HEADER_TABLE_SIZE allows: the protocol's default.
 	**/
-	public static inline var MAX_ENCODER_TABLE_SIZE:Int = H2Settings.DEFAULT_HEADER_TABLE_SIZE;
+	public static inline var MAX_ENCODER_TABLE_SIZE:Int = HTTP2Settings.DEFAULT_HEADER_TABLE_SIZE;
 
 	/** Our settings, sent at startup. */
-	public final localSettings:H2Settings;
+	public final localSettings:HTTP2Settings;
 
 	/** The peer's settings, as most recently received. */
-	public final remoteSettings:H2Settings;
+	public final remoteSettings:HTTP2Settings;
 
 	/** Set when the peer sent GOAWAY, with the code it gave. */
 	public var goAwayCode(default, null):Null<H2ErrorCode> = null;
@@ -171,17 +172,17 @@ class H2Connection {
 	private var __outboxBytes:Int = 0;
 	private var __outboxReplyBytes:Int = 0;
 
-	public function new(input:Input, output:Output, ?settings:H2Settings) {
+	public function new(input:Input, output:Output, ?settings:HTTP2Settings) {
 		__input = input;
 		__output = output;
 
-		localSettings = settings != null ? settings : new H2Settings();
+		localSettings = settings != null ? settings : new HTTP2Settings();
 		// Nothing here can take a pushed stream, and a PUSH_PROMISE is a
 		// connection error below, which 8.4 allows only once push has been
-		// refused. H2Settings allows push unless told otherwise, so it is
+		// refused. HTTP2Settings allows push unless told otherwise, so it is
 		// refused here whatever settings the client was given.
 		localSettings.enablePush = false;
-		remoteSettings = new H2Settings();
+		remoteSettings = new HTTP2Settings();
 		__streams = new Map();
 
 		__encoder = new HpackEncoder(remoteSettings.headerTableSize);
@@ -193,8 +194,8 @@ class H2Connection {
 		// The connection window is not affected by SETTINGS_INITIAL_WINDOW_SIZE
 		// (§6.9.2); it starts at the fixed default and only WINDOW_UPDATE
 		// moves it. Conflating the two is a classic stall.
-		__connectionSendWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
-		__connectionRecvWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		__connectionSendWindow = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		__connectionRecvWindow = HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 	}
 
 	/** Writes the preface and our SETTINGS. Must precede any request. */
@@ -784,7 +785,7 @@ class H2Connection {
 		if (delta != 0) {
 			for (target in __streams) {
 				var adjusted:Float = target.sendWindow + delta;
-				if (adjusted > H2Settings.MAX_WINDOW_SIZE) {
+				if (adjusted > HTTP2Settings.MAX_WINDOW_SIZE) {
 					throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, 'INITIAL_WINDOW_SIZE change overflows stream ${target.id}');
 				}
 				target.sendWindow += delta;
@@ -859,7 +860,7 @@ class H2Connection {
 
 		if (frame.streamId == 0) {
 			var updated:Float = __connectionSendWindow + increment;
-			if (updated > H2Settings.MAX_WINDOW_SIZE) {
+			if (updated > HTTP2Settings.MAX_WINDOW_SIZE) {
 				throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, "Connection send window overflowed");
 			}
 			__connectionSendWindow += increment;
@@ -872,7 +873,7 @@ class H2Connection {
 		}
 
 		var updated:Float = target.sendWindow + increment;
-		if (updated > H2Settings.MAX_WINDOW_SIZE) {
+		if (updated > HTTP2Settings.MAX_WINDOW_SIZE) {
 			throw new H2StreamError(frame.streamId, H2ErrorCode.FLOW_CONTROL_ERROR, "Stream send window overflowed");
 		}
 		target.sendWindow += increment;
@@ -902,7 +903,7 @@ class H2Connection {
 	}
 
 	private function __topUpConnectionWindow():Void {
-		if (__connectionUnacknowledged < (H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1)) {
+		if (__connectionUnacknowledged < (HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1)) {
 			return;
 		}
 
