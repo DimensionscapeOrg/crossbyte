@@ -71,7 +71,7 @@ import haxe.io.Bytes;
 	storage directory for the application. It is defined by the File.applicationStorageDirectory
 	property.
 
-	@event cancel    			Dispatched when a pending asynchronous operation is canceled.
+	@event cancel    			Dispatched when a pending asynchronous operation is cancelled.
 	@event complete  			Dispatched when an asynchronous operation is complete.
 	@event directoryListing 	Dispatched when a directory list is available as a result of a
 	call to the getDirectoryListingAsync() method.

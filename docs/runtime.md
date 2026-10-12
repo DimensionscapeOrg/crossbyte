@@ -25,7 +25,7 @@ net.post(() -> trace("on the network runtime's thread"));
 
 Every runtime schedules its timers with a min-heap, and for almost every program that is the end of it. It orders
 timers exactly, a one-millisecond delay costs what a six-hour delay costs, and thirty thousand recurring timers
-still use well under a millisecond a frame.
+still use well under a millisecond a tick.
 
 The exception is a runtime holding thousands of short timers that it re-arms constantly: a deadline per connection,
 a cooldown per entity. There the heap's `O(log n)` starts to show, and a timing wheel does better:

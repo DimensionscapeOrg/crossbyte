@@ -4,6 +4,8 @@ Every CrossByte server bounds what one peer can make it hold, and every limit is
 the object it is set on: one server, or one client, changing its limits changes no other in the process. Each member
 also says what it bounds in its own documentation.
 
+Durations are in seconds unless a table says otherwise, and sizes in bytes: a KiB is 1,024 bytes and a MiB 1,048,576.
+
 None of these limits bounds how often one address connects: a connection that arrives and leaves at once passes all
 of them. A server open to the internet keeps a `RateLimiter` in `admit`, which is asked before any work is done for a
 connection:
@@ -183,16 +185,16 @@ in it. A broadcast throws nothing for one session: one not open, or closing, is 
 ## HTTP clients
 
 What a server you call can cost you is bounded per request, on the `URLRequest`, so one caller's settings never
-reach another's requests:
+reach another's requests. Its timeouts are in milliseconds, as AIR's `URLRequest.idleTimeout` was:
 
 | `URLRequest` | Default | Bounds |
 | --- | --- | --- |
-| `idleTimeout` | 30 s | time with nothing arriving; natively, on the jvm and the interpreter also the wait for a load thread past `URLLoader.maxConcurrentLoads` |
-| `headTimeout` | 300 s | the response's head, from the request having gone; bytes trickling in do not move it |
+| `idleTimeout` | 30,000 ms | time with nothing arriving; natively, on the jvm and the interpreter also the wait for a load thread past `URLLoader.maxConcurrentLoads` |
+| `headTimeout` | 300,000 ms | the response's head, from the request having gone; bytes trickling in do not move it |
 | `totalTimeout` | none | the whole load, from `load()` to `COMPLETE` |
-| `maxBodySize` | 64 MB | the body on the wire; a larger `Content-Length` is refused before it is read |
-| `maxDecompressedSize` | 64 MB | what the body decodes to |
-| `maxResponseHeaderSize` | 64 KB | the status line and header fields, 1xx responses included |
+| `maxBodySize` | 64 MiB | the body on the wire; a larger `Content-Length` is refused before it is read |
+| `maxDecompressedSize` | 64 MiB | what the body decodes to |
+| `maxResponseHeaderSize` | 64 KiB | the status line and header fields, 1xx responses included |
 | `maxRedirects` | 10 | redirects followed before the load fails |
 
 `0` or less lifts any of them. An idle timeout alone does not bound a request: a server sending a byte at a time
@@ -226,7 +228,7 @@ write. What that costs, and what it sends to addresses nobody has proved, is bou
 | `maxResetsPerSecond` (static) | 1,000 | FINs every server in the process sends, together, to addresses with no session |
 | `allowRebind` | off | whether a session follows its player to a new address |
 
-Each session holds at most `ReliableDatagramSocket.maxOutputBufferSize` (256 KB) waiting for its congestion window,
+Each session holds at most `ReliableDatagramSocket.maxOutputBufferSize` (256 KiB) waiting for its congestion window,
 past which it is ended with an `ioError` saying why. A game that sends more at once (a level, one large reliable
 message) raises the limit, or sets it to 0 for none. [reliable-udp.md](reliable-udp.md) explains the handshake and
 what a session and a message cost.

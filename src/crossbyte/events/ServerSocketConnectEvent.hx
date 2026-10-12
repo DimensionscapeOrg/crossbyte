@@ -23,7 +23,7 @@ class ServerSocketConnectEvent extends Event {
 		@param type The type of the event. Must be: ServerSocketConnectEvent.CONNECT.
 		@param bubbles (default = false) Determines whether the Event object participates in the
 			   bubbling stage of the event flow. Always false
-		@param cancelable (default = false) Determines whether the Event object can be canceled. Always
+		@param cancelable (default = false) Determines whether the Event object can be cancelled. Always
 			   false.
 		@param socket (default = null) The socket for the new connection.
 	**/

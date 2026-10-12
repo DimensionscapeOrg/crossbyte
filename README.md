@@ -311,8 +311,8 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
 - **Crypto.** Natively, from libsodium and BLAKE3 compiled in: `Aead` (XChaCha20-Poly1305), `KeyExchange` and
   `X25519`, `GenericHash` (BLAKE2b), `HKDF`, `Ed25519` and `Blake3`; from mbedTLS, RSA and ECDSA signatures
   (`PublicKeySignature`, `SignatureKey`). Elsewhere `isAvailable()` is false and they throw. `Argon2id` natively
-  and on Node 24.7 or later; `BCrypt` everywhere, in Haxe, though hashing needs a secure random source. Secure random bytes natively, on the jvm, on Node, in a browser
-  and on PHP; not on the interpreter, neko or HashLink.
+  and on Node 24.7 or later; `BCrypt` everywhere, in Haxe, though hashing needs a secure random source. Secure
+  random bytes natively, on the jvm, on Node, in a browser and on PHP; not on the interpreter, neko or HashLink.
 - **Compression.** DEFLATE, GZIP, LZ4 and Brotli. LZ4 and Brotli are written in Haxe, and can use native backends
   instead (see Extensions).
 - **IPC.** `LocalConnection`, `SharedChannel` and `SharedObject`, natively on Windows, Linux and macOS. On every
@@ -337,7 +337,7 @@ All optional, all off unless you pass them.
 | `crossbyte_check_events` | Finds code that keeps an event, or the received bytes one carries, past its listener call (see `Event`). Every event and payload handed out for an arrival is made afresh and poisoned once the call returns: bytes overwritten with `0xDB`, length and position 0, fields cleared. For tests and debugging. |
 | `crossbyte_fresh_events` | Makes every event and payload handed out for an arrival afresh, where a release build reuses one of each per socket, session or connection. A workaround for code that keeps them, until it copies what it keeps. |
 | `crossbyte_keep_nofile` | Natively on Linux and macOS, keeps the process's limit on open descriptors as it started, rather than raising the soft limit to the hard one (see [docs/limits.md](docs/limits.md)). For a process that starts children which `select()` on descriptors below 1,024. |
-| `precision_tick` | A runtime waits out the end of each frame in 1 ms sleeps, spinning the last fraction, rather than in one wait: closer frame timing for more CPU. |
+| `precision_tick` | A runtime waits out the end of each tick in 1 ms sleeps, spinning the last fraction, rather than in one wait: closer tick timing for more CPU. |
 | `timer_burst_catchup` | A heap timer that has fallen several intervals behind fires once for each interval it missed, rather than once. |
 | `http_debug` | Logs each response line the HTTP client reads, through `Logger`. |
 | `crossbyte_debug` | Keeps `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |

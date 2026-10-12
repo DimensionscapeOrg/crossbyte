@@ -165,7 +165,7 @@ tick, and all of them are kept for the next. Once the traffic falls, what was ke
 once nothing has come back for ten, all but 64 go.
 
 **What a pass sends.** Natively a server's socket gathers the datagrams its sessions send in a pass and sends them
-together when the pass ends (on Linux with `sendmmsg`). They wait in 64 KB chunks that every datagram socket of the
+together when the pass ends (on Linux with `sendmmsg`). They wait in 64 KiB chunks that every datagram socket of the
 runtime takes from one pool, each datagram whole in one chunk, and the chunks go back to the pool once sent. The
 pool keeps what the busiest pass needed while passes go on taking chunks; what a pass no longer needs waits five
 seconds more as spare, so a server pausing between matches takes its chunks back, and once ten to fifteen seconds
@@ -175,7 +175,7 @@ server keeps broadcasting and 0.2 MB once it is quiet.
 **What a pass reads.** A server's socket reads up to eight datagrams a session in a pass (1,024 at the least), as
 each TCP connection reads its own, and what is left is read again before the loop waits. A server with more sessions
 than its runtime has processor time for slows its tick, as one over TCP does, rather than leaving what arrives in the
-system's buffer to be read a frame later behind everything since: natively on one runtime at 60 ticks a second, with
+system's buffer to be read a tick later behind everything since: natively on one runtime at 60 ticks a second, with
 each of 1,000 game clients sending three calls a tick, a call took 21 ms (p50) and 39 ms (p99), at
 35 ticks a second where 60 were asked for. The runtime's `loopLag` and `frameOverruns` say so. A server is
 one runtime's: to use more cores, run a server per runtime, each on a port of its own.
@@ -183,7 +183,7 @@ one runtime's: to use more cores, run a server per runtime, each on a port of it
 **The receive buffer.** What arrives for every session while the server is busy waits in its socket's receive buffer,
 and past it the system drops it. A server asks for 7 MiB (`ReliableDatagramServerSocket.RECEIVE_BUFFER_SIZE`, as QUIC
 servers ask) and, as it binds, says once in the log (category `net.rudp`) if it was granted less. Linux grants at most
-`net.core.rmem_max`, 208 KB on most systems; raise it to let a server have the whole buffer:
+`net.core.rmem_max`, 208 KiB on most systems; raise it to let a server have the whole buffer:
 
 ```
 sysctl -w net.core.rmem_max=7340032

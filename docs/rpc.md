@@ -728,7 +728,7 @@ A frame has to fit its transport too. Over a WebSocket a large frame goes as
 messages of 64 KiB, which the other side reads as one stream, so its peer's
 `maxMessageSize` (1 MiB unless set) is no limit on it as long as it is 64 KiB
 or more. Over reliable UDP a call larger than what the session may hold for
-its window (`maxOutputBufferSize`, 256 KB unless set) fails as it is made
+its window (`maxOutputBufferSize`, 256 KiB unless set) fails as it is made
 (`Unsent`), and so does one over local IPC larger than its 8 MiB message,
 where either would have ended the connection or gone nowhere; an answer that
 large goes in pieces over reliable UDP (see "Large answers"), and over local
@@ -1161,11 +1161,11 @@ streams interleave: a small call made just after a large one is answered
 without waiting for the whole of it. Natively over loopback TCP, while a 64 MB
 answer was in flight a small call took 3 ms (p50) and 15 ms (p99) where it
 took 56 and 98, and the large answer itself went as fast (850 MB/s against
-700); with an 8 MB answer, 1.6 and 6.6 ms where it took 11 and 27. The pieces go as the connection takes them: what it holds unsent is
-kept under four pieces, so a frame behind a large answer waits for at most
-those, and what waits behind them is the session's, counted toward
-`maxOutputPending`. Up to four answers go at once, a piece each in turn, and
-the rest wait their turn.
+700); with an 8 MB answer, 1.6 and 6.6 ms where it took 11 and 27. The pieces
+go as the connection takes them: what it holds unsent is kept under four
+pieces, so a frame behind a large answer waits for at most those, and what
+waits behind them is the session's, counted toward `maxOutputPending`. Up to
+four answers go at once, a piece each in turn, and the rest wait their turn.
 
 Calls never go in pieces, so they arrive in the order they were made. An
 answer in pieces is complete when its last piece is in, so a frame sent after
