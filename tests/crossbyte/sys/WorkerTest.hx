@@ -20,7 +20,6 @@ class WorkerTest extends utest.Test {
 		Assert.equals("done:job", worker.result);
 		Assert.equals(WorkerState.COMPLETED, worker.state);
 		Assert.isTrue(worker.completed);
-		Assert.isTrue(worker.canceled);
 		Assert.isFalse(worker.cancelRequested);
 	}
 
@@ -88,7 +87,6 @@ class WorkerTest extends utest.Test {
 		Assert.equals("bad", worker.error);
 		Assert.equals(WorkerState.FAILED, worker.state);
 		Assert.isTrue(worker.failed);
-		Assert.isTrue(worker.canceled);
 	}
 
 	public function testThrownExceptionIsCapturedAsError():Void {
@@ -123,7 +121,6 @@ class WorkerTest extends utest.Test {
 		Assert.equals(0, completeCount);
 		Assert.equals(0, progressCount);
 		Assert.equals(WorkerState.CANCELLED, worker.state);
-		Assert.isTrue(worker.canceled);
 		Assert.isTrue(worker.cancelRequested);
 	}
 

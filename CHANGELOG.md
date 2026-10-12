@@ -2498,6 +2498,9 @@ an API added in this release has is not listed here.
   `\\.\pipe\crossbyte-<SID>-<name>` on Windows, where it was
   `\\.\pipe\<name>`: a program of your own that opened those directly
   must follow.
+- `Worker.canceled` is gone. It was true once a run was over however it
+  ended, completed and failed too: read `state` (`CANCELLED`,
+  `COMPLETED` or `FAILED`), or `cancelRequested` for a run called off.
 
 ## 1.0.0-rc.1 - 2026-04-28
 

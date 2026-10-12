@@ -38,15 +38,6 @@ private enum WorkerMessage {
 **/
 class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	/**
-		Whether the run is over, however it ended: `true` once `cancel()` is
-		called, and also once the run has completed or failed. What the work
-		sends after that is dropped. To tell a cancelled run from a finished
-		one, read `state` (`CANCELLED`, `COMPLETED` or `FAILED`), or
-		`cancelRequested`.
-	**/
-	public var canceled(default, null):Bool;
-
-	/**
 		Whether the work has called `sendComplete`. Set as the work sends it,
 		so it can be `true` a moment before `ThreadEvent.COMPLETE` is
 		dispatched and `state` becomes `COMPLETED`.
@@ -83,6 +74,9 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	**/
 	public var state(default, null):WorkerState;
 
+	// Whether the run is over, however it ended: set by cancel(), and as the
+	// run completes or fails. What the work sends after that is dropped.
+	@:noCompletion private var __over:Bool;
 	@:noCompletion private var __runMessage:Null<In>;
 	@:noCompletion private var __runtime:CrossByte;
 
@@ -105,7 +99,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	#end
 	#if target.threaded
 	@:noCompletion private var __workerThread:Thread;
-	// Guards the outbox and the cross-thread lifecycle state (the canceled,
+	// Guards the outbox and the cross-thread lifecycle state (the __over,
 	// cancelRequested, completed, result and error flags) so the worker
 	// thread's send* calls cannot race cancel()/clean() on the runtime thread.
 	@:noCompletion private var __lock:Mutex;
@@ -135,7 +129,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	public function cancel(doClean:Bool = true):Void {
 		__acquire();
 		cancelRequested = true;
-		canceled = true;
+		__over = true;
 		// By the state, not by `completed`: sendComplete sets that as the work
 		// sends, and a completion not yet delivered is discarded by the drain
 		// once this is called, which would then set nothing, leaving the
@@ -235,7 +229,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	public function sendComplete(?message:Out):Void {
 		#if (target.threaded || js)
 		__acquire();
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			__release();
 			return;
 		}
@@ -244,7 +238,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		error = null;
 		__send(Complete(message));
 		#else
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			return;
 		}
 		completed = true;
@@ -261,14 +255,14 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	public function sendError(message:Dynamic = null):Void {
 		#if (target.threaded || js)
 		__acquire();
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			__release();
 			return;
 		}
 		error = message;
 		__send(Error(message));
 		#else
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			return;
 		}
 		error = message;
@@ -284,13 +278,13 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	public function sendProgress(?message:Progress):Void {
 		#if (target.threaded || js)
 		__acquire();
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			__release();
 			return;
 		}
 		__send(Progress(message));
 		#else
-		if (cancelRequested || canceled) {
+		if (cancelRequested || __over) {
 			return;
 		}
 		dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
@@ -352,7 +346,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	}
 
 	@:noCompletion private function __resetState():Void {
-		canceled = false;
+		__over = false;
 		cancelRequested = false;
 		completed = false;
 		error = null;
@@ -374,7 +368,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		completed = true;
 		result = message;
 		state = COMPLETED;
-		canceled = true;
+		__over = true;
 		cancelRequested = false;
 		dispatchEvent(new ThreadEvent(ThreadEvent.COMPLETE, message));
 	}
@@ -382,7 +376,7 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 	@:noCompletion private function __finishFailed(message:Dynamic):Void {
 		error = message;
 		state = FAILED;
-		canceled = true;
+		__over = true;
 		cancelRequested = false;
 		dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, message));
 	}
@@ -467,8 +461,8 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 			// of this batch would hand a finished run's messages to its
 			// successor.
 			//
-			// cancelRequested, not canceled. The two are not the same state:
-			// canceled is set by __finishCompleted and __finishFailed as well
+			// cancelRequested, not __over. The two are not the same state:
+			// __over is set by __finishCompleted and __finishFailed as well
 			// as by cancel(), so it means "no longer running" rather than "was
 			// called off", and reading it here says the drain stops because
 			// the producer finished, which is exactly when the last messages
@@ -480,12 +474,12 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 
 			switch (message) {
 				case Error(value):
-					if (!canceled) {
+					if (!__over) {
 						__finishFailed(value);
 					}
 					return;
 				case Complete(value):
-					if (!canceled) {
+					if (!__over) {
 						__finishCompleted(value);
 					}
 					return;
