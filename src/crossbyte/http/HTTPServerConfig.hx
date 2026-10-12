@@ -26,19 +26,20 @@ class HTTPServerConfig {
 		over 256 KB streams in bounded bursts, and far below what a few stalled
 		peers cost a process that never reclaims any of it.
 	**/
-	public static inline var DEFAULT_MAX_OUTPUT_BUFFER:Int = 8 * 1024 * 1024;
+	public static inline var DEFAULT_MAX_OUTPUT_BUFFER_SIZE:Int = 8 * 1024 * 1024;
 
 	/** The request body a server accepts by default: one megabyte. **/
-	public static inline var DEFAULT_MAX_REQUEST_BODY:Int = 1024 * 1024;
+	public static inline var DEFAULT_MAX_REQUEST_BODY_SIZE:Int = 1024 * 1024;
 
 	/** What one HTTP/2 connection holds of request bodies by default: four megabytes. **/
-	public static inline var DEFAULT_HTTP2_REQUEST_BODY_BUFFER:Int = 4 * 1024 * 1024;
+	public static inline var DEFAULT_HTTP2_MAX_REQUEST_BODY_BUFFER:Int = 4 * 1024 * 1024;
 
 	/**
 		Bytes a request body may reach, on the wire and once decoded, over
 		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
 		Large` as soon as a `Content-Length` says so, before any of the body
-		is read, on either protocol. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+		is read, on either protocol. Defaults to
+		`DEFAULT_MAX_REQUEST_BODY_SIZE`.
 
 		The limit counts the body alone; the header block has its own. Raise
 		it for uploads; the whole body is held in memory before middleware
@@ -47,14 +48,14 @@ class HTTPServerConfig {
 		such body; an HTTP/2 connection carries many at once, and
 		`http2MaxRequestBodyBuffer` is what all of them may hold together.
 	**/
-	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY;
+	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY_SIZE;
 
 	/**
 		Bytes of request body one HTTP/2 connection holds at once, across
 		every stream whose body is still arriving, or `0` and below for no
-		limit. Defaults to `DEFAULT_HTTP2_REQUEST_BODY_BUFFER`, and is never
-		less than `maxRequestBodySize`: one body of the largest size the
-		server takes always fits.
+		limit. Defaults to `DEFAULT_HTTP2_MAX_REQUEST_BODY_BUFFER`, and is
+		never less than `maxRequestBodySize`: one body of the largest size
+		the server takes always fits.
 
 		HTTP/1.1 reads one request at a time, so a connection holds one body.
 		HTTP/2 carries up to 128 requests at once, and with each body allowed
@@ -98,7 +99,7 @@ class HTTPServerConfig {
 		handed to the application, or is refused. What the application then
 		holds while it answers is its own, as for an HTTP/1.1 request.
 	**/
-	public var http2MaxRequestBodyBuffer:Int = DEFAULT_HTTP2_REQUEST_BODY_BUFFER;
+	public var http2MaxRequestBodyBuffer:Int = DEFAULT_HTTP2_MAX_REQUEST_BODY_BUFFER;
 
 	/**
 		What this server compresses, and how hard: text of a kilobyte or more,
@@ -689,12 +690,12 @@ class HTTPServerConfig {
 		Applied to every socket this server accepts, since an application
 		cannot reach those sockets before they are used.
 
-		`DEFAULT_MAX_OUTPUT_BUFFER` by default, which no ordinary response comes
-		near. A file over 256 KB streams, and streaming peaks at the watermark
-		plus one slice (320 KB), while a file under that is buffered whole and
-		so is smaller again. What is left above the default is a peer that
-		stopped reading, and a response an application built in one call that is
-		larger than any file this server would have buffered.
+		`DEFAULT_MAX_OUTPUT_BUFFER_SIZE` by default, which no ordinary response
+		comes near. A file over 256 KB streams, and streaming peaks at the
+		watermark plus one slice (320 KB), while a file under that is buffered
+		whole and so is smaller again. What is left above the default is a peer
+		that stopped reading, and a response an application built in one call
+		that is larger than any file this server would have buffered.
 
 		`0` means no limit at all, which bounds nothing:
 		a client that stops reading mid-response then holds its whole response in
@@ -713,7 +714,7 @@ class HTTPServerConfig {
 		handed before the connection filled, is held as well; what bounds that
 		is the stall deadline (see `requestTimeout`).
 	**/
-	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER;
+	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER_SIZE;
 
 	/**
 		What to do when an accepted connection exceeds

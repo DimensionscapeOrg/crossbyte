@@ -81,7 +81,7 @@ class HTTPRequestFramingTest extends utest.Test {
 		var server:HTTPServer = __serve(seen);
 
 		HTTPTestSupport.exchangeEach(server, [
-			'POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${HTTPServerConfig.DEFAULT_MAX_REQUEST_BODY + 1}\r\n\r\n'
+			'POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${HTTPServerConfig.DEFAULT_MAX_REQUEST_BODY_SIZE + 1}\r\n\r\n'
 		], function(responses:Array<HTTPTestResponse>):Void {
 			try server.close() catch (_:Dynamic) {}
 

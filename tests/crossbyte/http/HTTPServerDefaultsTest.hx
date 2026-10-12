@@ -94,7 +94,7 @@ class HTTPServerDefaultsTest extends utest.Test {
 		var server:HTTPServer = __makeServer();
 		var accepted:Int = -1;
 
-		Assert.isTrue(HTTPServerConfig.DEFAULT_MAX_OUTPUT_BUFFER > 0, "the default config left the output buffer unbounded");
+		Assert.isTrue(HTTPServerConfig.DEFAULT_MAX_OUTPUT_BUFFER_SIZE > 0, "the default config left the output buffer unbounded");
 
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
 			if (accepted < 0) {
@@ -107,7 +107,7 @@ class HTTPServerDefaultsTest extends utest.Test {
 		HTTPTestSupport.connectThen(client, server, function():Void {
 			HTTPTestSupport.pumpUntilAsync(() -> accepted >= 0, 3.0, function(seen:Bool):Void {
 				Assert.isTrue(seen, "no connection was accepted");
-				Assert.equals(HTTPServerConfig.DEFAULT_MAX_OUTPUT_BUFFER, accepted,
+				Assert.equals(HTTPServerConfig.DEFAULT_MAX_OUTPUT_BUFFER_SIZE, accepted,
 					"an accepted socket did not carry the configured output bound");
 
 				try client.close() catch (_:Dynamic) {}
