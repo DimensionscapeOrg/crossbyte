@@ -2389,6 +2389,10 @@ an API added in this release has is not listed here.
   (`MySQLConfig.sslMode`, `PREFERRED` by default), without checking the
   certificate: set `VERIFY_IDENTITY` and `sslCa` to know which server you
   reached, or `DISABLED` for the old behaviour.
+- `crossbyte.db.mysql.IsolationLevel` and
+  `crossbyte.db.postgres.PostgresIsolationLevel` are one
+  `crossbyte.db.IsolationLevel`, with the same four values: import that
+  instead.
 - `MongoConnection` speaks MongoDB's wire protocol, and PHP's `mongodb`
   extension is no longer used. `MongoConnection.lastInsertRowID` is gone
   (it read 0 whatever was inserted): read `lastInsertId`, the `_id` of the

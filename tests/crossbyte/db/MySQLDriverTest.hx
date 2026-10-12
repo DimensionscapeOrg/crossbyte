@@ -473,7 +473,7 @@ class MySQLDriverTest extends utest.Test {
 		var thrown:Dynamic = null;
 
 		try {
-			connection.isolationLevel = crossbyte.db.mysql.IsolationLevel.SERIALIZABLE;
+			connection.isolationLevel = crossbyte.db.IsolationLevel.SERIALIZABLE;
 		} catch (e:Dynamic) {
 			thrown = e;
 		}

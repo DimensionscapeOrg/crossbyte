@@ -2,7 +2,7 @@ package crossbyte.db;
 
 import utest.Assert;
 #if cpp
-import crossbyte.db.mysql.IsolationLevel;
+import crossbyte.db.IsolationLevel;
 import crossbyte.db.mysql.MySQLConfig;
 import crossbyte.db.mysql.MySQLConnection;
 import crossbyte.db.mysql.MySQLError;

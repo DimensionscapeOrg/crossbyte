@@ -4,6 +4,7 @@ package crossbyte.db.postgres;
 #if !(js && !nodejs)
 
 import haxe.Json;
+import crossbyte.db.IsolationLevel;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.EventDispatcher;
@@ -80,7 +81,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		The isolation level of the session's transactions, from the next one
 		on. Setting it throws the `SQLError` the server refused it with.
 	**/
-	public var isolationLevel(get, set):PostgresIsolationLevel;
+	public var isolationLevel(get, set):IsolationLevel;
 
 	@:noCompletion private var __connection:Dynamic;
 	#if cpp
@@ -95,7 +96,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	#end
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
-	@:noCompletion private var __isolationLevel:PostgresIsolationLevel = PostgresIsolationLevel.REPEATABLE_READ;
+	@:noCompletion private var __isolationLevel:IsolationLevel = IsolationLevel.REPEATABLE_READ;
 	@:noCompletion private var __lastInsertRowID:Float = 0;
 	@:noCompletion private var __lastAffectedRows:Float = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
@@ -660,7 +661,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		return v;
 	}
 
-	private function get_isolationLevel():PostgresIsolationLevel {
+	private function get_isolationLevel():IsolationLevel {
 		try {
 			var rs = __request("SHOW transaction_isolation;", false);
 			if (!rs.hasNext()) {
@@ -687,7 +688,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		Never begins a transaction itself: one that `autocommit` off began and
 		then rolled back would take the setting with it.
 	**/
-	private function set_isolationLevel(v:PostgresIsolationLevel):PostgresIsolationLevel {
+	private function set_isolationLevel(v:IsolationLevel):IsolationLevel {
 		__request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";", false);
 		__isolationLevel = v;
 		return v;

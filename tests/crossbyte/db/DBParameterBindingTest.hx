@@ -2,8 +2,6 @@ package crossbyte.db;
 
 import crossbyte.db.mongodb.MongoConfig;
 import crossbyte.db.mongodb.MongoConnection;
-import crossbyte.db.mysql.IsolationLevel;
-import crossbyte.db.postgres.PostgresIsolationLevel;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.errors.ArgumentError;
 import utest.Assert;
@@ -257,12 +255,12 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("SERIALIZABLE", IsolationLevel.ofString("SERIALIZABLE"));
 		// Server-reported form with a hyphen still normalizes.
 		Assert.equals("REPEATABLE READ", IsolationLevel.ofString("REPEATABLE-READ"));
-		Assert.equals("READ COMMITTED", PostgresIsolationLevel.ofString("read committed"));
+		Assert.equals("READ UNCOMMITTED", IsolationLevel.ofString("read_uncommitted"));
 	}
 
 	public function testIsolationWhitelistRejectsUnknownString():Void {
 		Assert.raises(() -> IsolationLevel.ofString("SERIALIZABLE; DROP TABLE users"), ArgumentError);
-		Assert.raises(() -> PostgresIsolationLevel.ofString("garbage"), ArgumentError);
+		Assert.raises(() -> IsolationLevel.ofString("garbage"), ArgumentError);
 	}
 
 	public function testMongoUriPercentEncodesUserinfo():Void {

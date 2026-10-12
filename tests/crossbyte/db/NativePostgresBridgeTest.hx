@@ -3,7 +3,7 @@ package crossbyte.db;
 #if cpp
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
-import crossbyte.db.postgres.PostgresIsolationLevel;
+import crossbyte.db.IsolationLevel;
 import crossbyte.db.postgres.PostgresParameter;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
@@ -718,14 +718,14 @@ class NativePostgresBridgeTest extends utest.Test {
 		var thrown:Dynamic = null;
 
 		try {
-			connection.isolationLevel = PostgresIsolationLevel.SERIALIZABLE;
+			connection.isolationLevel = IsolationLevel.SERIALIZABLE;
 		} catch (e:Dynamic) {
 			thrown = e;
 		}
 
 		Assert.isTrue(Std.isOfType(thrown, SQLError), "the refusal was swallowed: " + Std.string(thrown));
 		connection.rollback();
-		connection.isolationLevel = PostgresIsolationLevel.SERIALIZABLE;
+		connection.isolationLevel = IsolationLevel.SERIALIZABLE;
 		Assert.equals(IDLE, __serverTransaction(connection), "setting the level began a transaction");
 		connection.close();
 	}

@@ -3,6 +3,7 @@ package crossbyte.db.mysql;
 // Not built for any JavaScript target (Node included, which has no a database driver): a database driver needs a socket or a file, and credentials do not belong in a page.
 #if !js
 
+import crossbyte.db.IsolationLevel;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;

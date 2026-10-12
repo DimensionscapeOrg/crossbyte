@@ -3,13 +3,11 @@ package crossbyte.db;
 import crossbyte.db.mongodb.MongoConfig;
 import crossbyte.db.mongodb.MongoConnection;
 import crossbyte.db.mongodb.MongoStatement;
-import crossbyte.db.mysql.IsolationLevel;
 import crossbyte.db.mysql.MySQLConfig;
 import crossbyte.db.mysql.MySQLConnection;
 import crossbyte.db.mysql.MySQLStatement;
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
-import crossbyte.db.postgres.PostgresIsolationLevel;
 import crossbyte.db.postgres.PostgresStatement;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql.sqlite.CheckpointMode;
@@ -79,7 +77,8 @@ class DBSupportTest extends utest.Test {
 		Assert.equals("STRICT_TRANS_TABLES", mysql.sqlMode);
 
 		Assert.equals("READ COMMITTED", IsolationLevel.READ_COMMITTED);
-		Assert.equals("SERIALIZABLE", PostgresIsolationLevel.SERIALIZABLE);
+		Assert.equals("SERIALIZABLE", IsolationLevel.SERIALIZABLE);
+		Assert.equals("REPEATABLE READ", IsolationLevel.REPEATABLE_READ);
 		Assert.equals("create", SQLiteMode.CREATE);
 		Assert.equals("read", SQLiteMode.READ);
 		Assert.equals("WAL", JournalMode.WAL);
