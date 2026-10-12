@@ -283,7 +283,10 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   with that much room.
 - ICE: `IceAgent`, consent freshness (RFC 7675), role conflicts, ICE
   restart (`restartIce()`), trickle (`onLocalCandidate`,
-  `addRemoteCandidate`) and `onSelectedPairChanged`.
+  `addRemoteCandidate`) and `onSelectedPairChanged`. A check arriving from
+  somewhere the peer never advertised makes a peer-reflexive candidate with
+  the priority the check carries (RFC 8445 section 7.3.1.3), so both ends
+  order its pairs alike.
 - `PeerConnectionHost`: many peer connections on one UDP port, driven by
   one tick.
 - STUN and TURN: `gatherReflexive`, `gatherRelayed` and

@@ -805,7 +805,7 @@ class IceAgent {
 
 		__sendVia(__arrivedVia, response.encodeSigned(localCredentials.password), fromAddress, fromPort);
 
-		var pair = __pairFrom(fromAddress, fromPort, __arrivedVia);
+		var pair = __pairFrom(fromAddress, fromPort, __arrivedVia, __announcedPriority(request));
 
 		if (pair == null) {
 			return true;
@@ -1250,11 +1250,16 @@ class IceAgent {
 		which is the same discovery this side makes from a response, seen from
 		the other end.
 	**/
-	@:noCompletion private function __pairFrom(address:String, port:Int, ?via:IceCandidate):Null<IceCandidatePair> {
+	@:noCompletion private function __pairFrom(address:String, port:Int, via:Null<IceCandidate>, announced:Int):Null<IceCandidatePair> {
 		var remote:IceCandidate = __remoteAt(address, port);
 
+		// A place the peer never advertised: a peer-reflexive candidate, with
+		// the priority its check carries (RFC 8445 section 7.3.1.3), which is
+		// the one the peer orders this candidate's pairs by. Worked out here
+		// instead, it matches only a peer computing it the same way; a browser
+		// sends its own local preference.
 		if (remote == null) {
-			remote = new IceCandidate(PEER_REFLEXIVE, address, port);
+			remote = new IceCandidate(PEER_REFLEXIVE, address, port, IceCandidate.COMPONENT_RTP, announced > 0 ? announced : null);
 			__remotes.push(remote);
 		}
 
@@ -1282,6 +1287,14 @@ class IceAgent {
 		}
 
 		return null;
+	}
+
+	/**
+		The `PRIORITY` a check carries, or 0 when it has none. It is unsigned:
+		past 2^31 - 1 it is taken as that, the most a priority can be.
+	**/
+	@:noCompletion private static inline function __announcedPriority(request:StunMessage):Int {
+		return request.uintOf(StunMessage.ATTR_PRIORITY, 0);
 	}
 
 	/** The remote candidate at `address:port`, advertised or learned, or null. **/

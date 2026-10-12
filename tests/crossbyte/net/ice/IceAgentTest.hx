@@ -181,6 +181,64 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		A check from somewhere the peer never advertised gives the
+		peer-reflexive candidate it makes the priority the check carries, as
+		RFC 8445 section 7.3.1.3 says, so both ends order that candidate's
+		pairs alike. The agent gave it a priority of its own, which matches
+		only a peer computing the same one: a browser's checks carry its own
+		local preference, so the two ends ordered such pairs differently. The
+		attribute is unsigned: past 2^31 - 1 it is taken as that, the most a
+		priority can be; zero, or none at all, leaves the agent's own.
+	**/
+	public function testAPeerReflexiveCandidateTakesThePriorityItsCheckCarries():Void {
+		if (unsupported()) return;
+
+		var alice = credentials("alice");
+		var bob = new IceAgent(false, credentials("bob"));
+		bob.onSend = (_, _, _) -> {};
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.start(alice, 0);
+
+		var announced:Int = IceCandidate.computePriority(PEER_REFLEXIVE, 30000);
+		var cases:Array<{port:Int, priority:Null<Int>, expected:Int}> = [
+			{port: 40001, priority: announced, expected: announced},
+			{port: 40002, priority: 0xFFFFFFFF, expected: IceCandidate.MAX_PRIORITY},
+			{port: 40003, priority: 0x80000000, expected: IceCandidate.MAX_PRIORITY},
+			{port: 40004, priority: 0, expected: IceCandidate.computePriority(PEER_REFLEXIVE)},
+			{port: 40005, priority: null, expected: IceCandidate.computePriority(PEER_REFLEXIVE)}
+		];
+
+		for (c in cases) {
+			var attributes = [StunMessage.username(IceCredentials.username(bob.localCredentials, alice))];
+			if (c.priority != null) {
+				attributes.push(StunMessage.priority(c.priority));
+			}
+			attributes.push(StunMessage.iceRole(true, Int64.make(0, 5)));
+			var check = new StunMessage(StunMessage.BINDING_REQUEST, crossbyte.crypto.SecureRandom.getSecureRandomBytes(12), attributes);
+			Assert.isTrue(bob.receive(check.encodeSigned(bob.localCredentials.password), ALICE_ADDRESS, c.port, 0), "the check was not taken");
+
+			var found:IceCandidate = null;
+			for (remote in @:privateAccess bob.__remotes) {
+				if (remote.port == c.port) {
+					found = remote;
+				}
+			}
+			var learned:IceCandidate = Require.notNull(found, "no candidate was learned from port " + c.port);
+			Assert.isTrue(learned.type == PEER_REFLEXIVE);
+			Assert.equals(c.expected, learned.priority, "a check carrying " + c.priority + " made a candidate of priority " + learned.priority);
+
+			// And the pair checked back is ordered by it.
+			var ordered:Bool = false;
+			for (check in @:privateAccess bob.__checks) {
+				if (check.pair.remote == learned) {
+					ordered = Int64.compare(check.pair.priority, IceCandidatePair.computePriority(check.pair.local.priority, c.expected, false)) == 0;
+				}
+			}
+			Assert.isTrue(ordered, "the pair from port " + c.port + " was not ordered by the priority its check carried");
+		}
+	}
+
+	/**
 		A candidate that is a name rather than an address is not dialled.
 
 		Browsers publish their host candidates as random .local mDNS names by
