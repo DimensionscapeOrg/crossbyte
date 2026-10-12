@@ -60,6 +60,10 @@ import crossbyte.Timer as CBTimer;
  * primordial applications and should be treated as worker/runtime instances
  * under the main application context.
  *
+ * A runtime another loop drives (`HostApplication`, or a `CUSTOM` loop body)
+ * runs one frame per `pump(delta)` or `pump(delta, socketTimeout)` call,
+ * `delta` and `socketTimeout` in seconds.
+ *
  * @author Christopher Speciale
  */
 final class CrossByte extends EventDispatcher {

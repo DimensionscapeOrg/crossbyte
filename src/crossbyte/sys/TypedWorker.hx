@@ -37,14 +37,50 @@ private enum WorkerMessage {
 	`Worker`, and costs nothing more.
 **/
 class TypedWorker<In, Out, Progress> extends EventDispatcher {
+	/**
+		Whether the run is over, however it ended: `true` once `cancel()` is
+		called, and also once the run has completed or failed. What the work
+		sends after that is dropped. To tell a cancelled run from a finished
+		one, read `state` (`CANCELLED`, `COMPLETED` or `FAILED`), or
+		`cancelRequested`.
+	**/
 	public var canceled(default, null):Bool;
+
+	/**
+		Whether the work has called `sendComplete`. Set as the work sends it,
+		so it can be `true` a moment before `ThreadEvent.COMPLETE` is
+		dispatched and `state` becomes `COMPLETED`.
+	**/
 	public var completed(default, null):Bool;
+
+	/** Whether `cancel()` has been called since the last `run()` or `clean()`. **/
 	public var cancelRequested(default, null):Bool;
+
+	/**
+		The work `run()` starts, handed the message `run()` was given. It
+		reports through `sendProgress`, `sendComplete` and `sendError`; what
+		it throws is reported as `sendError` reports it.
+	**/
 	public var doWork:In->Void;
+
+	/** What the work sent with `sendError`, or threw. **/
 	public var error(default, null):Dynamic;
+
+	/** Whether the last run failed: `state` is `FAILED`. **/
 	public var failed(get, never):Bool;
+
+	/** What the work sent with `sendComplete`. **/
 	public var result(default, null):Null<Out>;
+
+	/** Whether a run is under way: `state` is `RUNNING`. `run()` refuses a worker that is. **/
 	public var running(get, never):Bool;
+
+	/**
+		Where the worker is: `IDLE` until `run()`, `RUNNING` while the work
+		goes on, then `COMPLETED`, `FAILED` or `CANCELLED` as its run ends:
+		the first two as the run's last message is delivered, the third by
+		`cancel()`.
+	**/
 	public var state(default, null):WorkerState;
 
 	@:noCompletion private var __runMessage:Null<In>;
@@ -89,6 +125,13 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		__resetState();
 	}
 
+	/**
+		Calls the run off. The work's thread is not stopped: what it sends
+		from here on is dropped, and nothing more is dispatched for the run.
+		`state` becomes `CANCELLED`, unless the run had already completed or
+		failed. With `doClean`, what the run had sent and was not yet
+		delivered is let go of as well.
+	**/
 	public function cancel(doClean:Bool = true):Void {
 		__acquire();
 		cancelRequested = true;
@@ -109,6 +152,10 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		}
 	}
 
+	/**
+		Lets go of what the last run left (its undelivered messages, `result`
+		and `error`) and makes the worker `IDLE` again, every flag `false`.
+	**/
 	public function clean():Void {
 		__cleanResources();
 		__resetState();
@@ -180,6 +227,11 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		return message;
 	}
 
+	/**
+		For the work: ends the run with `message`, which listeners hear as
+		`ThreadEvent.COMPLETE` on the runtime that called `run()`. Dropped
+		once the run is over.
+	**/
 	public function sendComplete(?message:Out):Void {
 		#if (target.threaded || js)
 		__acquire();
@@ -202,6 +254,10 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		#end
 	}
 
+	/**
+		For the work: ends the run as failed, with `message`, which listeners
+		hear as `ThreadEvent.ERROR`. Dropped once the run is over.
+	**/
 	public function sendError(message:Dynamic = null):Void {
 		#if (target.threaded || js)
 		__acquire();
@@ -220,6 +276,11 @@ class TypedWorker<In, Out, Progress> extends EventDispatcher {
 		#end
 	}
 
+	/**
+		For the work: reports `message`, which listeners hear as
+		`ThreadEvent.PROGRESS`, in the order sent. Dropped once the run is
+		over.
+	**/
 	public function sendProgress(?message:Progress):Void {
 		#if (target.threaded || js)
 		__acquire();

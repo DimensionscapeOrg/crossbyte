@@ -8,7 +8,15 @@ import sys.thread.Mutex;
 #end
 
 /**
-	ActionScript's `setTimeout` and `setInterval`, by id, on `haxe.Timer`.
+	ActionScript's `setTimeout` and `setInterval`, by id, on `haxe.Timer`,
+	with delays in milliseconds as there. `crossbyte.Timer` is the runtime's
+	own, in seconds.
+
+	`setTimeout(closure, delay)` calls `closure` once, `delay` milliseconds
+	from now, and `setInterval(closure, delay)` every `delay` milliseconds;
+	each returns the id `clearTimeout` or `clearInterval` takes. Given an
+	`args` array after the delay, either calls a function of any arity with
+	those arguments, as ActionScript's do.
 
 	A timer runs where a `haxe.Timer` made on the calling thread would: on
 	that thread's runtime (the primordial runtime on the primordial thread, a
@@ -34,9 +42,8 @@ final class GlobalTimer {
 	#end
 
 	/**
-	 *	Cancels a specified `setInterval()` call.
-	 *	@param	id	The ID of the `setInterval()` call, which you set to a variable, as
-	 *	in the following:
+		Stops the interval `setInterval` returned `id` for. An id already
+		cleared, or never given, is ignored.
 	**/
 	public static function clearInterval(id:UInt):Void {
 		var timer = __removeTimer(id);
@@ -46,9 +53,8 @@ final class GlobalTimer {
 	}
 
 	/**
-	 *	Cancels a specified `setTimeout()` call.
-	 *	@param	id	The ID of the `setTimeout()` call, which you set to a variable, as in
-	 *	the following
+		Stops the timeout `setTimeout` returned `id` for, if it has not run.
+		An id already cleared, already run, or never given is ignored.
 	**/
 	public static function clearTimeout(id:UInt):Void {
 		var timer = __removeTimer(id);
@@ -58,23 +64,17 @@ final class GlobalTimer {
 	}
 
 	/**
-		Runs a function at a specified interval (in milliseconds).
-		Instead of using the `setInterval()` method, consider creating a Timer object, with
-		the specified interval, using 0 as the `repeatCount` parameter (which sets the timer
-		to repeat indefinitely).
-		If you intend to use the `clearInterval()` method to cancel the `setInterval()`
-		call, be sure to assign the `setInterval()` call to a variable (which the
-		`clearInterval()` function will later reference). If you do not call the
-		`clearInterval()` function to cancel the `setInterval()` call, the object
-		containing the set timeout closure function will not be garbage collected.
-		@param	closure	The name of the function to execute. Do not include quotation
-		marks or parentheses, and do not specify parameters of the function to call. For
-		example, use `functionName`, not `functionName()` or `functionName(param)`.
-		@param	delay	The interval, in milliseconds.
-		@param	args	An optional list of arguments that are passed to the closure
-		function.
-		@returns	Unique numeric identifier for the timed process. Use this identifier
-		to cancel the process, by calling the `clearInterval()` method.
+		Calls `closure` every `delay` milliseconds until `clearInterval` is
+		called with the id this returns. Until then the interval holds
+		`closure`, and what it reaches.
+
+		The delay is in milliseconds and comes after the function, as in
+		ActionScript and JavaScript. `crossbyte.Timer.setInterval` takes
+		seconds, delay first, and runs on a runtime's thread only.
+
+		@param closure The function to call.
+		@param delay The interval, in milliseconds.
+		@return The id to pass to `clearInterval`.
 	**/
 	overload extern public static inline function setInterval(closure:Void->Void, delay:Int):UInt {
 		return __setIntervalVoid(closure, delay);
@@ -118,23 +118,16 @@ final class GlobalTimer {
 	}
 
 	/**
-		Runs a specified function after a specified delay (in milliseconds).
-		Instead of using this method, consider creating a Timer object, with the specified
-		interval, using 1 as the `repeatCount` parameter (which sets the timer to run only
-		once).
-		If you intend to use the `clearTimeout()` method to cancel the `setTimeout()` call,
-		be sure to assign the `setTimeout()` call to a variable (which the
-		`clearTimeout()` function will later reference). If you do not call the
-		`clearTimeout()` function to cancel the `setTimeout()` call, the object containing
-		the set timeout closure function will not be garbage collected.
-		@param	closure	The name of the function to execute. Do not include quotation marks
-		or parentheses, and do not specify parameters of the function to call. For
-		example, use `functionName`, not `functionName()` or `functionName(param)`.
-		@param	delay	The delay, in milliseconds, until the function is executed.
-		@param	args	An optional list of arguments that are passed to the closure
-		function.
-		@returns	Unique numeric identifier for the timed process. Use this identifier to
-		cancel the process, by calling the `clearTimeout()` method.
+		Calls `closure` once, `delay` milliseconds from now, unless
+		`clearTimeout` is called first with the id this returns.
+
+		The delay is in milliseconds and comes after the function, as in
+		ActionScript and JavaScript. `crossbyte.Timer.setTimeout` takes
+		seconds, delay first, and runs on a runtime's thread only.
+
+		@param closure The function to call.
+		@param delay The delay, in milliseconds.
+		@return The id to pass to `clearTimeout`.
 	**/
 	overload extern public static inline function setTimeout(closure:Void->Void, delay:Int):UInt {
 		return __setTimeoutVoid(closure, delay);

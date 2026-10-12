@@ -22,6 +22,12 @@ import sys.thread.Tls;
  * have no runtime, so these timer methods throw there; hand the work to a runtime with
  * `CrossByte.post()` instead.
  *
+ * **Arming.** `setTimeout(delay, callback)` runs `callback` once, `delay`
+ * seconds from now, and `setInterval(delay, interval, callback)` runs it
+ * after `delay` seconds and then every `interval` seconds. Each returns the
+ * handle `clear`, `pause` and `resume` take, and takes a callback with no
+ * argument or one that is handed that handle.
+ *
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
  * For ActionScript's `setTimeout` and `setInterval`, which can also be called
  * from a thread with no runtime, see `crossbyte.utils.GlobalTimer`.
