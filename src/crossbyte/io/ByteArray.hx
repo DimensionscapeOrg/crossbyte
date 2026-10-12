@@ -1818,6 +1818,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			data.setUint16(start, size, __little);
 			return;
 		}
+		#elseif hl
+		// As on JavaScript: up to 21,845 units, which cannot pass the
+		// prefix's 65535 bytes, written as writeUTFBytes writes them, the
+		// length put in after. More are sized first, and refused or prefixed.
+		var units:hl.Bytes = @:privateAccess value.bytes;
+		if (value.length <= 0xFFFF / crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+			var start:Int = position;
+			if (start > 0x7FFFFFFF - 2 - value.length * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+				__refusePast(2 + crossbyte._internal.Utf8.sizeOfUnits(units, value.length, 0));
+			}
+			writeShort(0);
+			var size:Int = __writeTextHl(value);
+			__rawSetU16(start, __little ? size : __swap16(size));
+			return;
+		}
+		var size:Int = crossbyte._internal.Utf8.sizeOfUnits(units, value.length, 0);
+		if (size > 0xFFFF) {
+			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${size}. Use writeUTFBytes with a length of your own.');
+		}
+		__refusePast(2 + size);
+		writeShort(size);
+		__writeTextHl(value);
+		return;
 		#end
 		var bytes = crossbyte._internal.Utf8.bytesOf(value);
 
@@ -1872,10 +1895,60 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		#elseif js
 		__writeText(value);
 		return;
+		#elseif hl
+		__writeTextHl(value);
+		return;
 		#end
 		// Through the platform's encoder; see Utf8.
 		__writeAll(crossbyte._internal.Utf8.bytesOf(value));
 	}
+
+	#if hl
+	/**
+		`value` in UTF-8 at the position, from the string's own UTF-16 straight
+		into the buffer. HashLink's encoder made a buffer and a Bytes of every
+		string to copy in, and took the character after an unpaired surrogate
+		into it: written here, twelve characters take 15 ns rather than 62,
+		and an unpaired surrogate is U+FFFD, as TextEncoder writes it. ASCII,
+		which text mostly is, goes in a byte a unit, into room made for that;
+		anything after the first unit that is not is sized, and room made for
+		it, first. The bytes written.
+	**/
+	@:noCompletion private function __writeTextHl(value:String):Int {
+		var count:Int = value.length;
+		if (count == 0) {
+			return 0;
+		}
+		var units:hl.Bytes = @:privateAccess value.bytes;
+		var at:Int = position;
+		// The end checked before anything is written or grown, sized only near
+		// it: the room made for the ASCII would otherwise already be readable
+		// when the rest was refused.
+		if (at > 0x7FFFFFFF - count * crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
+			__refusePast(crossbyte._internal.Utf8.sizeOfUnits(units, count, 0));
+		}
+		__resize(at + count, at);
+		var out:hl.Bytes = b;
+		var i:Int = 0;
+		while (i < count) {
+			var unit:Int = units.getUI16(i << 1);
+			if (unit >= 0x80) {
+				break;
+			}
+			out[at + i] = unit;
+			i++;
+		}
+		var end:Int = at + count;
+		if (i < count) {
+			var from:Int = at + i;
+			end = from + crossbyte._internal.Utf8.sizeOfUnits(units, count, i);
+			__resize(end, from);
+			crossbyte._internal.Utf8.encodeUnits(units, count, i, b, from);
+		}
+		position = end;
+		return end - at;
+	}
+	#end
 
 	#if ((jvm || java) && !macro)
 	/**

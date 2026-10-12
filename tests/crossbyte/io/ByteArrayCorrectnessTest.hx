@@ -887,8 +887,9 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		A string with half of a surrogate pair in it is written with U+FFFD in
 		its place, as JavaScript's encoder writes it. HashLink's encoder ran
 		past the end of a string ending in one and crashed the process, and
-		natively hxcpp threw "Invalid UTF16". The jvm writes `?`, and HashLink
-		one mid-string as bytes UTF-8 does not allow, without crashing.
+		took the character after one mid-string into it ("a", U+D800, "Z" went
+		out as "a" and four bytes, the Z lost), and natively hxcpp threw
+		"Invalid UTF16". The jvm writes `?`.
 	**/
 	public function testHalfASurrogatePairIsWrittenAsTheReplacementCharacter():Void {
 		#if (js || cpp || hl || jvm)
@@ -897,13 +898,9 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var end = new ByteArray();
 		end.writeUTFBytes("x" + high);
 		Assert.equals("78 " + replaced, __hex(end));
-		// Mid-string, HashLink writes it as bytes UTF-8 does not allow, and
-		// does not crash; finding those would cost every string a pass.
 		var middle = new ByteArray();
 		middle.writeUTFBytes("a" + high + "Z");
-		#if !hl
 		Assert.equals("61 " + replaced + " 5A", __hex(middle));
-		#end
 		var paired = new ByteArray();
 		paired.writeUTFBytes("\u{1F600}");
 		Assert.equals("F0 9F 98 80", __hex(paired));
@@ -1019,15 +1016,16 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		Text of mixed scripts is written as the Encoding Standard has it (an
 		unpaired surrogate as U+FFFD), byte for byte, by every writer that
 		encodes it itself: natively the C++ encoder, which takes ASCII four
-		units at a time from 32 units on, and on JavaScript the loop and
-		`encodeInto`. Strings of one kind of character each, as the tests
-		above write, never move from ASCII to anything else inside a word, nor
-		put half a pair at the edge of a word or of the string, which these
-		do, at every length either side of 32. Nothing is written past the
+		units at a time from 32 units on, on JavaScript the loop and
+		`encodeInto`, and on HashLink the loop over the string's own units.
+		Strings of one kind of character each, as the tests above write, never
+		move from ASCII to anything else inside a word, nor put half a pair at
+		the edge of a word or of the string, which these do, at every length
+		either side of 32. Nothing is written past the
 		bytes the text takes: the bytes after it stay as they were.
 	**/
 	public function testMixedTextIsWrittenAsTheEncodingStandardWritesIt():Void {
-		#if (cpp || js)
+		#if (cpp || js || hl)
 		var seed:Int = 0x2545F491;
 		var units:Array<Int> = [0x41, 0x7A, 0x20, 0xE9, 0x7FF, 0x800, 0x65E5, 0xFFFD, 0xFFFF];
 		for (round in 0...1500) {
@@ -1044,8 +1042,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 					case 9: String.fromCharCode(units[3 + ((seed >>> 4) & 3)]);
 					case 10: String.fromCharCode(units[7 + ((seed >>> 4) & 1)]);
 					case 11: "\u{1F600}";
-					case 12: String.fromCharCode(0xD83D);
-					case 13: String.fromCharCode(0xDE00);
+					// The halves of U+1F600, alone: HashLink's fromCharCode
+					// refuses a surrogate.
+					case 12: "\u{1F600}".substr(0, 1);
+					case 13: "\u{1F600}".substr(1, 1);
 					default: String.fromCharCode(units[pick % 3]);
 				});
 			}
@@ -1084,6 +1084,8 @@ class ByteArrayCorrectnessTest extends utest.Test {
 			}
 			Assert.isTrue(same, 'writeUTFBytes, $label');
 
+			#if (cpp || js)
+			// On HashLink ByteArrayOutput writes through HashLink's own encoder.
 			var output = new ByteArrayOutput();
 			output.writeUTF(text);
 			output.writeVarUTF(text);
@@ -1094,6 +1096,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				same = same && written[2 + i] == expected[i] && written[2 + size + varint + i] == expected[i];
 			}
 			Assert.isTrue(same, 'ByteArrayOutput, $label');
+			#end
 		}
 		#else
 		Assert.pass();

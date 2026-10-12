@@ -21,12 +21,13 @@ import haxe.io.Bytes;
 
 	Elsewhere the platform's own are used where they are right, and the
 	difference made up where they are not. An unpaired surrogate is written
-	as U+FFFD natively, where hxcpp's encoder threw on one. On HashLink one
-	at the end of a string is too: there its encoder ran past the end and
-	crashed the process. One elsewhere in a string HashLink writes as bytes
-	UTF-8 does not allow (it does not crash), as the jvm writes `?`; finding
-	those would cost every string written a pass over it. A malformed
-	sequence reads as U+FFFD on HashLink and eval too:
+	as U+FFFD natively, where hxcpp's encoder threw on one. On HashLink a
+	ByteArray writes text from the string's own units (encodeUnits), and
+	one is U+FFFD there too. Through `bytesOf` one at the end of a string is
+	(HashLink's encoder ran past the end and crashed the process), but one
+	elsewhere HashLink's encoder takes the character after it into it;
+	finding those would cost every string a pass. A malformed sequence
+	reads as U+FFFD on HashLink and eval too:
 	HashLink's decoder dropped everything from the first bad byte, and eval
 	kept the bytes as they were, which the next operation on the string then
 	aborted the process over. Natively hxcpp decodes leniently (a stray
@@ -133,6 +134,71 @@ class Utf8 {
 	}
 
 	#if hl
+	/**
+		How many bytes the UTF-16 `units` of a string, `count` of them, take
+		in UTF-8 from unit `from` on, as TextEncoder writes it: an unpaired
+		surrogate as U+FFFD, three bytes.
+	**/
+	public static function sizeOfUnits(units:hl.Bytes, count:Int, from:Int):Int {
+		var size:Int = 0;
+		var i:Int = from;
+		while (i < count) {
+			var unit:Int = units.getUI16(i << 1);
+			i++;
+			if (unit < 0x80) {
+				size++;
+			} else if (unit < 0x800) {
+				size += 2;
+			} else if (unit >= 0xD800 && unit < 0xDC00 && i < count && units.getUI16(i << 1) >= 0xDC00 && units.getUI16(i << 1) < 0xE000) {
+				size += 4;
+				i++;
+			} else {
+				size += 3;
+			}
+		}
+		return size;
+	}
+
+	/**
+		The UTF-16 `units` of a string, `count` of them, from unit `from` on,
+		written in UTF-8 into `out` at `at`, which has room for them there (see
+		sizeOfUnits), as TextEncoder writes them: an unpaired surrogate as
+		U+FFFD, where HashLink's encoder took the character after it into it.
+		Where they end.
+	**/
+	public static function encodeUnits(units:hl.Bytes, count:Int, from:Int, out:hl.Bytes, at:Int):Int {
+		var i:Int = from;
+		while (i < count) {
+			var code:Int = units.getUI16(i << 1);
+			i++;
+			if (code < 0x80) {
+				out[at++] = code;
+				continue;
+			}
+			if (code >= 0xD800 && code < 0xE000) {
+				var low:Int = i < count ? units.getUI16(i << 1) : 0;
+				if (code < 0xDC00 && low >= 0xDC00 && low < 0xE000) {
+					code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+					i++;
+				} else {
+					code = 0xFFFD;
+				}
+			}
+			if (code < 0x800) {
+				out[at++] = 0xC0 | (code >> 6);
+			} else if (code < 0x10000) {
+				out[at++] = 0xE0 | (code >> 12);
+				out[at++] = 0x80 | ((code >> 6) & 0x3F);
+			} else {
+				out[at++] = 0xF0 | (code >> 18);
+				out[at++] = 0x80 | ((code >> 12) & 0x3F);
+				out[at++] = 0x80 | ((code >> 6) & 0x3F);
+			}
+			out[at++] = 0x80 | (code & 0x3F);
+		}
+		return at;
+	}
+
 	// Whether HashLink's encoder stops where the string does. It takes every
 	// surrogate, high or low, with the unit after it, whatever that is, so it
 	// runs past the end of a string whose last unit it reaches as the first
@@ -542,6 +608,11 @@ class Utf8 {
 	}
 	#end
 
+	#if (js || hl)
+	/** At most this many bytes a UTF-16 unit takes in UTF-8. **/
+	public static inline var MAX_BYTES_PER_UNIT:Int = 3;
+	#end
+
 	#if js
 	static var __encoder:Dynamic = null;
 	static var __decoder:Dynamic = null;
@@ -630,9 +701,6 @@ class Utf8 {
 		for twelve characters, even at sixteen).
 	**/
 	public static inline var DIRECT:Int = 16;
-
-	/** At most this many bytes a UTF-16 unit takes in UTF-8. **/
-	public static inline var MAX_BYTES_PER_UNIT:Int = 3;
 
 	// `value`, which fits, into `view` from `at`: where it ends.
 	static function __loop(value:String, view:js.lib.Uint8Array, at:Int):Int {

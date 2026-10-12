@@ -41,14 +41,17 @@ class ByteArrayTest extends utest.Test {
 		ten times as fast as Haxe's encoder for 64 KB, and an unpaired
 		surrogate goes out as U+FFFD, as it does from every browser and from
 		Node. Haxe's encoder takes the character after a lone high surrogate
-		into it ("a", U+D800, "b" goes out as "a" and U+10062) and writes a
-		lone low one as bytes UTF-8 does not allow.
+		into it ("a", U+D83D, "b" goes out as "a" and a character past U+FFFF)
+		and writes a lone low one as bytes UTF-8 does not allow. On HashLink
+		text is written from the string's own units, the same way.
 	**/
 	public function testALoneSurrogateIsWrittenAsTheReplacementCharacter():Void {
-		#if js
+		#if (js || hl)
+		// The halves of U+1F600, alone: HashLink's fromCharCode refuses a
+		// surrogate.
 		var data = new ByteArray();
-		data.writeUTFBytes("a" + String.fromCharCode(0xD800) + "b");
-		data.writeUTFBytes("a" + String.fromCharCode(0xDC00) + "b");
+		data.writeUTFBytes("a" + "\u{1F600}".substr(0, 1) + "b");
+		data.writeUTFBytes("a" + "\u{1F600}".substr(1, 1) + "b");
 		var written = Bytes.alloc(data.length);
 		written.blit(0, data, 0, data.length);
 		Assert.equals("61efbfbd6261efbfbd62", written.toHex());

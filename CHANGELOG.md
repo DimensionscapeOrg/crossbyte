@@ -686,7 +686,11 @@ says how.
   it a character at a time: 200 characters in 83 ns rather than 146. On HashLink
   strings are decoded in one pass, ASCII four bytes at a time, where
   `getString` made three: `ByteArray`
-  reads of 200 characters take 790 ns rather than 1,530. On Node
+  reads of 200 characters take 790 ns rather than 1,530. There `ByteArray`
+  writes text from the string's own units straight into its buffer, where
+  HashLink's encoder made a buffer and a `Bytes` of it to copy in:
+  `writeUTFBytes` of twelve characters in 15 ns rather than 62, eleven
+  with accents in 31 rather than 64, and 200 in 175 rather than 235. On Node
   `ByteArrayInput` and `ByteArrayOutput` strings go through the platform's
   decoder and encoder, 144 ns rather than 1,456 for 200 characters, though
   a short string past ASCII read through `ByteArrayInput` costs about
@@ -1178,7 +1182,8 @@ Fixes to code new in this release are not listed.
 - Writing a string that ends in half of a surrogate pair, either half, no
   longer crashes HashLink (its encoder ran past the end of the string), and
   natively no longer throws "Invalid UTF16": the half is written as U+FFFD,
-  as on JavaScript. A malformed UTF-8 sequence reads as U+FFFD on HashLink and
+  as on JavaScript. On HashLink a `ByteArray` writes one inside a string as
+  U+FFFD too, where HashLink's encoder took the character after it with it. A malformed UTF-8 sequence reads as U+FFFD on HashLink and
   eval, where HashLink dropped everything from it on and eval kept the
   bytes, which the next operation on the string aborted the process over.
 - `ByteArrayInput.readBytes` refuses a destination range that does not fit
