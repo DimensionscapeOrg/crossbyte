@@ -10,8 +10,8 @@ import php.Syntax;
 #if nodejs
 import js.node.Crypto;
 #end
-#if !(cpp || php || java || jvm || js)
 import crossbyte.crypto._internal.NativeOnly;
+#if !(cpp || php || java || jvm || js)
 import crossbyte.errors.IllegalOperationError;
 #end
 
@@ -162,6 +162,20 @@ final class SecureRandom {
 	public static var isSupported(default, null):Bool = #if (cpp || php || java || jvm || nodejs || js) true #else false #end;
 
 	/**
+	 * Why this target has no CSPRNG to draw from: what `getSecureRandomBytes`
+	 * says when it refuses, as `isSupported` is false. `null` where
+	 * `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		return isSupported ? null : __UNSUPPORTED;
+	}
+
+	@:noCompletion private static inline final __UNSUPPORTED:String = "Secure random bytes are not available on " + NativeOnly.TARGET
+		+ ", and this will not fall back to a generator that only looks random.";
+
+	/**
 	 * Returns `length` bytes from the platform CSPRNG.
 	 *
 	 * @throws IllegalOperationError On a target without one (the
@@ -183,8 +197,7 @@ final class SecureRandom {
 		#elseif js
 		return __getSecureRandomBytesBrowser(length);
 		#else
-		throw new IllegalOperationError("Secure random bytes are not available on " + NativeOnly.TARGET
-			+ ", and this will not fall back to a generator that only looks random.");
+		throw new IllegalOperationError(__UNSUPPORTED);
 		#end
 	}
 

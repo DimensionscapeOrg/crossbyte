@@ -66,15 +66,16 @@ class Ed25519 {
 	}
 
 	/**
-	 * Returns a short diagnostic string describing whether the native Ed25519
-	 * backend is available.
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
 	 */
-	public static function availabilityMessage():String {
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
 		#if cpp
-		var message = NativeSodium.statusMessage();
-		return (message == null || message == "") ? "libsodium status is unavailable." : message;
+		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage();
 		#else
-		return "Ed25519 is only available on supported native cpp targets.";
+		return crossbyte.crypto._internal.NativeOnly.reason("Ed25519");
 		#end
 	}
 
@@ -180,7 +181,7 @@ class Ed25519 {
 	@:noCompletion
 	private static inline function __ensureAvailable():Void {
 		if (!NativeSodium.isAvailable()) {
-			throw new crossbyte.errors.IllegalOperationError(availabilityMessage());
+			throw new crossbyte.errors.IllegalOperationError(unsupportedReason);
 		}
 	}
 	#end

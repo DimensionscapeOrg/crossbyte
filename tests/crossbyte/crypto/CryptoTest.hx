@@ -17,6 +17,39 @@ class CryptoTest extends utest.Test {
 		#end
 	}
 
+	/**
+		Every crypto class says why it cannot be used, beside `isSupported`,
+		the same way: a reason exactly where `isSupported` is false, naming
+		this target off cpp.
+	**/
+	public function testEveryCryptoClassSaysWhyItIsUnsupported():Void {
+		var classes:Array<{name:String, supported:Bool, reason:Null<String>}> = [
+			{name: "AEAD", supported: AEAD.isSupported, reason: AEAD.unsupportedReason},
+			{name: "Blake3", supported: Blake3.isSupported, reason: Blake3.unsupportedReason},
+			{name: "ConstantTime", supported: ConstantTime.isSupported, reason: ConstantTime.unsupportedReason},
+			{name: "Ed25519", supported: Ed25519.isSupported, reason: Ed25519.unsupportedReason},
+			{name: "GenericHash", supported: GenericHash.isSupported, reason: GenericHash.unsupportedReason},
+			{name: "HKDF", supported: HKDF.isSupported, reason: HKDF.unsupportedReason},
+			{name: "KeyExchange", supported: KeyExchange.isSupported, reason: KeyExchange.unsupportedReason},
+			{name: "PublicKeySignature", supported: PublicKeySignature.isSupported, reason: PublicKeySignature.unsupportedReason},
+			{name: "SecureMemory", supported: SecureMemory.isSupported, reason: SecureMemory.unsupportedReason},
+			{name: "SecureRandom", supported: SecureRandom.isSupported, reason: SecureRandom.unsupportedReason},
+			{name: "X25519", supported: X25519.isSupported, reason: X25519.unsupportedReason},
+			{name: "Argon2id", supported: crossbyte.crypto.password.Argon2id.isSupported, reason: crossbyte.crypto.password.Argon2id.unsupportedReason}
+		];
+		for (entry in classes) {
+			if (entry.supported) {
+				Assert.isNull(entry.reason, entry.name + " is supported and still gave a reason: " + entry.reason);
+			} else {
+				Assert.isTrue(entry.reason != null && entry.reason.length > 0, entry.name + " is unsupported and said nothing of why");
+				#if !cpp
+				Assert.isTrue(entry.reason != null && entry.reason.indexOf(crossbyte.crypto._internal.NativeOnly.TARGET) >= 0,
+					entry.name + "'s reason does not name this target: " + entry.reason);
+				#end
+			}
+		}
+	}
+
 	public function testBlake3AvailabilityAndDeterministicHashing():Void {
 		#if cpp
 		Assert.isTrue(Blake3.isSupported);
@@ -78,7 +111,7 @@ class CryptoTest extends utest.Test {
 		// runs this on Linux and macOS to hold that to account.
 		#if cpp
 		Assert.isTrue(Ed25519.isSupported);
-		Assert.equals("libsodium is available.", Ed25519.availabilityMessage());
+		Assert.isNull(Ed25519.unsupportedReason);
 		// Malformed signatures and keys are refused, not thrown for.
 		Assert.isFalse(Ed25519.verifyDetached(null, message, Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
 		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), message, Bytes.alloc(1)));
@@ -95,7 +128,8 @@ class CryptoTest extends utest.Test {
 		Assert.isFalse(Ed25519.verifyDetached(signature, tampered, keyPair.publicKey));
 		#else
 		Assert.isFalse(Ed25519.isSupported);
-		Assert.equals("Ed25519 is only available on supported native cpp targets.", Ed25519.availabilityMessage());
+		Assert.equals("Ed25519 is only available natively (cpp), not on " + crossbyte.crypto._internal.NativeOnly.TARGET + ".",
+			Ed25519.unsupportedReason);
 		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.keypair()));
 		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));
 		// The target first, whatever the arguments: no key is right here.

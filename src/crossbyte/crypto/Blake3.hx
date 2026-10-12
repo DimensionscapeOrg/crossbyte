@@ -48,6 +48,20 @@ class Blake3 {
 	}
 
 	/**
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return null;
+		#else
+		return crossbyte.crypto._internal.NativeOnly.reason("BLAKE3");
+		#end
+	}
+
+	/**
 	 * Returns the SIMD width currently selected by the native BLAKE3 backend.
 	 *
 	 * Typical values are:

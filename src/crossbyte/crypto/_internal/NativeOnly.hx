@@ -14,6 +14,11 @@ class NativeOnly {
 
 	/** The error for `feature` asked for on this target. **/
 	public static function error(feature:String):IllegalOperationError {
-		return new IllegalOperationError(feature + " is only available natively (cpp), not on " + TARGET + ".");
+		return new IllegalOperationError(reason(feature));
+	}
+
+	/** What that error says: why `feature` cannot be used on this target. **/
+	public static function reason(feature:String):String {
+		return feature + " is only available natively (cpp), not on " + TARGET + ".";
 	}
 }

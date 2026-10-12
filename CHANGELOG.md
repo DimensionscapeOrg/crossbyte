@@ -490,7 +490,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `ByteArray.uncompress(algorithm, maxOutputSize)`.
 - Crypto from libsodium: `AEAD` (XChaCha20-Poly1305), `X25519`,
   `KeyExchange`, `GenericHash` (BLAKE2b), `HKDF`, `Argon2id`,
-  `ConstantTime.equals` and `SecureMemory.wipe`, each with `isSupported`.
+  `ConstantTime.equals` and `SecureMemory.wipe`, each with `isSupported`
+  and `unsupportedReason`, as every crypto class has.
 - `PublicKeySignature` and `SignatureKey`: RSA and ECDSA over SHA-256.
 - JWT: `RS256`, `ES256` and `EdDSA` signers; `JWKSet` and `JWK`;
   `JWT.verify`, which says why a token was refused (`JWTRejection`);
@@ -2505,6 +2506,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
 - `Blake3.isAvailable()` and `Ed25519.isAvailable()` are
   `Blake3.isSupported` and `Ed25519.isSupported`, a static `Bool` as every
   other class's feature check is: drop the parentheses.
+- `Ed25519.availabilityMessage()` is `Ed25519.unsupportedReason`, which
+  every crypto class has beside `isSupported`: why it cannot be used here,
+  or `null` where it can.
 - `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
   random bytes, throws an `IllegalOperationError` on the interpreter, neko
   and HashLink, where it threw a String.

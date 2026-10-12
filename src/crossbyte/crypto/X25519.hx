@@ -46,6 +46,20 @@ class X25519 {
 	}
 
 	/**
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage();
+		#else
+		return crossbyte.crypto._internal.NativeOnly.reason("X25519");
+		#end
+	}
+
+	/**
 	 * Computes the public point for `scalar` against the curve base point.
 	 */
 	public static function scalarmultBase(scalar:Bytes):Bytes {

@@ -34,6 +34,22 @@ class ConstantTime {
 	}
 
 	/**
+	 * Why the hardened backend is not in use here, as `isSupported` is false
+	 * (what this class does instead is in its own description). `null` where
+	 * `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage()
+			+ " Comparisons use a best-effort loop";
+		#else
+		return "Comparisons use a best-effort loop on " + crossbyte.crypto._internal.NativeOnly.TARGET + ": libsodium's is native (cpp) only.";
+		#end
+	}
+
+	/**
 	 * Compares two byte sequences without early exit on mismatch.
 	 *
 	 * @return `true` only when both are non-null, equal length, and equal

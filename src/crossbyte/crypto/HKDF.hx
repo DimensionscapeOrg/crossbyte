@@ -47,6 +47,20 @@ class HKDF {
 	}
 
 	/**
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage();
+		#else
+		return crossbyte.crypto._internal.NativeOnly.reason("HKDF");
+		#end
+	}
+
+	/**
 	 * Extracts a 32-byte PRK from input keying material.
 	 *
 	 * @param salt Optional salt; `null` uses the RFC 5869 zero salt.

@@ -37,7 +37,7 @@ class SodiumGlue {
 
 	public static function ensureAvailable():Void {
 		if (!NativeSodium.isAvailable()) {
-			throw availabilityMessage();
+			throw new crossbyte.errors.IllegalOperationError(availabilityMessage());
 		}
 	}
 }

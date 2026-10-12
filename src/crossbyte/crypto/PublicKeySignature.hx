@@ -74,6 +74,20 @@ class PublicKeySignature {
 	}
 
 	/**
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return NativePk.isAvailable() ? null : "Public-key signing needs mbedTLS's PK support, which this build does not have.";
+		#else
+		return crossbyte.crypto._internal.NativeOnly.reason("Public-key signing");
+		#end
+	}
+
+	/**
 	 * Reports the kind of key a PEM document contains.
 	 *
 	 * @param keyPem PEM text.

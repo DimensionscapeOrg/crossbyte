@@ -128,6 +128,16 @@ class Argon2id {
 	}
 
 	/**
+	 * Why this class cannot be used here: what its members say when they
+	 * refuse, as `isSupported` is false. `null` where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		return isSupported ? null : __unavailable().message;
+	}
+
+	/**
 	 * Hashes `password` into a self-describing PHC string.
 	 *
 	 * @throws IllegalOperationError When no backend is available.

@@ -43,7 +43,7 @@ class Ed25519Signer implements IJWTSigner {
 	public function new(publicKeys:StringMap<Bytes>, ?privateKey:Bytes, ?signKeyId:String) {
 		if (!Ed25519.isSupported) {
 			#if cpp
-			throw new IllegalOperationError("Ed25519Signer requires the native Ed25519 backend: " + Ed25519.availabilityMessage());
+			throw new IllegalOperationError("Ed25519Signer requires the native Ed25519 backend: " + Ed25519.unsupportedReason);
 			#else
 			throw NativeOnly.error("EdDSA JWT signing and verification");
 			#end

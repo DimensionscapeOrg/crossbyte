@@ -32,6 +32,22 @@ class SecureMemory {
 	}
 
 	/**
+	 * Why the hardened backend is not in use here, as `isSupported` is false
+	 * (what this class does instead is in its own description). `null` where
+	 * `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		#if cpp
+		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage()
+			+ " Bytes are wiped with a plain loop";
+		#else
+		return "Bytes are wiped with a plain loop on " + crossbyte.crypto._internal.NativeOnly.TARGET + ": libsodium's is native (cpp) only.";
+		#end
+	}
+
+	/**
 	 * Overwrites every byte of `bytes` with zero. `null` and empty buffers
 	 * are ignored.
 	 */
