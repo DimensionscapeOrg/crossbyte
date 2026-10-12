@@ -346,9 +346,14 @@ class NativeProcessTest extends utest.Test {
 
 	// Asked of the machine rather than the compiler: hl and neko have no
 	// `windows` define, and their bytecode runs on whichever OS it is given to.
+	//
+	// On Windows a program, not a command of cmd.exe's: natively, on hl and on
+	// neko each argument goes in quotes, and cmd.exe takes a quoted "echo" for
+	// a program's name. That ran only where an echo.exe was on the PATH (Git's,
+	// in its own shell and on CI), and failed with exit code 1 elsewhere.
 	@:noCompletion private static function getDefaultInfo():NativeProcessStartupInfo {
 		if (System.isWindows) {
-			return new NativeProcessStartupInfo("cmd.exe", ["/C", "echo", "nativeprocess_smoke"]);
+			return new NativeProcessStartupInfo("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Write-Output nativeprocess_smoke"]);
 		}
 		return new NativeProcessStartupInfo("sh", ["-c", "echo nativeprocess_smoke"]);
 	}
