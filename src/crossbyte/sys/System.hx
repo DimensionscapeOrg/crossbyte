@@ -13,6 +13,7 @@ import crossbyte.core.CrossByte;
 import sys.io.Process;
 #end
 
+/** Cross-platform system information and process-level utility accessors. */
 #if cpp
 #if windows
 @:access(crossbyte._internal.native.sys.win.WinNativeSystem)
@@ -24,7 +25,6 @@ import sys.io.Process;
 @:access(crossbyte._internal.native.sys.NativeSystem)
 #end
 #end
-/** Cross-platform system information and process-level utility accessors. */
 class System {
 	/**
 		The operating system this process is running on: `"windows"`,

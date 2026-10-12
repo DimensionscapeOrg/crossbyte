@@ -42,10 +42,6 @@ import sys.thread.Mutex;
 import haxe.atomic.AtomicInt;
 #end
 
-@:access(crossbyte.rpc.RPCHandler)
-@:access(crossbyte.rpc.RPCCommands)
-@:access(crossbyte.rpc.RPCArgs)
-@:access(crossbyte.rpc.RPCCall)
 /**
  * Binds an `RPCCommands` client surface and an optional `RPCHandler` to a live connection.
  *
@@ -53,6 +49,10 @@ import haxe.atomic.AtomicInt;
  * forwards inbound calls to a handler, routes responses back to pending client
  * calls, and optionally maintains a heartbeat using the built-in `ping` path.
  */
+@:access(crossbyte.rpc.RPCHandler)
+@:access(crossbyte.rpc.RPCCommands)
+@:access(crossbyte.rpc.RPCArgs)
+@:access(crossbyte.rpc.RPCCall)
 class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** Default interval between heartbeat pings in milliseconds. */
 	public static inline final DEFAULT_HEARTBEAT_INTERVAL:Int = 45000;

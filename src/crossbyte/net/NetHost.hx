@@ -10,7 +10,6 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net.Endpoint.__parseListenURL;
 
-@:forward
 /**
  * High-level server host wrapper over CrossByte's supported listener transports.
  *
@@ -23,6 +22,7 @@ import crossbyte.net.Endpoint.__parseListenURL;
  * `onDisconnect` run on the runtime that serves the connection, so they
  * must be safe to call from those threads.
  */
+@:forward
 abstract NetHost(INetHost) from INetHost to INetHost {
 	/**
 		Creates a host from a transport URI (`tcp://`, `ws://`, `wss://` or

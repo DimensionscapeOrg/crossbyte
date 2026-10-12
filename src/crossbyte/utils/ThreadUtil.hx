@@ -5,8 +5,8 @@ import crossbyte.core.CrossByte;
 import sys.thread.Thread;
 #end
 
-@:access(crossbyte.core.CrossByte)
 /** Thread-related helpers for interrogating the active CrossByte runtime. */
+@:access(crossbyte.core.CrossByte)
 class ThreadUtil {
 	/**
 		`true` when called from the primordial/runtime-owning thread.

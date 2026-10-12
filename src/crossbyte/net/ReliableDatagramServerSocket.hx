@@ -35,8 +35,6 @@ import crossbyte._internal.net.Resolver;
 import sys.net.Host;
 #end
 
-@:access(crossbyte.net.ReliableDatagramSocket)
-@:access(crossbyte.net.PreparedDatagram)
 /**
 	The `ReliableDatagramServerSocket` class accepts reliable UDP sessions from
 	remote peers on top of a single bound `DatagramSocket`.
@@ -319,6 +317,8 @@ import sys.net.Host;
 	       handshake. A session this server dials, with `connect` or
 	       `connectRelayed`, dispatches `Event.CONNECT` itself instead.
 **/
+@:access(crossbyte.net.ReliableDatagramSocket)
+@:access(crossbyte.net.PreparedDatagram)
 class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.net._internal.DatagramReceiver implements crossbyte.core._internal.PassFlush {
 	/**
 		Indicates whether reliable UDP server sockets are supported by the current target.

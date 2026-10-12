@@ -2,10 +2,10 @@ package crossbyte.net;
 
 using StringTools;
 
-@:structInit
 /**
  * Parsed endpoint data produced from a transport URI.
  */
+@:structInit
 class Endpoint {
 	/** Parsed protocol scheme. */
 	public var protocol:Protocol;

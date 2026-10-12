@@ -40,10 +40,6 @@ import sys.net.Host;
 import crossbyte._internal.net.IPv6;
 #end
 
-@:access(crossbyte.net.ReliableDatagramServerSocket)
-@:access(crossbyte.net.DatagramSocket)
-@:access(crossbyte.core.CrossByte)
-@:access(crossbyte.net.PreparedDatagram)
 /**
 	The `ReliableDatagramSocket` class provides a session-oriented reliable transport
 	on top of UDP.
@@ -110,6 +106,10 @@ import crossbyte._internal.net.IPv6;
 	@event data Dispatched in `DATAGRAM` mode when a complete reliable payload is delivered.
 	@event socketData Dispatched in `STREAM` mode when additional ordered bytes are available.
 **/
+@:access(crossbyte.net.ReliableDatagramServerSocket)
+@:access(crossbyte.net.DatagramSocket)
+@:access(crossbyte.core.CrossByte)
+@:access(crossbyte.net.PreparedDatagram)
 class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush implements crossbyte.net._internal.DatagramReceiver #if !nodejs implements crossbyte._internal.net.DatagramSender #end {
 	/**
 		A slot for whatever the application wants this connection to carry.

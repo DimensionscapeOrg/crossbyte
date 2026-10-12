@@ -35,6 +35,20 @@ import sys.net.Host;
 import sys.net.UdpSocket;
 #end
 
+/**
+	The `DatagramSocket` class provides connectionless User Datagram Protocol (UDP)
+	communication in a way that integrates with CrossByte's socket registry and
+	thread-local event loop.
+	A datagram socket can either be bound for listening and sending to arbitrary
+	remote endpoints, or connected to a specific remote endpoint for simpler
+	send and receive calls. Incoming payloads are dispatched as
+	`DatagramSocketDataEvent.DATA` events.
+	Unlike TCP sockets, UDP preserves message boundaries and does not guarantee
+	delivery, ordering, or retransmission.
+	@event close Dispatched when the socket is closed.
+	@event ioError Dispatched when an I/O error occurs while sending or receiving.
+	@event data Dispatched when a complete UDP payload has been received.
+**/
 #if cpp
 @:cppFileCode("
 #ifdef HX_WINDOWS
@@ -95,20 +109,6 @@ static bool crossbyte_udp_set_buffer(::Dynamic handle, bool receive, int size) {
 ")
 #end
 @:access(crossbyte.core.CrossByte)
-/**
-	The `DatagramSocket` class provides connectionless User Datagram Protocol (UDP)
-	communication in a way that integrates with CrossByte's socket registry and
-	thread-local event loop.
-	A datagram socket can either be bound for listening and sending to arbitrary
-	remote endpoints, or connected to a specific remote endpoint for simpler
-	send and receive calls. Incoming payloads are dispatched as
-	`DatagramSocketDataEvent.DATA` events.
-	Unlike TCP sockets, UDP preserves message boundaries and does not guarantee
-	delivery, ordering, or retransmission.
-	@event close Dispatched when the socket is closed.
-	@event ioError Dispatched when an I/O error occurs while sending or receiving.
-	@event data Dispatched when a complete UDP payload has been received.
-**/
 class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSocket #end #if cpp implements crossbyte.core._internal.PassFlush #end {
 	/**
 		Indicates whether UDP sockets are supported by the current target.

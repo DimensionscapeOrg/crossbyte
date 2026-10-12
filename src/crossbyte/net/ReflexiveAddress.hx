@@ -1,6 +1,5 @@
 package crossbyte.net;
 
-@:structInit
 /**
 	An address and port as somebody outside sees them.
 
@@ -15,6 +14,7 @@ package crossbyte.net;
 	whole reason to ask: a peer that advertises its host address advertises
 	somewhere no other peer can reach.
 **/
+@:structInit
 class ReflexiveAddress {
 	/**
 		The address as seen from outside: dotted quad for IPv4, RFC 5952's

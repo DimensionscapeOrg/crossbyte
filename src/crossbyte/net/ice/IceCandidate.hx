@@ -61,6 +61,9 @@ class IceCandidate {
 		return base != null ? base : this;
 	}
 
+	/** The largest priority RFC 8445 allows: 2^31 - 1. **/
+	public static inline var MAX_PRIORITY:Int = 2147483647;
+
 	/**
 		The component a media stream's data travels on, and the only one a data
 		transport has.
@@ -71,9 +74,6 @@ class IceCandidate {
 		is still in the priority formula, and a peer that does split a stream
 		needs the field to mean what the RFC says it means.
 	**/
-	/** The largest priority RFC 8445 allows: 2^31 - 1. **/
-	public static inline var MAX_PRIORITY:Int = 2147483647;
-
 	public static inline var COMPONENT_RTP:Int = 1;
 
 	/** The second component of a media stream, where one exists. **/

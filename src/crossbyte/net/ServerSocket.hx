@@ -3042,7 +3042,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	It sits in the poll set as its own socket's handler, so each flight the
 	peer sends steps the handshake the moment it lands.
 **/
-@:noCompletion
+@:noCompletion @:dox(hide)
 @:access(crossbyte.net.ServerSocket)
 final class PendingHandshake implements IPollableSocket {
 	public var socket(default, null):Socket;

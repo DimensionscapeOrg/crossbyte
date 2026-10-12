@@ -113,7 +113,7 @@ final class HTTPTLSOptions {
 
 	#if !js
 	/** Applies these to `socket`, a secure one not yet connected. */
-	@:noCompletion public function configure(socket:FlexSocket):Void {
+	@:noCompletion @:dox(hide) public function configure(socket:FlexSocket):Void {
 		if (!verifyCert) {
 			socket.verifyCert = false;
 		}
@@ -130,7 +130,7 @@ final class HTTPTLSOptions {
 		null when it passes or nothing is pinned. Called once the handshake is
 		done, before anything is sent.
 	**/
-	@:noCompletion public function checkPins(socket:FlexSocket):Null<String> {
+	@:noCompletion @:dox(hide) public function checkPins(socket:FlexSocket):Null<String> {
 		if (pinnedPublicKeys == null || pinnedPublicKeys.length == 0) {
 			return null;
 		}

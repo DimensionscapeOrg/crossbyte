@@ -12,7 +12,6 @@ import haxe.Json;
 import StringTools;
 import crossbyte.io.File;
 
-@:build(crossbyte._internal.macro.ResourcesMacro.ensureResources())
 /**
  * Provides access to files inside the application's `resources` directory.
  *
@@ -43,6 +42,7 @@ import crossbyte.io.File;
  * does.
  * Empty and `.` segments are dropped, so `"./maps//a.txt"` is `"maps/a.txt"`.
  */
+@:build(crossbyte._internal.macro.ResourcesMacro.ensureResources())
 final class Resources {
 	/**
 		Absolute path to the runtime resources directory: `resources` inside
@@ -255,6 +255,6 @@ final class Resources {
 	@:noCompletion private static var __resourcesDir:String = haxe.io.Path.removeTrailingSlashes(System.appDir) + File.separator + "resources" + File.separator;
 }
 
-@:build(crossbyte._internal.macro.ResourcesMacro.buildResourceTree())
 /** Placeholder type populated by `ResourcesMacro` with the compile-time resource tree. */
+@:build(crossbyte._internal.macro.ResourcesMacro.buildResourceTree())
 final class ResourceTree {}

@@ -426,6 +426,23 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		#end
 	}
 
+	#if cpp
+	/**
+		`sql` run as `request()` runs it, by `PQexec`, its result as the bridge's
+		block (see `PostgresWire`), with the transaction state read after it.
+	**/
+	@:noCompletion private function __requestBlock(sql:String):Bytes {
+		var data:haxe.io.BytesData = NativePostgres.requestBlock(__nativeHandle, sql);
+		__syncTransaction();
+
+		if (data == null) {
+			throw new IOError("Postgres bridge returned no result block.");
+		}
+
+		return Bytes.ofData(data);
+	}
+	#end
+
 	/**
 		Runs a statement with bound parameters, referenced as `$1`, `$2` and so
 		on in the statement text.
@@ -453,24 +470,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		rather than silently falling back to substitution, which would defeat
 		the point.
 	**/
-	#if cpp
-	/**
-		`sql` run as `request()` runs it, by `PQexec`, its result as the bridge's
-		block (see `PostgresWire`), with the transaction state read after it.
-	**/
-	@:noCompletion private function __requestBlock(sql:String):Bytes {
-		var data:haxe.io.BytesData = NativePostgres.requestBlock(__nativeHandle, sql);
-		__syncTransaction();
-
-		if (data == null) {
-			throw new IOError("Postgres bridge returned no result block.");
-		}
-
-		return Bytes.ofData(data);
-	}
-	#end
-
-	public function requestParams(sql:String, ?params:Array<PostgresParameter>):PostgresRawResult {
+	public function requestParams(sql:String, ?params:Array<PostgresParameter>):crossbyte.db.postgres.PostgresRawResult {
 		__requireConnected();
 
 		if (!__autocommit && !__inTransaction) {

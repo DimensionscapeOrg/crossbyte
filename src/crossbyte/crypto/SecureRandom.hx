@@ -14,6 +14,10 @@ import crossbyte.crypto._internal.NativeOnly;
 import crossbyte.errors.IllegalOperationError;
 #end
 
+/**
+ * Provides cryptographically secure random bytes using the strongest native
+ * source available on the current target.
+ */
 #if cpp
 @:cppFileCode('
 #ifdef HX_WINDOWS
@@ -140,10 +144,6 @@ namespace {
 }
 ')
 #end
-/**
- * Provides cryptographically secure random bytes using the strongest native
- * source available on the current target.
- */
 final class SecureRandom {
 	/**
 	 * Whether this target has a CSPRNG to draw from.

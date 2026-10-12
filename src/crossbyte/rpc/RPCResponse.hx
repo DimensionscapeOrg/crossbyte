@@ -5,11 +5,6 @@ import crossbyte._internal.system.timer.TimerHandle;
 import crossbyte.rpc._internal.RPCDeadlines;
 import crossbyte.rpc._internal.RPCReceiverCall;
 
-@:allow(crossbyte.rpc.RPCCommands)
-@:allow(crossbyte.rpc.RPCSession)
-@:allow(crossbyte.rpc._internal.RPCReceiverCall)
-@:access(crossbyte.rpc.RPCCommands)
-@:access(crossbyte.rpc.RPCSession)
 /**
  * The eventual result of a request/response RPC invocation.
  *
@@ -18,6 +13,11 @@ import crossbyte.rpc._internal.RPCReceiverCall;
  * is genuinely about RPC (which request this was, and which operation) and
  * how long it may wait.
  */
+@:allow(crossbyte.rpc.RPCCommands)
+@:allow(crossbyte.rpc.RPCSession)
+@:allow(crossbyte.rpc._internal.RPCReceiverCall)
+@:access(crossbyte.rpc.RPCCommands)
+@:access(crossbyte.rpc.RPCSession)
 class RPCResponse<T> extends Future<T> {
 	/**
 		Dispatched when the response resolves successfully.
