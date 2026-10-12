@@ -471,7 +471,7 @@ class LocalConnectionTest extends utest.Test {
 	/**
 		A connect to a listener that takes nobody ends at its deadline. On
 		Linux a connect to a listener whose backlog is full waits in the kernel
-		for it to take someone, past any `timeout`; on the calling thread, a
+		for it to take someone, past any `connectTimeout`; on the calling thread, a
 		listener hung, or simply busy, would hold every client's runtime for
 		good. The connects run on a thread of their own, so a wait that never
 		ends fails the case instead of the run.
@@ -1018,7 +1018,7 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	/**
-		`timeout = 0` means no deadline, as it does on every connect: the
+		`connectTimeout = 0` means no deadline, as it does on every connect: the
 		connect waits, on the calling thread, until something listens on the
 		name, rather than making one try and giving up at once.
 	**/
@@ -1028,7 +1028,7 @@ class LocalConnectionTest extends utest.Test {
 		var name = uniqueName("nodeadline");
 		var listening = LateListener.start(name, 0.4);
 		var client = new LocalConnection();
-		client.timeout = 0;
+		client.connectTimeout = 0;
 		var started = haxe.Timer.stamp();
 		var raised:Dynamic = null;
 		try {
@@ -1054,7 +1054,7 @@ class LocalConnectionTest extends utest.Test {
 	public function testATimeoutEndsTheWaitForAListener():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		var client = new LocalConnection();
-		client.timeout = 300;
+		client.connectTimeout = 0.3;
 		var started = haxe.Timer.stamp();
 		var raised:Dynamic = null;
 		try {
@@ -1193,7 +1193,7 @@ class LocalConnectionTest extends utest.Test {
 				problems.push('round $round: ${listening.length} listened');
 			}
 			var client = new LocalConnection();
-			client.timeout = 2000;
+			client.connectTimeout = 2.0;
 			try {
 				client.connect(name);
 			} catch (e:Dynamic) {
@@ -1329,7 +1329,7 @@ class LocalConnectionTest extends utest.Test {
 			Sys.command("ln", ["-s", link[1], link[0]]);
 		}
 		var client = new LocalConnection();
-		client.timeout = 300;
+		client.connectTimeout = 0.3;
 		var raised:Dynamic = null;
 		try {
 			client.connect(victim);
@@ -1429,7 +1429,7 @@ class LocalConnectionTest extends utest.Test {
 		}
 		closeQuietly(server);
 		var client = new LocalConnection();
-		client.timeout = 100;
+		client.connectTimeout = 0.1;
 		try {
 			client.connect(name);
 			thrown.push(null);

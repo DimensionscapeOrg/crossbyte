@@ -3,10 +3,10 @@ package crossbyte.net;
 /** Describes why a connection or host lifecycle callback fired. */
 enum Reason {
 	/**
-		A deadline passed: a connect not made within its socket's `timeout`,
-		or a reliable datagram socket's `connectTimeout` (an `ioError` whose
-		`errorID` is `IOErrorEvent.TIMEOUT_ERROR_ID`), or a connection its
-		owner closed for silence.
+		A deadline passed: a connect not made within its socket's
+		`connectTimeout` (an `ioError` whose `errorID` is
+		`IOErrorEvent.TIMEOUT_ERROR_ID`), or a connection its owner closed
+		for silence.
 	**/
 	Timeout;
 	/** The transport closed cleanly. */

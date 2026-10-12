@@ -649,7 +649,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			// A single try over local IPC, whose connect waits on this thread
 			// for a listener: a dial never holds up the runtime waiting. 1 ms,
 			// not 0, which LocalConnection takes for no deadline.
-			connection = new NetConnection(__dialUri, null, null, null, null, false, 1);
+			connection = new NetConnection(__dialUri, null, null, null, null, 0.001);
 		} catch (error:Dynamic) {
 			// Refused as it was made: a local:// name nobody listens on.
 			__endReason = Reason.Error("Could not connect to " + __dialUri + ": " + Std.string(error));

@@ -49,7 +49,7 @@ import haxe.io.Error;
 
 	- A connect that fails (refused, unreachable, a TLS handshake or a
 	  certificate refused, an upgrade the server declined or never answered,
-	  `timeout` passed) dispatches `ioError` saying why, and then `close`
+	  `connectTimeout` passed) dispatches `ioError` saying why, and then `close`
 	  with code 1006. `connect` is never dispatched. A plain `Socket`
 	  dispatches `ioError` alone.
 	- `close` is a `WebSocketCloseEvent` carrying the code and reason, and is
@@ -623,7 +623,7 @@ class WebSocket extends Socket {
 		`wss://` when `secure` is set. `host` may carry a path, as in
 		`"example.com/chat"`, and may be an IPv6 literal.
 
-		`timeout` bounds the whole of it, from this call to `connect`: the
+		`connectTimeout` bounds the whole of it, from this call to `connect`: the
 		host's lookup, the TCP connect, a `wss://` TLS handshake and the
 		upgrade together. `0` waits for as long as it takes.
 
@@ -668,9 +668,9 @@ class WebSocket extends Socket {
 
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
 			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
-		// `timeout` bounds the connection and the upgrade after it, as one
-		// deadline from here; see connect's doc.
-		__webSocket.connectTimeout = timeout;
+		// `connectTimeout` bounds the connection and the upgrade after it, as
+		// one deadline from here; see connect's doc.
+		__webSocket.connectTimeout = connectTimeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
 		__webSocket.maxMessageSize = __maxMessageSize;
 		__webSocket.closeTimeout = __closeTimeout;

@@ -207,7 +207,7 @@ class SocketContractTest extends utest.Test {
 			var failure:String = null;
 			client.secure = true;
 			client.verifyCert = false;
-			client.timeout = 0;
+			client.connectTimeout = 0;
 			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
 			client.connect("127.0.0.1", server.localPort);
 
@@ -274,7 +274,7 @@ class SocketContractTest extends utest.Test {
 
 	#if (cpp || java || jvm || eval || nodejs)
 	/** A client connected to a server that keeps what it hears, and `then` once it is. **/
-	private function __connected(then:(Socket, Heard, Void->Void)->Void, async:Async, ?timeout:Int):Void {
+	private function __connected(then:(Socket, Heard, Void->Void)->Void, async:Async, ?timeout:Float):Void {
 		var server = new ServerSocket();
 		var peer = new Heard();
 		var accepted:Array<Socket> = [];
@@ -291,7 +291,7 @@ class SocketContractTest extends utest.Test {
 			var client = new Socket();
 			var failure:String = null;
 			if (timeout != null) {
-				client.timeout = timeout;
+				client.connectTimeout = timeout;
 			}
 			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
 			client.connect("127.0.0.1", server.localPort);

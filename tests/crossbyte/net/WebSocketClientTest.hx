@@ -29,7 +29,7 @@ class WebSocketClientTest extends utest.Test {
 		server.listen();
 
 		var client = new WebSocket();
-		client.timeout = 400;
+		client.connectTimeout = 0.4;
 
 		var connected:Bool = false;
 		var closed:Bool = false;
@@ -69,12 +69,12 @@ class WebSocketClientTest extends utest.Test {
 		TLS handshake is given up on at `timeout`.
 
 		Natively the handshake has no fixed time of its own, whatever
-		`timeout` says, and on Node a connect is bounded before it has opened,
+		`connectTimeout` says, and on Node a connect is bounded before it has opened,
 		not left to wait on a silent server for good.
 	**/
 	@:timeout(20000)
 	public function testATlsHandshakeNobodyAnswersIsGivenUpOnAtTheTimeout(async:Async):Void {
-		__againstASilentServer(true, 400, function(outcome) {
+		__againstASilentServer(true, 0.4, function(outcome) {
 			Assert.isFalse(outcome.connected, "a TLS handshake nobody answered was reported as connected");
 			Assert.isTrue(outcome.closed, "a client whose TLS handshake went unanswered was never given up on");
 			Assert.isTrue(outcome.took >= 0.3 && outcome.took < 2.0, 'gave up after ${outcome.took} s against a timeout of 0.4 s');
@@ -83,7 +83,7 @@ class WebSocketClientTest extends utest.Test {
 	}
 
 	/**
-		A `timeout` of 0 waits as long as it takes, for the upgrade, a connect
+		A `connectTimeout` of 0 waits as long as it takes, for the upgrade, a connect
 		still looking its host up, and a TLS handshake alike.
 	**/
 	@:timeout(20000)
@@ -175,7 +175,7 @@ class WebSocketClientTest extends utest.Test {
 		then says nothing, and reports what became of it after `wait`
 		seconds, or once it has closed.
 	**/
-	private function __againstASilentServer(secure:Bool, timeout:Int, check:SilentOutcome->Void, async:Async, wait:Float = 8.0):Void {
+	private function __againstASilentServer(secure:Bool, timeout:Float, check:SilentOutcome->Void, async:Async, wait:Float = 8.0):Void {
 		var server = new ServerSocket();
 		var held:Array<Socket> = [];
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) held.push(e.socket));
@@ -185,7 +185,7 @@ class WebSocketClientTest extends utest.Test {
 		var client = new WebSocket();
 		client.secure = secure;
 		client.verifyCert = false;
-		client.timeout = timeout;
+		client.connectTimeout = timeout;
 
 		var outcome:SilentOutcome = {connected: false, closed: false, failure: null, took: -1.0};
 		var started:Float = 0.0;
@@ -281,7 +281,7 @@ class WebSocketClientTest extends utest.Test {
 		server.listen();
 
 		var client = new WebSocket();
-		client.timeout = 15000;
+		client.connectTimeout = 15.0;
 		var connected:Bool = false;
 		var closed:Bool = false;
 		var failure:String = null;

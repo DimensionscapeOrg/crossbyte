@@ -66,17 +66,17 @@ class SharedChannel extends EventDispatcher {
 	 */
 	public var client:Object;
 	/**
-	 * How long, in milliseconds, `send` waits on the calling thread for
+	 * How long, in seconds, `send` waits on the calling thread for
 	 * something to listen on a channel name it has no connection to yet;
 	 * past it, the send fails with an error `StatusEvent`. The default is
-	 * 5,000 (five seconds). It is `LocalConnection.timeout` for the
-	 * connection underneath.
+	 * 5. It is `LocalConnection.connectTimeout` for the connection
+	 * underneath.
 	 *
 	 * 0 (or less) means no deadline: the send waits until something
-	 * listens, however long that is. One try
-	 * is what any timeout of 50 or less makes.
+	 * listens, however long that is. One try is what any timeout of 0.05 or
+	 * less makes.
 	 */
-	public var timeout:Int = 5000;
+	public var connectTimeout:Float = 5.0;
 
 	@:noCompletion private var __listener:LocalConnection;
 	// A connection to each destination sent to lately, by name, so two
@@ -211,7 +211,7 @@ class SharedChannel extends EventDispatcher {
 					__dropLeastRecentLink();
 				}
 				var connection = new LocalConnection();
-				connection.timeout = timeout;
+				connection.connectTimeout = connectTimeout;
 				connection.connect(connectionName);
 				link = new OutboundLink(connection);
 				__outbound.set(connectionName, link);

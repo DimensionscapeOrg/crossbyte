@@ -163,16 +163,16 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 	public var onError(get, set):Reason->Void;
 	public var onReady(get, set):Void->Void;
 	/**
-	 * How long, in milliseconds, `connect()` waits on the calling thread for
+	 * How long, in seconds, `connect()` waits on the calling thread for
 	 * something to listen on the name; past it, `connect()` throws an
-	 * `ArgumentError`. The default is 5,000 (five seconds).
+	 * `ArgumentError`. The default is 5.
 	 *
 	 * 0 (or less) means no deadline: `connect()` waits until something
-	 * listens, however long that is, as a connect with `timeout = 0` does
-	 * everywhere in CrossByte. One try is what
-	 * any timeout of 50 or less makes, 50 ms being the pause between tries.
+	 * listens, however long that is, as a connect timeout of 0 does
+	 * everywhere in CrossByte. One try is what any timeout of 0.05 or less
+	 * makes, 50 milliseconds being the pause between tries.
 	 */
-	public var timeout:Int = 5000;
+	public var connectTimeout:Float = 5.0;
 	public var inTimestamp(default, null):Float = 0;
 	public var outTimestamp(default, null):Float = 0;
 
@@ -308,12 +308,12 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 	/**
 	 * Connects to a listening local endpoint, waiting on the calling thread
-	 * for something to listen on the name for up to `timeout`, or without a
-	 * deadline when that is 0.
+	 * for something to listen on the name for up to `connectTimeout`, or
+	 * without a deadline when that is 0.
 	 *
 	 * @param connectionName Named local IPC endpoint to connect to.
 	 * @throws ArgumentError When nothing listened on the name within
-	 *         `timeout`, or the name cannot be used.
+	 *         `connectTimeout`, or the name cannot be used.
 	 * @throws IOError When what is under the name is not this user's own:
 	 *         another user's pipe on Windows; on Linux and macOS the user's
 	 *         directory, or anything at the name's socket path that is not
@@ -328,7 +328,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		__mode = CLIENT;
 		__connectionName = connectionName;
 
-		var handle = __connect(connectionName, timeout);
+		var handle = __connect(connectionName, crossbyte._internal.Millis.of(connectTimeout));
 		if (handle == null) {
 			// Read at once, on the thread that tried.
 			var notOwned = __notOwned();

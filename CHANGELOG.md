@@ -523,7 +523,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - `System.applicationId`, set with `-D crossbyte_app_id`, names an
   application's storage directory.
 - `File.openWithDefaultApplication()`.
-- `SharedObject.remove(name)` and `SharedObject.lockTimeout`;
+- `SharedObject.remove(name)` and `SharedObject.lockWaitTimeout`;
   `LocalConnection.maxQueuedBytes` (16 MB) and `bytesPending`.
 - `NativeProcess` on the jvm, hl and neko.
 - Test harnesses: a load and churn harness (`ci/load.hxml`), a soak
@@ -821,8 +821,8 @@ says how.
   reports its code as `Reason.Code`. (Upgrading)
 - `RateLimiter` lives in `crossbyte.net` and is a token bucket; IPv6
   clients are keyed by their /64. (Upgrading)
-- `Socket.close()` sends what was written before it, and a `Socket.timeout`
-  of 0 is no deadline natively too, as on Node.
+- `Socket.close()` sends what was written before it, and a
+  `Socket.connectTimeout` of 0 is no deadline natively too, as on Node.
 - On the jvm: one `ByteBuffer` per array rather than one per read or
   write, a selector per thread, registrations kept between selects, reads
   that copy nothing (about 1,200 to 3,000 MB/s over loopback), and a
@@ -895,7 +895,8 @@ says how.
   session a server accepts no longer opens a socket of its own.
 - In `DATAGRAM` mode a message larger than one frame arrives as one
   message, and `flush()` works there too.
-- A `timeout` of 0 is no deadline, where it failed the attempt at once.
+- A `connectTimeout` of 0 is no deadline, where it failed the attempt at
+  once.
 
 #### WebSocket
 
@@ -923,7 +924,8 @@ says how.
   echo allocates 396 B where it took 428.
 - A `wss://` client checks the server's certificate. (Upgrading)
 - A client's failed connect ends one way: `ioError`, then `close` with 1006.
-  Its `timeout` bounds the whole connect: lookup, TCP, TLS and upgrade.
+  Its `connectTimeout` bounds the whole connect: lookup, TCP, TLS and
+  upgrade.
 - `ServerWebSocket.verifyCert` is gone, and `certAuthority` asks every
   client for a certificate. `cert` and `certAuthority` take
   `crossbyte.net.Certificate` and `Key`, and are set before `bind()`.
@@ -1841,6 +1843,16 @@ an API added in this release has is not listed here.
 - A native Windows build runs at the priority it was started with; set
   `CrossByte.windowsHighPriority = true` for the high class it took itself.
 
+#### Durations
+
+Every duration is a `Float` of seconds. Each member that took milliseconds
+has a new name, so code written against the old one stops compiling rather
+than waiting a thousand times as long: divide the old value by 1,000.
+
+| rc.1, in milliseconds | 1.0, in seconds |
+| --- | --- |
+| `Socket.timeout` (and so `WebSocket.timeout`), 20000 | `connectTimeout`, 20 |
+
 #### Runtime
 
 - An event, and a payload handed to a hook called once per arrival, is
@@ -2521,8 +2533,8 @@ an API added in this release has is not listed here.
   `System.memoryUsage()` is a `Float`.
 - `SharedObject`'s constructor, `flush()`, `sync()` and `clear()` throw an
   `IOError` when another participant holds the region's lock past
-  `lockTimeout` (five seconds), where they waited without end; set
-  `lockTimeout` to 0 to keep waiting. `sync()` throws an `IOError` for a
+  `lockWaitTimeout` (five seconds), where they waited without end; set
+  `lockWaitTimeout` to 0 to keep waiting. `sync()` throws an `IOError` for a
   payload the build cannot read, where it set `data` to `{}`.
 - On Linux and macOS a `SharedObject` region is not shared between users:
   one another user made under the name throws an `IOError`, where it was

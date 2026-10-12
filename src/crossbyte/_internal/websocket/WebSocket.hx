@@ -318,18 +318,18 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 */
 	public var onprogress:Void->Void = null;
 
-	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
+	private static inline var CONNECT_TIMEOUT:Float = 10.0;
 
 	/**
-	 * How long a client waits, in milliseconds, from the start of its connect
-	 * for the session to open: the name's lookup, the TCP connect, a TLS
+	 * How long a client waits, in seconds, from the start of its connect for
+	 * the session to open: the name's lookup, the TCP connect, a TLS
 	 * handshake and the upgrade, together. `0` waits as long as it takes.
 	 * Counted from the connect's start whenever it is set, so it can be set
 	 * straight after construction.
 	 */
-	public var connectTimeout(default, set):Int = CONNECT_TIMEOUT_MS;
+	public var connectTimeout(default, set):Float = CONNECT_TIMEOUT;
 
-	private function set_connectTimeout(value:Int):Int {
+	private function set_connectTimeout(value:Float):Float {
 		connectTimeout = value;
 		if (__isClient != false && readyState == CONNECTING && __socket != null) {
 			__armOpenDeadline();
@@ -3103,7 +3103,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			return;
 		}
 
-		var remaining:Float = connectTimeout / 1000 - (haxe.Timer.stamp() - __timestamp);
+		var remaining:Float = connectTimeout - (haxe.Timer.stamp() - __timestamp);
 		__openDeadline = __timers().setTimeout(remaining > 0 ? remaining : 0, function():Void {
 			__openDeadlineArmed = false;
 			if (readyState == CONNECTING) {
@@ -3137,7 +3137,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 	/** What a connect still not open at its deadline was waiting on. **/
 	private function __openFailure():String {
-		var limit:String = connectTimeout + " ms";
+		var limit:String = connectTimeout + " s";
 		#if !nodejs
 		if (__resolving) {
 			return "Failed to connect to server: " + __host + " was not looked up within " + limit;

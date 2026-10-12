@@ -244,7 +244,7 @@ class SharedObjectTest extends utest.Test {
 		// What another program, or a build knowing a class this one does
 		// not, might leave in the region.
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length, other.lockTimeout));
+		Assert.isTrue(SharedObject.__write(other.__handle, garbage.getData(), garbage.length, other.__lockWaitMs()));
 
 		var raised:Dynamic = null;
 		try {
@@ -277,7 +277,7 @@ class SharedObjectTest extends utest.Test {
 		var reader = new SharedObject(name, 65536);
 		function leave(levels:Int):Void {
 			var payload = haxe.io.Bytes.ofString(StringTools.lpad("", "a", levels) + StringTools.lpad("", "h", levels));
-			Assert.isTrue(SharedObject.__write(holder.__handle, payload.getData(), payload.length, holder.lockTimeout));
+			Assert.isTrue(SharedObject.__write(holder.__handle, payload.getData(), payload.length, holder.__lockWaitMs()));
 		}
 
 		leave(256);
@@ -318,7 +318,7 @@ class SharedObjectTest extends utest.Test {
 		var name:String = uniqueName("defaults");
 		var holder = new SharedObject(name, 8192);
 		var garbage = haxe.io.Bytes.ofString("#not a serialized value");
-		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length, holder.lockTimeout));
+		Assert.isTrue(SharedObject.__write(holder.__handle, garbage.getData(), garbage.length, holder.__lockWaitMs()));
 
 		var opened = new SharedObject(name, 8192, {fallback: true});
 		Assert.equals(true, opened.data.fallback);
@@ -578,14 +578,14 @@ class SharedObjectTest extends utest.Test {
 
 		var raised:Dynamic = null;
 		try {
-			early.lockTimeout = 200;
+			early.lockWaitTimeout = 0.2;
 			early.data = {n: 2};
 			early.flush();
 		} catch (e:Dynamic) {
 			raised = e;
 		}
 		holder.release();
-		early.lockTimeout = 5000;
+		early.lockWaitTimeout = 5.0;
 		early.sync();
 		var after:Dynamic = early.data.n;
 		early.close();
@@ -716,7 +716,7 @@ class SharedObjectTest extends utest.Test {
 
 	/**
 		A participant stopped while holding the region's lock fails the others'
-		waits at `lockTimeout`, with an `IOError` saying so, and they read,
+		waits at `lockWaitTimeout`, with an `IOError` saying so, and they read,
 		write and clear nothing. A wait with no deadline would let a holder
 		suspended in a debugger or sent SIGSTOP stop every participant for as
 		long as it stayed stopped.
@@ -736,7 +736,7 @@ class SharedObjectTest extends utest.Test {
 		var holder = new HeldLock(new SharedObject(name, 8192));
 
 		try {
-			shared.lockTimeout = 200;
+			shared.lockWaitTimeout = 0.2;
 			shared.data = {kept: "during"};
 			for (operation in ["sync", "flush", "clear"]) {
 				var started:Float = Timer.stamp();
@@ -755,7 +755,7 @@ class SharedObjectTest extends utest.Test {
 				}
 				var waited:Float = Timer.stamp() - started;
 				Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), '$operation threw ' + raised);
-				Assert.isTrue(Std.string(raised).indexOf("lock was not released within 200 ms") >= 0, '$operation threw ' + raised);
+				Assert.isTrue(Std.string(raised).indexOf("lock was not released within 0.2 s") >= 0, '$operation threw ' + raised);
 				Assert.isTrue(waited >= 0.18 && waited < 3, '$operation waited $waited s');
 			}
 			// Nothing synced over it or cleared it.
@@ -771,7 +771,7 @@ class SharedObjectTest extends utest.Test {
 			}
 			var waited:Float = Timer.stamp() - started;
 			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "new threw " + raised);
-			Assert.isTrue(Std.string(raised).indexOf("lock was not released within 5000 ms") >= 0, "new threw " + raised);
+			Assert.isTrue(Std.string(raised).indexOf("lock was not released within 5 s") >= 0, "new threw " + raised);
 			Assert.isTrue(waited >= 4.9 && waited < 20, 'new waited $waited s');
 		} catch (e:Dynamic) {
 			holder.release();
@@ -803,8 +803,8 @@ class SharedObjectTest extends utest.Test {
 		shared.data = {n: 0};
 		shared.flush();
 
-		for (deadline in [5000, 0]) {
-			shared.lockTimeout = deadline;
+		for (deadline in [5, 0]) {
+			shared.lockWaitTimeout = deadline;
 			var holder = new HeldLock(new SharedObject(name, 8192), 0.3);
 			var started:Float = Timer.stamp();
 			shared.data = {n: deadline};
@@ -813,7 +813,7 @@ class SharedObjectTest extends utest.Test {
 			holder.release();
 
 			// It waited for the holder, then wrote.
-			Assert.isTrue(waited >= 0.2 && waited < 5, 'lockTimeout $deadline: waited $waited s');
+			Assert.isTrue(waited >= 0.2 && waited < 5, 'lockWaitTimeout $deadline: waited $waited s');
 			shared.sync();
 			Assert.equals(deadline, shared.data.n);
 		}

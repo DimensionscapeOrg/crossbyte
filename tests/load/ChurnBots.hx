@@ -287,7 +287,7 @@ class H1Session extends ChurnSession {
 		socket = new Socket();
 		socket.secure = secure;
 		socket.verifyCert = false;
-		socket.timeout = Std.int(ChurnBots.TIMEOUT * 1000);
+		socket.connectTimeout = ChurnBots.TIMEOUT;
 		socket.addEventListener(Event.CONNECT, _ -> {
 			bots.time(name + ".setup", (Timer.stamp() - started) * 1000);
 			if (secure) {
@@ -445,7 +445,7 @@ class WsSession extends ChurnSession {
 		socket = new WebSocket();
 		socket.secure = secure;
 		socket.verifyCert = false;
-		socket.timeout = Std.int(ChurnBots.TIMEOUT * 1000);
+		socket.connectTimeout = ChurnBots.TIMEOUT;
 		socket.addEventListener(Event.CONNECT, _ -> {
 			bots.time(name + ".upgrade", (Timer.stamp() - started) * 1000);
 			if (secure) {
@@ -542,7 +542,7 @@ class H2cSession extends ChurnSession {
 	public function new(bots:ChurnBots, ops:Int) {
 		super(bots, "h2", ops);
 		socket = new Socket();
-		socket.timeout = Std.int(ChurnBots.TIMEOUT * 1000);
+		socket.connectTimeout = ChurnBots.TIMEOUT;
 		socket.addEventListener(Event.CONNECT, _ -> {
 			bots.time(name + ".setup", (Timer.stamp() - started) * 1000);
 			bots.count(name + ".sessions");

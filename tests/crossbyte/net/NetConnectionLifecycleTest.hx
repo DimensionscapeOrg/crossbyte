@@ -91,7 +91,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 	}
 
 	/**
-		A connect not made within its socket's `timeout` is `Reason.Timeout`,
+		A connect not made within its socket's `connectTimeout` is `Reason.Timeout`,
 		to `onError` and then `onClose`. The peer accepts and never answers
 		the TLS handshake, which the deadline counts with the connect.
 	**/
@@ -108,7 +108,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 			var socket = new Socket();
 			socket.secure = true;
 			socket.verifyCert = false;
-			socket.timeout = 400;
+			socket.connectTimeout = 0.4;
 			var errors:Array<Reason> = [];
 			var closes:Array<Reason> = [];
 			var connection = NetConnection.fromSocket(socket);
@@ -129,7 +129,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 	}
 
 	/**
-		A reliable session's connect not made within its `timeout` is
+		A reliable session's connect not made within its `connectTimeout` is
 		`Reason.Timeout` too. The peer is a datagram socket that takes every
 		CONNECT and answers none. The session's timeout errors carry
 		`TIMEOUT_ERROR_ID`, or this would end as `Reason.Error` with the time in
@@ -167,7 +167,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 	}
 
 	/**
-		A WebSocket connect not open within its `timeout` is `Reason.Timeout`
+		A WebSocket connect not open within its `connectTimeout` is `Reason.Timeout`
 		too. The server takes the TCP connection and never answers the
 		upgrade. The session's deadline errors carry `TIMEOUT_ERROR_ID`, or this
 		would end as `Reason.Error` with the time in its text.
@@ -182,7 +182,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 
 		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
 			var socket = new WebSocket();
-			socket.timeout = 400;
+			socket.connectTimeout = 0.4;
 			var errors:Array<Reason> = [];
 			var closes:Array<Reason> = [];
 			var connection = NetConnection.fromWebSocket(socket);

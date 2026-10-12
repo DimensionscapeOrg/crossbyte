@@ -254,7 +254,7 @@ class SharedChannelTest extends utest.Test {
 	}
 
 	/**
-		`timeout = 0` means no deadline: a send to a channel nothing listens on
+		`connectTimeout = 0` means no deadline: a send to a channel nothing listens on
 		yet waits, on the calling thread, until something does, rather than
 		making one try and reporting an error at once.
 	**/
@@ -264,7 +264,7 @@ class SharedChannelTest extends utest.Test {
 		var name = '__crossbyte_channel_nodeadline_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}'; // time of day: a name no other run has used
 		var listening = LateListener.start(name, 0.4);
 		var sender = new SharedChannel();
-		sender.timeout = 0;
+		sender.connectTimeout = 0;
 		var levels:Array<String> = [];
 		sender.addEventListener(crossbyte.events.StatusEvent.STATUS, (event:crossbyte.events.StatusEvent) -> levels.push(event.level));
 		var started = haxe.Timer.stamp();

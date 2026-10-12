@@ -85,7 +85,7 @@ class SocketTLSClientTest extends utest.Test {
 
 		var client = new Socket();
 		client.secure = true;
-		client.timeout = 1000;
+		client.connectTimeout = 1.0;
 		var connected:Bool = false;
 		var failure:String = null;
 		var endedAfter:Float = -1;

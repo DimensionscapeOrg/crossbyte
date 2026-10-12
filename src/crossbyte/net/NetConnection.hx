@@ -47,9 +47,8 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
  *   called after it.
  *
  * A deadline that passed is `Reason.Timeout`, to both: a connect not made
- * within its socket's `timeout` (a reliable datagram socket's
- * `connectTimeout`), and anything else its transport reports as an
- * `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
+ * within its socket's `connectTimeout`, and anything else its transport
+ * reports as an `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
  */
 abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
 	/** Remote peer address. */
@@ -102,17 +101,17 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * ```
 	 *
 	 * @param connectTimeout For `local://`, whose connect waits for a listener
-	 * on the calling thread: how long, in milliseconds; 0 for no deadline, and
-	 * 50 or less for a single try.
-	 * `LocalConnection.timeout` when left out. The other transports connect
-	 * without waiting and ignore it.
+	 * on the calling thread: how long, in seconds; 0 for no deadline, and
+	 * 0.05 or less for a single try.
+	 * `LocalConnection.connectTimeout` when left out. The other transports
+	 * connect without waiting and ignore it.
 	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
 	 * took the connection within `connectTimeout`, where the other
 	 * transports report a failed connect through `onError` and `onClose`
 	 * alone.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			readEnabled:Bool = false, ?connectTimeout:Int):Void {
+			?connectTimeout:Float, readEnabled:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
@@ -161,7 +160,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.onError = onError;
 				connection.readEnabled = readEnabled;
 				if (connectTimeout != null) {
-					connection.timeout = connectTimeout;
+					connection.connectTimeout = connectTimeout;
 				}
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);

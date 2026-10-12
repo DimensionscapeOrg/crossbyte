@@ -189,7 +189,7 @@ class SocketTest extends utest.Test {
 		// Ended by the lookup failing or, wherever the resolver takes longer
 		// to give up than this waits, by the attempt's deadline, which counts
 		// the lookup: some resolvers take more than 10 s to answer.
-		socket.timeout = 3000;
+		socket.connectTimeout = 3.0;
 
 		socket.connect("bad host name", 80);
 		Assert.equals(0, errors, "the lookup was waited on inside connect()");
@@ -631,7 +631,7 @@ class SocketTest extends utest.Test {
 		closeServerQuietly(vacant);
 
 		try {
-			client.timeout = 20000;
+			client.connectTimeout = 20.0;
 			client.connect("127.0.0.1", refusedPort);
 			// Past the socket's own deadline, so the code under test ends the
 			// wait however long the system takes to refuse.

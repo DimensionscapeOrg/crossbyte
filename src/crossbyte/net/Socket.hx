@@ -61,7 +61,7 @@ import sys.net.Socket as SysSocket;
 	- `connect` once it is up (and, for a `secure` one, its TLS handshake
 	  done).
 	- `ioError` for a connect that failed (refused, a name that does not
-	  resolve, a handshake that failed, or not made within `timeout`, whose
+	  resolve, a handshake that failed, or not made within `connectTimeout`, whose
 	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and nothing
 	  after it, since no connection came up: no `close` follows, as in AIR.
 	  Once connected, for a write that failed; the connection's `close`
@@ -200,7 +200,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		Set it before `connect()` to connect over TLS: once TCP is up the
 		client handshakes, and `connect` is dispatched when the handshake has
-		finished, within `timeout`, which counts it with the connect. The
+		finished, within `connectTimeout`, which counts it with the connect. The
 		server's certificate is checked against the host given to
 		`connect()`, see `verifyCert` and `certAuthority`, and a host name
 		goes to the server as SNI. A handshake that fails, a certificate
@@ -254,17 +254,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	/**
-		Indicates the number of milliseconds to wait for a connection.
-		If the connection doesn't succeed within the specified time, the
-		connection fails. The default value is 20,000 (twenty seconds).
+		How long, in seconds, a connect may take before it fails with an
+		`ioError` whose `errorID` is `IOErrorEvent.TIMEOUT_ERROR_ID`: 20
+		unless set.
 
 		0 means no deadline: the connect is waited on for as long as the
 		system keeps trying, on every target.
 
 		It counts a secure connection's TLS handshake, and a name's lookup,
-		with the connect. Not kept in a browser, whose WebSocket has its own.
+		with the connect. Read when `connect()` is called. Not kept in a
+		browser, whose WebSocket has its own.
 	**/
-	public var timeout:Int;
+	public var connectTimeout:Float;
 
 	/**
 		Maximum bytes allowed to accumulate in the outgoing buffer, or `0`
@@ -596,7 +597,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __nodeRuntime:CrossByte = null;
 	@:noCompletion private var __flushQueued:Bool = false;
 	@:noCompletion private var __ticking:Bool = false;
-	// The timer that ends a connect still not open at `timeout`; see
+	// The timer that ends a connect still not open at `connectTimeout`; see
 	// __armNodeConnectDeadline.
 	@:noCompletion private var __nodeConnectDeadline:Dynamic = null;
 	#end
@@ -882,7 +883,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// Set here: unset, it is 0 natively and on the jvm, which is AMF0 and
 		// throws without -lib format, and null elsewhere, which throws too.
 		objectEncoding = ObjectEncoding.DEFAULT;
-		timeout = 20000;
+		connectTimeout = 20.0;
 		__connected = false;
 		__closed = false;
 		__isConnecting = false;
@@ -986,7 +987,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		fails is reported by `ioError` alone; no `close` follows it.
 
 		A name is looked up off the runtime's thread, so nothing else on the
-		runtime waits on the resolver, and `timeout` counts the lookup as part
+		runtime waits on the resolver, and `connectTimeout` counts the lookup as part
 		of the attempt.
 
 		@param host The name or IP address of the host to connect to.
@@ -1342,7 +1343,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Keeps `timeout` on Node, which has no deadline of its own for a
+		Keeps `connectTimeout` on Node, which has no deadline of its own for a
 		connect: one that has not opened (a TLS one's handshake counted with
 		it, as natively) would be waited on for as long as the system kept
 		trying, and a handshake the server never answered, for good. At the
@@ -1351,11 +1352,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion private function __armNodeConnectDeadline(node:NodeSocket):Void {
 		__clearNodeConnectDeadline();
-		if (timeout <= 0) {
+		if (connectTimeout <= 0) {
 			return;
 		}
 
-		var limit:Int = timeout;
+		var limit:Float = connectTimeout;
 		__nodeConnectDeadline = js.Node.setTimeout(function() {
 			__nodeConnectDeadline = null;
 			if (__socket != node || __connected) {
@@ -1369,11 +1370,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// loop, where a listener that threw would end the process.
 			try {
 				__dispatchPooledIOError("Connection failed: " + __host + (secure ? " was not connected over TLS within " : " was not connected within ")
-					+ limit + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
+					+ limit + " s", IOErrorEvent.TIMEOUT_ERROR_ID);
 			} catch (e:Dynamic) {
 				__contain(e, IOErrorEvent.IO_ERROR);
 			}
-		}, limit);
+		}, Math.ceil(limit * 1000));
 	}
 
 	@:noCompletion private function __clearNodeConnectDeadline():Void {
@@ -2946,7 +2947,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// on past it.
 			if (__pastDeadline()) {
 				__cleanSocket();
-				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms", IOErrorEvent.TIMEOUT_ERROR_ID);
+				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + connectTimeout + " s", IOErrorEvent.TIMEOUT_ERROR_ID);
 			}
 			return;
 		}
@@ -3044,8 +3045,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// The deadline counts the TLS handshake with the connect.
 			doClose = true;
 			timedOut = true;
-			failure = __tlsHandshaking ? "the TLS handshake did not finish within " + timeout + " ms" : __host + " was not connected within " + timeout
-				+ " ms";
+			failure = __tlsHandshaking ? "the TLS handshake did not finish within " + connectTimeout + " s" : __host + " was not connected within "
+				+ connectTimeout + " s";
 		}
 
 		var bLength = 0;
@@ -3290,11 +3291,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
-		Whether the attempt under way has run past `timeout`. A timeout of 0
-		or less is no deadline, on every target.
+		Whether the attempt under way has run past `connectTimeout`. A
+		timeout of 0 or less is no deadline, on every target.
 	**/
 	@:noCompletion private inline function __pastDeadline():Bool {
-		return timeout > 0 && haxe.Timer.stamp() - __timestamp > timeout / 1000;
+		return connectTimeout > 0 && haxe.Timer.stamp() - __timestamp > connectTimeout;
 	}
 
 	/**
