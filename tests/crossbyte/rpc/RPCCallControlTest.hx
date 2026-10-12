@@ -12,7 +12,7 @@ import utest.Assert;
 	it, as gRPC's do: a handler can read when its caller stops waiting, and
 	one answering later learns that its caller has stopped, so it can stop
 	too, rather than finish work nobody will read and hold its place among
-	the calls waiting until its own `handlerTimeout`.
+	the calls waiting until its own `answerTimeout`.
 
 	Before, nothing of either crossed the wire: a caller that cancelled or
 	timed out simply dropped the answer when it came.
@@ -26,18 +26,18 @@ class RPCCallControlTest extends utest.Test {
 
 	public function testAHandlerReadsTheDeadlineItsCallerGave():Void {
 		final fixture = new ControlFixture();
-		fixture.client.callTimeout = 5000;
+		fixture.client.requestTimeout = 5.0;
 		Assert.equals(4, fixture.commands.measure().result, "the call was not answered");
 		final seen = fixture.handler.seen[0];
 		Assert.isTrue(seen.deadline > 0, "the caller's deadline did not arrive");
-		Assert.isTrue(seen.timeLeft > 4000 && seen.timeLeft <= 5000, "a deadline of 5,000 ms arrived as " + seen.timeLeft + " ms left");
+		Assert.isTrue(seen.timeRemaining > 4 && seen.timeRemaining <= 5, "a deadline of 5 s arrived as " + seen.timeRemaining + " s left");
 
-		fixture.commands.withTimeout(0).measure();
+		fixture.commands.within(0).measure();
 		Assert.equals(0.0, fixture.handler.seen[1].deadline, "a call with no deadline arrived with one");
-		Assert.equals(-1, fixture.handler.seen[1].timeLeft);
+		Assert.equals(-1, fixture.handler.seen[1].timeRemaining);
 
-		fixture.commands.withTimeout(250).measure();
-		Assert.isTrue(fixture.handler.seen[2].timeLeft <= 250 && fixture.handler.seen[2].timeLeft > 0);
+		fixture.commands.within(0.25).measure();
+		Assert.isTrue(fixture.handler.seen[2].timeRemaining <= 0.25 && fixture.handler.seen[2].timeRemaining > 0);
 		Assert.isNull(fixture.handler.currentCall, "a call was left current between calls");
 	}
 
@@ -70,7 +70,7 @@ class RPCCallControlTest extends utest.Test {
 	public function testACallersDeadlinePassingEndsTheCallOnTheHandlersSide():Void {
 		final fixture = new ControlFixture();
 		final receiver = new ControlReceiver();
-		fixture.commands.withTimeout(500).slowThen("b", receiver);
+		fixture.commands.within(0.5).slowThen("b", receiver);
 		final call = fixture.handler.calls.get("b");
 		final sentBefore:Int = fixture.link.server.sent;
 
@@ -87,7 +87,7 @@ class RPCCallControlTest extends utest.Test {
 
 	public function testADeadlineGivenAfterTheCallCancelsItOnThePeerWhenItPasses():Void {
 		final fixture = new ControlFixture();
-		final response = fixture.commands.slow("c").timeout(500);
+		final response = fixture.commands.slow("c").within(0.5);
 		final call = fixture.handler.calls.get("c");
 		Assert.equals(0.0, call.deadline, "a deadline given after the call went arrived with it");
 
@@ -101,9 +101,9 @@ class RPCCallControlTest extends utest.Test {
 
 	public function testTheSoonerOfTheCallersDeadlineAndHandlerTimeoutEndsIt():Void {
 		final fixture = new ControlFixture();
-		fixture.server.handlerTimeout = 1000;
-		final longer = fixture.commands.withTimeout(5000).slow("d");
-		final shorter = fixture.commands.withTimeout(250).slow("e");
+		fixture.server.answerTimeout = 1.0;
+		final longer = fixture.commands.within(5.0).slow("d");
+		final shorter = fixture.commands.within(0.25).slow("e");
 
 		pump(0.5);
 		Assert.equals(RPCFailure.TimedOut, fixture.handler.calls.get("e").reason);
@@ -138,10 +138,10 @@ class RPCCallControlTest extends utest.Test {
 			call = fixture.server.currentCall;
 			return new Completer<Dynamic>().future;
 		});
-		fixture.client.callTimeout = 400;
+		fixture.client.requestTimeout = 0.4;
 		final response:RPCResponse<Dynamic> = fixture.client.request(900, []);
 		Assert.notNull(call);
-		Assert.isTrue(call.timeLeft > 0 && call.timeLeft <= 400, "a runtime call's deadline did not arrive: " + call.timeLeft + " " + call.deadline + " " + fixture.client.peerCapabilities);
+		Assert.isTrue(call.timeRemaining > 0 && call.timeRemaining <= 0.4, "a runtime call's deadline did not arrive: " + call.timeRemaining + " " + call.deadline + " " + fixture.client.peerCapabilities);
 		Assert.isNull(fixture.server.currentCall, "a call was left current between calls");
 
 		pump(0.5);
@@ -154,7 +154,7 @@ class RPCCallControlTest extends utest.Test {
 		final fixture = new ControlFixture();
 		// As a peer whose hello declares no such capability.
 		fixture.client.peerCapabilities = 0;
-		fixture.client.callTimeout = 5000;
+		fixture.client.requestTimeout = 5.0;
 		fixture.link.server.bufferInbound = true;
 		final response = fixture.commands.slow("g");
 		fixture.client.cancelCall(response.requestId);
@@ -170,7 +170,7 @@ class RPCCallControlTest extends utest.Test {
 
 	public function testACallThatNeverReadsItsCallMakesNone():Void {
 		final fixture = new ControlFixture();
-		fixture.client.callTimeout = 5000;
+		fixture.client.requestTimeout = 5.0;
 		Assert.equals(3, fixture.commands.quick(3).result);
 		Assert.isNull(fixture.server.__currentCall);
 	}

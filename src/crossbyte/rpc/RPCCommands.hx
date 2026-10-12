@@ -62,7 +62,7 @@ abstract class RPCCommands {
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
-	// The deadline `withTimeout` gave the next call, or -1 for none given;
+	// The deadline `within` gave the next call, or -1 for none given;
 	// and the one the request being made waits under, read as it is framed.
 	@:noCompletion private var __nextTimeout:Int = -1;
 	@:noCompletion private var __callTimeout:Int = 0;
@@ -70,14 +70,14 @@ abstract class RPCCommands {
 
 	/**
 		Gives the next call made through these commands a deadline of its
-		own, `milliseconds` from when it is made, in place of its session's
-		`RPCSession.callTimeout`; `0` gives it none. Returns these commands,
+		own, `seconds` from when it is made, in place of its session's
+		`RPCSession.requestTimeout`; `0` gives it none. Returns these commands,
 		so the call follows:
 
 		```haxe
 		// Given commands:PlayerCommands, receiver:crossbyte.rpc.RPCStringReceiver.
-		commands.withTimeout(2000).getNameThen(7, receiver);
-		commands.withTimeout(500).getName(7).then(name -> trace(name));
+		commands.within(2).getNameThen(7, receiver);
+		commands.within(0.5).getName(7).then(name -> trace(name));
 		```
 
 		Past it, a call made with a receiver is told `RPCFailure.TimedOut`, and
@@ -89,8 +89,8 @@ abstract class RPCCommands {
 		Each commands class returns its own type, so the call that follows is
 		typed.
 	**/
-	public function withTimeout(milliseconds:Int):RPCCommands {
-		__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+	public function within(seconds:Float):RPCCommands {
+		__nextTimeout = crossbyte._internal.Millis.of(seconds);
 		return this;
 	}
 
@@ -210,11 +210,11 @@ abstract class RPCCommands {
 			requestId);
 	}
 
-	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `withTimeout`; commands with no session. **/
+	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `within`; commands with no session. **/
 	@:noCompletion private function __startOtherFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
-		// The deadline `withTimeout` gave, taken by this call, one-way or not.
+		// The deadline `within` gave, taken by this call, one-way or not.
 		final timeout:Int = __nextTimeout;
 		if (timeout >= 0) {
 			__nextTimeout = -1;
@@ -223,7 +223,7 @@ abstract class RPCCommands {
 			if (requestId != 0) {
 				// Carried with the call to a peer that reads it, so its
 				// handler knows when this side stops waiting.
-				final waits:Int = timeout >= 0 ? timeout : session.callTimeout;
+				final waits:Int = timeout >= 0 ? timeout : session.__requestTimeoutMs;
 				__callTimeout = waits;
 				__callTimeoutSent = waits > 0 && session.__readsCallControl();
 				return session.__takeRequestFrame(room, flags, op, requestId, waits);

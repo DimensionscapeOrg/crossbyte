@@ -66,7 +66,7 @@ class RPCResponse<T> extends Future<T> {
 	// The deadline: TimerHandle.INVALID while there is none; the handle of a
 	// timer of its own, on the thread the call was made on; or, below
 	// INVALID, its place in its session's queue of the deadlines its
-	// `callTimeout` gives (see RPCDeadlines).
+	// `requestTimeout` gives (see RPCDeadlines).
 	@:noCompletion private var __deadline:Int = TimerHandle.INVALID;
 	// Whether this is one of the calls its commands keep for calls made with
 	// a receiver (RPCReceiverCall), never handed to anyone. Beside the
@@ -161,8 +161,8 @@ class RPCResponse<T> extends Future<T> {
 	}
 
 	/**
-		Gives the call until `milliseconds` from now to be answered, in place
-		of any deadline it had (the session's `callTimeout`, or one set
+		Gives the call until `seconds` from now to be answered, in place of
+		any deadline it had (the session's `requestTimeout`, or one set
 		here before). `0` leaves it none, to wait for as long as the connection
 		lasts.
 
@@ -176,16 +176,16 @@ class RPCResponse<T> extends Future<T> {
 
 		Given here, after the call has gone, the deadline stays on this side:
 		when it passes, the peer is told the call is cancelled. One given
-		before the call goes (`RPCSession.callTimeout`, or the commands'
-		`withTimeout`) travels with it, so its handler can read it; see
+		before the call goes (`RPCSession.requestTimeout`, or the commands'
+		`within`) travels with it, so its handler can read it; see
 		`RPCCall`.
 
 		```haxe
-		commands.join("lobby").timeout(2000).then(count -> trace(count), message -> trace(message));
+		commands.join("lobby").within(2).then(count -> trace(count), message -> trace(message));
 		```
 	**/
-	public function timeout(milliseconds:Int):RPCResponse<T> {
-		__arm(milliseconds);
+	public function within(seconds:Float):RPCResponse<T> {
+		__arm(crossbyte._internal.Millis.of(seconds));
 		return this;
 	}
 
@@ -238,7 +238,7 @@ class RPCResponse<T> extends Future<T> {
 		} else if (__session != null) {
 			__session.__takeRuntimeResponse(requestId);
 		}
-		final message:String = "RPC call timed out after " + milliseconds + " ms";
+		final message:String = "RPC call timed out after " + (milliseconds / 1000) + " s";
 		__fail(message, new RPCTimeoutError(message));
 		if (!__deadlineSent) {
 			__cancelOnPeer();

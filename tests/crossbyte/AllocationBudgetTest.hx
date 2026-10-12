@@ -760,26 +760,26 @@ class AllocationBudgetTest extends utest.Test {
 	}
 
 	/**
-		A deadline from the session's `callTimeout` costs a call nothing: the
+		A deadline from the session's `requestTimeout` costs a call nothing: the
 		calls under it share one queue and one timer. A timer of its own for
 		each call (112 bytes natively and 95 on the jvm) is less than a quarter
 		of a call's figure, so the call's budget alone would not catch it.
 	**/
 	public function testAnRpcCallsDeadlineAllocatesNothing():Void {
 		var without:AllocationReading = __rpcCallUnder(0);
-		var under:AllocationReading = __rpcCallUnder(30000);
+		var under:AllocationReading = __rpcCallUnder(30);
 		__report("an RPC call and its answer, without a deadline", without);
-		__report("an RPC call and its answer, under callTimeout", under);
+		__report("an RPC call and its answer, under requestTimeout", under);
 		Assert.isTrue(under.perOperation - without.perOperation <= 16,
-			"a call under callTimeout allocated " + under + ", where one without allocated " + without);
+			"a call under requestTimeout allocated " + under + ", where one without allocated " + without);
 	}
 
-	private static function __rpcCallUnder(callTimeout:Int):AllocationReading {
+	private static function __rpcCallUnder(requestTimeout:Float):AllocationReading {
 		var link = LinkedConnection.pair();
 		var commands = new BudgetCommands();
 		var clientSession = new RPCSession<BudgetCommands>(link.client, commands);
 		var serverSession = new RPCSession(link.server, null, new BudgetHandler());
-		clientSession.callTimeout = callTimeout;
+		clientSession.requestTimeout = requestTimeout;
 		// Typed Void: an arrow function ending in an assignment returns its
 		// value, which natively is boxed as the function is called.
 		var answered:Int = 0;
@@ -916,13 +916,13 @@ class AllocationBudgetTest extends utest.Test {
 	}
 
 	/**
-		A call made with a receiver under the session's `callTimeout` costs
+		A call made with a receiver under the session's `requestTimeout` costs
 		nothing more than one without: its deadline waits in the session's
 		queue, as a future's does.
 	**/
 	public function testAReceiverCallsDeadlineAllocatesNothing():Void {
 		var fixture = new BudgetRpc();
-		fixture.client.callTimeout = 30000;
+		fixture.client.requestTimeout = 30.0;
 		var receiver = fixture.receiver;
 		var op = () -> {
 			var told:Int = receiver.told;
@@ -933,13 +933,13 @@ class AllocationBudgetTest extends utest.Test {
 		};
 		__warm(op, WARM_CHEAP);
 		var under:AllocationReading = AllocationMeter.measure(op, 20000);
-		__report("an RPC call answered through an RPCIntReceiver, under callTimeout", under);
+		__report("an RPC call answered through an RPCIntReceiver, under requestTimeout", under);
 		__within(RPC_INT_RECEIVER, under);
 	}
 
 	/**
-		A call given a deadline of its own, with `RPCResponse.timeout` after it
-		is made or `withTimeout` before, costs nothing more than one without:
+		A call given a deadline of its own, with `RPCResponse.within` after it
+		is made or `within` before, costs nothing more than one without:
 		it waits in the session's heap of deadlines, whatever its length. Each
 		such call held a timer of its own, a closure and a timer node, before
 		that heap took deadlines of any length.
@@ -959,7 +959,7 @@ class AllocationBudgetTest extends utest.Test {
 		var receiverOwn = () -> {
 			var told:Int = receiver.told;
 			flip = !flip;
-			commands.withTimeout(flip ? 20000 : 30000).addThen(receiver.int, 1, receiver);
+			commands.within(flip ? 20 : 30).addThen(receiver.int, 1, receiver);
 			if (receiver.told != told + 1) {
 				throw "the call was not answered";
 			}
@@ -982,7 +982,7 @@ class AllocationBudgetTest extends utest.Test {
 		var futureOwn = function():Void {
 			flip = !flip;
 			link.client.bufferInbound = true;
-			var response = commands.add(answered, 1).timeout(flip ? 20000 : 30000);
+			var response = commands.add(answered, 1).within(flip ? 20 : 30);
 			link.client.bufferInbound = false;
 			link.client.flushBufferedReads();
 			if (!response.completed) {
@@ -995,11 +995,11 @@ class AllocationBudgetTest extends utest.Test {
 		}
 		var readings = [for (op in [without, receiverOwn, futureWithout, futureOwn]) AllocationMeter.measure(op, 20000)];
 		__report("an RPC call through a receiver, without a deadline", readings[0]);
-		__report("an RPC call through a receiver, under withTimeout", readings[1]);
+		__report("an RPC call through a receiver, under within", readings[1]);
 		__report("an RPC call with a future, without a deadline", readings[2]);
 		__report("an RPC call with a future, under timeout()", readings[3]);
 		Assert.isTrue(readings[1].perOperation - readings[0].perOperation <= 16,
-			"a receiver call under withTimeout allocated " + readings[1] + ", where one without allocated " + readings[0]);
+			"a receiver call under within allocated " + readings[1] + ", where one without allocated " + readings[0]);
 		Assert.isTrue(readings[3].perOperation - readings[2].perOperation <= 16,
 			"a call given timeout() allocated " + readings[3] + ", where one without allocated " + readings[2]);
 	}

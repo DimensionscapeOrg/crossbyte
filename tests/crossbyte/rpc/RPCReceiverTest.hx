@@ -229,7 +229,7 @@ class RPCReceiverTest extends utest.Test {
 
 	public function testACallPastItsDeadlineTimesOutAndALateAnswerIsDropped():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var heard = new Heard();
 		var call = fixture.commands.slowThen("a", heard);
 
@@ -249,7 +249,7 @@ class RPCReceiverTest extends utest.Test {
 	public function testDeadlinesFallDueInOrderAmongFutureCalls():Void {
 		// Receiver calls and futures share the session's one queue of deadlines.
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var heard = new Heard();
 		var first = fixture.commands.slowThen("a", heard);
 		var future = fixture.commands.slow("b");
@@ -268,7 +268,7 @@ class RPCReceiverTest extends utest.Test {
 
 	public function testACancelledCallIsToldSoAndItsAnswerDropped():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var heard = new Heard();
 		var call = fixture.commands.slowThen("a", heard);
 

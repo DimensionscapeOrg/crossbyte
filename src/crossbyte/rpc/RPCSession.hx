@@ -55,12 +55,10 @@ import haxe.atomic.AtomicInt;
 @:access(crossbyte.rpc.RPCArgs)
 @:access(crossbyte.rpc.RPCCall)
 class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
-	/** Default interval between heartbeat pings in milliseconds. */
-	public static inline final DEFAULT_HEARTBEAT_INTERVAL:Int = 45000;
-	/** Default timeout window before a peer is considered dead, in milliseconds. */
-	public static inline final DEFAULT_HEARTBEAT_TIMEOUT:Int = 90000;
-	/** Default jitter bucket used to spread heartbeat start phases, in milliseconds. */
-	public static inline final DEFAULT_HEARTBEAT_JITTER:Int = 5000;
+	/** `pingInterval` unless changed: 45 seconds. */
+	public static inline final DEFAULT_PING_INTERVAL:Float = 45.0;
+	/** `idleTimeout` unless changed: 90 seconds. */
+	public static inline final DEFAULT_IDLE_TIMEOUT:Float = 90.0;
 	/** Default for `maxCallsWaiting`. */
 	public static inline final DEFAULT_MAX_CALLS_WAITING:Int = 256;
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
@@ -81,16 +79,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** Optional client-side command surface for outbound RPC calls and responses. */
 	public var commands(get, set):C;
 	/**
-		Heartbeat interval in milliseconds. Zero or less is no heartbeat: no
-		pings, and no `heartbeatTimeout`. Read as the heartbeat starts.
+		How often, in seconds, the heartbeat pings a peer when nothing else
+		has been sent: `DEFAULT_PING_INTERVAL`, 45, unless changed. Zero or
+		less is no heartbeat: no pings, and no `idleTimeout`. Read as the
+		heartbeat starts.
 	**/
-	public var heartbeatInterval(get, set):Int;
+	public var pingInterval(get, set):Float;
 	/**
-		Heartbeat timeout in milliseconds: the connection is closed once
-		nothing has arrived for this long. Zero or less never times the peer
-		out; the pings go on.
+		How long, in seconds, the connection may go with nothing arriving
+		before it is closed: `DEFAULT_IDLE_TIMEOUT`, 90, unless changed. Zero
+		or less never times the peer out; the pings go on.
 	**/
-	public var heartbeatTimeout(get, set):Int;
+	public var idleTimeout(get, set):Float;
 	/** Arbitrary user data attached to the session. */
 	public var data:D;
 
@@ -100,8 +100,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	// TimerHandle.INVALID when no heartbeat is scheduled. Not 0: that is a real
 	// handle, the first timer a scheduler hands out.
 	@:noCompletion private var __heartbeatTimerHandle:Int = TimerHandle.INVALID;
-	@:noCompletion private var __heartbeatInterval:Int = DEFAULT_HEARTBEAT_INTERVAL;
-	@:noCompletion private var __heartbeatTimeout:Int = DEFAULT_HEARTBEAT_TIMEOUT;
+	@:noCompletion private var __pingInterval:Float = DEFAULT_PING_INTERVAL;
+	@:noCompletion private var __idleTimeout:Float = DEFAULT_IDLE_TIMEOUT;
 	@:noCompletion private var __heartbeatPhase:Int;
 	@:noCompletion private var __active:Bool = false;
 	@:noCompletion private var __hasHeartbeat:Bool = false;
@@ -143,23 +143,38 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var callsWaiting(get, never):Int;
 
 	/**
-		How long, in milliseconds, each request this session makes (through
-		its commands or with `request`) may wait for its answer before it
-		fails with an `RPCTimeoutError`. `0`, as it starts, is no deadline: a
-		call waits for as long as the connection lasts. A call can have a
-		deadline of its own instead; see `RPCResponse.timeout`.
+		How long, in seconds, each request this session makes (through its
+		commands or with `request`) may wait for its answer before it fails
+		with an `RPCTimeoutError`. `0`, as it starts, is no deadline: a call
+		waits for as long as the connection lasts. A call can have a deadline
+		of its own instead; see `RPCResponse.within`. The wire carries whole
+		milliseconds, so a deadline is rounded up to one.
 
 		Read as each call is made. A call with no deadline arms nothing. A
 		call's deadline (this, or one of its own from the commands'
-		`withTimeout` or the response's `timeout`) waits in a heap, with one
+		`within` or the response's `timeout`) waits in a heap, with one
 		timer for all of the session's calls, whatever their deadlines; a
 		call answered leaves it at once, and nothing is allocated for it.
 	**/
-	public var callTimeout:Int = 0;
+	public var requestTimeout(get, set):Float;
+
+	@:noCompletion private var __requestTimeout:Float = 0.0;
+	// In milliseconds, as the wire and the deadline heap take it, set with
+	// the property so a call reads it as it is.
+	@:noCompletion private var __requestTimeoutMs:Int = 0;
+
+	@:noCompletion private inline function get_requestTimeout():Float {
+		return __requestTimeout;
+	}
+
+	@:noCompletion private function set_requestTimeout(value:Float):Float {
+		__requestTimeoutMs = crossbyte._internal.Millis.of(value);
+		return __requestTimeout = value;
+	}
 
 	/**
-		How long, in milliseconds, a call this session's handler answers with
-		a `Future` may wait for that future. Past it the caller is answered
+		How long, in seconds, a call this session's handler answers with a
+		`Future` may wait for that future. Past it the caller is answered
 		`RPCError.TIMEOUT_MESSAGE`, `onHandlerError` is told with an
 		`RPCTimeoutError`, `afterCall` sees the same, and the call stops
 		counting against `maxCallsWaiting`; the future completing later
@@ -169,9 +184,21 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 		Both lanes, and only calls answered later: a method answering at once
 		has answered before any deadline could pass. Their deadlines wait in a
-		queue, as `callTimeout`'s do, with one timer for all of them.
+		queue, as `requestTimeout`'s do, with one timer for all of them.
 	**/
-	public var handlerTimeout:Int = 0;
+	public var answerTimeout(get, set):Float;
+
+	@:noCompletion private var __answerTimeout:Float = 0.0;
+	@:noCompletion private var __answerTimeoutMs:Int = 0;
+
+	@:noCompletion private inline function get_answerTimeout():Float {
+		return __answerTimeout;
+	}
+
+	@:noCompletion private function set_answerTimeout(value:Float):Float {
+		__answerTimeoutMs = crossbyte._internal.Millis.of(value);
+		return __answerTimeout = value;
+	}
 
 	/**
 		The most bytes a frame may hold, after its 4-byte length: what this
@@ -306,20 +333,20 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private inline function set_heartbeatInterval(value:Int):Int {
-		return __heartbeatInterval = value;
+	@:noCompletion private inline function set_pingInterval(value:Float):Float {
+		return __pingInterval = value;
 	}
 
-	@:noCompletion private inline function get_heartbeatInterval():Int {
-		return __heartbeatInterval;
+	@:noCompletion private inline function get_pingInterval():Float {
+		return __pingInterval;
 	}
 
-	@:noCompletion private inline function set_heartbeatTimeout(value:Int):Int {
-		return __heartbeatTimeout = value;
+	@:noCompletion private inline function set_idleTimeout(value:Float):Float {
+		return __idleTimeout = value;
 	}
 
-	@:noCompletion private inline function get_heartbeatTimeout():Int {
-		return __heartbeatTimeout;
+	@:noCompletion private inline function get_idleTimeout():Float {
+		return __idleTimeout;
 	}
 
 	@:noCompletion private inline function set_commands(commands:C):C {
@@ -797,7 +824,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 */
 	public dynamic function onHandlerError(op:Int, method:Null<String>, error:haxe.Exception):Void {
 		final who:String = 'RPC handler ' + (method != null ? method : 'for op $op');
-		// A handler that ran out of time (its `handlerTimeout`, or a call it
+		// A handler that ran out of time (its `answerTimeout`, or a call it
 		// was waiting on) threw nothing; saying it threw sends a reader looking
 		// for an exception.
 		if (Std.isOfType(error, RPCTimeoutError)) {
@@ -916,7 +943,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** A frame begun for a writer: the session's, or a fresh one while that is taken. Its count goes in the byte kept after the head. **/
 	@:noCompletion private function __startWriting(op:Int, requestId:Int):RPCFrame {
 		final framed:RPCFrame = requestId != 0 ? __takeRequestFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | RPCWire.FLAG_REQUEST, op, requestId,
-			callTimeout) : __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME, op, 0);
+			__requestTimeoutMs) : __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME, op, 0);
 		framed.building = true;
 		framed.owner = cast this;
 		framed.op = op;
@@ -932,8 +959,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final response = new RPCResponse<T>(requestId, op);
 		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
-		if (callTimeout > 0) {
-			__queueDeadline(cast response, callTimeout);
+		if (__requestTimeoutMs > 0) {
+			__queueDeadline(cast response, __requestTimeoutMs);
 			// As it was framed: with its deadline, to a peer that reads one.
 			response.__deadlineSent = __readsCallControl();
 		}
@@ -981,8 +1008,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final response = new RPCResponse<T>(requestId, op);
 		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
-		if (callTimeout > 0) {
-			__queueDeadline(cast response, callTimeout);
+		if (__requestTimeoutMs > 0) {
+			__queueDeadline(cast response, __requestTimeoutMs);
 			// As it was framed: with its deadline, to a peer that reads one.
 			response.__deadlineSent = __readsCallControl();
 		}
@@ -990,10 +1017,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return response;
 	}
 
-	// The deadlines of the calls this session makes under `callTimeout`, made
+	// The deadlines of the calls this session makes under `requestTimeout`, made
 	// with the first; see RPCDeadlines.
 	@:noCompletion private var __deadlines:Null<RPCDeadlines> = null;
-	// And of those its handler answers later under `handlerTimeout`.
+	// And of those its handler answers later under `answerTimeout`.
 	@:noCompletion private var __handlerDeadlines:Null<RPCCallDeadlines> = null;
 
 	/** The heap of the deadlines of the calls its handler answers later, made with the first. **/
@@ -2252,11 +2279,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		__callsWaiting++;
 		// A call with nothing to end it early (no deadline, its caller's or
-		// `handlerTimeout`, and a handler that never read `currentCall`, so
+		// `answerTimeout`, and a handler that never read `currentCall`, so
 		// nothing to tell of a cancel) is settled by its future alone, and
 		// nothing more is made for it.
 		var call:Null<RPCCall> = __currentCall;
-		if (call == null && handlerTimeout <= 0 && __inTimeout <= 0) {
+		if (call == null && __answerTimeoutMs <= 0 && __inTimeout <= 0) {
 			__settleWhenComplete(future, () -> {
 				__callsWaiting--;
 				settle(future, false);
@@ -2270,7 +2297,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			call = __currentCall = new RPCCall(cast this, __inOp, __inRequestId == NOT_DISPATCHING ? 0 : __inRequestId, __inTimeout, __inRuntime);
 		}
 		final waiting:RPCCall = call;
-		waiting.__wait(cast future, cast settle, handlerTimeout);
+		waiting.__wait(cast future, cast settle, __answerTimeoutMs);
 		__settleWhenComplete(future, waiting.__finish);
 	}
 
@@ -2319,7 +2346,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return @:privateAccess haxe.Exception.caught(future.cause != null ? future.cause : future.error);
 	}
 
-	/** The failure a call answered later settles with when `handlerTimeout` passes first. **/
+	/** The failure a call answered later settles with when `answerTimeout` passes first. **/
 	@:noCompletion private static function __handlerTimedOut<T>():Future<T> {
 		final timedOut = new Future<T>();
 		// Read at once, by whoever settles with it: not a failure nobody heard.
@@ -2373,7 +2400,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):RPCFrame {
 		final framed:RPCFrame = requestId != 0 ? __takeRequestFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | RPCWire.FLAG_REQUEST, op, requestId,
-			callTimeout) : __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME, op, 0);
+			__requestTimeoutMs) : __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME, op, 0);
 		try {
 			RPCRuntimeCodec.writeArgs(framed, args);
 		} catch (error:Dynamic) {
@@ -2562,9 +2589,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-	 * Starts the session's heartbeat: a `ping` every `heartbeatInterval`
-	 * milliseconds when nothing else has been sent, and the connection
-	 * closed when nothing has arrived for `heartbeatTimeout`. Every session
+	 * Starts the session's heartbeat: a `ping` every `pingInterval`
+	 * seconds when nothing else has been sent, and the connection
+	 * closed when nothing has arrived for `idleTimeout`. Every session
 	 * answers a ping, so an idle peer is heard from all the same.
 	 *
 	 * A session with or without commands has one. Started before its
@@ -2687,13 +2714,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __resumeHeartbeat():Void {
 		__hasHeartbeat = true;
-		if (__heartbeatInterval <= 0) {
+		if (!(__pingInterval > 0)) {
 			// None: no pings and no timeout. Handed to the timer, it fired
 			// once and stopped for good.
 			return;
 		}
-		__intervalSec = __heartbeatInterval / 1000;
-		__timeoutSec = __heartbeatTimeout / 1000;
+		__intervalSec = __pingInterval;
+		__timeoutSec = __idleTimeout > 0 ? __idleTimeout : 0.0;
 		__heardSince = Timer.getTime();
 		__heartbeatTimerHandle = Timer.setInterval(__heartbeatPhase / 1000, __intervalSec, __onHeartbeat);
 	}
@@ -2701,7 +2728,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private inline function __calculateHeartbeatPhase():Int {
 		@:privateAccess
 		var step:Int = Std.int(CrossByte.current().__tickInterval);
-		var phase:Int = Bucket.phaseFromHash(__getHeartbeatKeyHash(), __heartbeatInterval, step);
+		var phase:Int = Bucket.phaseFromHash(__getHeartbeatKeyHash(), crossbyte._internal.Millis.of(__pingInterval), step);
 		return phase;
 	}
 
@@ -2786,7 +2813,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (Logger.isEnabled(LogLevel.DEBUG)) {
 			Logger.debug('RPC session $sessionId heard nothing for $silence s; closing its connection');
 		}
-		__failAllPending("RPC connection timed out: nothing arrived for " + __heartbeatTimeout + " ms", Reason.Timeout);
+		__failAllPending("RPC connection timed out: nothing arrived for " + __idleTimeout + " s", Reason.Timeout);
 		// Closed as the timeout it is, so the connection's `onClose`, a host's
 		// `onDisconnect` and this session's `onDown` hear `Timeout`, not the
 		// `Closed` an application's own close() says.
@@ -2813,7 +2840,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 /**
 	The deadlines of the calls a session's handler answers later (the
-	caller's, or the session's `handlerTimeout`, whichever is sooner), in a
+	caller's, or the session's `answerTimeout`, whichever is sooner), in a
 	binary heap ordered by when each falls due and, for the same moment, by
 	when it was added, with one timer for them all, set for the first. A
 	call settled leaves it at once. Nothing is allocated once it has grown to

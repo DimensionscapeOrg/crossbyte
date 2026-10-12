@@ -6,7 +6,7 @@ import haxe.ds.Vector;
 
 /**
 	The deadlines of a session's calls, whatever each one is (the session's
-	`callTimeout`, one given with `withTimeout` or `RPCResponse.timeout`), in
+	`requestTimeout`, one given with `within` or `RPCResponse.within`), in
 	a binary heap ordered by when each falls due, and one timer for all of
 	them, set for the first: rather than a timer for each call, a closure
 	and a timer node a call, and a slot of the 524,288 timers one runtime can

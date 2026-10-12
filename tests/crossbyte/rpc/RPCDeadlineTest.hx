@@ -34,7 +34,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testACallPastItsDeadlineFailsAndTheConnectionStaysUp():Void {
 		var fixture = new Fixture();
-		var waiting = fixture.commands.slow("a").timeout(1000);
+		var waiting = fixture.commands.slow("a").within(1.0);
 
 		pump(0.75);
 		Assert.isFalse(waiting.completed, "failed before its deadline");
@@ -55,7 +55,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testASessionsDeadlineAppliesToEveryCallOnBothLanes():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		// A runtime handler that never answers.
 		fixture.server.register(800, args -> new Completer<Dynamic>().future);
 		var compiled = fixture.commands.slow("b");
@@ -69,9 +69,9 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testACallsOwnDeadlineReplacesTheSessions():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 500;
-		var longer = fixture.commands.slow("c").timeout(3000);
-		var none = fixture.commands.slow("d").timeout(0);
+		fixture.client.requestTimeout = 0.5;
+		var longer = fixture.commands.slow("c").within(3.0);
+		var none = fixture.commands.slow("d").within(0);
 
 		pump(2);
 		Assert.isFalse(longer.completed, "held to the session's deadline, not its own");
@@ -83,7 +83,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testACallAnsweredInTimeKeepsItsAnswer():Void {
 		var fixture = new Fixture();
-		var answered = fixture.commands.slow("e").timeout(1000);
+		var answered = fixture.commands.slow("e").within(1.0);
 		fixture.handler.pending.get("e").complete("in time");
 
 		pump(2);
@@ -103,7 +103,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testAHandlerThatDoesNotAnswerInTimeIsAnsweredForAndFreesItsPlace():Void {
 		var fixture = new Fixture();
-		fixture.server.handlerTimeout = 1000;
+		fixture.server.answerTimeout = 1.0;
 		var waiting = fixture.commands.slow("g");
 		Assert.equals(1, fixture.server.callsWaiting);
 
@@ -126,7 +126,7 @@ class RPCDeadlineTest extends utest.Test {
 		var commands = new DeadlineCommands();
 		var client = new RPCSession<DeadlineCommands>(link.client, commands);
 		var server = new RPCSession(link.server, null, new DeadlineHandler());
-		server.handlerTimeout = 1000;
+		server.answerTimeout = 1.0;
 		var logged:Array<String> = [];
 		crossbyte.utils.Logger.sink = line -> logged.push(line);
 		try {
@@ -148,7 +148,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testARuntimeHandlerThatDoesNotAnswerInTimeIsAnsweredFor():Void {
 		var fixture = new Fixture();
-		fixture.server.handlerTimeout = 1000;
+		fixture.server.answerTimeout = 1.0;
 		var never = new Completer<Dynamic>();
 		fixture.server.register(801, args -> never.future);
 		var waiting:RPCResponse<Dynamic> = fixture.client.request(801, []);
@@ -162,7 +162,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testAHandlerAnsweringInTimeIsUntouchedByItsDeadline():Void {
 		var fixture = new Fixture();
-		fixture.server.handlerTimeout = 1000;
+		fixture.server.answerTimeout = 1.0;
 		var waiting = fixture.commands.slow("h");
 		fixture.handler.pending.get("h").complete("done");
 		pump(2);
@@ -174,7 +174,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testCallsUnderTheSessionsDeadlineFailInTheOrderMadeEachAtItsOwnTime():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		fixture.server.register(802, args -> new Completer<Dynamic>().future);
 		var failed:Array<String> = [];
 		fixture.commands.slow("i").then(_ -> {}, _ -> failed.push("first"));
@@ -190,7 +190,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testACallAnsweredLeavesTheQueueAndTheOthersKeepTheirDeadlines():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var first = fixture.commands.slow("k");
 		var second = fixture.commands.slow("l");
 		var third = fixture.commands.slow("m");
@@ -209,9 +209,9 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testLoweringTheSessionsDeadlineHoldsTheNextCallToTheLowerOne():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 2000;
+		fixture.client.requestTimeout = 2.0;
 		var longer = fixture.commands.slow("n");
-		fixture.client.callTimeout = 500;
+		fixture.client.requestTimeout = 0.5;
 		var shorter = fixture.commands.slow("o");
 
 		pump(0.75);
@@ -223,7 +223,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testACallMadeAsAnotherTimesOutGetsADeadlineOfItsOwn():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var again:Null<RPCResponse<String>> = null;
 		fixture.commands.slow("p").then(_ -> {}, _ -> again = fixture.commands.slow("q"));
 
@@ -236,7 +236,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testStoppingFailsTheCallsOnceAndLaterCallsStillHaveDeadlines():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		var before = [fixture.commands.slow("r"), fixture.commands.slow("s")];
 		fixture.client.stop();
 		for (call in before) {
@@ -254,7 +254,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testManyCallsBehindASlowOneKeepTheirDeadlinesAsTheQueueGrows():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 1000;
+		fixture.client.requestTimeout = 1.0;
 		fixture.server.maxCallsWaiting = 1000;
 		var slow = fixture.commands.slow("first");
 		// Each call left waiting followed by one answered as it is made, which
@@ -298,9 +298,9 @@ class RPCDeadlineTest extends utest.Test {
 	public function testWithTimeoutGivesTheNextCallADeadlineOfItsOwn():Void {
 		var fixture = new Fixture();
 		var receiver = new DeadlineReceiver();
-		var first:Int = fixture.commands.withTimeout(500).slowThen("aa", receiver);
+		var first:Int = fixture.commands.within(0.5).slowThen("aa", receiver);
 		var second:Int = fixture.commands.slowThen("ab", receiver);
-		var third:RPCResponse<String> = fixture.commands.withTimeout(1000).slow("ac");
+		var third:RPCResponse<String> = fixture.commands.within(1.0).slow("ac");
 
 		pump(0.75);
 		Assert.same([first], receiver.timedOut, "a receiver call outlived the deadline withTimeout gave it, or another took it");
@@ -314,8 +314,8 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testWithTimeoutZeroLeavesTheNextCallNoDeadline():Void {
 		var fixture = new Fixture();
-		fixture.client.callTimeout = 500;
-		var none = fixture.commands.withTimeout(0).slow("ad");
+		fixture.client.requestTimeout = 0.5;
+		var none = fixture.commands.within(0).slow("ad");
 		var held = fixture.commands.slow("ae");
 
 		pump(0.75);
@@ -325,7 +325,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testAOneWayCallTakesTheDeadlineItWasGiven():Void {
 		var fixture = new Fixture();
-		fixture.commands.withTimeout(500).note("one-way");
+		fixture.commands.within(0.5).note("one-way");
 		var after = fixture.commands.slow("af");
 
 		pump(0.75);
@@ -335,9 +335,9 @@ class RPCDeadlineTest extends utest.Test {
 	public function testDeadlinesOfEveryLengthFallDueEachAtItsOwnTime():Void {
 		var fixture = new Fixture();
 		var failed:Array<String> = [];
-		fixture.commands.withTimeout(1500).slow("ag").then(_ -> {}, _ -> failed.push("1500"));
-		fixture.commands.withTimeout(500).slow("ah").then(_ -> {}, _ -> failed.push("500"));
-		fixture.commands.slow("ai").timeout(1000).then(_ -> {}, _ -> failed.push("1000"));
+		fixture.commands.within(1.5).slow("ag").then(_ -> {}, _ -> failed.push("1500"));
+		fixture.commands.within(0.5).slow("ah").then(_ -> {}, _ -> failed.push("500"));
+		fixture.commands.slow("ai").within(1.0).then(_ -> {}, _ -> failed.push("1000"));
 		Assert.equals(3, fixture.client.__deadlines.length, "a deadline did not wait in the session's heap");
 
 		pump(0.75);
@@ -353,7 +353,7 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testHandlerDeadlinesFallDueInOrderAndOneAnsweredLeaves():Void {
 		var fixture = new Fixture();
-		fixture.server.handlerTimeout = 1000;
+		fixture.server.answerTimeout = 1.0;
 		var first = fixture.commands.slow("u");
 		pump(0.5);
 		var second = fixture.commands.slow("v");
@@ -372,9 +372,9 @@ class RPCDeadlineTest extends utest.Test {
 
 	public function testLoweringTheHandlerTimeoutHoldsTheNextCallToTheLowerOne():Void {
 		var fixture = new Fixture();
-		fixture.server.handlerTimeout = 2000;
+		fixture.server.answerTimeout = 2.0;
 		var longer = fixture.commands.slow("y");
-		fixture.server.handlerTimeout = 500;
+		fixture.server.answerTimeout = 0.5;
 		var shorter = fixture.commands.slow("z");
 
 		pump(0.75);

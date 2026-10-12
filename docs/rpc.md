@@ -313,7 +313,7 @@ answer, so it can tell its calls apart.
 
 Every call is told exactly once, through its answer or through `onFailure`,
 which says why with an `RPCFailure`: `TimedOut` past its deadline (the
-session's `callTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`,
+session's `requestTimeout`, or its own; see Deadlines), `Cancelled`, `Stopped`,
 `Disconnected(reason)`, `Unsent(message)` for a call that could not go, or
 `Unreadable(message)` for an answer this side could not read. When the other
 side refused the call, the failure says what refused it:
@@ -325,7 +325,7 @@ side refused the call, the failure says what refused it:
 | `UnreadableArguments` | could not read the call's arguments | `RPCError.UNREADABLE_MESSAGE` |
 | `Busy` | had `maxCallsWaiting` calls waiting | `RPCError.BUSY_MESSAGE` |
 | `NoHandler` | has nothing to answer calls | `RPCError.NO_HANDLER_MESSAGE` |
-| `HandlerTimedOut` | its handler ran past `handlerTimeout` | `RPCError.TIMEOUT_MESSAGE` |
+| `HandlerTimedOut` | its handler ran past `answerTimeout` | `RPCError.TIMEOUT_MESSAGE` |
 | `HandlerFailed` | its handler threw something else | `RPCError.INTERNAL_MESSAGE` |
 | `TooLarge` | could not take the call, or its answer, for its size | which limit (see "When a handler fails") |
 
@@ -870,7 +870,7 @@ Each call waiting holds what it waits on, so a session limits how many may
 wait at once: `maxCallsWaiting`, 256 unless set. A call past it is refused
 before its method runs, with `RPCError.BUSY_MESSAGE`, as `beforeCall` refuses
 one. If the connection ends while a call waits, its answer is dropped. How
-long one may wait is `handlerTimeout`; see Deadlines, below.
+long one may wait is `answerTimeout`; see Deadlines, below.
 
 The runtime lane does the same for a registered handler that returns a
 `Future`. Which of those answer later is not known until they run, so while
@@ -1106,14 +1106,14 @@ and a compiled method's op never collide.
 ## Sessions, heartbeats and pending calls
 
 `start()` begins the session's heartbeat, with commands or without: a `ping`
-every `heartbeatInterval` milliseconds (45 seconds unless set) when nothing
+every `pingInterval` seconds (45 unless set) when nothing
 else has been sent, and the connection closed if nothing arrives for
-`heartbeatTimeout` (90 seconds). Every session answers a ping, so a peer with
+`idleTimeout` (90 seconds). Every session answers a ping, so a peer with
 nothing to say is still heard from, and a server that only answers calls can
 heartbeat its clients to find the ones that have vanished. A ping is not a
 call: `beforeCall` and `afterCall` never see one. `stop()` ends the heartbeat
-without closing the connection. A `heartbeatInterval` of zero or less means
-no heartbeat at all, and a `heartbeatTimeout` of zero or less means pings
+without closing the connection. A `pingInterval` of zero or less means
+no heartbeat at all, and an `idleTimeout` of zero or less means pings
 that never time the peer out.
 
 Started before its connection is up, the heartbeat begins once the connection
@@ -1123,8 +1123,8 @@ hears once.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>, connection:crossbyte.net.NetConnection.
-session.heartbeatInterval = 10000;
-session.heartbeatTimeout = 30000;
+session.pingInterval = 10;
+session.idleTimeout = 30;
 session.start();
 
 // The connection's callbacks stay the application's: set them before or
@@ -1253,8 +1253,8 @@ after `dial` returns hear it.
 ## Deadlines
 
 A peer that is still there can still leave a call unanswered. A call can be
-given a deadline (the session's `callTimeout` for every call it makes, or
-one of its own with `timeout`, in milliseconds), and past it the call fails
+given a deadline (the session's `requestTimeout` for every call it makes, or
+one of its own with `within`, in seconds), and past it the call fails
 with an `RPCTimeoutError` as its `cause`. The connection is left as it was,
 and an answer arriving later is dropped.
 
@@ -1262,9 +1262,9 @@ and an answer arriving later is dropped.
 // Given session:RPCSession<ChatCommands>, commands:ChatCommands.
 import crossbyte.rpc.RPCTimeoutError;
 
-session.callTimeout = 5000;
+session.requestTimeout = 5;
 
-final joining = commands.join("lobby").timeout(2000);
+final joining = commands.join("lobby").within(2);
 joining.catchError(message -> {
 	if (Std.isOfType(joining.cause, RPCTimeoutError)) {
 		trace('no answer in time: $message');
@@ -1272,15 +1272,15 @@ joining.catchError(message -> {
 });
 ```
 
-`timeout(0)` leaves a call no deadline. A call made with a receiver has no
+`within(0)` leaves a call no deadline. A call made with a receiver has no
 `RPCResponse` to give one to, so a deadline of its own is given before it,
-through the commands: `withTimeout(ms)` gives the next call made through
-them its deadline, in place of `callTimeout` (`0` for none), and returns the
+through the commands: `within(seconds)` gives the next call made through
+them its deadline, in place of `requestTimeout` (`0` for none), and returns the
 commands, so the call follows. It works for a future's call as well.
 
 ```haxe
 // Given commands:ChatCommands.
-commands.withTimeout(2000).joinThen("lobby", new Lobby());
+commands.within(2).joinThen("lobby", new Lobby());
 ```
 
 A call without a deadline arms nothing and costs nothing for it. Every
@@ -1289,17 +1289,17 @@ one timer for all of them, and a call answered leaves it at once: a deadline
 costs a call no allocation, and no timer of its own, of which a runtime holds
 at most 524,288 at once.
 
-A handler can be held to one as well. `handlerTimeout` is how long a call its
+A handler can be held to one as well. `answerTimeout` is how long a call its
 handler answers with a `Future` may wait for that future: past it the caller is
 answered `RPCError.TIMEOUT_MESSAGE`, `onHandlerError` and `afterCall` are told
 with an `RPCTimeoutError`, and the call gives up its place among the
 `maxCallsWaiting`. Without it, a future that never completes holds that place
 for as long as the connection lasts. These deadlines wait in a queue of their
-own, as `callTimeout`'s do.
+own, as `requestTimeout`'s do.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>.
-session.handlerTimeout = 10000;
+session.answerTimeout = 10;
 ```
 
 An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
@@ -1308,11 +1308,11 @@ its own caller that it timed out, and reports it on its side too.
 
 ### The handler's side of a deadline
 
-A call's deadline, given before it goes (`callTimeout`, or `withTimeout`),
+A call's deadline, given before it goes (`requestTimeout`, or `within`),
 goes with it, and a call its caller stops waiting for (cancelled with
 `cancelCall`, or past a deadline given with `timeout` after it went) is
 cancelled on the other side as well, as gRPC's are. A handler sees both
-through `currentCall`, an `RPCCall`: its `deadline` and `timeLeft`, and,
+through `currentCall`, an `RPCCall`: its `deadline` and `timeRemaining`, and,
 for a call it answers later, `cancelled`, `reason` and `onCancel`:
 
 ```haxe
@@ -1341,7 +1341,7 @@ class ReportHandler extends RPCHandler {
 
 A call answered later ends early when its caller cancels it or its
 caller's deadline passes (nothing is answered, since nobody waits, and
-nothing is reported), when `handlerTimeout` passes first (its caller is
+nothing is reported), when `answerTimeout` passes first (its caller is
 answered `RPCError.TIMEOUT_MESSAGE`, as above), or when its connection ends.
 Then `cancelled` is `true`, `onCancel` is called once, the call stops counting
 against `maxCallsWaiting`, `afterCall` is told (with
@@ -1352,13 +1352,13 @@ answer goes nowhere. A runtime handler reads `session.currentCall`.
 `currentCall` is made the first time it is read in a call: a handler that
 never reads it costs nothing for it, and a deadline costs the call a few
 bytes on the wire and nothing else. A call answered later whose handler never
-read `currentCall`, with no deadline of its caller's and no `handlerTimeout`,
+read `currentCall`, with no deadline of its caller's and no `answerTimeout`,
 has nothing to end it early, and waits for its future alone, as cheaply as
 before: a cancel for it finds nothing to stop, and its answer, sent, is
-dropped by its caller. A deadline given with `timeout` after a
+dropped by its caller. A deadline given with `within` after a
 call has gone stays on the caller's side: its handler does not see it, and
 is told only once it passes. One that went with the call binds the handler
-as it was sent, so a longer one given with `timeout` afterwards waits for an
+as it was sent, so a longer one given with `within` afterwards waits for an
 answer that, past the first, does not come.
 
 ## On the wire

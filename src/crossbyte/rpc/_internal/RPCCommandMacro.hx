@@ -154,7 +154,7 @@ class RPCCommandMacro {
 			injectPing(newFields, Context.currentPos());
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
-		newFields.push(withTimeoutField());
+		newFields.push(withinField());
 		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
 		final all = fields.concat(newFields);
 		RPCContractMacroTools.requireJvmSize(all, "RPC commands class");
@@ -162,11 +162,11 @@ class RPCCommandMacro {
 	}
 
 	/**
-		`withTimeout`, returning this class, so the call made through what it
-		returns is this class's: an override of `RPCCommands.withTimeout`, in
+		`within`, returning this class, so the call made through what it
+		returns is this class's: an override of `RPCCommands.within`, in
 		every commands class, each returning its own type.
 	**/
-	static function withTimeoutField():Field {
+	static function withinField():Field {
 		final local = Context.getLocalClass().get();
 		final self:ComplexType = TPath({
 			pack: [],
@@ -174,14 +174,14 @@ class RPCCommandMacro {
 			params: [for (param in local.params) TPType(TPath({pack: [], name: param.name}))]
 		});
 		return {
-			name: "withTimeout",
-			doc: "Gives the next call made through these commands a deadline of its own; see `RPCCommands.withTimeout`.",
+			name: "within",
+			doc: "Gives the next call made through these commands a deadline of its own; see `RPCCommands.within`.",
 			access: [APublic, AOverride],
 			kind: FFun({
-				args: [{name: "milliseconds", type: macro :Int}],
+				args: [{name: "seconds", type: macro :Float}],
 				ret: self,
 				expr: macro {
-					this.__nextTimeout = milliseconds < 0 ? 0 : milliseconds;
+					this.__nextTimeout = crossbyte._internal.Millis.of(seconds);
 					return this;
 				}
 			}),

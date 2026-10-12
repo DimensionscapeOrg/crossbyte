@@ -44,8 +44,8 @@ class RPCHeartbeatTest extends utest.Test {
 		var commands = new QuietCommands();
 		var client = new RPCSession<QuietCommands>(link.client, commands);
 		var closes = closesOf(client);
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 3000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 3.0;
 		client.start();
 
 		pump(0.5);
@@ -65,8 +65,8 @@ class RPCHeartbeatTest extends utest.Test {
 		var link = LinkedConnection.pair();
 		var server = new RPCSession(link.server, null, new QuietHandler());
 		var closes = closesOf(server);
-		server.heartbeatInterval = 1000;
-		server.heartbeatTimeout = 3000;
+		server.pingInterval = 1.0;
+		server.idleTimeout = 3.0;
 		server.start();
 
 		pump(5);
@@ -79,12 +79,12 @@ class RPCHeartbeatTest extends utest.Test {
 		// No pings and no timeout, however long the peer is quiet. Handed to
 		// the timer as it was, the interval fired once, sent one ping and left
 		// the session with no heartbeat for good.
-		for (interval in [0, -1000]) {
+		for (interval in [0, -1.0]) {
 			var link = LinkedConnection.pair();
 			var server = new RPCSession(link.server, null, new QuietHandler());
 			var closes = closesOf(server);
-			server.heartbeatInterval = interval;
-			server.heartbeatTimeout = 3000;
+			server.pingInterval = interval;
+			server.idleTimeout = 3.0;
 			server.start();
 			var sent:Int = link.server.sent;
 
@@ -99,12 +99,12 @@ class RPCHeartbeatTest extends utest.Test {
 	public function testAHeartbeatTimeoutOfZeroOrLessNeverTimesThePeerOut():Void {
 		// The pings go on, a peer that answers none is kept. Read as a
 		// timeout, zero closed the connection at the first beat.
-		for (timeout in [0, -1000]) {
+		for (timeout in [0, -1.0]) {
 			var link = LinkedConnection.pair();
 			var server = new RPCSession(link.server, null, new QuietHandler());
 			var closes = closesOf(server);
-			server.heartbeatInterval = 1000;
-			server.heartbeatTimeout = timeout;
+			server.pingInterval = 1.0;
+			server.idleTimeout = timeout;
 			server.start();
 			var sent:Int = link.server.sent;
 
@@ -123,8 +123,8 @@ class RPCHeartbeatTest extends utest.Test {
 		var commands = new QuietCommands();
 		var client = new RPCSession<QuietCommands>(link.client, commands);
 		var closes = closesOf(client);
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 3000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 3.0;
 		client.start();
 		var waiting = commands.join("lobby");
 
@@ -141,8 +141,8 @@ class RPCHeartbeatTest extends utest.Test {
 		link.client.isConnected = false;
 		var server = new RPCSession(link.server, null, new QuietHandler());
 		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 3000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 3.0;
 		Assert.isFalse(client.start(), "start() said a connection that was not up was");
 
 		pump(3);
@@ -158,8 +158,8 @@ class RPCHeartbeatTest extends utest.Test {
 		var link = LinkedConnection.pair();
 		var server = new RPCSession(link.server, null, new QuietHandler());
 		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 100000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 100.0;
 		client.start();
 		client.start();
 		pump(5);
@@ -177,8 +177,8 @@ class RPCHeartbeatTest extends utest.Test {
 		var server = new RPCSession(link.server, null, new QuietHandler());
 		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
 		var closes = closesOf(client);
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 3000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 3.0;
 		client.start();
 		client.start();
 		pump(0.5);
@@ -216,7 +216,7 @@ class RPCHeartbeatTest extends utest.Test {
 					session = cast new RPCSession(link.server);
 			}
 			if (kind == "started") {
-				session.heartbeatInterval = 100000;
+				session.pingInterval = 100.0;
 				session.start();
 			}
 			var answers = framesArrivingAt(link.client);
@@ -258,8 +258,8 @@ class RPCHeartbeatTest extends utest.Test {
 		// other beat, and a peer's pongs heard twice the interval apart.
 		var link = LinkedConnection.pair();
 		var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
-		client.heartbeatInterval = 1000;
-		client.heartbeatTimeout = 1000000;
+		client.pingInterval = 1.0;
+		client.idleTimeout = 1000.0;
 		client.start();
 		var runtime = CrossByte.current();
 		// A tenth of a second at a time, which no binary fraction is.
@@ -285,8 +285,8 @@ class RPCHeartbeatTest extends utest.Test {
 			var link = LinkedConnection.pair();
 			var server = new RPCSession(link.server, null, new QuietHandler());
 			var client = new RPCSession<QuietCommands>(link.client, new QuietCommands());
-			client.heartbeatInterval = 1000;
-			client.heartbeatTimeout = 3000;
+			client.pingInterval = 1.0;
+			client.idleTimeout = 3.0;
 			client.start();
 			pump(4);
 			client.stop();

@@ -116,8 +116,8 @@ class NetConnectionTcpTest extends utest.Test {
 			var connection = new NetConnection('tcp://127.0.0.1:${server.localPort}', null, null, reason -> closes.push(reason));
 			var session = new RPCSession(connection, new TcpEchoCommands());
 			session.onDown = reason -> downs.push(reason);
-			session.heartbeatInterval = 200;
-			session.heartbeatTimeout = 800;
+			session.pingInterval = 0.2;
+			session.idleTimeout = 0.8;
 			session.start();
 
 			NetPump.until(() -> closes.length > 0 && downs.length > 0, 10.0, function(_) {

@@ -32,7 +32,7 @@ class RPCError extends Error {
 
 	/**
 		What a caller is told when the handler of its call has not answered
-		within the session's `RPCSession.handlerTimeout`.
+		within the session's `RPCSession.answerTimeout`.
 	**/
 	public static inline final TIMEOUT_MESSAGE:String = "The call timed out";
 

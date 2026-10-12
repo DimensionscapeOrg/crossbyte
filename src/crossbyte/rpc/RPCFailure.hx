@@ -19,8 +19,8 @@ import crossbyte.net.Reason;
 enum RPCFailure {
 	/**
 		No answer came by the call's deadline: the session's
-		`RPCSession.callTimeout`, or one of its own from `RPCCommands.withTimeout`
-		or `RPCResponse.timeout`.
+		`RPCSession.requestTimeout`, or one of its own from `RPCCommands.within`
+		or `RPCResponse.within`.
 	**/
 	TimedOut;
 
@@ -75,7 +75,7 @@ enum RPCFailure {
 
 	/**
 		The other side's handler answered later and did not within its
-		session's `RPCSession.handlerTimeout`, or failed with an
+		session's `RPCSession.answerTimeout`, or failed with an
 		`RPCTimeoutError` (a call it was waiting on timed out). Its message is
 		`RPCError.TIMEOUT_MESSAGE`.
 	**/

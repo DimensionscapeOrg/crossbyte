@@ -62,8 +62,8 @@ class RPCReadyAgainTest extends utest.Test {
 
 	public function testTheHeartbeatResumesForTheNextPeer():Void {
 		var fixture = new Fixture();
-		fixture.server.heartbeatInterval = 1000;
-		fixture.server.heartbeatTimeout = 100000;
+		fixture.server.pingInterval = 1.0;
+		fixture.server.idleTimeout = 100.0;
 		fixture.server.start();
 		fixture.connect();
 		fixture.firstLeaves();

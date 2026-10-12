@@ -86,8 +86,8 @@ class RPCEdgesTest extends utest.Test {
 
 	public function testADeadlinePassingWithTheAnswerInFlightTimesOut():Void {
 		final edge = new Edge();
-		final response = edge.commands.withTimeout(250).slow("c");
-		edge.commands.withTimeout(250).slowThen("d", edge.told);
+		final response = edge.commands.within(0.25).slow("c");
+		edge.commands.within(0.25).slowThen("d", edge.told);
 		pump(0.5);
 		edge.handler.pending.get("c").complete("late");
 		edge.handler.pending.get("d").complete("late");

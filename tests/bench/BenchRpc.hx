@@ -88,7 +88,7 @@ class BenchRpc {
 		var timedLink = BenchLink.pair();
 		var timedCommands = new BenchCommands();
 		var timedClient = new RPCSession<BenchCommands>(timedLink.client, timedCommands);
-		timedClient.callTimeout = 5000;
+		timedClient.requestTimeout = 5.0;
 		var timedServer = new RPCSession(timedLink.server, null, new BenchHandler());
 		Bench.run("request and response, with a deadline", function():Void {
 			timedCommands.name(7);

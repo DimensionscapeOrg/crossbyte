@@ -84,7 +84,7 @@ class RPCRefusalTest extends utest.Test {
 
 	public function testAHandlerOutOfTimeIsHandlerTimedOut():Void {
 		final pair = new Pair();
-		pair.server.handlerTimeout = 200;
+		pair.server.answerTimeout = 0.2;
 		final response = pair.commands.slow("d");
 		pair.commands.slowThen("e", pair.told);
 		pump(0.5);

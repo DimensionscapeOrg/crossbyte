@@ -381,18 +381,18 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `registerArgs(op, handler)` reads them through `RPCArgs`.
 - Handlers can answer later by returning `Future<T>`;
   `RPCSession.maxCallsWaiting` (256) bounds the calls waiting.
-- Deadlines: `RPCResponse.timeout(ms)`, `RPCSession.callTimeout` and
-  `handlerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
-  `withTimeout(ms)` on a commands class gives the next call a deadline of
+- Deadlines: `RPCResponse.within(seconds)`, `RPCSession.requestTimeout` and
+  `answerTimeout`; a call past its deadline fails with `RPCTimeoutError`.
+  `within(seconds)` on a commands class gives the next call a deadline of
   its own, a call made with a receiver included
-  (`commands.withTimeout(2000).joinThen(room, receiver)`). Every deadline
+  (`commands.within(2).joinThen(room, receiver)`). Every deadline
   waits in one heap a session, under one timer, so a call's deadline
   allocates nothing, whatever its length.
 - Deadlines and cancellation reach the handler, as gRPC's do: a call's
   deadline goes with it, and a call its caller cancels (`cancelCall`) or
   times out is cancelled on the other side. A handler reads its call as
   `RPCHandler.currentCall` (`RPCSession.currentCall` for a runtime
-  handler), an `RPCCall` with `deadline`, `timeLeft`, `cancelled`, `reason`
+  handler), an `RPCCall` with `deadline`, `timeRemaining`, `cancelled`, `reason`
   and `onCancel`; one answering later stops counting against
   `maxCallsWaiting` once its caller has stopped waiting, and is not
   answered. Negotiated in the hello, so a peer without it is sent neither;
@@ -537,6 +537,13 @@ says how.
 
 #### Runtime
 
+- Every duration is a `Float` of seconds. The members that took
+  milliseconds have new names (a socket's `connectTimeout`, the HTTP
+  client's `readTimeout`, `responseHeaderTimeout` and `loadTimeout`,
+  SQLite's `lockWaitTimeout`, RPC's `pingInterval` and `idleTimeout`), and
+  `GlobalTimer` takes its delay first; wire formats that define
+  milliseconds (MongoDB's `maxTimeMS`, a WebRTC channel's
+  `maxPacketLifeTime`) keep them. (Upgrading)
 - A failure in a callback no longer ends the process. What a timer, a tick
   listener, a socket handler or a posted callback throws is logged with
   `Logger.error` and dispatched as `UncaughtErrorEvent.UNCAUGHT_ERROR`; a
@@ -1631,17 +1638,17 @@ Fixes to code new in this release are not listed.
   `requestId` or `framed`: the build failed ("ByteArrayInput cannot be
   called", a duplicate argument, or the frame written as the argument).
 - `onHandlerError`'s default report says a handler that ran out of time
-  (its `handlerTimeout`, or a call it forwarded) did not answer in time,
+  (its `answerTimeout`, or a call it forwarded) did not answer in time,
   where it said the handler threw.
 - A frame that names a count or length larger than itself is refused before
   anything is allocated, and a frame too short for what it carries no longer
   reads into the next frame.
 - A call fails when its connection closes or cannot carry it, where it
   waited for good; its `cause` is the connection's `Reason`.
-- A `heartbeatInterval` of zero or less is no heartbeat. It sent one ping
+- A `pingInterval` of zero or less is no heartbeat. It sent one ping
   and then stopped for good, so a peer that vanished was held, and a debug
   build threw from `start()`.
-- A `heartbeatTimeout` of zero or less never times the peer out, and the
+- An `idleTimeout` of zero or less never times the peer out, and the
   pings go on. It closed the connection at the first beat.
 - The heartbeat no longer closes healthy connections: pings were never
   answered.
@@ -1858,6 +1865,10 @@ than waiting a thousand times as long: divide the old value by 1,000.
 | `GlobalTimer.setTimeout(closure, delay)` | `setTimeout(delay, closure)`, the delay first |
 | `GlobalTimer.setInterval(closure, delay)` | `setInterval(interval, closure)`, the interval first |
 | `SQLiteConnection.busyTimeout`, 5000 as it opens | `lockWaitTimeout`, 5 |
+| `RPCSession.heartbeatInterval`, 45000 | `pingInterval`, 45 |
+| `RPCSession.heartbeatTimeout`, 90000 | `idleTimeout`, 90 |
+| `RPCSession.DEFAULT_HEARTBEAT_INTERVAL`, `DEFAULT_HEARTBEAT_TIMEOUT` | `DEFAULT_PING_INTERVAL`, `DEFAULT_IDLE_TIMEOUT` |
+| `RPCSession.DEFAULT_HEARTBEAT_JITTER` | gone: nothing read it |
 
 #### Runtime
 

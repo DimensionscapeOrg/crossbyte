@@ -36,7 +36,7 @@ import crossbyte.utils.Logger;
 	- its caller cancels it (`RPCSession.cancelCall`), or the caller's
 	  deadline passes: `reason` is `Cancelled` or `TimedOut`, and nothing is
 	  sent back, since the caller has stopped waiting;
-	- the session's `RPCSession.handlerTimeout` passes: `TimedOut`, and the
+	- the session's `RPCSession.answerTimeout` passes: `TimedOut`, and the
 	  caller is answered `RPCError.TIMEOUT_MESSAGE`;
 	- its connection ends: `Disconnected(reason)`.
 
@@ -46,13 +46,13 @@ import crossbyte.utils.Logger;
 	`RPCTimeoutError`, and the call stops counting against `maxCallsWaiting`.
 	A call answered at once has answered before anything else is read, so
 	nothing can end it first. A call answered later whose handler never read
-	this, with no deadline (its caller's, or `handlerTimeout`), is not
+	this, with no deadline (its caller's, or `answerTimeout`), is not
 	tracked at all: it costs nothing more than before, and a cancel for it
 	finds nothing to stop.
 
 	A caller's deadline and its cancellations reach this side from a peer of
 	1.0 or later, once the peers' hellos have been exchanged; a deadline given
-	with `RPCResponse.timeout` after the call has gone arrives as a
+	with `RPCResponse.within` after the call has gone arrives as a
 	cancellation when it passes.
 **/
 @:access(crossbyte.rpc.RPCSession)
@@ -72,8 +72,8 @@ final class RPCCall {
 	**/
 	public var deadline(default, null):Float = 0.0;
 
-	/** Milliseconds left until `deadline`, `0` once it has passed, and `-1` with no deadline. **/
-	public var timeLeft(get, never):Int;
+	/** Seconds left until `deadline`, `0` once it has passed, and `-1` with no deadline. **/
+	public var timeRemaining(get, never):Float;
 
 	/** Whether the call has ended before its answer; see `reason`. **/
 	public var cancelled(default, null):Bool = false;
@@ -101,7 +101,7 @@ final class RPCCall {
 	@:noCompletion private var __due:Float = 0.0;
 	@:noCompletion private var __order:Int = 0;
 	// Whether the deadline in the heap is the caller's, rather than the
-	// session's handlerTimeout.
+	// session's answerTimeout.
 	@:noCompletion private var __dueByCaller:Bool = false;
 
 	@:noCompletion private function new(session:RPCSession<Dynamic, Dynamic>, op:Int, requestId:Int, timeout:Int, runtime:Bool) {
@@ -114,27 +114,27 @@ final class RPCCall {
 		}
 	}
 
-	private function get_timeLeft():Int {
+	private function get_timeRemaining():Float {
 		if (deadline <= 0) {
 			return -1;
 		}
-		// Less a hair, so that 400 ms left, read at once, is not 401 for the
-		// sum's rounding.
-		final left:Float = (deadline - Timer.getTime()) * 1000 - 1e-6;
-		return left <= 0 ? 0 : Math.ceil(left);
+		// Less a microsecond, so that 0.4 s left, read at once, is not a
+		// hair over 0.4 for the sum's rounding.
+		final left:Float = deadline - Timer.getTime() - 0.000001;
+		return left <= 0 ? 0 : left;
 	}
 
 	/**
 		Waits for `future`, which `settle` answers with once it completes, or
-		once its deadline (the caller's or `handlerTimeout`, whichever is
+		once its deadline (the caller's or `answerTimeout`, whichever is
 		sooner) passes.
 	**/
-	@:noCompletion private function __wait(future:Future<Dynamic>, settle:(Future<Dynamic>, Bool) -> Void, handlerTimeout:Int):Void {
+	@:noCompletion private function __wait(future:Future<Dynamic>, settle:(Future<Dynamic>, Bool) -> Void, answerTimeoutMs:Int):Void {
 		__future = future;
 		__settle = settle;
 		__session.__listWaiting(this);
 		final now:Float = Timer.getTime();
-		var due:Float = handlerTimeout > 0 ? now + handlerTimeout / 1000 : 0.0;
+		var due:Float = answerTimeoutMs > 0 ? now + answerTimeoutMs / 1000 : 0.0;
 		if (deadline > 0 && (due == 0 || deadline <= due)) {
 			due = deadline;
 			__dueByCaller = true;
@@ -152,7 +152,7 @@ final class RPCCall {
 		__settle(__future, false);
 	}
 
-	/** Its deadline passed: the caller's, which is not answered, or `handlerTimeout`, which is. **/
+	/** Its deadline passed: the caller's, which is not answered, or `answerTimeout`, which is. **/
 	@:noCompletion private function __expire():Void {
 		final byCaller:Bool = __dueByCaller;
 		if (!__leave()) {
