@@ -1228,9 +1228,11 @@ Fixes to code new in this release are not listed.
 - `ExpiringMap.get`, `touch`, `exists`, `set` and `sweep` allocate nothing
   natively on the map's own clock, where each asked it through a closure
   that boxed its answer and boxed a String key, 56 bytes a `get` (39 ns
-  where it took 54 at 1,000 entries). `sweep(now)` is inline, so a time
-  given in a local variable is not boxed, natively or on the jvm (24
-  bytes a sweep).
+  where it took 54 at 1,000 entries). `sweep()` and `sweep(now)` are two
+  functions rather than one with an optional time, so no time is boxed on
+  its way in however it is given, natively or on the jvm (24 bytes a
+  sweep given a field or a call's answer). Neither is a value to pass on:
+  pass `() -> map.sweep()`.
 - A `ListedMap` boxes no key or index natively, nor an index on the jvm:
   natively a `get` of a String key takes 22 ns rather than 27 at 1,000
   keys and allocates nothing rather than 32 bytes, and a replaced value

@@ -230,31 +230,35 @@ final class ExpiringMap<K:Dynamic, V> {
 	}
 
 	/**
-		Drops everything whose time has passed.
+		Drops everything whose time has passed, by the clock the map was made
+		with.
 
 		Walks only the entries that have expired, rather than the whole map,
 		so calling it every tick costs what has actually expired since the
 		last one.
 
-		Inline, so a time given in a local variable is not boxed on its way
-		in, as an optional `Float` otherwise is, natively and on the jvm. One
-		worked out in the call (`sweep(clock.now())`), or read from a field,
-		still is: put it in a local variable first.
+		`sweep()` and `sweep(now)` are two functions rather than one taking
+		an optional time, which natively and on the jvm is boxed on its way
+		in; so neither allocates, however the time is given. Each is
+		inlined where it is called, and is not a value to pass on: pass
+		`() -> map.sweep()`.
 
-		@param now When, by the clock the map was made with; left out, it
-		       asks that clock.
+		@return How many went.
+	**/
+	public overload extern inline function sweep():Int {
+		return __sweepAt(__now());
+	}
+
+	/**
+		Drops everything whose time had passed at `now`, by the clock the map
+		was made with.
+
 		@return How many went.
 		@throws ArgumentError For a `now` of NaN, which no deadline is at or
 		        past.
 	**/
-	public inline function sweep(?now:Float):Int {
-		// Two calls rather than one taking `now == null ? __now() : now`,
-		// whose type is Null<Float>: the clock's answer would be boxed.
-		return now == null ? __sweepNow() : __sweepAt(now);
-	}
-
-	private function __sweepNow():Int {
-		return __sweepAt(__now());
+	public overload extern inline function sweep(now:Float):Int {
+		return __sweepAt(now);
 	}
 
 	private function __sweepAt(at:Float):Int {

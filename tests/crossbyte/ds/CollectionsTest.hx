@@ -2837,6 +2837,45 @@ class CollectionsTest extends utest.Test {
 		#end
 	}
 
+	/**
+		Nor does a sweep given its time from a field or a call. `sweep(now)`
+		took an optional `Float`, which natively and on the jvm is boxed on
+		its way in: 24 bytes a sweep given a field or a call's answer
+		(natively; on the jvm where its JIT does not take the box away).
+	**/
+	public function testASweepGivenAFieldOrACallAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var map = new ExpiringMap<String, Int>(1e9, 0);
+		for (i in 0...100) {
+			map.set("k" + i, i);
+		}
+		__sweepTime = haxe.Timer.stamp();
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			() -> sum += map.sweep(__sweepTime),
+			() -> sum += map.sweep(__sweepClock()),
+			() -> sum += map.sweep()
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "a sweep allocated " + reading);
+		}
+		Assert.equals(100, map.length);
+		Assert.equals(0, sum);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	static var __sweepTime:Float = 0;
+
+	static function __sweepClock():Float {
+		return __sweepTime;
+	}
+
 	/** `sweep` without a time asks the map's own clock, and with one takes it, NaN refused. **/
 	public function testSweepTakesTheTimeOrAsksTheClock():Void {
 		var now:Float = 0;
