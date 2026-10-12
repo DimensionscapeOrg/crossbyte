@@ -131,6 +131,73 @@ class JWTClaimsTest extends utest.Test {
 		Assert.equals(JWTRejection.MALFORMED, jwt.verify(forge('{"iss":["a"],"exp":4102444800}')).rejection);
 	}
 
+	/**
+		A time given to `verify` or `verifyToken` allocates nothing: with one,
+		from a local, a field or a call, a verification allocates what one
+		without a time does. Each took an optional `Float`, which natively and
+		on the jvm is boxed on its way in, once per token (24 bytes natively);
+		and without a time the wall clock was read through a `Date`. Measured
+		on a token refused at its claims, before any time is read, and on one
+		that verifies.
+	**/
+	public function testATimeGivenToVerifyAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]));
+		__verifyTime = Date.now().getTime() / 1000;
+		var sink:Int = 0;
+		for (token in [forge('{"sub":7,"exp":4102444800}'), forge('{"sub":"a","exp":4102444800}')]) {
+			var local:Float = __verifyTime;
+			var forms:Array<{name:String, op:Void->Void}> = [
+				{name: "no time", op: () -> sink += jwt.verify(token).valid ? 1 : 0},
+				{name: "a local", op: () -> sink += jwt.verify(token, local).valid ? 1 : 0},
+				{name: "a field", op: () -> sink += jwt.verify(token, __verifyTime).valid ? 1 : 0},
+				{name: "a call", op: () -> sink += jwt.verify(token, __verifyClock()).valid ? 1 : 0},
+				{name: "verifyToken, a field", op: () -> sink += jwt.verifyToken(token, __verifyTime) != null ? 1 : 0}
+			];
+			var without:Null<Float> = null;
+			for (form in forms) {
+				for (_ in 0...5000) {
+					form.op();
+				}
+				var reading = crossbyte.test.AllocationMeter.measure(form.op, 2000, 3);
+				if (Sys.getEnv("CB_ALLOC_REPORT") != null) {
+					Sys.println("[ALLOC] " + crossbyte.test.AllocationMeter.platform() + " JWT.verify given " + form.name + ": " + reading);
+				}
+				if (without == null) {
+					without = reading.perOperation;
+				} else {
+					Assert.equals(without, reading.perOperation, 'verify given ${form.name} allocated ${reading} where it allocated $without bytes without a time');
+				}
+			}
+		}
+		Assert.isTrue(sink > 0);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	static var __verifyTime:Float = 0;
+
+	static function __verifyClock():Float {
+		return __verifyTime;
+	}
+
+	/** A time of NaN, by which no token would be expired, is refused rather than taken. **/
+	public function testATimeOfNaNIsRefused():Void {
+		var jwt:JWT = JWT.make(HS256([{secret: SECRET}]));
+		var expired:String = forge('{"sub":"a","exp":1000}');
+		Assert.raises(() -> jwt.verify(expired, Math.NaN), ArgumentError);
+		Assert.raises(() -> jwt.verifyToken(expired, Math.NaN), ArgumentError);
+		Assert.equals(JWTRejection.EXPIRED, jwt.verify(expired).rejection);
+		Assert.isNull(jwt.verifyToken(expired));
+		#if !static
+		// Where a Float can be null, null is still the wall clock, as the
+		// optional time was: not a time by which nothing has expired.
+		Assert.equals(JWTRejection.EXPIRED, jwt.verify(expired, null).rejection);
+		Assert.isNull(jwt.verifyToken(expired, null));
+		#end
+	}
+
 	/** A token with exactly these claims under a JWT header, signed with the secret. */
 	static function forge(payload:String):String {
 		var input:String = JWT.base64UrlEncodeString('{"alg":"HS256","typ":"JWT"}') + "." + JWT.base64UrlEncodeString(payload);

@@ -1073,6 +1073,13 @@ says how.
 - JWT HS256 verification and signing cost about a quarter of what they did.
   JWT times are `Float` seconds, and its data types are classes.
   (Upgrading)
+- `JWT.verify` and `verifyToken` are each two functions, with a time and
+  without, rather than one taking an optional time, which natively and on
+  the jvm was boxed on its way in; without one they read `Sys.time()`
+  where they made a `Date`. A verification allocates 24 B less natively
+  and on the jvm, and on the jvm 1.7 KB less without a time. A time of NaN,
+  by which no token was expired, is refused with an `ArgumentError`.
+  (Upgrading)
 - Off native cpp, crypto and IPC classes throw `IllegalOperationError`.
   (Upgrading)
 - libsodium built by gcc and clang uses 64-bit arithmetic and the CPU's SIMD
@@ -2390,6 +2397,10 @@ an API added in this release has is not listed here.
   the audience it is; with none, those tokens are refused.
 - `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
 - `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
+- `JWT.verify` and `verifyToken` are inlined where they are called, and are
+  no longer values: pass `token -> jwt.verify(token)`. Natively, on the jvm
+  and on HashLink a time given as `null` no longer compiles: leave it out
+  for the wall clock.
 - `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
   `Null<Float>`, where they were `Null<Int>`: convert with `Std.int` where
   code keeps one in an `Int`. A claims literal whose times mix `Int` and

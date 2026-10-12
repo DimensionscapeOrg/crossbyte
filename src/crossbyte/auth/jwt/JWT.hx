@@ -129,23 +129,36 @@ class JWT {
 	}
 
 	/**
-	 * Verifies a compact JWT and returns the decoded payload on success.
+	 * Verifies a compact JWT and returns the decoded payload on success,
+	 * judging `exp`, `iat` and `nbf` by the wall clock.
 	 *
 	 * Returns `null` when the token is malformed, expired, signed by the wrong
 	 * algorithm, or fails issuer/audience validation. `verify` makes the same
 	 * checks and says which one failed.
 	 *
-	 * @param now The time to judge `exp`, `iat` and `nbf` against, in seconds
-	 *        since the epoch. Defaults to the wall clock; pass one for a
-	 *        service that keeps its own clock, or for fixed-time tests.
+	 * `verifyToken(token)` and `verifyToken(token, now)` are two functions
+	 * rather than one taking an optional time, which natively and on the jvm
+	 * is boxed on its way in. Each is inlined where it is called, and is not
+	 * a value to pass on: pass `token -> jwt.verifyToken(token)`.
 	 */
-	public function verifyToken(token:String, ?now:Float):JWTPayload {
-		return verify(token, now).payload;
+	public overload extern inline function verifyToken(token:String):JWTPayload {
+		return __verify(token, 0.0, true).payload;
+	}
+
+	/**
+	 * The same, judging the times by `now`, in seconds since the epoch: for a
+	 * service that keeps its own clock, or for fixed-time tests.
+	 *
+	 * @throws ArgumentError For a `now` of NaN, by which no token would be
+	 *         expired.
+	 */
+	public overload extern inline function verifyToken(token:String, now:Float):JWTPayload {
+		return __verify(token, now, false).payload;
 	}
 
 	/**
 	 * Verifies a compact JWT, answering with its claims or with why it was
-	 * refused.
+	 * refused, judging `exp`, `iat` and `nbf` by the wall clock.
 	 *
 	 * Checks run cheapest first and the first failure is the answer: size and
 	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
@@ -157,9 +170,35 @@ class JWT {
 	 * extension is implemented here, and RFC 7515 makes such a token invalid
 	 * to a verifier that does not understand the extensions it names.
 	 *
-	 * @param now As for `verifyToken`.
+	 * Two functions, with a time and without, as `verifyToken` is.
 	 */
-	public function verify(token:String, ?now:Float):JWTVerification {
+	public overload extern inline function verify(token:String):JWTVerification {
+		return __verify(token, 0.0, true);
+	}
+
+	/**
+	 * The same, judging the times by `now`, in seconds since the epoch.
+	 *
+	 * @throws ArgumentError For a `now` of NaN, by which no token would be
+	 *         expired.
+	 */
+	public overload extern inline function verify(token:String, now:Float):JWTVerification {
+		return __verify(token, now, false);
+	}
+
+	/** `verify`, the time `now` or, with `clock`, the wall clock's. **/
+	@:noCompletion private function __verify(token:String, now:Float, clock:Bool):JWTVerification {
+		#if !static
+		// Where a Float can be null (JavaScript, eval, neko), a time given as
+		// null asks the wall clock, as the optional time it replaces did,
+		// rather than judging every token by null and passing it.
+		if (!clock && (now : Null<Float>) == null) {
+			clock = true;
+		}
+		#end
+		if (!clock && Math.isNaN(now)) {
+			throw new crossbyte.errors.ArgumentError("JWT.verify was given a time of NaN.");
+		}
 		if (token == null || token.length == 0) {
 			return JWTVerification.refused(MALFORMED);
 		}
@@ -283,7 +322,7 @@ class JWT {
 
 		// Float throughout: a time past 2038 does not fit an Int, and one near
 		// the limit plus the leeway wrapped where an Int is 32 bits.
-		var nowSec:Float = now != null ? now : Date.now().getTime() / 1000;
+		var nowSec:Float = clock ? __wallClock() : now;
 		if (nowSec > expiresAt + leeway) {
 			return JWTVerification.refused(EXPIRED);
 		}
@@ -448,6 +487,20 @@ class JWT {
 				Math.isFinite(number) ? number : Math.NaN;
 			default: Math.NaN;
 		}
+	}
+
+	/**
+		Seconds since the epoch by the wall clock. `Sys.time()` where there is
+		one rather than `Date.now()`, which makes a `Date` per token.
+	**/
+	@:noCompletion private static inline function __wallClock():Float {
+		#if sys
+		return Sys.time(); // time of day: a token's times are seconds since the epoch
+		#elseif js
+		return js.lib.Date.now() / 1000; // time of day: as above
+		#else
+		return Date.now().getTime() / 1000; // time of day: as above
+		#end
 	}
 
 	// Made once: an array literal in the loop below is an allocation per token.
