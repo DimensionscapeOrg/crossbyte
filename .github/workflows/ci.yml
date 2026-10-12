@@ -135,14 +135,21 @@ jobs:
       - name: Run interpreter test suite with arrivals checked
         run: haxe ci/interp-tests.hxml -D crossbyte_check_events
 
-  # The jvm target, smoke and full suites, on Java 8 deliberately: it is the
+  # The jvm target, smoke and full suites, on Java 8 and 17. Java 8 is the
   # floor the jvm's bytecode quirks (VerifyErrors from some code shapes) are
-  # checked against, and a newer JVM would not reproduce them. The full suite
-  # also catches what the jvm renders differently, such as IPv6 text.
+  # checked against, and a newer JVM would not reproduce them. Java 17 takes
+  # the paths CrossByte chooses on a newer JVM: reusePort from Java 9, and a
+  # select that allocates nothing from Java 11. The full suite also catches
+  # what the jvm renders differently, such as IPv6 text. The run with
+  # arrivals checked is on Java 8 alone.
   jvm-tests:
-    name: Core | JVM Tests
+    name: Core | JVM Tests (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["8", "17"]
     defaults:
       run:
         shell: bash
@@ -160,7 +167,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "8"
+          java-version: ${{ matrix.java }}
 
       # utest, and hxjava, which --jvm needs.
       - name: Install Haxe libraries
@@ -182,11 +189,15 @@ jobs:
         run: java -jar export/jvm/CrossByteTests.jar
 
       # Again with every arrival's payload killed once its call returns (see
-      # core-tests-checked). The same jar path: the hxml names its output.
+      # core-tests-checked), on Java 8 only: what it checks is CrossByte's
+      # handling of events, not the JVM's. The same jar path: the hxml names
+      # its output.
       - name: Build jvm test suite with arrivals checked
+        if: matrix.java == '8'
         run: haxe ci/jvm-tests.hxml -D crossbyte_check_events
 
       - name: Run jvm test suite with arrivals checked
+        if: matrix.java == '8'
         run: java -jar export/jvm/CrossByteTests.jar
 
   docs:
