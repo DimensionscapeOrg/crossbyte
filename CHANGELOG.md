@@ -2310,6 +2310,8 @@ an API added in this release has is not listed here.
   	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
   }
   ```
+- `RPCResonse`, a misspelling of `RPCResponse` that rc.1 also exported, is
+  deprecated and warns where it is used: write `RPCResponse`.
 
 #### Data
 
