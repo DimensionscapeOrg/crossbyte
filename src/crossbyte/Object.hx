@@ -40,13 +40,20 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * field; on the jvm `get` of a property throws), so read a class's fields
  * through the class.
  *
- * **Conversions.** An `Object` takes any value, and on its own becomes only
- * a `Dynamic`: `var count:Int = object`, `var socket:Socket = object`,
- * `object + 1` and `if (object)` do not compile, where each target made its
- * own of them (a "12" as an `Int` was 12 natively, "12" on JavaScript and a
- * thrown cast on the jvm). Say what it is: `cast(object, Socket)` checks
- * that, and throws on every target if it is not; `cast object` does not
- * check; `toString()` gives it as text.
+ * **Conversions.** As in ActionScript, an `Object` takes any value and
+ * converts on its own to any type: `var socket:Socket = event.target`.
+ * Nothing checks that conversion. An object of another class is kept as it
+ * is on JavaScript, eval and Neko, becomes null natively, and throws on the
+ * jvm and HashLink; `cast(object, Socket)` checks, and throws on every
+ * target if it is not one.
+ *
+ * A primitive held in an `Object` converts as each target makes of it. A
+ * "12" taken as an `Int` is 12 natively, stays the text "12" on JavaScript,
+ * eval and Neko (adding 1 to it gives "121"), and throws on the jvm and
+ * HashLink; a number taken as a `Bool`, or tested by `if (object)`, differs
+ * by target too. Where that matters, say what it is: `cast(object, Int)`
+ * throws on every target unless it holds an `Int`, and `toString()` gives
+ * it as text to parse.
  *
  * **What still differs.** These are each target's own, and checking for
  * them would cost every read:
@@ -75,7 +82,7 @@ import crossbyte.ds.ListedMap.KeyValuePair;
 @:transitive
 @:callable
 @:forward
-abstract Object(Dynamic) from Dynamic {
+abstract Object(Dynamic) from Dynamic to Dynamic {
 	public inline function new() {
 		this = {};
 	}

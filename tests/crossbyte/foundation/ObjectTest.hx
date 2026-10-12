@@ -2,6 +2,8 @@ package crossbyte.foundation;
 
 import crossbyte.Object;
 import crossbyte.TypedObject;
+import crossbyte.events.Event;
+import crossbyte.net.Socket;
 import utest.Assert;
 
 /**
@@ -193,52 +195,105 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
-		An `Object` converts on its own to `Dynamic` and to nothing else, and
-		its own arithmetic does not compile. It converted to anything,
-		unchecked, and each target made its own of that: one holding "12" as
-		an `Int` was "12" on eval, Neko and Node (so `n + 1` was "121"), 12
-		natively, and a cast that threw on the jvm and HashLink; `if (object)`
-		of 3 was taken natively, on Node and HashLink, not on eval or Neko,
-		and threw on the jvm. Its fields are `Dynamic`, as they were; a value
-		is taken as a type with `cast`, and as text with `toString()`.
+		An `Object` converts on its own to the type it is assigned to, as
+		ActionScript's and OpenFL's do, so `var socket:Socket = event.target`
+		compiles: for a while it converted only to `Dynamic`, and that line,
+		ActionScript's way to type an event's target, did not.
 	**/
-	public function testAnObjectConvertsOnlyToDynamic():Void {
-		var number:Object = "12";
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var n:Int = number;
-		}), "an Object became an Int");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var f:Float = number;
-		}), "an Object became a Float");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var b:Bool = number;
-		}), "an Object became a Bool");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var d:Date = number;
-		}), "an Object became a Date without a cast");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(number + 1), "an Object was added to");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(number * 2), "an Object was multiplied");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(-number), "an Object was negated");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf(if (number) 1 else 0), "an Object was a condition");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var s:String = number;
-		}), "an Object became a String without a cast");
-		Assert.notNull(crossbyte.ds.TypeCheck.errorOf({
-			var structure:{} = number;
-		}), "an Object became a structure without a cast");
+	public function testAnObjectConvertsToTheTypeItIsAssignedTo():Void {
+		var target:Object = new Socket();
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf({
+			var socket:Socket = target;
+		}), "an Object did not become a Socket");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf({
+			var dispatcher:crossbyte.events.IEventDispatcher = target;
+		}), "an Object did not become an interface");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf({
+			var count:Int = target;
+		}), "an Object did not become an Int");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf({
+			var typed:TypedObject<{id:Int}> = target;
+		}), "an Object did not become a TypedObject");
+		Assert.isNull(crossbyte.ds.TypeCheck.errorOf({
+			var map = new haxe.ds.ObjectMap<{}, Int>();
+			map.set(target, 1);
+		}), "an Object was not taken as a key");
+	}
 
-		var three:Object = 3;
-		Assert.equals("3", three.toString());
-		Assert.equals(12, Std.parseInt(number.toString()));
-		var loose:Dynamic = three;
-		Assert.equals(3, loose);
-		var payload:Object = haxe.Json.parse('{"hits":3}');
-		var hits:Int = payload.hits;
-		Assert.equals(4, hits + 1);
+	/**
+		The idiom itself, in a listener: the target assigned to its type is
+		the dispatcher, read through its type, on every target, and
+		`cast(event.target, T)` checks.
+	**/
+	public function testAnEventsTargetIsAssignedToItsType():Void {
+		var socket:Socket = new Socket();
+		var seen:Socket = null;
+		var current:Socket = null;
+		var checked:Socket = null;
+		var connected:Null<Bool> = null;
+		socket.addEventListener("probe", (event:Event) -> {
+			var target:Socket = event.target;
+			seen = target;
+			connected = target.connected;
+			current = event.currentTarget;
+			checked = cast(event.target, Socket);
+		});
+		socket.dispatchEvent(new Event("probe"));
+		Assert.isTrue(seen == socket, "the target was not the socket");
+		Assert.isTrue(current == socket, "the current target was not the socket");
+		Assert.isTrue(checked == socket, "the checked cast was not the socket");
+		Assert.isFalse(connected);
+	}
+
+	/**
+		What the documentation says of an unchecked conversion: an object of
+		another class is kept as it is on JavaScript, eval and Neko, is null
+		natively, and throws on the jvm and HashLink, while `cast(object, T)`
+		throws on every target; a "12" taken as an `Int` is 12 natively, the
+		text "12" on JavaScript, eval and Neko, and throws on the jvm and
+		HashLink.
+	**/
+	public function testAnUncheckedConversionIsEachTargetsOwn():Void {
 		var instance:Object = new Sealed();
-		var sealed:Sealed = cast instance;
+		var sealed:Sealed = instance;
 		Assert.equals(1, sealed.field);
-		Assert.equals(1, cast(instance, Sealed).field);
+
+		var other:Other = null;
+		var threw:Bool = false;
+		try {
+			other = instance;
+		} catch (_:Dynamic) {
+			threw = true;
+		}
+		#if cpp
+		Assert.isFalse(threw);
+		Assert.isNull(other);
+		#elseif (jvm || hl)
+		Assert.isTrue(threw, "an object of another class was assigned");
+		#else
+		Assert.isFalse(threw);
+		Assert.isTrue((other : Dynamic) == (instance : Dynamic), "the object was not kept");
+		#end
+		Assert.raises(() -> cast(instance, Other));
+
+		var text:Object = "12";
+		var taken:Dynamic = null;
+		threw = false;
+		try {
+			var number:Int = text;
+			taken = number;
+		} catch (_:Dynamic) {
+			threw = true;
+		}
+		#if cpp
+		Assert.equals(12, taken);
+		#elseif (jvm || hl)
+		Assert.isTrue(threw, "a String was taken as an Int");
+		#else
+		Assert.isTrue(Std.isOfType(taken, String), "the text was converted");
+		#end
+		Assert.raises(() -> cast(text, Int));
+		Assert.equals(12, Std.parseInt(text.toString()));
 	}
 
 	/** The documentation's example, as written there, run. **/
@@ -274,7 +329,7 @@ class ObjectTest extends utest.Test {
 	public function testKeysLeaveOutWhatHaxeKeepsOnAnObject():Void {
 		var payload:Object = haxe.Json.parse('{"a":1,"b":2}');
 		var map = new haxe.ds.ObjectMap<{}, Int>();
-		map.set(cast payload, 1);
+		map.set(payload, 1);
 		var keys:Array<String> = payload.keys();
 		keys.sort(Reflect.compare);
 		Assert.same(["a", "b"], keys);
@@ -299,6 +354,12 @@ class ObjectTest extends utest.Test {
 
 private class Sealed {
 	public var field:Int = 1;
+
+	public function new() {}
+}
+
+private class Other {
+	public var other:Int = 2;
 
 	public function new() {}
 }
