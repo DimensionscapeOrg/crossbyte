@@ -53,7 +53,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 				first.__dispose(false);
 
 				var second = new ReliableDatagramSocket();
-				second.timeout = 15000;
+				second.connectTimeout = 15.0;
 				second.bind(port, "127.0.0.1");
 				var connected:Bool = false;
 				var failure:String = null;

@@ -71,9 +71,9 @@ interface INetHost {
 	/**
 	 * Opens an outgoing session from this host's listening endpoint.
 	 *
-	 * `timeoutMs` bounds the connect: 20 seconds unless given, 0 for no
-	 * deadline. (`ReliableDatagramSocket.DEFAULT_TIMEOUT`, written out here:
-	 * that class is not built for the browser, and this interface is.)
+	 * `timeoutMs` bounds the connect, in milliseconds: 20 seconds unless
+	 * given, 0 for no deadline. A reliable datagram host's session holds it
+	 * as its `connectTimeout`, in seconds.
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */

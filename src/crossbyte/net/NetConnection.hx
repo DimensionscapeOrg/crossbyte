@@ -47,8 +47,9 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
  *   called after it.
  *
  * A deadline that passed is `Reason.Timeout`, to both: a connect not made
- * within its socket's `timeout`, and anything else its transport reports
- * as an `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
+ * within its socket's `timeout` (a reliable datagram socket's
+ * `connectTimeout`), and anything else its transport reports as an
+ * `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
  */
 abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
 	/** Remote peer address. */

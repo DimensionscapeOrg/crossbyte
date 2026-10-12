@@ -2103,6 +2103,12 @@ an API added in this release has is not listed here.
   `ioError`. One `send` larger than the window waits whole, so an
   application that sends more than that at once (one large reliable
   message, a file) raises it on its sessions, or sets it to 0 for no limit.
+- `ReliableDatagramSocket.timeout`, in milliseconds, is `connectTimeout`,
+  in seconds as the class's other durations are: `timeout = 5000` is
+  `connectTimeout = 5`. `DEFAULT_TIMEOUT` (20000) is
+  `DEFAULT_CONNECT_TIMEOUT` (20.0). The server's `connect` and
+  `connectRelayed`, and `INetHost.dial`, still take `timeoutMs` in
+  milliseconds.
 
 #### WebSocket
 

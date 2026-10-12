@@ -149,7 +149,7 @@ class NetConnectionLifecycleTest extends utest.Test {
 		// Node binds asynchronously.
 		NetPump.until(() -> silent.localPort != 0, 5.0, function(_) {
 			var socket = new ReliableDatagramSocket();
-			socket.timeout = 400;
+			socket.connectTimeout = 0.4;
 			var errors:Array<Reason> = [];
 			var closes:Array<Reason> = [];
 			var connection = NetConnection.fromReliableDatagramSocket(socket);

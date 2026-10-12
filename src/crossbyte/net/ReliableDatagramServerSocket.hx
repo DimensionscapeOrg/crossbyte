@@ -411,7 +411,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		Negative disables the check.
 
 		A CONNECT costs the sender one datagram and costs this side a session
-		holding two timers for `timeout` milliseconds, and UDP lets a sender
+		holding two timers for its `connectTimeout`, and UDP lets a sender
 		write whatever it likes in the source field, so at that point nothing
 		about the peer has been established. Without a ceiling one peer can
 		spend a packet each on as many of these as it cares to, from addresses
@@ -520,9 +520,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		after any loss. In a test over a NAT that changed the client's port,
 		traffic resumed a round trip after the client's first frame from the
 		new port. Nothing on the client needs to be set: a 1.0 client always
-		answers, and gives up after its `timeout` (20 s unless set), closing
-		with an `ioError` that says the rebind failed. `admit` is not asked
-		again; a rebind is the same session, at another address.
+		answers, and gives up after its `connectTimeout` (20 s unless set),
+		closing with an `ioError` that says the rebind failed. `admit` is not
+		asked again; a rebind is the same session, at another address.
 
 		Refused, with the session left where it was: a wrong proof; a
 		challenge made for another address or port, or more than 10 to 20
@@ -1096,7 +1096,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`address` may be a name everywhere but Node, and it is not looked up
 		on the runtime's thread: the session is returned at once, and filed
 		under the address the name resolves to, its handshake begun, when the
-		answer comes. Until then its `remoteAddress` reads empty; its timeout
+		answer comes. Until then its `remoteAddress` reads empty; its deadline
 		counts the lookup. What this call throws for an address it reports on
 		such a session instead, as an `ioError` event followed by the
 		session's close: a name that does not resolve, an endpoint that has a
@@ -1104,11 +1104,11 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		thread with no CrossByte runtime a name is looked up in the call.
 
 		@param address The peer's address, or a name.
-		@param timeoutMs The session's `timeout`, in milliseconds: how long
-		       the handshake may take. 20 seconds unless given; 0 sets no
-		       deadline, as it does for the session's own `timeout`, and the
-		       attempt goes on until the peer answers or the session is
-		       closed.
+		@param timeoutMs How long the handshake may take, in milliseconds:
+		       the session's `connectTimeout`, which is in seconds. 20 seconds
+		       unless given; 0 sets no deadline, as it does for
+		       `connectTimeout`, and the attempt goes on until the peer answers
+		       or the session is closed.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
 		       sends it: copied now, and at most one frame
 		       (`ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE` with a key).
@@ -1125,7 +1125,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		@throws RangeError if `payload` is larger than one frame, or
 		`timeoutMs` is negative.
 	**/
-	public function connect(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT, ?payload:ByteArray,
+	public function connect(address:String, port:Int, timeoutMs:Int = 20000, ?payload:ByteArray,
 			?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
@@ -1159,7 +1159,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// Without a runtime on this thread there is nothing to hand an answer
 		// back to, so a name is looked up here.
 		if (Resolver.needsLookup(address) && Resolver.runtimeHere() != null) {
-			return __dialByName(address, port, timeoutMs, outgoing, encryptionKey);
+			return __dialByName(address, port, timeoutMs / 1000, outgoing, encryptionKey);
 		}
 
 		try {
@@ -1181,7 +1181,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
 		}
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing,
+		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs / 1000, outgoing,
 			congestionControlFor(resolved, port), null, encryptionKey);
 		__file(resolved, port, socket);
 		return socket;
@@ -1329,8 +1329,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	/**
-		Refuses a negative timeout for a dialled session, as its `timeout`
-		does, before anything is made for it.
+		Refuses a negative timeout for a dialled session, as its
+		`connectTimeout` does, before anything is made for it.
 	**/
 	@:noCompletion private static inline function __checkTimeout(timeoutMs:Int):Void {
 		if (timeoutMs < 0) {
@@ -1353,8 +1353,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		`congestionControlFor` that throws, each asked about only once the
 		address is known.
 	**/
-	@:noCompletion private function __dialByName(name:String, port:Int, timeoutMs:Int, outgoing:ByteArray, encryptionKey:Null<haxe.io.Bytes>):ReliableDatagramSocket {
-		var socket = ReliableDatagramSocket.__createDialed(__socket, null, port, this, socketMode, timeoutMs, outgoing, null, null, encryptionKey);
+	@:noCompletion private function __dialByName(name:String, port:Int, connectTimeout:Float, outgoing:ByteArray, encryptionKey:Null<haxe.io.Bytes>):ReliableDatagramSocket {
+		var socket = ReliableDatagramSocket.__createDialed(__socket, null, port, this, socketMode, connectTimeout, outgoing, null, null, encryptionKey);
 		if (__dialling == null) {
 			__dialling = [];
 		}
@@ -1433,9 +1433,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		resolve leaves the question to its deadline.
 
 		`timeoutMs` is how long to keep asking. 0 or less sets no deadline, as
-		it does for a connection's `timeout`: the question is asked until it
-		is answered or this server closes, since nothing else ends a question
-		over UDP that nobody answers.
+		it does for a session's `connectTimeout`: the question is asked until
+		it is answered or this server closes, since nothing else ends a
+		question over UDP that nobody answers.
 
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
@@ -1919,7 +1919,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		@throws RangeError if `payload` is larger than one frame, or
 		`timeoutMs` is negative.
 	**/
-	public function connectRelayed(address:String, port:Int, timeoutMs:Int = ReliableDatagramSocket.DEFAULT_TIMEOUT,
+	public function connectRelayed(address:String, port:Int, timeoutMs:Int = 20000,
 			?payload:ByteArray, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed || !bound || !listening) {
 			throw new IOError("Cannot dial from a server socket that is not bound and listening.");
@@ -1946,7 +1946,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// The permission first, so the relay forwards the first CONNECT.
 		relay.permit(address, haxe.Timer.stamp());
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs, outgoing,
+		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs / 1000, outgoing,
 			congestionControlFor(address, port), relay, encryptionKey);
 		__file(address, port, socket);
 		return socket;

@@ -210,11 +210,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public var remotePort(get, never):Int;
 
 	/**
-		The connection timeout, in milliseconds, used while establishing a
-		reliable session: 20 seconds unless changed. Zero means no deadline:
-		the attempt goes on, a CONNECT every three seconds, until the peer
-		answers or `close()` is called. Set it before `connect()`; an attempt
-		already under way keeps the deadline it began with.
+		How long, in seconds, establishing a reliable session may take: 20
+		unless changed. Zero means no deadline: the attempt goes on, a
+		CONNECT every three seconds, until the peer answers or `close()` is
+		called. Set it before `connect()`; an attempt already under way keeps
+		the deadline it began with.
 
 		It is also how long a connected session waits for its server to take
 		it back at a new address, once the server has said it no longer
@@ -222,9 +222,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		past it the session closes, after an `ioError` saying the rebind
 		failed. Zero leaves that to `idleTimeout`.
 
-		@throws RangeError If set below zero.
+		@throws RangeError If set below zero, or to NaN.
 	**/
-	public var timeout(get, set):Int;
+	public var connectTimeout(get, set):Float;
 
 	/**
 		How many bytes may wait for the window before `outputOverflowPolicy`
@@ -847,8 +847,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// check that finds the session quiet lets it go.
 	@:noCompletion private static inline var QUIET_SCRATCH:Int = 256;
 
-	/** `timeout` unless changed, in milliseconds. **/
-	public static inline var DEFAULT_TIMEOUT:Int = 20000;
+	/** `connectTimeout` unless changed, in seconds. **/
+	public static inline var DEFAULT_CONNECT_TIMEOUT:Float = 20.0;
 
 	/** `keepAliveInterval` unless changed, in seconds. **/
 	public static inline var DEFAULT_KEEP_ALIVE_INTERVAL:Float = 15.0;
@@ -1263,7 +1263,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private var __relay:TurnClient = null;
 
-	@:noCompletion private var __timeout:Int = DEFAULT_TIMEOUT;
+	@:noCompletion private var __connectTimeout:Float = DEFAULT_CONNECT_TIMEOUT;
 	@:noCompletion private var __transport:DatagramSocket;
 
 	/**
@@ -1571,10 +1571,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		`host` may be a name everywhere but Node. It is looked up off the
 		runtime's thread, and the handshake starts when the answer comes;
-		`remoteAddress` is the address it resolved to from then. The attempt's
-		timeout counts the lookup. A name that does not resolve is reported as
-		an `ioError` event, and the socket then closes, as an attempt that
-		timed out does.
+		`remoteAddress` is the address it resolved to from then.
+		`connectTimeout` counts the lookup. A name that does not resolve is
+		reported as an `ioError` event, and the socket then closes, as an
+		attempt that timed out does.
 
 		@param host The remote address, or a name, to connect to.
 		@param port The remote UDP port to connect to.
@@ -2301,7 +2301,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 * handshake waits for `__beginDialled` with the answer.
 	 */
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:Null<String>, remotePort:Int,
-			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
+			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, connectTimeout:Float, payload:ByteArray,
 			congestion:CongestionControl, ?relay:TurnClient, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		var socket = __adopted();
 		if (congestion != null) {
@@ -2315,7 +2315,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// Set before the handshake begins, or the first retransmission window
 		// is measured against the default rather than what the caller asked
 		// for. 0 is no deadline here too.
-		socket.timeout = timeoutMs;
+		socket.connectTimeout = connectTimeout;
 
 		socket.__ownsTransport = false;
 		socket.__incoming = false;
@@ -2662,7 +2662,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		this side a new port, or the device moved to another network. The
 		answer is a REBIND (the challenge, and the proof) from the new
 		address, sent at once for a new challenge and every `REBIND_RETRY`
-		until the server's REBOUND comes. Within `timeout` of the first
+		until the server's REBOUND comes. Within `connectTimeout` of the first
 		challenge, or the session ends saying so.
 	**/
 	@:noCompletion private function __answerChallenge(challenge:Int):Void {
@@ -2694,7 +2694,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__sendPathOut(ReliableDatagramProtocol.REBIND_FRAME_SIZE);
 	}
 
-	/** The rebind under way: sent again, or, past `timeout`, given up with the session. **/
+	/** The rebind under way: sent again, or, past `connectTimeout`, given up with the session. **/
 	@:noCompletion private function __onRebindTimer():Void {
 		if (__closed || __rebindingSince < 0) {
 			__endRebind();
@@ -2702,7 +2702,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 		var now:Float = __clock();
 		var waited:Float = now - __rebindingSince;
-		if (__timeout > 0 && waited >= __timeout / 1000) {
+		if (__connectTimeout > 0 && waited >= __connectTimeout) {
 			__endRebind();
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR,
@@ -3732,12 +3732,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		The attempt's deadline, `timeout` from now; none for a timeout of
+		The attempt's deadline, `connectTimeout` from now; none for a timeout of
 		zero.
 	**/
 	@:noCompletion private function __armConnectionTimeout():Void {
-		if (__timeout > 0) {
-			__connectionTimeoutHandle = __timers().setTimeout(__timeout / 1000, __onConnectionFailed);
+		if (__connectTimeout > 0) {
+			__connectionTimeoutHandle = __timers().setTimeout(__connectTimeout, __onConnectionFailed);
 		}
 	}
 
@@ -5545,8 +5545,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __remotePort;
 	}
 
-	@:noCompletion private inline function get_timeout():Int {
-		return __timeout;
+	@:noCompletion private inline function get_connectTimeout():Float {
+		return __connectTimeout;
 	}
 
 	@:noCompletion private function set_endian(value:Endian):Endian {
@@ -5588,12 +5588,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private function set_timeout(value:Int):Int {
-		if (value < 0) {
-			throw new RangeError("Invalid socket timeout specified.");
+	@:noCompletion private function set_connectTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new RangeError("A connect timeout cannot be negative.");
 		}
 
-		__timeout = value;
+		__connectTimeout = value;
 		return value;
 	}
 }

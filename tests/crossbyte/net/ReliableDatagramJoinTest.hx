@@ -422,8 +422,8 @@ class ReliableDatagramJoinTest extends utest.Test {
 			bob.joinValidation = ALWAYS;
 			bob.listen();
 
-			var toBob = alice.connect("127.0.0.1", bob.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from alice"));
-			var toAlice = bob.connect("127.0.0.1", alice.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from bob"));
+			var toBob = alice.connect("127.0.0.1", bob.localPort, 20000, bytesOf("from alice"));
+			var toAlice = bob.connect("127.0.0.1", alice.localPort, 20000, bytesOf("from bob"));
 			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
 
 			Assert.isTrue(toBob.connected && toAlice.connected, "two dialled sessions never connected under ALWAYS");

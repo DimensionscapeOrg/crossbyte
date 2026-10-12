@@ -372,7 +372,7 @@ class ReliableDatagramRebindTest extends utest.Test {
 		}
 
 		try {
-			pair.client.timeout = 1000;
+			pair.client.connectTimeout = 1.0;
 			pair.nat.dropOut = data -> {
 				var frame = ReliableDatagramProtocol.decode(data);
 				return frame != null && frame.type == PATH;

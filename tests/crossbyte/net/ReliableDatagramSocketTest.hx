@@ -350,11 +350,18 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.listen();
 
 			var unbounded = server.connect("127.0.0.1", silent.localPort, 0);
-			Assert.equals(0, unbounded.timeout, "a dial with a timeout of 0 was given a deadline of " + unbounded.timeout + " ms");
+			Assert.equals(0.0, unbounded.connectTimeout, "a dial with a timeout of 0 was given a deadline of " + unbounded.connectTimeout + " s");
 
 			var plain = server.connect("127.0.0.1", 9);
-			Assert.equals(ReliableDatagramSocket.DEFAULT_TIMEOUT, plain.timeout, "a dial with no timeout given lost the default");
-			Assert.equals(20000, ReliableDatagramSocket.DEFAULT_TIMEOUT);
+			Assert.equals(ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT, plain.connectTimeout, "a dial with no timeout given lost the default");
+			Assert.equals(20.0, ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT);
+			Assert.equals(20.0, new ReliableDatagramSocket().connectTimeout);
+
+			// The dial's milliseconds are the session's seconds.
+			var quick = server.connect("127.0.0.1", 10, 2500);
+			Assert.equals(2.5, quick.connectTimeout, "a dial's timeout in milliseconds did not become the session's in seconds");
+			Assert.raises(() -> plain.connectTimeout = -1, crossbyte.errors.RangeError);
+			Assert.raises(() -> plain.connectTimeout = Math.NaN, crossbyte.errors.RangeError);
 
 			Assert.raises(() -> server.connect("127.0.0.1", 10, -1), crossbyte.errors.RangeError);
 		} catch (e:Dynamic) {
@@ -1353,7 +1360,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			var unusedPort = unused.localPort;
 			unused.close();
 
-			client.timeout = 10;
+			client.connectTimeout = 0.01;
 			client.addEventListener(IOErrorEvent.IO_ERROR, _ -> {
 				errors++;
 				order.push("ioError");
@@ -1401,11 +1408,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 			silent.bind(0, "127.0.0.1");
 			silent.receive();
 
-			byAddress.timeout = 0;
+			byAddress.connectTimeout = 0;
 			byAddress.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by address: " + e.text));
 			byAddress.connect("127.0.0.1", silent.localPort);
 
-			byName.timeout = 0;
+			byName.connectTimeout = 0;
 			byName.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failures.push("by name: " + e.text));
 			byName.connect("localhost", silent.localPort);
 
@@ -1640,11 +1647,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			server.bind(0, "127.0.0.1");
 			server.listen();
-			Assert.raises(() -> server.connect("127.0.0.1", 9, ReliableDatagramSocket.DEFAULT_TIMEOUT, tooBig), crossbyte.errors.RangeError);
+			Assert.raises(() -> server.connect("127.0.0.1", 9, 20000, tooBig), crossbyte.errors.RangeError);
 			Assert.equals(0, __countConnections(server), "the refused dial was registered");
 
 			// A frame's worth exactly is not too big.
-			Assert.notNull(server.connect("127.0.0.1", 9, ReliableDatagramSocket.DEFAULT_TIMEOUT, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
+			Assert.notNull(server.connect("127.0.0.1", 9, 20000, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -1713,8 +1720,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			bob.bind(0, "127.0.0.1");
 			bob.listen();
 
-			var toBob = alice.connect("127.0.0.1", bob.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from alice"));
-			var toAlice = bob.connect("127.0.0.1", alice.localPort, ReliableDatagramSocket.DEFAULT_TIMEOUT, bytesOf("from bob"));
+			var toBob = alice.connect("127.0.0.1", bob.localPort, 20000, bytesOf("from alice"));
+			var toAlice = bob.connect("127.0.0.1", alice.localPort, 20000, bytesOf("from bob"));
 
 			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
 
