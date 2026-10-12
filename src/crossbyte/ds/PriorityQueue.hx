@@ -46,14 +46,14 @@ import haxe.ds.Vector;
  */
 final class PriorityQueue<T:{}> {
 	/**
-	 * Returns `true` if the queue is empty.
+	 * Whether the queue is empty.
 	 */
 	public var isEmpty(get, never):Bool;
 
 	/**
-	 * Returns the number of elements currently in the queue.
+	 * The number of elements currently in the queue.
 	 */
-	public var size(get, never):Int;
+	public var length(get, never):Int;
 
 	@:noCompletion private var cmp:(T, T) -> Int;
 
@@ -94,7 +94,7 @@ final class PriorityQueue<T:{}> {
 		return __size == 0;
 	}
 
-	@:noCompletion private inline function get_size():Int {
+	@:noCompletion private inline function get_length():Int {
 		return __size;
 	}
 

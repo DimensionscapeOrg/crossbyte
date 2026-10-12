@@ -107,7 +107,7 @@ class OrderedMapTest extends utest.Test {
 		}
 		Assert.same([0, 1, 2, 3, 4, 5], seen);
 		Assert.same(["k1", "k3", "k5"], [for (k in map.keysIterator()) k]);
-		Assert.equals(3, map.length());
+		Assert.equals(3, map.length);
 
 		// An entry removed before the loop reaches it is not visited, and the
 		// loop goes on past it.
@@ -130,7 +130,7 @@ class OrderedMapTest extends utest.Test {
 			map.clear();
 		}
 		Assert.equals(1, visited);
-		Assert.equals(0, map.length());
+		Assert.equals(0, map.length);
 		Assert.isFalse(map.iterator().hasNext());
 	}
 
@@ -174,7 +174,7 @@ class OrderedMapTest extends utest.Test {
 			map.remove(keys[n - 1 - i]);
 		}
 		var took:Float = haxe.Timer.stamp() - started;
-		Assert.equals(0, map.length());
+		Assert.equals(0, map.length);
 		Assert.isTrue(took < 0.15, n + " removals took " + took + " s");
 	}
 

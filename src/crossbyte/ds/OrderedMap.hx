@@ -195,11 +195,11 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Returns the number of key-value pairs stored in the map.
-	 *
-	 * @return The number of entries in the map.
+	 * The number of key-value pairs stored in the map.
 	 */
-	public #if final inline #end function length():Int {
+	public var length(get, never):Int;
+
+	@:noCompletion private #if final inline #end function get_length():Int {
 		return __count;
 	}
 

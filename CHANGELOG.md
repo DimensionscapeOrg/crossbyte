@@ -2004,6 +2004,11 @@ an API added in this release has is not listed here.
   name)`, and `fields.get(name)`, `fields.delete(name)` and
   `fields.clear()` likewise. A key of one of those names is read and
   written with brackets, `fields["get"]`.
+- `PriorityQueue.size` and `Deque.size()` are `length`, and
+  `IndexedMap.length()` and `OrderedMap.length()` are the property
+  `length`, as on every other `crossbyte.ds` type: drop the parentheses.
+  `Deque.isEmpty()` is the property `isEmpty`, as on `PriorityQueue` and
+  `Stack`.
 
 #### TCP
 

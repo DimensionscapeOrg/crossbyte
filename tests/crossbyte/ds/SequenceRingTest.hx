@@ -13,7 +13,7 @@ class SequenceRingTest extends utest.Test {
 		Assert.equals("snapshot 5", ring.get(5));
 		Assert.isNull(ring.get(6));
 		Assert.equals(5, ring.newest);
-		Assert.isFalse(ring.isEmpty());
+		Assert.isFalse(ring.isEmpty);
 	}
 
 	public function testANumberOlderThanTheWindowHasAgedOut():Void {
@@ -72,7 +72,7 @@ class SequenceRingTest extends utest.Test {
 	public function testAnEmptyRingHoldsNothing():Void {
 		// Every slot starts out numbered 0; none of them may answer for it.
 		var ring = new SequenceRing<String>(4);
-		Assert.isTrue(ring.isEmpty());
+		Assert.isTrue(ring.isEmpty);
 		Assert.isNull(ring.get(0));
 		Assert.isFalse(ring.has(0));
 	}
@@ -82,7 +82,7 @@ class SequenceRingTest extends utest.Test {
 		ring.put(3, "three");
 		ring.clear();
 
-		Assert.isTrue(ring.isEmpty());
+		Assert.isTrue(ring.isEmpty);
 		Assert.isNull(ring.get(3));
 
 		// And starts again from whatever comes next, however far back.
@@ -110,7 +110,7 @@ class SequenceRingTest extends utest.Test {
 		Assert.isFalse(ring.remove(10), "removed twice");
 		Assert.isFalse(ring.remove(11), "never put");
 		Assert.equals(12, ring.newest, "removing moved the window");
-		Assert.isFalse(ring.isEmpty());
+		Assert.isFalse(ring.isEmpty);
 
 		// A number a ring's length away shares the slot, and is not the one
 		// filed there.

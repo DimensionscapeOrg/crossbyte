@@ -127,7 +127,7 @@ class PriorityQueueTest extends utest.Test {
 		var first = later[0];
 		first.priority = 1;
 		queue.enqueue(first);
-		Assert.equals(5, queue.size);
+		Assert.equals(5, queue.length);
 		Assert.equals(1, queue.dequeue().id);
 	}
 
@@ -160,7 +160,7 @@ class PriorityQueueTest extends utest.Test {
 		for (i in 0...40) {
 			queue.enqueue(100000 + i, i % 4);
 		}
-		Assert.equals(40, queue.size);
+		Assert.equals(40, queue.length);
 		Assert.isTrue(queue.contains(100007));
 		Assert.equals(3.0, queue.priorityOf(100007));
 		Assert.isTrue(queue.remove(100007));
@@ -196,7 +196,7 @@ class PriorityQueueTest extends utest.Test {
 			queue.enqueue(id, 1);
 		}
 		queue.enqueue(-5, 1);
-		Assert.equals(6, queue.size, "an id already held was held twice");
+		Assert.equals(6, queue.length, "an id already held was held twice");
 		Assert.equals(-5, queue.peek());
 		Assert.equals(1.0, queue.peekPriority());
 		Assert.equals(-5, queue.dequeue());
@@ -238,7 +238,7 @@ class PriorityQueueTest extends utest.Test {
 			}
 		}
 		Assert.equals(0, outOfTurn, outOfTurn + " of " + nextServed + " ids were served out of turn");
-		Assert.equals(30, queue.size);
+		Assert.equals(30, queue.length);
 	}
 
 	/** Clearing starts the arrival count over without mixing up the order. **/
@@ -268,7 +268,7 @@ class PriorityQueueTest extends utest.Test {
 		}
 		failing = false;
 
-		Assert.equals(8, queue.size);
+		Assert.equals(8, queue.length);
 		var drained:Array<Int> = [];
 		while (!queue.isEmpty) {
 			var ticket = queue.dequeue();
@@ -292,7 +292,7 @@ class PriorityQueueTest extends utest.Test {
 		} catch (e:crossbyte.errors.ArgumentError) {
 			Assert.pass();
 		}
-		Assert.equals(0, queue.size);
+		Assert.equals(0, queue.length);
 	}
 
 	public function testClearingAnIntQueueAfterASpikeLetsTheRoomGo():Void {

@@ -63,7 +63,7 @@ final class SequenceRing<T> {
 	public var capacity(default, null):Int;
 
 	/**
-	 * The newest number put. Meaningless while `isEmpty()`.
+	 * The newest number put. Meaningless while `isEmpty`.
 	 */
 	public var newest(default, null):Int = 0;
 
@@ -128,7 +128,7 @@ final class SequenceRing<T> {
 
 	/**
 	 * Takes out what is filed under `sequence`, and lets go of it. The window
-	 * stays where it is: `newest`, and `isEmpty()`, still answer for what
+	 * stays where it is: `newest`, and `isEmpty`, still answer for what
 	 * was put.
 	 *
 	 * @return `false` if nothing was filed under `sequence`, or it had aged
@@ -229,7 +229,9 @@ final class SequenceRing<T> {
 	/**
 	 * Whether nothing has been put since the ring was made or cleared.
 	 */
-	public function isEmpty():Bool {
+	public var isEmpty(get, never):Bool;
+
+	@:noCompletion private inline function get_isEmpty():Bool {
 		return __empty;
 	}
 

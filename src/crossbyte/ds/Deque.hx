@@ -108,11 +108,17 @@ class Deque<T> {
 		return __items[(__head + _size - 1) & (__items.length - 1)];
 	}
 
-	public function isEmpty():Bool {
+	/** Whether the deque holds no item. **/
+	public var isEmpty(get, never):Bool;
+
+	/** How many items the deque holds. **/
+	public var length(get, never):Int;
+
+	@:noCompletion private inline function get_isEmpty():Bool {
 		return _size == 0;
 	}
 
-	public function size():Int {
+	@:noCompletion private inline function get_length():Int {
 		return _size;
 	}
 

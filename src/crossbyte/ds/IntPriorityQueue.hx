@@ -22,7 +22,7 @@ import haxe.ds.Vector;
  * ```haxe
  * var queue = new IntPriorityQueue();
  * queue.enqueue(playerId, rating);
- * while (queue.size >= 2) {
+ * while (queue.length >= 2) {
  * 	startMatch(queue.dequeue(), queue.dequeue());
  * }
  * ```
@@ -31,7 +31,7 @@ import haxe.ds.Vector;
  */
 final class IntPriorityQueue {
 	/** How many ids are held. **/
-	public var size(default, null):Int = 0;
+	public var length(default, null):Int = 0;
 
 	/** Whether no id is held. **/
 	public var isEmpty(get, never):Bool;
@@ -63,7 +63,7 @@ final class IntPriorityQueue {
 	}
 
 	@:noCompletion private inline function get_isEmpty():Bool {
-		return size == 0;
+		return length == 0;
 	}
 
 	/** Whether `id` is held. **/
@@ -109,7 +109,7 @@ final class IntPriorityQueue {
 		__nextOrder += 1.0;
 		__slotOf.set(id, slot);
 
-		var i:Int = size++;
+		var i:Int = length++;
 		__heap[i] = slot;
 		__position[slot] = i;
 		__siftUp(i);
@@ -123,7 +123,7 @@ final class IntPriorityQueue {
 	 *         so without also being an id.
 	 */
 	public function dequeue():Int {
-		if (size == 0) {
+		if (length == 0) {
 			throw new IllegalOperationError("The queue is empty.");
 		}
 		var id:Int = __ids[__heap[0]];
@@ -137,7 +137,7 @@ final class IntPriorityQueue {
 	 * @throws IllegalOperationError If the queue is empty.
 	 */
 	public function peek():Int {
-		if (size == 0) {
+		if (length == 0) {
 			throw new IllegalOperationError("The queue is empty.");
 		}
 		return __ids[__heap[0]];
@@ -149,7 +149,7 @@ final class IntPriorityQueue {
 	 * @throws IllegalOperationError If the queue is empty.
 	 */
 	public function peekPriority():Float {
-		if (size == 0) {
+		if (length == 0) {
 			throw new IllegalOperationError("The queue is empty.");
 		}
 		return __priority[__heap[0]];
@@ -181,7 +181,7 @@ final class IntPriorityQueue {
 	/** Takes every id out. **/
 	public function clear():Void {
 		__slotOf.clear();
-		size = 0;
+		length = 0;
 		__freeCount = 0;
 		__slotCount = 0;
 		__nextOrder = 0.0;
@@ -198,7 +198,7 @@ final class IntPriorityQueue {
 		__slotOf.remove(__ids[slot]);
 		__free[__freeCount++] = slot;
 
-		var last:Int = --size;
+		var last:Int = --length;
 		if (i != last) {
 			var moved:Int = __heap[last];
 			__heap[i] = moved;
@@ -230,7 +230,7 @@ final class IntPriorityQueue {
 
 	@:noCompletion private function __siftDown(i:Int):Void {
 		var slot:Int = __heap[i];
-		var n:Int = size;
+		var n:Int = length;
 		while (true) {
 			var l:Int = (i << 1) + 1;
 			if (l >= n) {
@@ -269,7 +269,7 @@ final class IntPriorityQueue {
 			Vector.blit(__priority, 0, priority, 0, __slotCount);
 			Vector.blit(__order, 0, order, 0, __slotCount);
 			Vector.blit(__position, 0, position, 0, __slotCount);
-			Vector.blit(__heap, 0, heap, 0, size);
+			Vector.blit(__heap, 0, heap, 0, length);
 			Vector.blit(__free, 0, free, 0, __freeCount);
 		}
 		__ids = ids;

@@ -1375,14 +1375,14 @@ class CollectionsTest extends utest.Test {
 		deque.add("head");
 		deque.push("last");
 
-		Assert.isFalse(deque.isEmpty());
-		Assert.equals(3, deque.size());
+		Assert.isFalse(deque.isEmpty);
+		Assert.equals(3, deque.length);
 		Assert.equals("head", deque.first());
 		Assert.equals("last", deque.last());
 		Assert.equals("head", deque.pop());
 		Assert.equals("last", deque.remove());
 		Assert.equals("tail", deque.pop());
-		Assert.isTrue(deque.isEmpty());
+		Assert.isTrue(deque.isEmpty);
 		Assert.raises(() -> deque.pop());
 		Assert.raises(() -> deque.remove());
 		Assert.raises(() -> deque.first());
@@ -1410,13 +1410,13 @@ class CollectionsTest extends utest.Test {
 		var walked:Array<Int> = [for (x in deque) x];
 		var expected:Array<Int> = [for (i in 0...5) -5 + i].concat([for (i in 2...40) i]);
 		Assert.equals(expected.join(","), walked.join(","));
-		Assert.equals(expected.length, deque.size());
+		Assert.equals(expected.length, deque.length);
 		Assert.equals(-5, deque.first());
 		Assert.equals(39, deque.last());
 		Assert.equals(39, deque.remove());
 
 		deque.clear();
-		Assert.isTrue(deque.isEmpty());
+		Assert.isTrue(deque.isEmpty);
 		Assert.equals(0, [for (x in deque) x].length);
 		Assert.raises(() -> deque.pop());
 		deque.push(7);
@@ -1445,7 +1445,7 @@ class CollectionsTest extends utest.Test {
 			}
 		}) / 20000;
 		Assert.isTrue(perItem < 1, perItem + " bytes allocated per item added");
-		Assert.equals(64, deque.size());
+		Assert.equals(64, deque.length);
 	}
 	#end
 
@@ -1468,12 +1468,12 @@ class CollectionsTest extends utest.Test {
 
 		high.priority = 6;
 		queue.enqueue(high);
-		Assert.equals(3, queue.size);
+		Assert.equals(3, queue.length);
 
 		Assert.equals("low", queue.dequeue().name);
 		Assert.isTrue(queue.remove(mid));
 		Assert.isFalse(queue.contains(mid));
-		Assert.equals(1, queue.size);
+		Assert.equals(1, queue.length);
 
 		queue.clear();
 		Assert.isTrue(queue.isEmpty);
@@ -1510,7 +1510,7 @@ class CollectionsTest extends utest.Test {
 			pairs.push(pair.key + "=" + pair.value);
 		}
 		Assert.equals("b=2,a=4", pairs.join(","));
-		Assert.equals(2, map.length());
+		Assert.equals(2, map.length);
 	}
 
 	public function testIndexedMapMaintainsDenseStorageAcrossRemoval():Void {
@@ -1519,14 +1519,14 @@ class CollectionsTest extends utest.Test {
 		map.add("twenty", 20);
 		map.set(30, "thirty");
 
-		Assert.equals(3, map.length());
+		Assert.equals(3, map.length);
 		Assert.equals("ten", map.get(10));
 		Assert.equals("thirty", map.get(30));
 		Assert.isTrue(map.exists(20));
 
 		Assert.isTrue(map.remove(20));
 		Assert.isFalse(map.exists(20));
-		Assert.equals(2, map.length());
+		Assert.equals(2, map.length);
 		Assert.isFalse(map.remove(20));
 
 		var keys = map.keys();
@@ -1538,7 +1538,7 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("ten,thirty", values.join(","));
 
 		map.clear();
-		Assert.equals(0, map.length());
+		Assert.equals(0, map.length);
 		Assert.equals(0, map.keys().length);
 	}
 
@@ -1561,7 +1561,7 @@ class CollectionsTest extends utest.Test {
 			map.remove(map.keys()[0]);
 		}
 		Assert.equals(6, visits);
-		Assert.equals(0, map.length());
+		Assert.equals(0, map.length);
 
 		var distinct = new IndexedMap<String>();
 		for (i in 0...6) {
@@ -1577,7 +1577,7 @@ class CollectionsTest extends utest.Test {
 		}
 		seen.sort(Reflect.compare);
 		Assert.equals("v0,v1,v2,v3,v4,v5", seen.join(","));
-		Assert.equals(3, distinct.length());
+		Assert.equals(3, distinct.length);
 	}
 
 	/**
@@ -1628,8 +1628,8 @@ class CollectionsTest extends utest.Test {
 					wrong.push("holds " + key + " as " + map.get(key) + ", not " + model.get(key));
 				}
 			}
-			if (map.length() != count) {
-				wrong.push("length " + map.length() + ", not " + count);
+			if (map.length != count) {
+				wrong.push("length " + map.length + ", not " + count);
 			}
 			var keys = map.keys();
 			var values = map.toArray();
@@ -1702,7 +1702,7 @@ class CollectionsTest extends utest.Test {
 		#if jvm
 		Assert.equals(0.0, far.perOperation, "a removal and an addition allocated " + far);
 		#end
-		Assert.equals(1000, map.length());
+		Assert.equals(1000, map.length);
 		Assert.isTrue(sum > 0);
 		#else
 		Assert.pass();

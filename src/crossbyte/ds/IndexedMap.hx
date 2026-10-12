@@ -130,11 +130,11 @@ class IndexedMap<T> {
 	}
 
 	/**
-	 * Returns the number of values stored.
-	 *
-	 * @return The number of entries in the map.
+	 * The number of values stored.
 	 */
-	public inline function length():Int {
+	public var length(get, never):Int;
+
+	@:noCompletion private inline function get_length():Int {
 		return values.length;
 	}
 
