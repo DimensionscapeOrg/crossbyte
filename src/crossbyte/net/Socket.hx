@@ -1133,7 +1133,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
 			__cleanupFailedConnect();
-			throw "Socket can only be initiated in a CrossByte threaded instance";
+			throw new IllegalOperationError("Socket can only be initiated in a CrossByte threaded instance");
 		}
 
 		if (h == null) {

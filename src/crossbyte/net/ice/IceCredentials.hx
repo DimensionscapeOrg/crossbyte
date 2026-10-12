@@ -89,7 +89,7 @@ class IceCredentials {
 	/**
 		A fresh pair from the platform CSPRNG.
 
-		@throws String on a target with no secure source, rather than falling
+		@throws IllegalOperationError on a target with no secure source, rather than falling
 		back to one that only looks random. Check `isSupported`, or construct
 		them directly from credentials a peer sent.
 	**/

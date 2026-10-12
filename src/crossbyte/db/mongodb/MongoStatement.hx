@@ -101,11 +101,11 @@ class MongoStatement extends EventDispatcher {
 		fetched at once; with a positive count, that many, and `next` fetches
 		more.
 
-		@throws String When no connection is set.
+		@throws IllegalOperationError When no connection is set.
 	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__sqlConnection == null) {
-			throw "MongoStatement: no connection set.";
+			throw new crossbyte.errors.IllegalOperationError("MongoStatement: no connection set.");
 		}
 
 		__executing = true;
@@ -141,7 +141,7 @@ class MongoStatement extends EventDispatcher {
 	/** Fetches the next `prefetch` documents, or all that remain with -1. **/
 	public function next(prefetch:Int = -1):Void {
 		if (__cursor == null) {
-			throw "MongoDB Error - invalid result set";
+			throw new crossbyte.errors.IllegalOperationError("MongoDB Error - invalid result set");
 		}
 
 		__prefetch = prefetch;

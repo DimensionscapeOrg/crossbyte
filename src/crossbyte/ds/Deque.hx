@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.IllegalOperationError;
 import haxe.ds.Vector;
 
 /**
@@ -59,11 +60,11 @@ class Deque<T> {
 	/**
 	 * Removes and returns the item at the front.
 	 *
-	 * @throws String If the deque is empty.
+	 * @throws IllegalOperationError If the deque is empty.
 	 */
 	public function pop():T {
 		if (_size == 0)
-			throw "Deque is empty";
+			throw new IllegalOperationError("Deque is empty");
 		var value:T = __items[__head];
 		__items[__head] = null;
 		__head = (__head + 1) & (__items.length - 1);
@@ -74,11 +75,11 @@ class Deque<T> {
 	/**
 	 * Removes and returns the item at the back.
 	 *
-	 * @throws String If the deque is empty.
+	 * @throws IllegalOperationError If the deque is empty.
 	 */
 	public function remove():T {
 		if (_size == 0)
-			throw "Deque is empty";
+			throw new IllegalOperationError("Deque is empty");
 		var at:Int = (__head + _size - 1) & (__items.length - 1);
 		var value:T = __items[at];
 		__items[at] = null;
@@ -89,22 +90,22 @@ class Deque<T> {
 	/**
 	 * The item at the front, left in place.
 	 *
-	 * @throws String If the deque is empty.
+	 * @throws IllegalOperationError If the deque is empty.
 	 */
 	public function first():T {
 		if (_size == 0)
-			throw "Deque is empty";
+			throw new IllegalOperationError("Deque is empty");
 		return __items[__head];
 	}
 
 	/**
 	 * The item at the back, left in place.
 	 *
-	 * @throws String If the deque is empty.
+	 * @throws IllegalOperationError If the deque is empty.
 	 */
 	public function last():T {
 		if (_size == 0)
-			throw "Deque is empty";
+			throw new IllegalOperationError("Deque is empty");
 		return __items[(__head + _size - 1) & (__items.length - 1)];
 	}
 

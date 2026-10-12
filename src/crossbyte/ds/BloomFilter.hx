@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.RangeError;
 import crossbyte.utils.Hash;
 import haxe.ds.Vector;
@@ -41,10 +42,10 @@ class BloomFilter {
 	 */
 	public function new(size:Int, numHashFunctions:Int) {
 		if (size <= 0) {
-			throw "BloomFilter size must be greater than zero";
+			throw new ArgumentError("BloomFilter size must be greater than zero");
 		}
 		if (numHashFunctions <= 0) {
-			throw "BloomFilter must use at least one hash function";
+			throw new ArgumentError("BloomFilter must use at least one hash function");
 		}
 
 		this.size = size;

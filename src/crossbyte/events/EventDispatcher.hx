@@ -1,5 +1,6 @@
 package crossbyte.events;
 
+import crossbyte.errors.ArgumentError;
 import haxe.ds.StringMap;
 import crossbyte.Function;
 import crossbyte.Object;
@@ -133,7 +134,7 @@ class EventDispatcher implements IEventDispatcher {
 	 * @param listener A callback of type `T -> Void` to be invoked when the event is dispatched.
 	 * @param priority Where the listener runs among the others for `type`:
 	 *        higher runs earlier. Defaults to `0`.
-	 * @throws String If `listener` is null.
+	 * @throws ArgumentError If `listener` is null.
 	 *
 	 * @example
 	 * ```haxe
@@ -144,7 +145,7 @@ class EventDispatcher implements IEventDispatcher {
 	 */
 	public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		if (listener == null) {
-			throw "listener must not be null";
+			throw new ArgumentError("listener must not be null");
 		}
 
 		var entry:ListenerEntry = new ListenerEntry(cast listener, priority, __nextListenerOrder++);

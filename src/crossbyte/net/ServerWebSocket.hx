@@ -1328,7 +1328,7 @@ class ServerWebSocket extends ServerSocket {
 	override public function listen(backlog:Int = 0):Void {
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
-			throw "ServerWebSocket can only be initiated in a CrossByte threaded instance";
+			throw new crossbyte.errors.IllegalOperationError("ServerWebSocket can only be initiated in a CrossByte threaded instance");
 		}
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");

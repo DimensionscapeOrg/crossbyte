@@ -1,5 +1,6 @@
 package crossbyte.core;
 
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.EventType;
@@ -131,7 +132,7 @@ class Application extends EventDispatcher {
 	 */
 	private function initialize():Void {
 		if (__application != null) {
-			throw "Application must only be instantiated once by extending it.";
+			throw new IllegalOperationError("Application must only be instantiated once by extending it.");
 		}
 
 		// Ensure we're in the main thread
@@ -141,7 +142,7 @@ class Application extends EventDispatcher {
 		// Thread.current() hands out a new one on every call, so != would be
 		// true on the main thread itself.
 		if (!(Thread.current() == __mainThread)) {
-			throw "Application must only be instantiated in the main thread!";
+			throw new IllegalOperationError("Application must only be instantiated in the main thread!");
 		}
 		#end
 

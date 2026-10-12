@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.RangeError;
 import haxe.ds.Vector;
 
 /**
@@ -51,11 +52,11 @@ final class IdList {
 	/**
 	 * The id at `index`, counting from 0.
 	 *
-	 * @throws String If `index` is not below `length`.
+	 * @throws RangeError If `index` is not below `length`.
 	 */
 	public inline function get(index:Int):Int {
 		if (index < 0 || index >= length) {
-			throw 'Index $index is out of bounds (length $length)';
+			throw new RangeError('Index $index is out of bounds (length $length)');
 		}
 		return __ids[index];
 	}

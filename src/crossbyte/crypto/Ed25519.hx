@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -91,7 +92,7 @@ class Ed25519 {
 		var secretKey = Bytes.alloc(SECRET_KEY_BYTES);
 		var rc = NativeSodium.ed25519Keypair(__ptr(publicKey), __ptr(secretKey));
 		if (rc != 0) {
-			throw "libsodium crypto_sign_keypair failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_sign_keypair failed: " + rc);
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
 		#else
@@ -110,7 +111,7 @@ class Ed25519 {
 	public static function signDetached(message:Bytes, secretKey:Bytes):Bytes {
 		#if cpp
 		if (secretKey == null || secretKey.length != SECRET_KEY_BYTES) {
-			throw "secretKey must be " + SECRET_KEY_BYTES + " bytes";
+			throw new ArgumentError("secretKey must be " + SECRET_KEY_BYTES + " bytes");
 		}
 
 		__ensureAvailable();
@@ -118,7 +119,7 @@ class Ed25519 {
 		var signature = Bytes.alloc(SIGNATURE_BYTES);
 		var rc = NativeSodium.ed25519SignDetached(__ptr(signature), __cptrOrNull(message), __length(message), __cptr(secretKey));
 		if (rc != 0) {
-			throw "libsodium crypto_sign_detached failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_sign_detached failed: " + rc);
 		}
 		return signature;
 		#else
@@ -138,7 +139,7 @@ class Ed25519 {
 	 * @throws IllegalOperationError On a target other than native cpp, whatever
 	 *         it is handed, rather than answering `false`, the answer for a
 	 *         forged signature.
-	 * @throws String When libsodium could not be started, as signing does.
+	 * @throws IllegalOperationError When libsodium could not be started, as signing does.
 	 */
 	public static function verifyDetached(signature:Bytes, message:Bytes, publicKey:Bytes):Bool {
 		#if cpp
@@ -179,7 +180,7 @@ class Ed25519 {
 	@:noCompletion
 	private static inline function __ensureAvailable():Void {
 		if (!NativeSodium.isAvailable()) {
-			throw availabilityMessage();
+			throw new crossbyte.errors.IllegalOperationError(availabilityMessage());
 		}
 	}
 	#end

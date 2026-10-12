@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -69,10 +70,10 @@ class GenericHash {
 	public static function hash(data:Bytes, ?key:Bytes, length:Int = BYTES_DEFAULT):Bytes {
 		#if cpp
 		if (length < BYTES_MIN || length > BYTES_MAX) {
-			throw "digest length must be between " + BYTES_MIN + " and " + BYTES_MAX + " bytes";
+			throw new ArgumentError("digest length must be between " + BYTES_MIN + " and " + BYTES_MAX + " bytes");
 		}
 		if (key != null && (key.length < KEY_BYTES_MIN || key.length > KEY_BYTES_MAX)) {
-			throw "key length must be between " + KEY_BYTES_MIN + " and " + KEY_BYTES_MAX + " bytes";
+			throw new ArgumentError("key length must be between " + KEY_BYTES_MIN + " and " + KEY_BYTES_MAX + " bytes");
 		}
 
 		SodiumGlue.ensureAvailable();
@@ -81,7 +82,7 @@ class GenericHash {
 		var rc = NativeSodium.genericHash(SodiumGlue.ptr(digest), length, SodiumGlue.cptrOrEmpty(data), SodiumGlue.len(data),
 			SodiumGlue.cptrOrEmpty(key), SodiumGlue.len(key));
 		if (rc != 0) {
-			throw "libsodium crypto_generichash failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_generichash failed: " + rc);
 		}
 		return digest;
 		#else

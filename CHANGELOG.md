@@ -2010,6 +2010,20 @@ an API added in this release has is not listed here.
   `length`, as on every other `crossbyte.ds` type: drop the parentheses.
   `Deque.isEmpty()` is the property `isEmpty`, as on `PriorityQueue` and
   `Stack`.
+- Where CrossByte threw a `String`, it throws one of its error classes,
+  with the same text: an `ArgumentError` for a bad argument (crypto keys,
+  nonces and lengths, JWK and JWKS documents, a JWT signer's keys,
+  `RateLimiter`'s limits, a slot map's or `BloomFilter`'s size, a `URL`
+  that does not parse, a null listener); a `RangeError` for an index or
+  position out of range (`BitmapData` pixels, `IdList`, `ListedMap`,
+  `ByteArrayInput`, a varint too long); an `EOFError` for a
+  `ByteArrayInput` read past its end; an `IllegalOperationError` for a call
+  the state refuses (an empty `Deque`, a full slot map, a disposed
+  `BitmapData`, a statement with no connection, an `ObjectPool` object
+  given back twice, a socket started on a thread with no runtime, a
+  second `Application`); and a `crossbyte.errors.Error` where libsodium,
+  BLAKE3 or mbedTLS failed. `catch (e:String)` no longer catches them:
+  catch the class, or `crossbyte.errors.Error`, which they all extend.
 
 #### TCP
 

@@ -112,7 +112,7 @@ class MySQLStatement extends EventDispatcher {
 	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__live() == null) {
-			throw "MySQLStatement: no connection set.";
+			throw new crossbyte.errors.IllegalOperationError("MySQLStatement: no connection set.");
 		}
 
 		// Before anything changes: a parameter with no literal (a NaN) throws
@@ -255,7 +255,7 @@ class MySQLStatement extends EventDispatcher {
 
 	public function next(prefetch:Int = -1):Void {
 		if (__resultSet == null) {
-			throw "MySQL Error - invalid result set";
+			throw new crossbyte.errors.IllegalOperationError("MySQL Error - invalid result set");
 		}
 		__prefetch = prefetch;
 
@@ -400,7 +400,7 @@ class MySQLStatement extends EventDispatcher {
 	**/
 	public function executeEach(each:SQLRow->Void):Float {
 		if (__live() == null) {
-			throw "MySQLStatement: no connection set.";
+			throw new crossbyte.errors.IllegalOperationError("MySQLStatement: no connection set.");
 		}
 
 		var sql:String = __applyParameters(text);

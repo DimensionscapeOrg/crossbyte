@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -50,7 +51,7 @@ class X25519 {
 	public static function scalarmultBase(scalar:Bytes):Bytes {
 		#if cpp
 		if (scalar == null || scalar.length != SCALAR_BYTES) {
-			throw "scalar must be " + SCALAR_BYTES + " bytes";
+			throw new ArgumentError("scalar must be " + SCALAR_BYTES + " bytes");
 		}
 
 		SodiumGlue.ensureAvailable();
@@ -58,7 +59,7 @@ class X25519 {
 		var point = Bytes.alloc(POINT_BYTES);
 		var rc = NativeSodium.scalarmultBase(SodiumGlue.ptr(point), SodiumGlue.cptr(scalar));
 		if (rc != 0) {
-			throw "libsodium crypto_scalarmult_curve25519_base failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_scalarmult_curve25519_base failed: " + rc);
 		}
 		return point;
 		#else
@@ -76,10 +77,10 @@ class X25519 {
 	public static function scalarmult(scalar:Bytes, peerPoint:Bytes):Bytes {
 		#if cpp
 		if (scalar == null || scalar.length != SCALAR_BYTES) {
-			throw "scalar must be " + SCALAR_BYTES + " bytes";
+			throw new ArgumentError("scalar must be " + SCALAR_BYTES + " bytes");
 		}
 		if (peerPoint == null || peerPoint.length != POINT_BYTES) {
-			throw "peerPoint must be " + POINT_BYTES + " bytes";
+			throw new ArgumentError("peerPoint must be " + POINT_BYTES + " bytes");
 		}
 
 		SodiumGlue.ensureAvailable();
@@ -87,7 +88,7 @@ class X25519 {
 		var point = Bytes.alloc(POINT_BYTES);
 		var rc = NativeSodium.scalarmult(SodiumGlue.ptr(point), SodiumGlue.cptr(scalar), SodiumGlue.cptr(peerPoint));
 		if (rc != 0) {
-			throw "libsodium crypto_scalarmult_curve25519 rejected the peer point (small-order element): " + rc;
+			throw new ArgumentError("libsodium crypto_scalarmult_curve25519 rejected the peer point (small-order element): " + rc);
 		}
 		return point;
 		#else

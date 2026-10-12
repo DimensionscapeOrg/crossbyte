@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -75,7 +76,7 @@ class Blake3 {
 	public static function hash(input:Bytes, outputLength:Int = DEFAULT_OUTPUT_BYTES):Bytes {
 		#if cpp
 		if (outputLength < 0) {
-			throw "outputLength must be >= 0";
+			throw new ArgumentError("outputLength must be >= 0");
 		}
 
 		var output = Bytes.alloc(outputLength);
@@ -85,7 +86,7 @@ class Blake3 {
 
 		var rc = NativeBlake3.hash(__cptrOrNull(input), __length(input), __ptr(output), outputLength);
 		if (rc != 0) {
-			throw "BLAKE3 hashing failed: " + rc;
+			throw new crossbyte.errors.Error("BLAKE3 hashing failed: " + rc);
 		}
 		return output;
 		#else

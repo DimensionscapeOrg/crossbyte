@@ -1,5 +1,6 @@
 package crossbyte.rpc._internal;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArrayInput;
 import haxe.io.Bytes;
 
@@ -45,7 +46,7 @@ class RPCRuntimeCodec {
 	}
 
 	/**
-		@throws String For a value of a type the lane does not carry, of which
+		@throws ArgumentError For a value of a type the lane does not carry, of which
 		        nothing has been written.
 	**/
 	public static function writeValue(output:RPCFrame, value:Dynamic):Void {
@@ -71,7 +72,7 @@ class RPCRuntimeCodec {
 				output.putByte(TAG_BYTES);
 				output.putBytes(cast value);
 			case _:
-				throw "Unsupported runtime RPC value: " + Std.string(Type.typeof(value));
+				throw new ArgumentError("Unsupported runtime RPC value: " + Std.string(Type.typeof(value)));
 		}
 	}
 

@@ -1,5 +1,6 @@
 package crossbyte.crypto.password;
 
+import crossbyte.errors.ArgumentError;
 import haxe.crypto.BaseCode;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
@@ -214,7 +215,7 @@ class BCrypt {
 	 */
 	public static function hash(password:String, cost:Int = 12):String {
 		if (password == null || password.length == 0) {
-			throw "Password must not be empty";
+			throw new ArgumentError("Password must not be empty");
 		}
 		#if php
 		var phpOptions:NativeAssocArray<Dynamic> = new NativeAssocArray();
@@ -227,7 +228,7 @@ class BCrypt {
 		key.fill(0, key.length, 0);
 
 		if (hashed == null) {
-			throw "bcrypt could not use the salt it generated";
+			throw new crossbyte.errors.Error("bcrypt could not use the salt it generated");
 		}
 		return hashed;
 		#end
@@ -334,7 +335,7 @@ class BCrypt {
 
 	@:noCompletion private static function __generateSalt(rounds:Int = 12):String {
 		if (rounds < 4 || rounds > 31) {
-			throw "Salt rounds should be between 4 and 31";
+			throw new ArgumentError("Salt rounds should be between 4 and 31");
 		}
 
 		var rng:Bytes = SecureRandom.getSecureRandomBytes(SALT_LENGTH);

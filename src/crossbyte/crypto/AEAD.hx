@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -83,7 +84,7 @@ class AEAD {
 		var rc = NativeSodium.aeadEncrypt(SodiumGlue.ptr(sealed), SodiumGlue.cptrOrEmpty(plaintext), plaintextLength,
 			SodiumGlue.cptrOrEmpty(associatedData), SodiumGlue.len(associatedData), SodiumGlue.cptr(nonce), SodiumGlue.cptr(key));
 		if (rc != 0) {
-			throw "libsodium crypto_aead_xchacha20poly1305_ietf_encrypt failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_aead_xchacha20poly1305_ietf_encrypt failed: " + rc);
 		}
 		return sealed;
 		#else
@@ -125,10 +126,10 @@ class AEAD {
 	@:noCompletion
 	private static function __validateNonceAndKey(nonce:Bytes, key:Bytes):Void {
 		if (nonce == null || nonce.length != NONCE_BYTES) {
-			throw "nonce must be " + NONCE_BYTES + " bytes";
+			throw new ArgumentError("nonce must be " + NONCE_BYTES + " bytes");
 		}
 		if (key == null || key.length != KEY_BYTES) {
-			throw "key must be " + KEY_BYTES + " bytes";
+			throw new ArgumentError("key must be " + KEY_BYTES + " bytes");
 		}
 	}
 

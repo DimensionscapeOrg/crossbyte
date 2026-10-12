@@ -61,7 +61,7 @@ class SignatureKey {
 	 * Parses a PEM private key: PKCS#8, or PKCS#1 RSA, or SEC1 EC; unencrypted.
 	 *
 	 * @throws ArgumentError When `pem` is empty.
-	 * @throws String When mbedTLS cannot read it, with mbedTLS's reason.
+	 * @throws ArgumentError When mbedTLS cannot read it, with mbedTLS's reason.
 	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function fromPrivatePem(pem:String):SignatureKey {
@@ -72,7 +72,7 @@ class SignatureKey {
 	 * Parses a PEM public key (`SubjectPublicKeyInfo`, as `JWK.toPem` produces).
 	 *
 	 * @throws ArgumentError When `pem` is empty.
-	 * @throws String When mbedTLS cannot read it.
+	 * @throws ArgumentError When mbedTLS cannot read it.
 	 * @throws IllegalOperationError On a target other than native cpp.
 	 */
 	public static function fromPublicPem(pem:String):SignatureKey {
@@ -84,7 +84,7 @@ class SignatureKey {
 	 *
 	 * @param format Encoding to produce. Use `JOSE` for `ES256` JWTs.
 	 * @throws ArgumentError When `message` is null or this is a public key.
-	 * @throws String When the key has been disposed of, or mbedTLS fails.
+	 * @throws crossbyte.errors.Error When the key has been disposed of, or mbedTLS fails.
 	 */
 	public function sign(message:Bytes, format:SignatureFormat = NATIVE):Bytes {
 		if (message == null) {
@@ -107,10 +107,10 @@ class SignatureKey {
 		var rc:Int = NativePk.signSha256(__handle, SodiumGlue.cptr(hash), SodiumGlue.ptr(scratch), scratch.length, Pointer.arrayElem(produced, 0).raw,
 			format);
 		if (rc != 0) {
-			throw 'Signing failed: ' + NativePk.errorMessage(rc) + ' (code $rc)';
+			throw new crossbyte.errors.Error('Signing failed: ' + NativePk.errorMessage(rc) + ' (code $rc)');
 		}
 		if (produced[0] <= 0) {
-			throw "mbedTLS signing produced an empty signature.";
+			throw new crossbyte.errors.Error("mbedTLS signing produced an empty signature.");
 		}
 		return scratch.sub(0, produced[0]);
 		#else
@@ -180,7 +180,7 @@ class SignatureKey {
 
 		if (!NativePk.isAvailable()) {
 			if (throws) {
-				throw PublicKeySignature.UNAVAILABLE;
+				throw new crossbyte.errors.IllegalOperationError(PublicKeySignature.UNAVAILABLE);
 			}
 			return null;
 		}
@@ -193,7 +193,7 @@ class SignatureKey {
 
 		if (handle == null) {
 			if (throws) {
-				throw 'Not a PEM ' + (isPrivate ? "private" : "public") + ' key mbedTLS can read: ' + NativePk.errorMessage(error[0]);
+				throw new ArgumentError('Not a PEM ' + (isPrivate ? "private" : "public") + ' key mbedTLS can read: ' + NativePk.errorMessage(error[0]));
 			}
 			return null;
 		}

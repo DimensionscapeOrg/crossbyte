@@ -35,8 +35,8 @@ class BCryptHardeningTest extends utest.Test {
 	public function testEmptyPasswordIsRejected():Void {
 		// hash() throws on an empty/null password before touching the CSPRNG,
 		// so this is exercisable on every target.
-		Assert.raises(() -> BCrypt.hash(""), String);
-		Assert.raises(() -> BCrypt.hash(null), String);
+		Assert.raises(() -> BCrypt.hash(""), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> BCrypt.hash(null), crossbyte.errors.ArgumentError);
 
 		// verify() never matches an empty/null password and returns false.
 		Assert.isFalse(BCrypt.verify("", COST_12_HASH));

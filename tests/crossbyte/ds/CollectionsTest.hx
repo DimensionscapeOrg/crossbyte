@@ -85,8 +85,8 @@ class CollectionsTest extends utest.Test {
 	}
 
 	public function testBloomFilterRejectsInvalidConstruction():Void {
-		Assert.raises(() -> new BloomFilter(0, 3));
-		Assert.raises(() -> new BloomFilter(16, 0));
+		Assert.raises(() -> new BloomFilter(0, 3), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> new BloomFilter(16, 0), crossbyte.errors.ArgumentError);
 	}
 
 	public function testBitSetSupportsGrowthMutationAndLogicalLength():Void {
@@ -1383,10 +1383,10 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("last", deque.remove());
 		Assert.equals("tail", deque.pop());
 		Assert.isTrue(deque.isEmpty);
-		Assert.raises(() -> deque.pop());
-		Assert.raises(() -> deque.remove());
-		Assert.raises(() -> deque.first());
-		Assert.raises(() -> deque.last());
+		Assert.raises(() -> deque.pop(), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> deque.remove(), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> deque.first(), crossbyte.errors.IllegalOperationError);
+		Assert.raises(() -> deque.last(), crossbyte.errors.IllegalOperationError);
 	}
 
 	/**
@@ -1418,7 +1418,7 @@ class CollectionsTest extends utest.Test {
 		deque.clear();
 		Assert.isTrue(deque.isEmpty);
 		Assert.equals(0, [for (x in deque) x].length);
-		Assert.raises(() -> deque.pop());
+		Assert.raises(() -> deque.pop(), crossbyte.errors.IllegalOperationError);
 		deque.push(7);
 		deque.add(6);
 		Assert.equals("6,7", [for (x in deque) x].join(","));

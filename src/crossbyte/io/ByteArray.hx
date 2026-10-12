@@ -2059,7 +2059,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	@:noCompletion private function explicitResize(size:Int):Void {
 		#if debug
 		if (size < 0)
-			throw "`__explicitResize`: size < 0";
+			throw new RangeError("`__explicitResize`: size < 0");
 		#end
 
 		if (size > __length) {

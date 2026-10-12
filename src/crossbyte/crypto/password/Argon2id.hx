@@ -1,5 +1,6 @@
 package crossbyte.crypto.password;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 import crossbyte.Future;
 import crossbyte.crypto.password._internal.PasswordWork;
@@ -130,11 +131,11 @@ class Argon2id {
 	 * Hashes `password` into a self-describing PHC string.
 	 *
 	 * @throws IllegalOperationError When no backend is available.
-	 * @throws String When the limits are below the minimums.
+	 * @throws ArgumentError When the limits are below the minimums.
 	 */
 	public static function hash(password:String, opslimit:Int = OPSLIMIT_INTERACTIVE, memlimit:Int = MEMLIMIT_INTERACTIVE):String {
 		if (password == null) {
-			throw "password must not be null";
+			throw new ArgumentError("password must not be null");
 		}
 		__validateLimits(opslimit, memlimit);
 
@@ -146,7 +147,7 @@ class Argon2id {
 		var rc = NativeSodium.pwhashStr(SodiumGlue.ptr(out), SodiumGlue.cptrOrEmpty(passwordBytes), passwordBytes.length, opslimit, memlimit);
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		if (rc != 0) {
-			throw "libsodium crypto_pwhash_str failed (out of memory?): " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_pwhash_str failed (out of memory?): " + rc);
 		}
 
 		var terminator = 0;
@@ -243,13 +244,13 @@ class Argon2id {
 	 */
 	public static function derive(password:String, salt:Bytes, length:Int, opslimit:Int, memlimit:Int):Bytes {
 		if (password == null) {
-			throw "password must not be null";
+			throw new ArgumentError("password must not be null");
 		}
 		if (salt == null || salt.length != SALT_BYTES) {
-			throw "salt must be " + SALT_BYTES + " bytes";
+			throw new ArgumentError("salt must be " + SALT_BYTES + " bytes");
 		}
 		if (length < BYTES_MIN) {
-			throw "derived length must be at least " + BYTES_MIN + " bytes";
+			throw new ArgumentError("derived length must be at least " + BYTES_MIN + " bytes");
 		}
 		__validateLimits(opslimit, memlimit);
 
@@ -262,7 +263,7 @@ class Argon2id {
 			SodiumGlue.cptr(salt), opslimit, memlimit);
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		if (rc != 0) {
-			throw "libsodium crypto_pwhash failed (out of memory?): " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_pwhash failed (out of memory?): " + rc);
 		}
 		return out;
 		#elseif nodejs
@@ -292,7 +293,7 @@ class Argon2id {
 		var completer:Completer<String> = new Completer<String>();
 		try {
 			if (password == null) {
-				throw "password must not be null";
+				throw new ArgumentError("password must not be null");
 			}
 			__validateLimits(opslimit, memlimit);
 			__requireNode();
@@ -368,10 +369,10 @@ class Argon2id {
 	@:noCompletion
 	private static function __validateLimits(opslimit:Int, memlimit:Int):Void {
 		if (opslimit < OPSLIMIT_MIN) {
-			throw "opslimit must be at least " + OPSLIMIT_MIN;
+			throw new ArgumentError("opslimit must be at least " + OPSLIMIT_MIN);
 		}
 		if (memlimit < MEMLIMIT_MIN) {
-			throw "memlimit must be at least " + MEMLIMIT_MIN + " bytes";
+			throw new ArgumentError("memlimit must be at least " + MEMLIMIT_MIN + " bytes");
 		}
 	}
 

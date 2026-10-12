@@ -69,7 +69,7 @@ abstract RPCRequestWriter<T>(RPCFrame) {
 		Any value `call` carries, tagged as `call` tags it, for a value whose
 		type is known only at run time.
 
-		@throws String For a value of a type the lane does not carry; the call
+		@throws ArgumentError For a value of a type the lane does not carry; the call
 		        can still be cancelled.
 	**/
 	public inline function value(value:Dynamic):RPCRequestWriter<T> {

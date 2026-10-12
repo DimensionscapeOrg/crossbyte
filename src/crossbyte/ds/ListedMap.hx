@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.RangeError;
 import haxe.ds.ReadOnlyArray;
 import haxe.ds.Map;
 #if (cpp && !cppia)
@@ -154,7 +155,7 @@ final class ListedMap<K:Dynamic, V> {
 	public #if !debug inline #end function valueAt(i:Int):Null<V> {
 		#if debug
 		if (i < 0 || i >= __keyValuePairs.length)
-			throw 'Index $i is out of bounds (size: ${__keyValuePairs.length})';
+			throw new RangeError('Index $i is out of bounds (size: ${__keyValuePairs.length})');
 		#end
 
 		return __keyValuePairs[i].value;

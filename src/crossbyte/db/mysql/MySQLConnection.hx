@@ -1196,15 +1196,15 @@ private class NoRows implements ResultSet {
 	}
 
 	public function getResult(n:Int):String {
-		throw "No rows.";
+		throw new crossbyte.errors.IllegalOperationError("No rows.");
 	}
 
 	public function getIntResult(n:Int):Int {
-		throw "No rows.";
+		throw new crossbyte.errors.IllegalOperationError("No rows.");
 	}
 
 	public function getFloatResult(n:Int):Float {
-		throw "No rows.";
+		throw new crossbyte.errors.IllegalOperationError("No rows.");
 	}
 
 	public function getFieldsNames():Null<Array<String>> {

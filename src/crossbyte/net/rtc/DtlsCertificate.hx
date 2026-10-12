@@ -147,7 +147,7 @@ class DtlsCertificate {
 			// The mbedtls code, because a failure here is not reproducible on
 			// demand and "it did not work" is the least useful thing this could
 			// say about one.
-			throw "A certificate could not be generated: mbedTLS returned " + NativeDtls.lastError() + ".";
+			throw new crossbyte.errors.Error("A certificate could not be generated: mbedTLS returned " + NativeDtls.lastError() + ".");
 		}
 
 		return new DtlsCertificate(made[0], made[1]);

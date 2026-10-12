@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -59,7 +60,7 @@ class HKDF {
 		var rc = NativeSodium.hkdfSha256Extract(SodiumGlue.ptr(prk), SodiumGlue.cptrOrEmpty(salt), SodiumGlue.len(salt),
 			SodiumGlue.cptrOrEmpty(ikm), SodiumGlue.len(ikm));
 		if (rc != 0) {
-			throw "libsodium crypto_kdf_hkdf_sha256_extract failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_kdf_hkdf_sha256_extract failed: " + rc);
 		}
 		return prk;
 		#else
@@ -77,10 +78,10 @@ class HKDF {
 	public static function sha256Expand(prk:Bytes, ?info:Bytes, length:Int):Bytes {
 		#if cpp
 		if (prk == null || prk.length != SHA256_PRK_BYTES) {
-			throw "prk must be " + SHA256_PRK_BYTES + " bytes";
+			throw new ArgumentError("prk must be " + SHA256_PRK_BYTES + " bytes");
 		}
 		if (length <= 0 || length > SHA256_EXPAND_MAX_BYTES) {
-			throw "output length must be between 1 and " + SHA256_EXPAND_MAX_BYTES + " bytes";
+			throw new ArgumentError("output length must be between 1 and " + SHA256_EXPAND_MAX_BYTES + " bytes");
 		}
 
 		SodiumGlue.ensureAvailable();
@@ -88,7 +89,7 @@ class HKDF {
 		var okm = Bytes.alloc(length);
 		var rc = NativeSodium.hkdfSha256Expand(SodiumGlue.ptr(okm), length, SodiumGlue.cptrOrEmpty(info), SodiumGlue.len(info), SodiumGlue.cptr(prk));
 		if (rc != 0) {
-			throw "libsodium crypto_kdf_hkdf_sha256_expand failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_kdf_hkdf_sha256_expand failed: " + rc);
 		}
 		return okm;
 		#else

@@ -1,5 +1,6 @@
 package crossbyte.utils;
 
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.ds.Stack;
 import crossbyte.errors.ArgumentError;
 
@@ -136,7 +137,7 @@ final class ObjectPool<T:{}> {
 
 		#if debug
 		if (__inUse.exists(obj))
-			throw "ObjectPool: double-loan";
+			throw new IllegalOperationError("ObjectPool: double-loan");
 		__inUse.set(obj, true);
 		#end
 
@@ -161,9 +162,9 @@ final class ObjectPool<T:{}> {
 	@:noCompletion private inline function __release(obj:T, reset:Bool):Bool {
 		#if debug
 		if (obj == null)
-			throw "Released object cant be null";
+			throw new ArgumentError("Released object cant be null");
 		if (!__inUse.remove(obj))
-			throw "ObjectPool: foreign or already-released object";
+			throw new IllegalOperationError("ObjectPool: foreign or already-released object");
 		#end
 		var taken:Bool = __free.length < __created && (__free.length == 0 || __free.last() != obj);
 		if (taken) {

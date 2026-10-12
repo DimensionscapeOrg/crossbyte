@@ -1,5 +1,6 @@
 package crossbyte.url;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.utils.IntParse;
 
 /** Parsed URL wrapper with convenience accessors for common request parts. */
@@ -25,6 +26,13 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		return this.getRawUri();
 	}
 
+	/**
+		Parses `address`.
+
+		@throws ArgumentError If `address` is not a well-formed absolute URL:
+		        `scheme://host`, a port from 0 to 65535 if one is given, no
+		        user name, and no control character anywhere.
+	**/
 	public inline function new(address:String) {
 		this = new URLAccess(address);
 	}
@@ -92,18 +100,18 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		for (i in 0...uri.length) {
 			var code:Int = StringTools.fastCodeAt(uri, i);
 			if (code < 0x20 || code == 0x7F) {
-				throw "Uri must be well-formed";
+				throw new ArgumentError("Uri must be well-formed");
 			}
 		}
 
 		var schemeEnd:Int = uri.indexOf("://");
 		if (schemeEnd <= 0) {
-			throw "Uri must be well-formed";
+			throw new ArgumentError("Uri must be well-formed");
 		}
 
 		var rawScheme:String = uri.substr(0, schemeEnd);
 		if (!~/^[A-Za-z][A-Za-z0-9+\-.]*$/.match(rawScheme)) {
-			throw "Uri must be well-formed";
+			throw new ArgumentError("Uri must be well-formed");
 		}
 
 		scheme = rawScheme.toLowerCase();
@@ -122,25 +130,25 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		// A space has no place in a host or a port. One in the path or the
 		// query is the client's to encode on the way out, as a browser does.
 		if (authority.length == 0 || authority.indexOf("@") >= 0 || authority.indexOf(" ") >= 0) {
-			throw "Uri must be well-formed";
+			throw new ArgumentError("Uri must be well-formed");
 		}
 
 		var rawPort:Null<String> = null;
 		if (StringTools.startsWith(authority, "[")) {
 			var bracketEnd:Int = authority.indexOf("]");
 			if (bracketEnd <= 1) {
-				throw "Uri must be well-formed";
+				throw new ArgumentError("Uri must be well-formed");
 			}
 
 			host = authority.substr(1, bracketEnd - 1);
 			if (host.indexOf(":") < 0) {
-				throw "Uri must be well-formed";
+				throw new ArgumentError("Uri must be well-formed");
 			}
 
 			var remainder:String = authority.substr(bracketEnd + 1);
 			if (remainder.length > 0) {
 				if (!StringTools.startsWith(remainder, ":")) {
-					throw "Uri must be well-formed";
+					throw new ArgumentError("Uri must be well-formed");
 				}
 				rawPort = remainder.substr(1);
 			}
@@ -148,7 +156,7 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 			var colon:Int = authority.lastIndexOf(":");
 			if (colon >= 0) {
 				if (authority.indexOf(":") != colon) {
-					throw "Uri must be well-formed";
+					throw new ArgumentError("Uri must be well-formed");
 				}
 				rawPort = authority.substr(colon + 1);
 				host = authority.substr(0, colon);
@@ -158,7 +166,7 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		}
 
 		if (host == null || host.length == 0) {
-			throw "Uri must be well-formed";
+			throw new ArgumentError("Uri must be well-formed");
 		}
 
 		port = __parsePort(rawPort);
@@ -180,7 +188,7 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		// refused, so one port has one spelling.
 		var parsed:Int = rawPort.length > 5 ? -1 : IntParse.decimal(rawPort, 65535);
 		if (parsed < 0 || (rawPort.length > 1 && StringTools.fastCodeAt(rawPort, 0) == "0".code)) {
-			throw "Uri must be well-formed";
+			throw new ArgumentError("Uri must be well-formed");
 		}
 
 		return parsed;

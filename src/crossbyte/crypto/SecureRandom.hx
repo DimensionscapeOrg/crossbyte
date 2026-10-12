@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 #if php
@@ -294,7 +295,7 @@ final class SecureRandom {
 		var webCrypto:js.html.Crypto = js.Browser.window.crypto;
 
 		if (webCrypto == null) {
-			throw "Secure random bytes need the Web Crypto API's crypto.getRandomValues, which this browser does not have.";
+			throw new crossbyte.errors.IllegalOperationError("Secure random bytes need the Web Crypto API's crypto.getRandomValues, which this browser does not have.");
 		}
 
 		var out = new js.lib.Uint8Array(length);
@@ -338,7 +339,7 @@ final class SecureRandom {
 	#if php
 	private static function __getSecureRandomBytesPHP(length:Int):ByteArray {
 		if (length < 0) {
-			throw "length must be >= 0";
+			throw new ArgumentError("length must be >= 0");
 		}
 		if (length == 0) {
 			return Bytes.alloc(0);
@@ -348,7 +349,7 @@ final class SecureRandom {
 			var raw:String = Global.random_bytes(length);
 			return Bytes.ofData(raw);
 		} catch (e:Dynamic) {
-			throw "Error generating random bytes: " + e;
+			throw new crossbyte.errors.Error("Error generating random bytes: " + e);
 		}
 	}
 	#end

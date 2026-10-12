@@ -1373,7 +1373,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public function listen(backlog:Int = 0):Void {
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
-			throw "ServerSocket can only be initiated in a CrossByte threaded instance";
+			throw new IllegalOperationError("ServerSocket can only be initiated in a CrossByte threaded instance");
 		} else {
 			if (__closed) {
 				throw new IOError("Operation attempted on invalid socket.");

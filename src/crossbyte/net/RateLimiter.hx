@@ -64,13 +64,13 @@ class RateLimiter {
 	 */
 	public function new(maxRequests:Int = 10, perSeconds:Float = 60.0, ?clock:() -> Float, maxKeys:Int = DEFAULT_MAX_KEYS) {
 		if (maxRequests < 1) {
-			throw "maxRequests must be at least 1";
+			throw new crossbyte.errors.ArgumentError("maxRequests must be at least 1");
 		}
 		if (perSeconds <= 0 || !Math.isFinite(perSeconds)) {
-			throw "perSeconds must be a positive finite number";
+			throw new crossbyte.errors.ArgumentError("perSeconds must be a positive finite number");
 		}
 		if (maxKeys < 1) {
-			throw "maxKeys must be at least 1";
+			throw new crossbyte.errors.ArgumentError("maxKeys must be at least 1");
 		}
 
 		__capacity = maxRequests;
@@ -107,7 +107,7 @@ class RateLimiter {
 	 */
 	public function tryAcquire(key:String, cost:Int = 1):Bool {
 		if (cost < 1) {
-			throw "cost must be at least 1";
+			throw new crossbyte.errors.ArgumentError("cost must be at least 1");
 		}
 		if (key == null) {
 			key = "";
@@ -144,7 +144,7 @@ class RateLimiter {
 	 */
 	public function secondsUntil(key:String, cost:Int = 1):Float {
 		if (cost < 1) {
-			throw "cost must be at least 1";
+			throw new crossbyte.errors.ArgumentError("cost must be at least 1");
 		}
 		if (cost > __capacity) {
 			return Math.POSITIVE_INFINITY;

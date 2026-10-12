@@ -21,11 +21,11 @@ class JWKSetTest extends utest.Test {
 	// --- parsing, no toolchain required ---
 
 	public function testDocumentWithoutKeysArrayIsRejected():Void {
-		Assert.raises(() -> JWKSet.parse("{}"), String);
-		Assert.raises(() -> JWKSet.parse("not json at all"), String);
-		Assert.raises(() -> JWKSet.parse(""), String);
+		Assert.raises(() -> JWKSet.parse("{}"), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWKSet.parse("not json at all"), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWKSet.parse(""), crossbyte.errors.ArgumentError);
 		// A `keys` member of the wrong shape is as unusable as none.
-		Assert.raises(() -> JWKSet.parse('{"keys":"nope"}'), String);
+		Assert.raises(() -> JWKSet.parse('{"keys":"nope"}'), crossbyte.errors.ArgumentError);
 	}
 
 	/**

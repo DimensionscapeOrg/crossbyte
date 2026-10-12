@@ -13,8 +13,8 @@ class ByteArrayInputTest extends utest.Test {
 
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("abc"));
 
-		Assert.raises(() -> input.position = -1, String);
-		Assert.raises(() -> input.position = 4, String);
+		Assert.raises(() -> input.position = -1, crossbyte.errors.RangeError);
+		Assert.raises(() -> input.position = 4, crossbyte.errors.RangeError);
 		Assert.equals(0, input.position);
 	}
 
@@ -65,7 +65,7 @@ class ByteArrayInputTest extends utest.Test {
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("a"));
 
 		Assert.equals("a".code, input.readByte());
-		Assert.raises(() -> input.readByte(), String);
+		Assert.raises(() -> input.readByte(), crossbyte.errors.EOFError);
 		Assert.equals(1, input.position);
 		Assert.isTrue(input.eof());
 	}
@@ -97,7 +97,7 @@ class ByteArrayInputTest extends utest.Test {
 
 		var input:ByteArrayInput = bytes;
 
-		Assert.raises(() -> input.readUTF(), String);
+		Assert.raises(() -> input.readUTF(), crossbyte.errors.EOFError);
 		Assert.equals(0, input.position);
 		Assert.equals(4, input.bytesAvailable);
 	}
@@ -123,7 +123,7 @@ class ByteArrayInputTest extends utest.Test {
 		}
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUInt(), String);
+		Assert.raises(() -> input.readVarUInt(), crossbyte.errors.RangeError);
 	}
 
 	public function testReadVarUIntRejectsOverflow():Void {
@@ -138,7 +138,7 @@ class ByteArrayInputTest extends utest.Test {
 			bytes.set(4, top);
 
 			var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-			Assert.raises(() -> input.readVarUInt(), String);
+			Assert.raises(() -> input.readVarUInt(), crossbyte.errors.RangeError);
 		}
 	}
 
@@ -171,7 +171,7 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(5, 0x41);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUTF(), String);
+		Assert.raises(() -> input.readVarUTF(), crossbyte.errors.EOFError);
 	}
 
 	public function testReadVarUIntRejectsAVarintTheBufferEndsInside():Void {
@@ -182,7 +182,7 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(1, 0x80);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUInt(), String);
+		Assert.raises(() -> input.readVarUInt(), crossbyte.errors.EOFError);
 	}
 
 	public function testReadVarUTFRejectsALengthTheBufferCannotHold():Void {
@@ -199,7 +199,7 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(5, 0x41);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUTF(), String);
+		Assert.raises(() -> input.readVarUTF(), crossbyte.errors.EOFError);
 	}
 
 	/**

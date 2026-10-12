@@ -160,7 +160,7 @@ class HTTPServer extends ServerSocket {
 				case 0: Connect(__config.phpAddress, __config.phpPort);
 				case 1: Launch(__config.phpAddress, __config.phpPort, __config.phpCGIPath, __config.phpINIPath);
 				default:
-					throw "Invalid PHPMode enum";
+					throw new crossbyte.errors.ArgumentError("Invalid PHPMode enum");
 			}
 			if (replica) {
 				// A bridge per runtime, since a bridge is its runtime's: each

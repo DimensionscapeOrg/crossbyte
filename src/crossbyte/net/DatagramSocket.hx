@@ -921,7 +921,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
-			throw "DatagramSocket can only be initiated in a CrossByte threaded instance";
+			throw new IllegalOperationError("DatagramSocket can only be initiated in a CrossByte threaded instance");
 		}
 
 		__receiving = true;

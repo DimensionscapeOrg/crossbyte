@@ -1,5 +1,6 @@
 package crossbyte.crypto;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 #if !cpp
 import crossbyte.crypto._internal.NativeOnly;
@@ -93,7 +94,7 @@ class KeyExchange {
 		var secretKey = Bytes.alloc(SECRET_KEY_BYTES);
 		var rc = NativeSodium.kxKeypair(SodiumGlue.ptr(publicKey), SodiumGlue.ptr(secretKey));
 		if (rc != 0) {
-			throw "libsodium crypto_kx_keypair failed: " + rc;
+			throw new crossbyte.errors.Error("libsodium crypto_kx_keypair failed: " + rc);
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
 		#else
@@ -114,7 +115,7 @@ class KeyExchange {
 		var rc = NativeSodium.kxClientSessionKeys(SodiumGlue.ptr(rx), SodiumGlue.ptr(tx), SodiumGlue.cptr(clientPublicKey),
 			SodiumGlue.cptr(clientSecretKey), SodiumGlue.cptr(serverPublicKey));
 		if (rc != 0) {
-			throw "libsodium crypto_kx_client_session_keys rejected the server public key: " + rc;
+			throw new ArgumentError("libsodium crypto_kx_client_session_keys rejected the server public key: " + rc);
 		}
 		return {rx: rx, tx: tx};
 		#else
@@ -135,7 +136,7 @@ class KeyExchange {
 		var rc = NativeSodium.kxServerSessionKeys(SodiumGlue.ptr(rx), SodiumGlue.ptr(tx), SodiumGlue.cptr(serverPublicKey),
 			SodiumGlue.cptr(serverSecretKey), SodiumGlue.cptr(clientPublicKey));
 		if (rc != 0) {
-			throw "libsodium crypto_kx_server_session_keys rejected the client public key: " + rc;
+			throw new ArgumentError("libsodium crypto_kx_server_session_keys rejected the client public key: " + rc);
 		}
 		return {rx: rx, tx: tx};
 		#else
@@ -146,13 +147,13 @@ class KeyExchange {
 	@:noCompletion
 	private static function __validateKeys(ownPublicKey:Bytes, ownSecretKey:Bytes, peerPublicKey:Bytes):Void {
 		if (ownPublicKey == null || ownPublicKey.length != PUBLIC_KEY_BYTES) {
-			throw "publicKey must be " + PUBLIC_KEY_BYTES + " bytes";
+			throw new ArgumentError("publicKey must be " + PUBLIC_KEY_BYTES + " bytes");
 		}
 		if (ownSecretKey == null || ownSecretKey.length != SECRET_KEY_BYTES) {
-			throw "secretKey must be " + SECRET_KEY_BYTES + " bytes";
+			throw new ArgumentError("secretKey must be " + SECRET_KEY_BYTES + " bytes");
 		}
 		if (peerPublicKey == null || peerPublicKey.length != PUBLIC_KEY_BYTES) {
-			throw "peer publicKey must be " + PUBLIC_KEY_BYTES + " bytes";
+			throw new ArgumentError("peer publicKey must be " + PUBLIC_KEY_BYTES + " bytes");
 		}
 	}
 }

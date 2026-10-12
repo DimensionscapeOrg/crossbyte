@@ -1,5 +1,6 @@
 package crossbyte.core;
 
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.Event;
 #if !js
 import sys.thread.Thread;
@@ -58,14 +59,14 @@ class ServerApplication extends Application {
 	 */
 	override function initialize() {
 		if (Application.__application != null) {
-			throw "ServerApplication must only be instantiated once by extending it.";
+			throw new IllegalOperationError("ServerApplication must only be instantiated once by extending it.");
 		}
 
 		// Ensure we're in the main thread
 		#if !js
 		// A negated ==, not !=: see Application.initialize.
 		if (!(Thread.current() == Application.__mainThread)) {
-			throw "ServerApplication must only be instantiated in the main thread!";
+			throw new IllegalOperationError("ServerApplication must only be instantiated in the main thread!");
 		}
 		#end
 

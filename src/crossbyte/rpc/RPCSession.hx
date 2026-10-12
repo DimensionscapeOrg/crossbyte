@@ -1,5 +1,6 @@
 package crossbyte.rpc;
 
+import crossbyte.errors.IllegalOperationError;
 import crossbyte._internal.system.timer.TimerHandle;
 
 // Built for every target, JavaScript included: the portable suite runs RPC on
@@ -328,7 +329,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (!same && commands != null) {
 			var bound = commands.__nc;
 			if (bound != null && bound != __connection) {
-				throw "Cannot bind RPCCommands: already bound to a different RPCSession.";
+				throw new IllegalOperationError("Cannot bind RPCCommands: already bound to a different RPCSession.");
 			}
 		}
 		#end
@@ -953,7 +954,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		reads it where it lies, allocating nothing.
 
 		@throws ArgumentError When the call is over `maxFrameSize`.
-		@throws String When an argument is of a type the runtime lane does not carry.
+		@throws ArgumentError When an argument is of a type the runtime lane does not carry.
 	**/
 	public function call(op:Int, ?args:Array<Dynamic>):Void {
 		__sendCallFrame(__runtimeFrame(op, 0, args));
@@ -969,7 +970,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * that has ended, with the `Reason` it ended with; and when the send
 	 * throws, with what it threw.
 	 *
-	 * @throws String When an argument is of a type the runtime lane does not carry;
+	 * @throws ArgumentError When an argument is of a type the runtime lane does not carry;
 	 * nothing is left waiting.
 	 */
 	public function request<T>(op:Int, ?args:Array<Dynamic>):RPCResponse<T> {
@@ -2367,7 +2368,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		A runtime call's frame: a request with `requestId`, or a one-way call
 		when it is 0.
 
-		@throws String When an argument is of a type the runtime lane does not
+		@throws ArgumentError When an argument is of a type the runtime lane does not
 		carry; nothing is held for it.
 	**/
 	@:noCompletion private function __runtimeFrame(op:Int, requestId:Int, args:Array<Dynamic>):RPCFrame {

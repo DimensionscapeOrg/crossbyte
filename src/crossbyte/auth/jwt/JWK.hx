@@ -1,5 +1,6 @@
 package crossbyte.auth.jwt;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.auth.jwt._internal.Der;
 import haxe.io.Bytes;
 
@@ -69,7 +70,7 @@ class JWK {
 	 * Computed once and retained: a verifier reaches for this on every
 	 * token, and re-encoding DER per request would be pure waste.
 	 *
-	 * @throws String If the key material is missing or malformed.
+	 * @throws ArgumentError If the key material is missing or malformed.
 	 */
 	public function toPem():String {
 		if (__pem != null) {
@@ -79,7 +80,7 @@ class JWK {
 		__pem = switch (kty) {
 			case "RSA": __rsaPem();
 			case "EC": __ecPem();
-			default: throw 'unsupported JWK kty "$kty"';
+			default: throw new ArgumentError('unsupported JWK kty "$kty"');
 		}
 
 		return __pem;
@@ -87,10 +88,10 @@ class JWK {
 
 	private function __rsaPem():String {
 		if (__rsaModulus == null || __rsaExponent == null) {
-			throw "RSA JWK is missing n or e";
+			throw new ArgumentError("RSA JWK is missing n or e");
 		}
 		if (__rsaModulus.length == 0 || __rsaExponent.length == 0) {
-			throw "RSA JWK has an empty n or e";
+			throw new ArgumentError("RSA JWK has an empty n or e");
 		}
 
 		var publicKey:Bytes = Der.sequence([Der.unsignedInteger(__rsaModulus), Der.unsignedInteger(__rsaExponent)]);
@@ -104,10 +105,10 @@ class JWK {
 
 	private function __ecPem():String {
 		if (crv != "P-256") {
-			throw 'unsupported EC curve "$crv"; only P-256 is supported';
+			throw new ArgumentError('unsupported EC curve "$crv"; only P-256 is supported');
 		}
 		if (__ecX == null || __ecY == null) {
-			throw "EC JWK is missing x or y";
+			throw new ArgumentError("EC JWK is missing x or y");
 		}
 
 		// RFC 7518 6.2.1.2: each coordinate is the full field size, so a
@@ -135,7 +136,7 @@ class JWK {
 			return value;
 		}
 		if (value.length > size) {
-			throw 'EC JWK coordinate $name is ${value.length} bytes, longer than the $size expected for P-256';
+			throw new ArgumentError('EC JWK coordinate $name is ${value.length} bytes, longer than the $size expected for P-256');
 		}
 
 		var padded:Bytes = Bytes.alloc(size);

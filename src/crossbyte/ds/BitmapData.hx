@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.errors.IllegalOperationError;
+import crossbyte.errors.RangeError;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.math.Point;
@@ -48,7 +50,7 @@ class BitmapData {
 	public function getPixel(x:Int, y:Int):Int {
 		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
-			throw "Pixel out of bounds";
+			throw new RangeError("Pixel out of bounds");
 		}
 		return pixels[y * width + x] & 0xFFFFFF; // Return RGB, ignoring alpha
 	}
@@ -56,7 +58,7 @@ class BitmapData {
 	public function setPixel(x:Int, y:Int, color:Int):Void {
 		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
-			throw "Pixel out of bounds";
+			throw new RangeError("Pixel out of bounds");
 		}
 		var alpha = transparent ? (pixels[y * width + x] & 0xFF000000) : 0xFF000000;
 		pixels[y * width + x] = __stored(alpha | (color & 0xFFFFFF));
@@ -65,7 +67,7 @@ class BitmapData {
 	public function getPixel32(x:Int, y:Int):Int {
 		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
-			throw "Pixel out of bounds";
+			throw new RangeError("Pixel out of bounds");
 		}
 		return pixels[y * width + x];
 	}
@@ -73,7 +75,7 @@ class BitmapData {
 	public function setPixel32(x:Int, y:Int, color:Int):Void {
 		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
-			throw "Pixel out of bounds";
+			throw new RangeError("Pixel out of bounds");
 		}
 		pixels[y * width + x] = __stored(color);
 	}
@@ -271,7 +273,7 @@ class BitmapData {
 	@:noCompletion
 	private inline function __ensureNotDisposed():Void {
 		if (pixels == null) {
-			throw "BitmapData has been disposed";
+			throw new IllegalOperationError("BitmapData has been disposed");
 		}
 	}
 }

@@ -126,9 +126,9 @@ class SignatureKeyTest extends utest.Test {
 
 		Assert.raises(() -> SignatureKey.fromPublicPem(""), ArgumentError);
 		Assert.raises(() -> SignatureKey.fromPrivatePem(null), ArgumentError);
-		Assert.raises(() -> SignatureKey.fromPrivatePem("-----BEGIN PRIVATE KEY-----\nbm9wZQ==\n-----END PRIVATE KEY-----"), String);
+		Assert.raises(() -> SignatureKey.fromPrivatePem("-----BEGIN PRIVATE KEY-----\nbm9wZQ==\n-----END PRIVATE KEY-----"), crossbyte.errors.ArgumentError);
 		// A public key is not a private one.
-		Assert.raises(() -> SignatureKey.fromPrivatePem(keys.publicPem), String);
+		Assert.raises(() -> SignatureKey.fromPrivatePem(keys.publicPem), crossbyte.errors.ArgumentError);
 		Assert.raises(() -> SignatureKey.fromPublicPem(keys.publicPem).sign(Bytes.ofString("m")), ArgumentError);
 		// A signature too long for any key is refused, not read past.
 		Assert.isFalse(SignatureKey.fromPublicPem(keys.publicPem).verify(Bytes.ofString("m"), Bytes.alloc(4096), JOSE));

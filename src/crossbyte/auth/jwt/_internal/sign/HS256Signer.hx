@@ -1,5 +1,7 @@
 package crossbyte.auth.jwt._internal.sign;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import crossbyte.auth.Secret;
@@ -51,7 +53,7 @@ class HS256Signer implements IJWTSigner {
 
 	public function new(secrets:Array<Secret>, ?signKeyId:String) {
 		if (secrets == null || secrets.length == 0) {
-			throw "Must include at least one JWT secret";
+			throw new ArgumentError("Must include at least one JWT secret");
 		}
 
 		__hasSoleSecret = secrets.length == 1;
@@ -67,15 +69,15 @@ class HS256Signer implements IJWTSigner {
 				if (__hasSoleSecret) {
 					keyId = "default";
 				} else {
-					throw 'HS256Signer: key missing for secret at index $i';
+					throw new ArgumentError('HS256Signer: key missing for secret at index $i');
 				}
 			}
 
 			if (__keys.exists(keyId)) {
-				throw 'HS256Signer: duplicate key id "$keyId"';
+				throw new ArgumentError('HS256Signer: duplicate key id "$keyId"');
 			}
 			if (secret.secret == null || secret.secret.length == 0) {
-				throw 'HS256Signer: empty secret for key "$keyId"';
+				throw new ArgumentError('HS256Signer: empty secret for key "$keyId"');
 			}
 			__keys.set(keyId, secret.secret);
 			__macs.set(keyId, new HmacSha256(Bytes.ofString(secret.secret)));
@@ -88,13 +90,13 @@ class HS256Signer implements IJWTSigner {
 
 		if (signKeyId != null) {
 			if (!__keys.exists(signKeyId)) {
-				throw 'HS256Signer: unknown signKeyId "$signKeyId"';
+				throw new ArgumentError('HS256Signer: unknown signKeyId "$signKeyId"');
 			}
 			__signKeyId = signKeyId;
 		} else {
 			__signKeyId = __hasSoleSecret ? soleKeyId : null;
 			if (!__hasSoleSecret && __signKeyId == null) {
-				throw "HS256Signer: multiple keys provided; signKeyId is required";
+				throw new ArgumentError("HS256Signer: multiple keys provided; signKeyId is required");
 			}
 		}
 	}
@@ -124,11 +126,11 @@ class HS256Signer implements IJWTSigner {
 		keyId = keyId != null ? keyId : __signKeyId;
 
 		if (keyId == null) {
-			throw "HS256Signer.sign: no key id available";
+			throw new IllegalOperationError("HS256Signer.sign: no key id available");
 		}
 		var mac:Null<HmacSha256> = __macs.get(keyId);
 		if (mac == null) {
-			throw 'HS256Signer.sign: unknown key id "$keyId"';
+			throw new ArgumentError('HS256Signer.sign: unknown key id "$keyId"');
 		}
 
 		return Base64Url.encode(mac.macText(input, 0, input.length));

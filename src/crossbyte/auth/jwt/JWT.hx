@@ -1,5 +1,6 @@
 package crossbyte.auth.jwt;
 
+import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
 import haxe.Json;
 import crossbyte._internal.Utf8;
@@ -103,7 +104,7 @@ class JWT {
 	 * verification on another thread uses either the old keys or the new, never
 	 * a mixture.
 	 *
-	 * @throws String When `spec` is invalid, as `make` does.
+	 * @throws ArgumentError When `spec` is invalid, as `make` does.
 	 */
 	public function updateKeys(spec:JWTSigner):Void {
 		__keys = new JWTKeys(__signerFor(spec));
@@ -116,7 +117,7 @@ class JWT {
 	 *
 	 * @throws ArgumentError When `iat`, `exp` or `nbf` is present and not a
 	 *         finite number of seconds.
-	 * @throws String When the signer holds no private key: a verify-only
+	 * @throws IllegalOperationError When the signer holds no private key: a verify-only
 	 *         one, such as `JWKSet.signer` makes.
 	 */
 	public function generateToken(payload:JWTPayload):String {
@@ -599,7 +600,7 @@ class JWT {
 	/**
 	 * Normalizes a base64url string into padded standard base64 form.
 	 *
-	 * @throws String For a length no base64url string can have (one more than
+	 * @throws ArgumentError For a length no base64url string can have (one more than
 	 *         a multiple of four).
 	 */
 	public static inline function normalizeBase64Url(s:String):String {
@@ -611,7 +612,7 @@ class JWT {
 				std += "=";
 			case 0:
 			case 1:
-				throw "invalid base64url length";
+				throw new ArgumentError("invalid base64url length");
 		}
 		return std;
 	}

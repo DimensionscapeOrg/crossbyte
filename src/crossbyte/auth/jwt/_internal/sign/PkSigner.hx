@@ -1,5 +1,7 @@
 package crossbyte.auth.jwt._internal.sign;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.auth.jwt.JWTAlgorithm;
 import crossbyte.auth.jwt._internal.Base64Url;
 import crossbyte.crypto.PublicKeySignature;
@@ -56,17 +58,17 @@ class PkSigner implements IJWTSigner {
 	 */
 	public function new(algorithm:JWTAlgorithm, publicKeys:StringMap<String>, ?privateKey:String, ?signKeyId:String) {
 		if (algorithm != JWTAlgorithm.RS256 && algorithm != JWTAlgorithm.ES256) {
-			throw 'PkSigner supports RS256 and ES256, not "$algorithm"';
+			throw new ArgumentError('PkSigner supports RS256 and ES256, not "$algorithm"');
 		}
 		if (!PublicKeySignature.isSupported) {
 			#if cpp
-			throw "PkSigner requires the native mbedTLS backend, which this hxcpp does not expose.";
+			throw new IllegalOperationError("PkSigner requires the native mbedTLS backend, which this hxcpp does not expose.");
 			#else
 			throw NativeOnly.error(algorithm + " JWT signing and verification");
 			#end
 		}
 		if (publicKeys == null) {
-			throw "PkSigner: publicKeys must not be null";
+			throw new ArgumentError("PkSigner: publicKeys must not be null");
 		}
 
 		__algorithm = algorithm;
@@ -80,18 +82,18 @@ class PkSigner implements IJWTSigner {
 
 		for (keyId in publicKeys.keys()) {
 			if (keyId == null || keyId == "") {
-				throw "PkSigner: empty key id";
+				throw new ArgumentError("PkSigner: empty key id");
 			}
 
 			var pem:String = publicKeys.get(keyId);
 			if (pem == null || pem == "") {
-				throw 'PkSigner: empty public key for "$keyId"';
+				throw new ArgumentError('PkSigner: empty public key for "$keyId"');
 			}
 			// A key of the wrong kind would fail every verification at
 			// runtime with no indication why; reject it at construction.
 			var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(pem, false, false);
 			if (key == null || key.type != expectedType) {
-				throw 'PkSigner: public key "$keyId" is not a valid $algorithm key';
+				throw new ArgumentError('PkSigner: public key "$keyId" is not a valid $algorithm key');
 			}
 
 			__publicKeys.set(keyId, key);
@@ -100,7 +102,7 @@ class PkSigner implements IJWTSigner {
 		}
 
 		if (keyCount == 0) {
-			throw "PkSigner: at least one public key is required";
+			throw new ArgumentError("PkSigner: at least one public key is required");
 		}
 
 		if (privateKey != null && privateKey != "") {
@@ -109,32 +111,32 @@ class PkSigner implements IJWTSigner {
 				if (key != null) {
 					key.dispose();
 				}
-				throw 'PkSigner: private key is not a valid $algorithm key';
+				throw new ArgumentError('PkSigner: private key is not a valid $algorithm key');
 			}
 			__privateKey = key;
 		}
 
 		if (signKeyId != null) {
 			if (!__publicKeys.exists(signKeyId)) {
-				throw 'PkSigner: unknown signKeyId "$signKeyId"';
+				throw new ArgumentError('PkSigner: unknown signKeyId "$signKeyId"');
 			}
 			__signKeyId = signKeyId;
 		} else if (keyCount == 1) {
 			__signKeyId = soleKeyId;
 		} else if (__privateKey != null) {
-			throw "PkSigner: multiple public keys provided; signKeyId is required to sign";
+			throw new ArgumentError("PkSigner: multiple public keys provided; signKeyId is required to sign");
 		}
 	}
 
 	public function sign(input:String, ?keyId:String):String {
 		if (__privateKey == null) {
-			throw "PkSigner.sign: no private key configured (verify-only signer)";
+			throw new IllegalOperationError("PkSigner.sign: no private key configured (verify-only signer)");
 		}
 		if (keyId != null && keyId != __signKeyId) {
-			throw 'PkSigner.sign: unknown signing key id "$keyId"';
+			throw new ArgumentError('PkSigner.sign: unknown signing key id "$keyId"');
 		}
 		if (input == null) {
-			throw "PkSigner.sign: input must not be null";
+			throw new ArgumentError("PkSigner.sign: input must not be null");
 		}
 
 		return Base64Url.encode(__privateKey.sign(Bytes.ofString(input), __format));

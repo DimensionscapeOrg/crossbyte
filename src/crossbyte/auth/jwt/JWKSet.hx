@@ -1,5 +1,6 @@
 package crossbyte.auth.jwt;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte._internal.serial.JsonNesting;
 import crossbyte.auth.jwt._internal.Base64Url;
 import haxe.ds.StringMap;
@@ -76,31 +77,31 @@ class JWKSet {
 	 * would overflow the stack and end the process.
 	 *
 	 * @param json The JWK Set document.
-	 * @throws String If the document is not a JWK Set.
+	 * @throws ArgumentError If the document is not a JWK Set.
 	 */
 	public static function parse(json:String):JWKSet {
 		if (json == null || StringTools.trim(json) == "") {
-			throw "JWKS document is empty";
+			throw new ArgumentError("JWKS document is empty");
 		}
 
 		if (!JsonNesting.within(json, JsonNesting.LIMIT)) {
-			throw 'JWKS document nests more than ${JsonNesting.LIMIT} levels deep';
+			throw new ArgumentError('JWKS document nests more than ${JsonNesting.LIMIT} levels deep');
 		}
 
 		var root:Dynamic;
 		try {
 			root = haxe.Json.parse(json);
 		} catch (e:Dynamic) {
-			throw 'JWKS document is not valid JSON: $e';
+			throw new ArgumentError('JWKS document is not valid JSON: $e');
 		}
 
 		if (root == null) {
-			throw "JWKS document is not a JSON object";
+			throw new ArgumentError("JWKS document is not a JSON object");
 		}
 
 		var rawKeys:Dynamic = Reflect.field(root, "keys");
 		if (rawKeys == null || !Std.isOfType(rawKeys, Array)) {
-			throw 'JWKS document has no "keys" array';
+			throw new ArgumentError('JWKS document has no "keys" array');
 		}
 
 		var set:JWKSet = new JWKSet();
@@ -194,18 +195,18 @@ class JWKSet {
 	 * jwt.updateKeys(JWKSet.parse(fetchedJson).signer(RS256));
 	 * ```
 	 *
-	 * @throws String When `algorithm` is neither, or no key here verifies it.
+	 * @throws ArgumentError When `algorithm` is neither, or no key here verifies it.
 	 */
 	public function signer(algorithm:JWTAlgorithm):JWTSigner {
 		if (algorithm != JWTAlgorithm.RS256 && algorithm != JWTAlgorithm.ES256) {
-			throw 'A JWK Set verifies RS256 or ES256, not "$algorithm"';
+			throw new ArgumentError('A JWK Set verifies RS256 or ES256, not "$algorithm"');
 		}
 
 		var pems:StringMap<String> = pemsFor(algorithm);
 		if (!pems.keys().hasNext()) {
 			var single:Null<String> = singlePem(algorithm);
 			if (single == null) {
-				throw 'The JWK Set holds no key that verifies $algorithm';
+				throw new ArgumentError('The JWK Set holds no key that verifies $algorithm');
 			}
 			pems.set("default", single);
 		}

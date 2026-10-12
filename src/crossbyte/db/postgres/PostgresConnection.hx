@@ -119,7 +119,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	public function open(cfg:PostgresConfig):Void {
 		__requireSupported();
 		if (cfg == null) {
-			throw "PostgresConnection: config is required.";
+			throw new ArgumentError("PostgresConnection: config is required.");
 		}
 
 		#if cpp

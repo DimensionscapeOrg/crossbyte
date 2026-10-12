@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.RangeError;
 import haxe.ds.Vector;
 
@@ -73,17 +75,17 @@ final class PackedSlotMap<T> {
 	 */
 	public function new(initialCapacity:Int, ?maxCapacity:Int, ?growthChunk:Int = 1024) {
 		if (initialCapacity <= 0) {
-			throw "initialCapacity must be > 0";
+			throw new ArgumentError("initialCapacity must be > 0");
 		}
 
 		var hardMax:Int = (1 << SlotHandle.INDEX_BITS);
 		this.maxCapacity = (maxCapacity == null) ? hardMax : maxCapacity;
 		if (this.maxCapacity > hardMax) {
-			throw "maxCapacity exceeds handle index space";
+			throw new ArgumentError("maxCapacity exceeds handle index space");
 		}
 
 		if (initialCapacity > this.maxCapacity) {
-			throw "initialCapacity > maxCapacity";
+			throw new ArgumentError("initialCapacity > maxCapacity");
 		}
 
 		this.growthChunk = (growthChunk == null || growthChunk <= 0) ? 1 : growthChunk;
@@ -104,7 +106,7 @@ final class PackedSlotMap<T> {
 		if (__freeHead == -1) {
 			__grow();
 			if (__freeHead == -1) {
-				throw "PackedSlotMap full";
+				throw new IllegalOperationError("PackedSlotMap full");
 			}
 		}
 		var slot:Int = __freeHead;

@@ -49,7 +49,7 @@ final class ObjectRecycler<T:{}> {
 			// Nothing to take.
 		} else if (object == _l0 || object == _l1) {
 			#if debug
-			throw "ObjectRecycler: double-recycle of same object";
+			throw new crossbyte.errors.IllegalOperationError("ObjectRecycler: double-recycle of same object");
 			#end
 		} else if (_l0 == null || _l1 == null) {
 			var func:T->Void = pool.resetFunction;

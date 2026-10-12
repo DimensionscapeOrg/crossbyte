@@ -1,5 +1,7 @@
 package crossbyte.auth.jwt._internal.sign;
 
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.auth.jwt.JWTAlgorithm;
 import crossbyte.auth.jwt._internal.Base64Url;
 import crossbyte.crypto.ConstantTime;
@@ -41,13 +43,13 @@ class Ed25519Signer implements IJWTSigner {
 	public function new(publicKeys:StringMap<Bytes>, ?privateKey:Bytes, ?signKeyId:String) {
 		if (!Ed25519.isSupported) {
 			#if cpp
-			throw "Ed25519Signer requires the native Ed25519 backend: " + Ed25519.availabilityMessage();
+			throw new IllegalOperationError("Ed25519Signer requires the native Ed25519 backend: " + Ed25519.availabilityMessage());
 			#else
 			throw NativeOnly.error("EdDSA JWT signing and verification");
 			#end
 		}
 		if (publicKeys == null) {
-			throw "Ed25519Signer: publicKeys must not be null";
+			throw new ArgumentError("Ed25519Signer: publicKeys must not be null");
 		}
 
 		__publicKeys = new StringMap();
@@ -55,36 +57,36 @@ class Ed25519Signer implements IJWTSigner {
 		var soleKeyId:String = null;
 		for (keyId in publicKeys.keys()) {
 			if (keyId == null || keyId == "") {
-				throw "Ed25519Signer: empty key id";
+				throw new ArgumentError("Ed25519Signer: empty key id");
 			}
 			var publicKey:Bytes = publicKeys.get(keyId);
 			if (publicKey == null || publicKey.length != Ed25519.PUBLIC_KEY_BYTES) {
-				throw 'Ed25519Signer: public key "$keyId" must be ' + Ed25519.PUBLIC_KEY_BYTES + " bytes";
+				throw new ArgumentError('Ed25519Signer: public key "$keyId" must be ' + Ed25519.PUBLIC_KEY_BYTES + " bytes");
 			}
 			__publicKeys.set(keyId, publicKey);
 			soleKeyId = keyId;
 			keyCount++;
 		}
 		if (keyCount == 0) {
-			throw "Ed25519Signer: at least one public key is required";
+			throw new ArgumentError("Ed25519Signer: at least one public key is required");
 		}
 
 		if (privateKey != null) {
 			if (privateKey.length != Ed25519.SECRET_KEY_BYTES) {
-				throw "Ed25519Signer: private key must be " + Ed25519.SECRET_KEY_BYTES + " bytes (libsodium seed||public format)";
+				throw new ArgumentError("Ed25519Signer: private key must be " + Ed25519.SECRET_KEY_BYTES + " bytes (libsodium seed||public format)");
 			}
 			__privateKey = privateKey;
 		}
 
 		if (signKeyId != null) {
 			if (!__publicKeys.exists(signKeyId)) {
-				throw 'Ed25519Signer: unknown signKeyId "$signKeyId"';
+				throw new ArgumentError('Ed25519Signer: unknown signKeyId "$signKeyId"');
 			}
 			__signKeyId = signKeyId;
 		} else if (keyCount == 1) {
 			__signKeyId = soleKeyId;
 		} else if (__privateKey != null) {
-			throw "Ed25519Signer: multiple public keys provided; signKeyId is required to sign";
+			throw new ArgumentError("Ed25519Signer: multiple public keys provided; signKeyId is required to sign");
 		}
 
 		// A libsodium secret key embeds its public key in the last 32 bytes;
@@ -94,20 +96,20 @@ class Ed25519Signer implements IJWTSigner {
 			var declared:Bytes = __publicKeys.get(__signKeyId);
 			var embedded:Bytes = __privateKey.sub(Ed25519.SECRET_KEY_BYTES - Ed25519.PUBLIC_KEY_BYTES, Ed25519.PUBLIC_KEY_BYTES);
 			if (!ConstantTime.equals(declared, embedded)) {
-				throw 'Ed25519Signer: private key does not match public key "' + __signKeyId + '"';
+				throw new ArgumentError('Ed25519Signer: private key does not match public key "' + __signKeyId + '"');
 			}
 		}
 	}
 
 	public function sign(input:String, ?keyId:String):String {
 		if (__privateKey == null) {
-			throw "Ed25519Signer.sign: no private key configured (verify-only signer)";
+			throw new IllegalOperationError("Ed25519Signer.sign: no private key configured (verify-only signer)");
 		}
 		if (keyId != null && keyId != __signKeyId) {
-			throw 'Ed25519Signer.sign: unknown signing key id "$keyId"';
+			throw new ArgumentError('Ed25519Signer.sign: unknown signing key id "$keyId"');
 		}
 		if (input == null) {
-			throw "Ed25519Signer.sign: input must not be null";
+			throw new ArgumentError("Ed25519Signer.sign: input must not be null");
 		}
 
 		var signature:Bytes = Ed25519.signDetached(Bytes.ofString(input), __privateKey);

@@ -132,7 +132,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		}
 		expected += this.__outputPosition;
 		if (expected != total)
-			throw "flush invariant failed: used != size";
+			throw new crossbyte.errors.Error("flush invariant failed: used != size");
 		#end
 
 		if (this.byteCache != null) {
@@ -267,7 +267,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		// made for it: a length of 2^31 asked for a 2 GB chunk before the
 		// copy found it out.
 		if (offset < 0 || length < 0 || offset > source.length || length > source.length - offset) {
-			throw 'ByteArrayOutput.writeBytes: $length bytes from $offset is outside the source';
+			throw new RangeError('ByteArrayOutput.writeBytes: $length bytes from $offset is outside the source');
 		}
 
 		__room(length);
@@ -314,7 +314,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		// to 2 GB, and in `final` a near miss wrote into the unused part of
 		// the chunk, which nothing copies, and the patch was lost.
 		if (position < 0 || position > bytesWritten - 4) {
-			throw 'ByteArrayOutput position out of range (' + position + ' + 4 > ' + bytesWritten + ')';
+			throw new RangeError('ByteArrayOutput position out of range (' + position + ' + 4 > ' + bytesWritten + ')');
 		}
 
 		var chunkStart:Int = 0;
