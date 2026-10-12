@@ -59,6 +59,19 @@ class WebSocketIPv6Test extends utest.Test {
 			return;
 		}
 
+		#if nodejs
+		// Node takes the address only as it listens, and reports a refusal as
+		// an ioError then (see ServerSocket.bind), so a machine with no IPv6
+		// loopback says so here, not by throwing above. Only that refusal:
+		// any other failure to listen is the test's to report.
+		var noLoopback:Bool = false;
+		server.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> {
+			if (server.localPort == 0 && (e.text.indexOf("EADDRNOTAVAIL") >= 0 || e.text.indexOf("EAFNOSUPPORT") >= 0)) {
+				noLoopback = true;
+			}
+		});
+		#end
+
 		var sessions:Array<WebSocket> = [];
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var session:WebSocket = cast e.socket;
@@ -80,7 +93,16 @@ class WebSocketIPv6Test extends utest.Test {
 		client.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> failure = e.text);
 		client.addEventListener(WebSocketMessageEvent.MESSAGE, (m:WebSocketMessageEvent) -> echoed = m.text);
 
-		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+		NetPump.until(() -> server.localPort != 0 #if nodejs || noLoopback #end, 5.0, function(_) {
+			#if nodejs
+			if (noLoopback) {
+				// No IPv6 loopback on this machine: nothing to dial.
+				Assert.pass();
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+				return;
+			}
+			#end
 			var refused:String = null;
 			try {
 				client.connect("::1", server.localPort);
