@@ -724,6 +724,10 @@ says how.
   write past the end grows it, and a negative index is a `RangeError`),
   or of anything else the field named by the number, as ActionScript
   reads `object[0]`.
+- `FieldStruct`'s `exists`, `get`, `delete` and `clear` are methods,
+  `fields.exists(name)`, as `keys`, `values` and `entries` are, where they
+  were static and `fields.exists(name)` read the key `exists` and did not
+  compile. `delete` says whether there was a field. (Upgrading)
 
 #### TCP
 
@@ -1944,6 +1948,11 @@ an API added in this release has is not listed here.
 - An `Object` holding an `Array` or a `String` lists no fields, where on
   Node it listed the indices or the characters: code that walked one so
   reads it as the `Array` or `String` it is.
+- `FieldStruct`'s `exists`, `get`, `delete` and `clear` are called on the
+  struct: `fields.exists(name)` where it was `FieldStruct.exists(fields,
+  name)`, and `fields.get(name)`, `fields.delete(name)` and
+  `fields.clear()` likewise. A key of one of those names is read and
+  written with brackets, `fields["get"]`.
 
 #### TCP
 

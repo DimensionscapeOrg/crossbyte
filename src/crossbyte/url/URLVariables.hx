@@ -56,7 +56,7 @@ abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>
 		@param source A URL-encoded query string.
 	**/
 	public function decode(source:String):Void {
-		FieldStruct.clear(this);
+		this.clear();
 
 		for (pair in source.split(";").join("&").split("&")) {
 			if (pair == "") {

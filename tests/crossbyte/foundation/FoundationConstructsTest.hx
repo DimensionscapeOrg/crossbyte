@@ -23,8 +23,8 @@ class FoundationConstructsTest extends utest.Test {
 
 		Assert.equals(3, fields.count);
 		Assert.equals(5, fields["size"]);
-		Assert.isTrue(FieldStruct.exists(fields, "count"));
-		Assert.equals(5, FieldStruct.get(fields, "size"));
+		Assert.isTrue(fields.exists("count"));
+		Assert.equals(5, fields.get("size"));
 
 		var seen = [];
 		for (entry in FieldStruct.iterator(fields)) {
@@ -34,11 +34,33 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isTrue(seen.indexOf("count=3") != -1);
 		Assert.isTrue(seen.indexOf("size=5") != -1);
 
-		FieldStruct.delete(fields, "count");
-		Assert.isFalse(FieldStruct.exists(fields, "count"));
+		Assert.isTrue(fields.delete("count"));
+		Assert.isFalse(fields.exists("count"));
+		Assert.isFalse(fields.delete("count"), "a field deleted twice was there the second time");
 
-		FieldStruct.clear(fields);
-		Assert.isFalse(FieldStruct.exists(fields, "size"));
+		fields.clear();
+		Assert.isFalse(fields.exists("size"));
+	}
+
+	/**
+		`exists`, `get`, `delete` and `clear` are methods, as `keys`, `values`
+		and `entries` are, so `fields.exists("a")` compiles. They were static
+		(`FieldStruct.exists(fields, "a")`), and `fields.exists("a")` read the
+		key `exists` and failed to compile: "Null<Int> cannot be called". A
+		key of one of those names is read and written with brackets.
+	**/
+	public function testFieldStructsHelpersAreMethods():Void {
+		var fields:FieldStruct<Int> = new FieldStruct();
+		Assert.isNull(TypeCheck.errorOf(fields.exists("a")), "exists is not a method");
+		Assert.isNull(TypeCheck.errorOf(fields.get("a")), "get is not a method");
+		Assert.isNull(TypeCheck.errorOf(fields.delete("a")), "delete is not a method");
+		Assert.isNull(TypeCheck.errorOf(fields.clear()), "clear is not a method");
+		Assert.equals("Bool", TypeCheck.typeOf(fields.delete("a")), "delete does not say whether there was a field");
+
+		fields["exists"] = 1;
+		fields["get"] = 2;
+		Assert.equals(1, fields["exists"]);
+		Assert.equals(2, fields["get"]);
 	}
 
 	public function testFieldStructProvidesKeyValueAndObjectViews():Void {

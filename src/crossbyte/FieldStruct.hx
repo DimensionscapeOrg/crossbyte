@@ -10,46 +10,51 @@ private typedef BaseStruct<T = Dynamic> = StringMap<T>;
  *
  * `FieldStruct<T>` gives CrossByte a compact way to model dynamic, string-keyed
  * records while still constraining the value lane to `T`. It supports dot access,
- * bracket access, and iteration over keys or key/value pairs:
- * `for (name => value in fields)`, or `keys()`, `values()` and `entries()`.
+ * bracket access, `exists`, `get`, `delete` and `clear`, and iteration over
+ * keys or key/value pairs: `for (name => value in fields)`, or `keys()`,
+ * `values()` and `entries()`.
  *
  * Any name is a key, `__proto__` included, on every target. A key named
- * like a member (`keys`, `values`, `entries`, `toObject`,
- * `keyValueIterator`) is read and written with brackets, `fields["keys"]`,
- * where `fields.keys` is the method.
+ * like a member (`exists`, `get`, `delete`, `clear`, `keys`, `values`,
+ * `entries`, `toObject`, `keyValueIterator`) is read and written with
+ * brackets, `fields["keys"]`, where `fields.keys` is the method.
  *
  * A field read with a dot is a `Null<T>`: a key not there reads null, which
  * as an `Int` is 0 natively, on the jvm and on HashLink, and null elsewhere
  * (one more than it is NaN on JavaScript and throws on eval and Neko), so
- * ask `FieldStruct.exists(fields, name)` first where that matters. Add
+ * ask `fields.exists(name)` first where that matters. Add
  * to a field with `fields.count += 1`: `fields.count++` does not compile, as
  * Haxe has no increment through a field it reads and writes by name.
  */
 @:generic
 @:callable
 abstract FieldStruct<T = Dynamic>(BaseStruct<T>) {
-	public static inline function clear<T>(instance:FieldStruct<T>):Void {
-		(cast instance : BaseStruct<T>).clear();
-	}
-
-	public static inline function delete<T>(instance:FieldStruct<T>, field:String):Void {
-		(cast instance : BaseStruct<T>).remove(field);
-	}
-
-	public static inline function get<T>(instance:FieldStruct<T>, field:String):Null<T> {
-		return (cast instance : BaseStruct<T>).get(field);
-	}
-
-	public static inline function exists<T>(instance:FieldStruct<T>, field:String):Bool {
-		return (cast instance : BaseStruct<T>).exists(field);
-	}
-
 	public static inline function iterator<T>(instance:FieldStruct<T>):KeyValueIterator<String, T> {
 		return (cast instance : BaseStruct<T>).keyValueIterator();
 	}
 
 	public inline function new() {
 		this = new BaseStruct();
+	}
+
+	/** Whether there is a field `field`. **/
+	public inline function exists(field:String):Bool {
+		return (cast this : BaseStruct<T>).exists(field);
+	}
+
+	/** The field `field`, or null when there is none. **/
+	public inline function get(field:String):Null<T> {
+		return (cast this : BaseStruct<T>).get(field);
+	}
+
+	/** Removes the field `field`, and says whether there was one. **/
+	public inline function delete(field:String):Bool {
+		return (cast this : BaseStruct<T>).remove(field);
+	}
+
+	/** Removes every field. **/
+	public inline function clear():Void {
+		(cast this : BaseStruct<T>).clear();
 	}
 
 	public inline function keys():Iterator<String> {
