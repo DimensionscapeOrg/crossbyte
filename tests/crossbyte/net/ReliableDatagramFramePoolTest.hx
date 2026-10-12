@@ -195,7 +195,8 @@ class ReliableDatagramFramePoolTest extends utest.Test {
 				Assert.isTrue(accepted[0].__sackBuffer() == accepted[1].__sackBuffer() && accepted[0].__sackBuffer() == server.__sackScratch);
 				Assert.isTrue(clients[0].__echoBuffer() != clients[1].__echoBuffer(), "two clients shared a scratch");
 				// One the server dials, to a port nobody answers on.
-				var dialled = server.connect("127.0.0.1", 9, 1000);
+				server.connectTimeout = 1.0;
+				var dialled = server.connect("127.0.0.1", 9);
 				Assert.isTrue(dialled.__pool() == shared, "a session the server dialled took frames from a pool of its own");
 				dialled.abort();
 			}

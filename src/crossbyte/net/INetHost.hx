@@ -65,19 +65,33 @@ interface INetHost {
 	 */
 	public var canDial(get, never):Bool;
 
+	/**
+	 * How long, in seconds, a session `dial` or `dialRelayed` opens may take
+	 * to connect: 20 unless changed, 0 for no deadline. Read as each is
+	 * dialled. A reliable datagram host's sessions hold it as their
+	 * `connectTimeout`. A host that cannot dial keeps it and reads it never.
+	 *
+	 * @throws crossbyte.errors.RangeError If set below zero, or to NaN.
+	 */
+	public var connectTimeout(get, set):Float;
+
+	/**
+	 * How long, in seconds, `discoverPublicAddress` keeps asking: 3 unless
+	 * changed (`StunClient.DEFAULT_TIMEOUT`). 0 or less sets no deadline:
+	 * the question is asked until it is answered or the host closes.
+	 */
+	public var stunTimeout(get, set):Float;
+
 	/** Binds the host to a local address and port. */
 	public function bind(address:String, port:Int):Void;
 
 	/**
-	 * Opens an outgoing session from this host's listening endpoint.
-	 *
-	 * `timeoutMs` bounds the connect, in milliseconds: 20 seconds unless
-	 * given, 0 for no deadline. A reliable datagram host's session holds it
-	 * as its `connectTimeout`, in seconds.
+	 * Opens an outgoing session from this host's listening endpoint, whose
+	 * connect `connectTimeout` bounds.
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 20000):INetConnection;
+	public function dial(address:String, port:Int):INetConnection;
 
 	/**
 	 * Asks a STUN server how this host's listening endpoint appears from
@@ -93,13 +107,12 @@ interface INetHost {
 	 * socket, so an address discovered anywhere else says nothing about where
 	 * this host can be reached, which is the only thing worth publishing.
 	 *
-	 * `timeoutMs` is how long to keep asking; 0 or less sets no deadline: the
-	 * question is asked until it is answered or the host closes.
+	 * It is asked for `stunTimeout`.
 	 *
 	 * Fails, with an `IllegalOperationError` as its cause, when `canDial` is
 	 * false.
 	 */
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress>;
+	public function discoverPublicAddress(server:String, port:Int = 3478):Future<ReflexiveAddress>;
 
 	/**
 	 * The address a peer at `destination` would reach this host on without
@@ -146,12 +159,12 @@ interface INetHost {
 	/**
 	 * Opens an outgoing session to a peer through the relay `allocateRelay`
 	 * was granted. Like one from `dial`, it does not surface through
-	 * `onAccept`: the caller already holds it. `timeoutMs` bounds the
-	 * connect as `dial`'s does.
+	 * `onAccept`: the caller already holds it. `connectTimeout` bounds the
+	 * connect as it bounds `dial`'s.
 	 *
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 20000):INetConnection;
+	public function dialRelayed(address:String, port:Int):INetConnection;
 
 	/**
 	 * Lets a peer reach this host through the relay before this host has sent

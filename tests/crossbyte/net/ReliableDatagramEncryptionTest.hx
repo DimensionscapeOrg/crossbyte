@@ -65,7 +65,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		server.listen();
 		socket.connect("127.0.0.1", server.localPort);
 		Assert.raises(() -> socket.encryptionKey = key(2), IllegalOperationError);
-		Assert.raises(() -> server.connect("127.0.0.1", 9, 1000, null, Bytes.alloc(31)), ArgumentError);
+		server.connectTimeout = 1.0;
+		Assert.raises(() -> server.connect("127.0.0.1", 9, null, Bytes.alloc(31)), ArgumentError);
 		socket.abort();
 		server.close();
 		Assert.equals(21, ReliableDatagramSocket.ENCRYPTION_OVERHEAD);
@@ -292,8 +293,10 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		b.listen();
 		var fromA:Array<String> = [];
 		var fromB:Array<String> = [];
-		var toB = a.connect("127.0.0.1", b.localPort, 5000, null, key(8));
-		var toA = b.connect("127.0.0.1", a.localPort, 5000, null, key(8));
+		a.connectTimeout = 5.0;
+		var toB = a.connect("127.0.0.1", b.localPort, null, key(8));
+		b.connectTimeout = 5.0;
+		var toA = b.connect("127.0.0.1", a.localPort, null, key(8));
 		toB.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromB.push(e.data.readUTFBytes(e.data.length)));
 		toA.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromA.push(e.data.readUTFBytes(e.data.length)));
 		Pair.pumpUntil(() -> toA.connected && toB.connected, 5.0);

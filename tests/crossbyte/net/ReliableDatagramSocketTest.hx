@@ -98,7 +98,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			server.discoverPublicAddress("127.0.0.1", stun.localPort, 3000)
+			server.discoverPublicAddress("127.0.0.1", stun.localPort)
 				.then(function(address):Void {
 					discovered = address;
 				}, function(error:String):Void {
@@ -180,7 +180,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			server.discoverPublicAddress("127.0.0.1", stun.localPort, 9000)
+			server.stunTimeout = 9.0;
+			server.discoverPublicAddress("127.0.0.1", stun.localPort)
 				.then(function(address):Void {
 					discovered = address;
 				}, function(error:String):Void {
@@ -238,7 +239,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			server.discoverPublicAddress("127.0.0.1", liar.localPort, 1000)
+			server.stunTimeout = 1.0;
+			server.discoverPublicAddress("127.0.0.1", liar.localPort)
 				.then(function(address):Void {
 					discovered = address;
 				}, function(error:String):Void {
@@ -264,7 +266,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 		var beforeListening:String = null;
 
 		// Unbound: there is no port to ask about.
-		server.discoverPublicAddress("127.0.0.1", 3478, 500).catchError(message -> beforeListening = message);
+		server.stunTimeout = 0.5;
+		server.discoverPublicAddress("127.0.0.1", 3478).catchError(message -> beforeListening = message);
 		Assert.notNull(beforeListening, "discovery was attempted from an unbound server");
 
 		try {
@@ -272,9 +275,10 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.listen();
 
 			var second:String = null;
-			server.discoverPublicAddress("127.0.0.1", 65530, 2000);
+			server.stunTimeout = 2.0;
+			server.discoverPublicAddress("127.0.0.1", 65530);
 			// Two outstanding queries would race for one reply.
-			server.discoverPublicAddress("127.0.0.1", 65530, 2000).catchError(message -> second = message);
+			server.discoverPublicAddress("127.0.0.1", 65530).catchError(message -> second = message);
 
 			Assert.notNull(second, "a second concurrent query was accepted");
 		} catch (e:Dynamic) {
@@ -312,7 +316,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			server.discoverPublicAddress("127.0.0.1", silent.localPort, 0).then(_ -> {}, error -> failure = error);
+			server.stunTimeout = 0;
+			server.discoverPublicAddress("127.0.0.1", silent.localPort).then(_ -> {}, error -> failure = error);
 			// Past three seconds, and the fourth ask, at 3.5 s.
 			pumpUntil(() -> failure != null, 4.0);
 
@@ -331,11 +336,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 	}
 
 	/**
-		A session a server dials with a timeout of 0 has no deadline, as a
-		session's own `timeout` of 0 has none: it is still trying a silent
-		peer well past the default, twenty seconds, which 0 is not taken for.
-		A negative timeout is refused, as the session's `timeout` refuses it,
-		and the default is twenty seconds.
+		A session a server dials with a `connectTimeout` of 0 has no deadline,
+		as a session's own of 0 has none: it is still trying a silent peer
+		well past the default, twenty seconds, which 0 is not taken for. A
+		negative or NaN one is refused, as the session's is, and the default
+		is twenty seconds.
 	**/
 	public function testADialTimeoutOfZeroSetsNoDeadline():Void {
 		if (!requireDatagramSupport()) return;
@@ -349,21 +354,28 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
-			var unbounded = server.connect("127.0.0.1", silent.localPort, 0);
+			Assert.equals(ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT, server.connectTimeout);
+			server.connectTimeout = 0;
+			var unbounded = server.connect("127.0.0.1", silent.localPort);
 			Assert.equals(0.0, unbounded.connectTimeout, "a dial with a timeout of 0 was given a deadline of " + unbounded.connectTimeout + " s");
 
+			server.connectTimeout = ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT;
 			var plain = server.connect("127.0.0.1", 9);
 			Assert.equals(ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT, plain.connectTimeout, "a dial with no timeout given lost the default");
 			Assert.equals(20.0, ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT);
 			Assert.equals(20.0, new ReliableDatagramSocket().connectTimeout);
 
-			// The dial's milliseconds are the session's seconds.
-			var quick = server.connect("127.0.0.1", 10, 2500);
-			Assert.equals(2.5, quick.connectTimeout, "a dial's timeout in milliseconds did not become the session's in seconds");
+			// The server's, read as each session is dialled.
+			server.connectTimeout = 2.5;
+			var quick = server.connect("127.0.0.1", 10);
+			Assert.equals(2.5, quick.connectTimeout, "a dial did not take the server's connectTimeout");
+			Assert.equals(20.0, plain.connectTimeout, "a session already dialled took the server's new connectTimeout");
 			Assert.raises(() -> plain.connectTimeout = -1, crossbyte.errors.RangeError);
 			Assert.raises(() -> plain.connectTimeout = Math.NaN, crossbyte.errors.RangeError);
 
-			Assert.raises(() -> server.connect("127.0.0.1", 10, -1), crossbyte.errors.RangeError);
+			Assert.raises(() -> server.connectTimeout = -1, crossbyte.errors.RangeError);
+			Assert.raises(() -> server.connectTimeout = Math.NaN, crossbyte.errors.RangeError);
+			Assert.equals(2.5, server.connectTimeout, "a refused connectTimeout changed it");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -383,7 +395,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 		var server = new ReliableDatagramServerSocket();
 		try {
 			// Unbound: neither question has a port to be about.
-			var discovery = server.discoverPublicAddress("127.0.0.1", 3478, 500);
+			server.stunTimeout = 0.5;
+			var discovery = server.discoverPublicAddress("127.0.0.1", 3478);
 			var local = server.localAddressFor("127.0.0.1");
 
 			Assert.isTrue(discovery.completed && !discovery.succeeded, "discovery from an unbound server did not fail at once");
@@ -1647,11 +1660,11 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			server.bind(0, "127.0.0.1");
 			server.listen();
-			Assert.raises(() -> server.connect("127.0.0.1", 9, 20000, tooBig), crossbyte.errors.RangeError);
+			Assert.raises(() -> server.connect("127.0.0.1", 9, tooBig), crossbyte.errors.RangeError);
 			Assert.equals(0, __countConnections(server), "the refused dial was registered");
 
 			// A frame's worth exactly is not too big.
-			Assert.notNull(server.connect("127.0.0.1", 9, 20000, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
+			Assert.notNull(server.connect("127.0.0.1", 9, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -1720,8 +1733,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			bob.bind(0, "127.0.0.1");
 			bob.listen();
 
-			var toBob = alice.connect("127.0.0.1", bob.localPort, 20000, bytesOf("from alice"));
-			var toAlice = bob.connect("127.0.0.1", alice.localPort, 20000, bytesOf("from bob"));
+			var toBob = alice.connect("127.0.0.1", bob.localPort, bytesOf("from alice"));
+			var toAlice = bob.connect("127.0.0.1", alice.localPort, bytesOf("from bob"));
 
 			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
 
@@ -1833,7 +1846,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try {
 			server.bind(0, "127.0.0.1");
 			server.listen();
-			server.discoverPublicAddress("127.0.0.1", 3478, 1000).then(_ -> {}, error -> refusal = error);
+			server.stunTimeout = 1.0;
+			server.discoverPublicAddress("127.0.0.1", 3478).then(_ -> {}, error -> refusal = error);
 			pumpUntil(() -> refusal != null, 2.0);
 		} catch (e:Dynamic) {
 			refusal = "threw " + Std.string(e);

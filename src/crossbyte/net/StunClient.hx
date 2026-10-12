@@ -50,7 +50,7 @@ import sys.net.Host;
 	```haxe
 	var socket = new DatagramSocket();
 	socket.bind(0, "0.0.0.0");
-	StunClient.discover("stun.example.org", 3478, 3000, socket).then(function(address) {
+	StunClient.discover("stun.example.org", 3478, socket).then(function(address) {
 		trace("peers reach this socket at " + address);
 	});
 	```
@@ -85,20 +85,33 @@ class StunClient {
 	public static inline var DEFAULT_PORT:Int = 3478;
 
 	/**
+		`timeout` unless changed, in seconds, and the `stunTimeout` of the
+		classes that ask through a socket of their own
+		(`ReliableDatagramServerSocket`, `INetHost`, `PeerConnection`).
+	**/
+	public static inline var DEFAULT_TIMEOUT:Float = 3.0;
+
+	/**
+		How long each question here is asked for before giving up, in
+		seconds: `DEFAULT_TIMEOUT`, 3, unless changed, and read as each is
+		asked (for each of the questions `classifyMapping` and
+		`classifyFiltering` ask). UDP has no failure to report (a request that
+		reaches nothing looks exactly like one still in flight), so only a
+		deadline ends a question nobody answers. 0 or less sets none, as it
+		does for a connection's `connectTimeout`: the question is asked until
+		it is answered, or until the socket it is asked through closes, so one
+		asked through a socket of its own, with no deadline, holds that socket
+		until the server answers. `classifyFiltering` needs one.
+	**/
+	public static var timeout:Float = DEFAULT_TIMEOUT;
+
+	/**
 		Asks `server` for this host's reflexive address.
 
 		The request is repeated on RFC 5389's schedule until the deadline, each
 		gap twice the last (see `StunQuery`, which owns the schedule and the
 		reading of a reply for all three places here that ask this question).
 
-		@param timeoutMs How long to keep asking before giving up. UDP has no
-		failure to report (a request that reaches nothing looks exactly like
-		one still in flight), so only a deadline ends a question nobody
-		answers. 0 or less sets none, as it does for a connection's `timeout`:
-		the question is asked until it is answered, or until the socket it is
-		asked through closes, so one asked through a socket of its own, with
-		no deadline, holds that socket until the server answers. The same for
-		every question here.
 		@param socket The socket to ask through, whose mapping is then what the
 		answer describes; bound, and not connected. It is left open, and left
 		not receiving if it was not. The answer reaches its other `data`
@@ -107,11 +120,11 @@ class StunClient {
 		which fails. Without one, a socket of the question's own is bound and
 		closed.
 	**/
-	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000,
-			?socket:DatagramSocket):Future<ReflexiveAddress> {
+	public static function discover(server:String, port:Int = DEFAULT_PORT, ?socket:DatagramSocket):Future<ReflexiveAddress> {
 		var future = new Future<ReflexiveAddress>();
+		var timeout:Float = StunClient.timeout;
 
-		__ask(server, port, timeoutMs, socket, null, function(answer:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+		__ask(server, port, timeout, socket, null, function(answer:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 			if (answer != null) {
 				@:privateAccess future.__resolve(answer.mapped);
 			} else {
@@ -128,7 +141,6 @@ class StunClient {
 		from. The building block `classifyMapping` and `classifyFiltering` are
 		made of, for a caller running RFC 5780's other tests.
 
-		@param timeoutMs As for `discover`: 0 or less is no deadline.
 		@param socket As for `discover`. Every question about one mapping has
 		to go through the socket that owns it.
 		@param changeAddress Ask the server to answer from its other address.
@@ -136,12 +148,13 @@ class StunClient {
 		filters shows it by not letting that answer in, so such a question can
 		time out on a network where nothing is wrong.
 	**/
-	public static function probe(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000, ?socket:DatagramSocket,
-			changeAddress:Bool = false, changePort:Bool = false):Future<StunProbe> {
+	public static function probe(server:String, port:Int = DEFAULT_PORT, ?socket:DatagramSocket, changeAddress:Bool = false,
+			changePort:Bool = false):Future<StunProbe> {
 		var future = new Future<StunProbe>();
+		var timeout:Float = StunClient.timeout;
 		var attributes = (changeAddress || changePort) ? [StunMessage.changeRequest(changeAddress, changePort)] : null;
 
-		__ask(server, port, timeoutMs, socket, attributes, function(answer:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+		__ask(server, port, timeout, socket, attributes, function(answer:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 			if (answer != null) {
 				@:privateAccess future.__resolve(__probeOf(answer));
 			} else {
@@ -171,14 +184,12 @@ class StunClient {
 		alias from that alias) as `ADDRESS_DEPENDENT`, its own addresses
 		taken for a NAT's mappings.
 
-		@param timeoutMs For each question, as for `discover`: 0 or less is
-		no deadline.
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
-	public static function classifyMapping(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000,
-			?socket:DatagramSocket):Future<NatBehavior> {
+	public static function classifyMapping(server:String, port:Int = DEFAULT_PORT, ?socket:DatagramSocket):Future<NatBehavior> {
 		var future = new Future<NatBehavior>();
+		var timeout:Float = StunClient.timeout;
 		var owned:Null<DatagramSocket> = null;
 
 		function settle(behavior:Null<NatBehavior>, failure:Null<String>):Void {
@@ -199,7 +210,7 @@ class StunClient {
 			}
 		}
 
-		__ask(server, port, timeoutMs, socket, null, function(first:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+		__ask(server, port, timeout, socket, null, function(first:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 			if (first == null) {
 				settle(null, failure);
 				return;
@@ -219,7 +230,7 @@ class StunClient {
 					settle(ENDPOINT_INDEPENDENT, null);
 					return;
 				}
-				__askTheOtherAddress(server, port, timeoutMs, socket, first, other, settle);
+				__askTheOtherAddress(server, port, timeout, socket, first, other, settle);
 			});
 		});
 
@@ -227,10 +238,10 @@ class StunClient {
 	}
 
 	/** `classifyMapping`'s second and third questions, through `socket`. **/
-	@:noCompletion private static function __askTheOtherAddress(server:String, port:Int, timeoutMs:Int, socket:Null<DatagramSocket>,
+	@:noCompletion private static function __askTheOtherAddress(server:String, port:Int, timeout:Float, socket:Null<DatagramSocket>,
 			first:StunAnswer, other:ReflexiveAddress, settle:(Null<NatBehavior>, Null<String>) -> Void):Void {
 		// Test II: the other address, the same port.
-		__ask(other.address, port, timeoutMs, socket, null, function(second:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+		__ask(other.address, port, timeout, socket, null, function(second:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 			if (second == null) {
 				settle(null, "RFC 5780's second question, to " + other.address + ":" + port + ", went unanswered: " + failure);
 				return;
@@ -242,7 +253,7 @@ class StunClient {
 			}
 
 			// Test III: the other address and the other port.
-			__ask(other.address, other.port, timeoutMs, socket, null, function(third:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+			__ask(other.address, other.port, timeout, socket, null, function(third:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 				if (third == null) {
 					settle(null, "RFC 5780's third question, to " + other + ", went unanswered: " + failure);
 					return;
@@ -287,19 +298,20 @@ class StunClient {
 		The server is asked to answer from its other address and port, then
 		from its other port only. An answer that gets in says the NAT lets it;
 		one that does not arrives as silence, so a filtering NAT is reported
-		only once `timeoutMs` has passed for each question it stopped, up to
+		only once `timeout` has passed for each question it stopped, up to
 		two deadlines on top of the first answer's time.
 
-		@param timeoutMs For each question, as for `discover`, but it has to
-		be more than 0. Silence is the answer this listens for, and a question
-		with no deadline would wait out a filtering NAT for good, so 0 or less
-		fails at once, with an `ArgumentError` as its `cause`.
+		`timeout` has to be more than 0 here. Silence is the answer this
+		listens for, and a question with no deadline would wait out a
+		filtering NAT for good, so 0 or less (or NaN) fails at once, with an
+		`ArgumentError` as its `cause`.
+
 		@param socket As for `discover`. Without one, a socket of its own is
 		used for all three and closed.
 	**/
-	public static function classifyFiltering(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000,
-			?socket:DatagramSocket):Future<NatBehavior> {
+	public static function classifyFiltering(server:String, port:Int = DEFAULT_PORT, ?socket:DatagramSocket):Future<NatBehavior> {
 		var future = new Future<NatBehavior>();
+		var timeout:Float = StunClient.timeout;
 		var owned:Null<DatagramSocket> = null;
 
 		function settle(behavior:Null<NatBehavior>, failure:Null<String>):Void {
@@ -312,9 +324,9 @@ class StunClient {
 			}
 		}
 
-		if (timeoutMs <= 0) {
-			@:privateAccess future.__fail("Classifying a NAT's filtering needs a deadline of more than 0 ms: a filtering NAT answers with "
-				+ "silence, which only a deadline can hear.", new ArgumentError("timeoutMs"));
+		if (!(timeout > 0)) {
+			@:privateAccess future.__fail("Classifying a NAT's filtering needs a deadline of more than 0 seconds: a filtering NAT answers with "
+				+ "silence, which only a deadline can hear.", new ArgumentError("timeout"));
 			return future;
 		}
 
@@ -328,7 +340,7 @@ class StunClient {
 
 		// Test I: an ordinary question, which makes the mapping the other two
 		// ask about and learns where the server's other address is.
-		__ask(server, port, timeoutMs, socket, null, function(first:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
+		__ask(server, port, timeout, socket, null, function(first:Null<StunAnswer>, failure:Null<String>, _:Bool):Void {
 			if (first == null) {
 				settle(null, failure);
 				return;
@@ -344,7 +356,7 @@ class StunClient {
 			var primary:String = first.from.address;
 
 			// Test II: answered from the other address and port.
-			__ask(primary, port, timeoutMs, socket, [StunMessage.changeRequest(true, true)],
+			__ask(primary, port, timeout, socket, [StunMessage.changeRequest(true, true)],
 				function(second:Null<StunAnswer>, failure:Null<String>, timedOut:Bool):Void {
 					if (second != null) {
 						var wrong = __answeredFromWrongPlace(second, other.address, other.port);
@@ -358,7 +370,7 @@ class StunClient {
 					}
 
 					// Test III: answered from the other port only.
-					__ask(primary, port, timeoutMs, socket, [StunMessage.changeRequest(false, true)],
+					__ask(primary, port, timeout, socket, [StunMessage.changeRequest(false, true)],
 						function(third:Null<StunAnswer>, failure:Null<String>, timedOut:Bool):Void {
 							if (third != null) {
 								var wrong = __answeredFromWrongPlace(third, primary, other.port);
@@ -405,7 +417,7 @@ class StunClient {
 		and whether that was the deadline passing. Always later, never inside
 		this call, unless the question could not be asked at all.
 	**/
-	@:noCompletion private static function __ask(server:String, port:Int, timeoutMs:Int, socket:Null<DatagramSocket>,
+	@:noCompletion private static function __ask(server:String, port:Int, timeout:Float, socket:Null<DatagramSocket>,
 			attributes:Null<Array<StunAttribute>>, then:(Null<StunAnswer>, Null<String>, Bool) -> Void):Void {
 		var unusable:Null<String> = __usable(server);
 		if (unusable != null) {
@@ -431,7 +443,7 @@ class StunClient {
 			}
 		}
 
-		var query = new StunQuery(haxe.Timer.stamp(), timeoutMs, attributes);
+		var query = new StunQuery(haxe.Timer.stamp(), timeout, attributes);
 		var runtime:CrossByte = CrossByte.current();
 		var wasReceiving:Bool = !owned && socket.receiving;
 		var settled:Bool = false;
@@ -537,11 +549,11 @@ class StunClient {
 				// Only a question with a deadline gets here.
 				var damage:Null<String> = query.damage();
 				if (damage != null) {
-					finish(null, "No usable reply from the STUN server at " + server + ":" + port + " within " + query.timeoutMs + "ms: " + damage
+					finish(null, "No usable reply from the STUN server at " + server + ":" + port + " within " + query.timeout + " s: " + damage
 						+ ".", false);
 				} else {
-					finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + query.timeoutMs
-						+ "ms. UDP reports nothing when it is dropped, so a silent network and a wrong address look the same from here.",
+					finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + query.timeout
+						+ " s. UDP reports nothing when it is dropped, so a silent network and a wrong address look the same from here.",
 						true);
 				}
 				return;

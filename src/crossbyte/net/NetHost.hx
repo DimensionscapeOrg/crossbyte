@@ -132,11 +132,40 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 		return false;
 	}
 
+	/** Kept, and never read: this host cannot dial. See `INetHost.connectTimeout`. **/
+	public var connectTimeout(get, set):Float;
+
+	@:noCompletion private var __connectTimeout:Float = 20.0;
+
+	@:noCompletion private function get_connectTimeout():Float {
+		return __connectTimeout;
+	}
+
+	@:noCompletion private function set_connectTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new crossbyte.errors.RangeError("A connect timeout cannot be negative.");
+		}
+		return __connectTimeout = value;
+	}
+
+	/** Kept, and never read: this host asks nothing. See `INetHost.stunTimeout`. **/
+	public var stunTimeout(get, set):Float;
+
+	@:noCompletion private var __stunTimeout:Float = StunClient.DEFAULT_TIMEOUT;
+
+	@:noCompletion private function get_stunTimeout():Float {
+		return __stunTimeout;
+	}
+
+	@:noCompletion private function set_stunTimeout(value:Float):Float {
+		return __stunTimeout = value;
+	}
+
 	/**
 	 * Always refuses. Accepting and connecting are separate sockets on a stream
 	 * transport, so there is no listening endpoint here to leave from.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 20000):INetConnection {
+	public function dial(address:String, port:Int):INetConnection {
 		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host cannot dial from its listening endpoint: accepting and connecting are separate sockets on a stream transport. Use NetConnection for an outgoing session.");
 	}
@@ -147,7 +176,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	 * rather than thrown, as everything this answers with a `Future` reports
 	 * failure; see `INetHost`.
 	 */
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+	public function discoverPublicAddress(server:String, port:Int = 3478):Future<ReflexiveAddress> {
 		var refusal = new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
 		return Future.failed(refusal.message, refusal);
@@ -164,7 +193,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	}
 
 	/** Always refuses; see `allocateRelay`. **/
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 20000):INetConnection {
+	public function dialRelayed(address:String, port:Int):INetConnection {
 		throw __noRelay("dialRelayed");
 	}
 
@@ -370,6 +399,28 @@ private class RUDPHost implements INetHost {
 		return true;
 	}
 
+	/** The server's `connectTimeout`. See `INetHost.connectTimeout`. **/
+	public var connectTimeout(get, set):Float;
+
+	@:noCompletion private inline function get_connectTimeout():Float {
+		return __server.connectTimeout;
+	}
+
+	@:noCompletion private inline function set_connectTimeout(value:Float):Float {
+		return __server.connectTimeout = value;
+	}
+
+	/** The server's `stunTimeout`. See `INetHost.stunTimeout`. **/
+	public var stunTimeout(get, set):Float;
+
+	@:noCompletion private inline function get_stunTimeout():Float {
+		return __server.stunTimeout;
+	}
+
+	@:noCompletion private inline function set_stunTimeout(value:Float):Float {
+		return __server.stunTimeout = value;
+	}
+
 	/**
 	 * Opens a reliable session from the port this host is bound to.
 	 *
@@ -378,16 +429,16 @@ private class RUDPHost implements INetHost {
 	 * surface through `onAccept`: it was initiated here, and the caller
 	 * already holds it.
 	 */
-	public function dial(address:String, port:Int, timeoutMs:Int = 20000):INetConnection {
-		return NetConnection.fromReliableDatagramSocket(__server.connect(address, port, timeoutMs));
+	public function dial(address:String, port:Int):INetConnection {
+		return NetConnection.fromReliableDatagramSocket(__server.connect(address, port));
 	}
 
 	/**
 	 * Asks through the socket this host listens on, so the answer describes the
 	 * port peers actually dial.
 	 */
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
-		return __server.discoverPublicAddress(server, port, timeoutMs);
+	public function discoverPublicAddress(server:String, port:Int = 3478):Future<ReflexiveAddress> {
+		return __server.discoverPublicAddress(server, port);
 	}
 
 	/**
@@ -411,8 +462,8 @@ private class RUDPHost implements INetHost {
 	 * A session dialled through the relay, surfacing no more through
 	 * `onAccept` than one dialled directly.
 	 */
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 20000):INetConnection {
-		return NetConnection.fromReliableDatagramSocket(__server.connectRelayed(address, port, timeoutMs));
+	public function dialRelayed(address:String, port:Int):INetConnection {
+		return NetConnection.fromReliableDatagramSocket(__server.connectRelayed(address, port));
 	}
 
 	public function permitRelayedPeer(address:String):Void {

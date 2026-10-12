@@ -2070,8 +2070,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
   line or set the cap it wants. A host asks for the system's largest
   backlog.
 - A class implementing `INetHost` declares `maxConnections` as
-  `(get, set)` and adds `refusedConnections` (a `Float`), `canDial`, `dial`,
-  `discoverPublicAddress`, `localAddressFor`, `allocateRelay`,
+  `(get, set)` and adds `refusedConnections` (a `Float`), `canDial`,
+  `connectTimeout` and `stunTimeout` (`Float`s of seconds, `(get, set)`),
+  `dial`, `discoverPublicAddress`, `localAddressFor`, `allocateRelay`,
   `dialRelayed` and `permitRelayedPeer`. A host that cannot dial from its
   listening endpoint answers `canDial` false, throws
   `IllegalOperationError` from `dial`, `dialRelayed` and
@@ -2144,9 +2145,8 @@ than waiting a thousand times as long: divide the old value by 1,000.
 - `ReliableDatagramSocket.timeout`, in milliseconds, is `connectTimeout`,
   in seconds as the class's other durations are: `timeout = 5000` is
   `connectTimeout = 5`. `DEFAULT_TIMEOUT` (20000) is
-  `DEFAULT_CONNECT_TIMEOUT` (20.0). The server's `connect` and
-  `connectRelayed`, and `INetHost.dial`, still take `timeoutMs` in
-  milliseconds.
+  `DEFAULT_CONNECT_TIMEOUT` (20.0). A session the server dials takes the
+  server's `connectTimeout`, in seconds too.
 
 #### WebSocket
 

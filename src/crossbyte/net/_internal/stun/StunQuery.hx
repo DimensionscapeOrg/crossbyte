@@ -36,10 +36,10 @@ class StunQuery {
 	public static inline var RETRANSMIT_FIRST:Float = 0.5;
 
 	/**
-		How long this question is asked for, in milliseconds (what a failure
-		should say it waited), or 0 for no deadline.
+		How long this question is asked for, in seconds (what a failure should
+		say it waited), or 0 for no deadline.
 	**/
-	public var timeoutMs(default, null):Int;
+	public var timeout(default, null):Float;
 
 	/** The request, whose transaction is what a reply is believed by. **/
 	public var request(default, null):StunMessage;
@@ -62,12 +62,13 @@ class StunQuery {
 
 	/**
 		@param now The caller's clock, whatever it consistently uses.
-		@param timeoutMs How long to keep asking. 0 or less sets no deadline,
-		as it does for every timeout here: the question is asked, each gap
-		twice the last, until it is answered or its asker stops it.
+		@param timeout How long to keep asking, in seconds. 0 or less (or NaN)
+		sets no deadline, as it does for every timeout here: the question is
+		asked, each gap twice the last, until it is answered or its asker
+		stops it.
 		@param attributes More for the request to carry: a CHANGE-REQUEST.
 	**/
-	public function new(now:Float, timeoutMs:Int, ?attributes:Array<StunAttribute>) {
+	public function new(now:Float, timeout:Float, ?attributes:Array<StunAttribute>) {
 		request = StunMessage.bindingRequest();
 
 		if (attributes != null) {
@@ -76,8 +77,8 @@ class StunQuery {
 			}
 		}
 
-		this.timeoutMs = timeoutMs > 0 ? timeoutMs : 0;
-		__deadline = timeoutMs > 0 ? now + timeoutMs / 1000 : Math.POSITIVE_INFINITY;
+		this.timeout = timeout > 0 ? timeout : 0.0;
+		__deadline = timeout > 0 ? now + timeout : Math.POSITIVE_INFINITY;
 		__interval = RETRANSMIT_FIRST;
 		__nextAttempt = now + __interval;
 	}

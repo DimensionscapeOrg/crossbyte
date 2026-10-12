@@ -932,7 +932,8 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			// All four listening: a reflexive question nobody answers, the relay,
 			// an agent checking, and a restart's agent.
-			connection.gatherReflexive("127.0.0.1", silent.port, 30000).then(_ -> {}, _ -> {});
+			connection.stunTimeout = 30.0;
+			connection.gatherReflexive("127.0.0.1", silent.port).then(_ -> {}, _ -> {});
 			connection.connect({
 				usernameFragment: "remoteufrag",
 				password: "remotepasswordlongenough",

@@ -801,7 +801,8 @@ class NameLookupTest extends utest.Test {
 		var name:String = __missingName();
 		var started:Float = haxe.Timer.stamp();
 		// Long enough that reaching it cannot pass for failing at once.
-		var question = server.discoverPublicAddress(name, 3478, 20000);
+		server.stunTimeout = 20.0;
+		var question = server.discoverPublicAddress(name, 3478);
 
 		NetPump.until(() -> question.completed, 12.0, function(_) {
 			var took:Float = haxe.Timer.stamp() - started;
@@ -839,7 +840,8 @@ class NameLookupTest extends utest.Test {
 
 		NetPump.until(() -> stun.localPort != 0 && server.localPort != 0, 5.0, function(_) {
 			var lookups:Int = crossbyte._internal.net.Resolver.__started;
-			var question = server.discoverPublicAddress("localhost", stun.localPort, 5000);
+			server.stunTimeout = 5.0;
+			var question = server.discoverPublicAddress("localhost", stun.localPort);
 			Assert.equals(lookups + 1, crossbyte._internal.net.Resolver.__started, "the name was not looked up off the runtime's thread");
 
 			NetPump.until(() -> question.completed, 8.0, function(_) {

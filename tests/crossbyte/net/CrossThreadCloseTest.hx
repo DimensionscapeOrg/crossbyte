@@ -339,7 +339,8 @@ class CrossThreadCloseTest extends utest.Test {
 
 		var failure:String = null;
 		var failedOnRuntime:Bool = false;
-		server.discoverPublicAddress("127.0.0.1", silent.localPort, 20000).then(_ -> {}, function(error:String) {
+		server.stunTimeout = 20.0;
+		server.discoverPublicAddress("127.0.0.1", silent.localPort).then(_ -> {}, function(error:String) {
 			failure = error;
 			failedOnRuntime = CrossByte.__currentOrNull() == runtime;
 		});

@@ -35,7 +35,7 @@ class StunQueryTest extends utest.Test {
 	public function testASuccessCarryingAnAddressIsTheAnswer():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var reply = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
 			[StunMessage.xorMappedAddress("198.51.100.42", 51234)]);
 
@@ -59,8 +59,8 @@ class StunQueryTest extends utest.Test {
 	public function testAReplyWithAnotherTransactionIsNotOurs():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
-		var stranger = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
+		var stranger = new StunQuery(0, 3.0);
 
 		var forged = new StunMessage(StunMessage.BINDING_SUCCESS, stranger.request.transactionId,
 			[StunMessage.xorMappedAddress("192.0.2.66", 9999)]);
@@ -72,7 +72,7 @@ class StunQueryTest extends utest.Test {
 	public function testSomethingThatIsNotStunIsNotOurs():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var noise = new ByteArray();
 
 		for (i in 0...40) {
@@ -87,7 +87,7 @@ class StunQueryTest extends utest.Test {
 	public function testARefusalIsReportedWithItsReason():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var refusal = new StunMessage(StunMessage.BINDING_ERROR, query.request.transactionId,
 			[StunMessage.errorCode(400, "Bad Request")]);
 
@@ -109,7 +109,7 @@ class StunQueryTest extends utest.Test {
 	public function testASuccessWithoutAnAddressIsItsOwnOutcome():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var empty = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId);
 
 		Assert.equals(ANSWERED_WITHOUT_ADDRESS, query.interpret(empty.encode()));
@@ -126,7 +126,7 @@ class StunQueryTest extends utest.Test {
 	public function testTheScheduleDoublesAndTheDeadlineEnds():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 
 		Assert.isFalse(query.shouldRetransmit(0.4), "asked again before the first gap had passed");
 		Assert.isTrue(query.shouldRetransmit(0.5), "never asked again at the first gap");
@@ -147,7 +147,7 @@ class StunQueryTest extends utest.Test {
 	public function testAskingAgainKeepsTheSameTransaction():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var first = query.request.transactionId;
 
 		query.shouldRetransmit(0.5);
@@ -174,17 +174,17 @@ class StunQueryTest extends utest.Test {
 
 		Assert.isFalse(query.expired(13.0), "a question with no deadline expired at the three seconds 0 used to mean");
 		Assert.isFalse(query.expired(1e9), "a question with no deadline expired");
-		Assert.equals(0, query.timeoutMs);
+		Assert.equals(0.0, query.timeout);
 		Assert.isTrue(query.shouldRetransmit(10.5), "a question with no deadline was not asked again");
 		Assert.isFalse(query.shouldRetransmit(11.4), "the gap did not double");
 		Assert.isTrue(query.shouldRetransmit(11.5));
 
-		var negative = new StunQuery(10, -5);
-		Assert.equals(0, negative.timeoutMs);
+		var negative = new StunQuery(10, -0.005);
+		Assert.equals(0.0, negative.timeout);
 		Assert.isFalse(negative.expired(1e9), "a question with a negative timeout expired");
 
-		Assert.equals(750, new StunQuery(10, 750).timeoutMs);
-		Assert.isTrue(new StunQuery(10, 750).expired(10.75));
+		Assert.equals(0.75, new StunQuery(10, 0.75).timeout);
+		Assert.isTrue(new StunQuery(10, 0.75).expired(10.75));
 	}
 
 	/**
@@ -199,7 +199,7 @@ class StunQueryTest extends utest.Test {
 	public function testAnAnswerWithABadFingerprintIsNotBelieved():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var damaged = fingerprinted(new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
 			[StunMessage.xorMappedAddress("192.0.2.66", 9999)]), true);
 
@@ -236,7 +236,7 @@ class StunQueryTest extends utest.Test {
 	public function testAnAnswerRequiringAnUnknownAttributeCannotBeUsed():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var reply = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
 			[StunMessage.xorMappedAddress("198.51.100.42", 51234), unknownAttribute(0x7FAA)]);
 
@@ -247,7 +247,7 @@ class StunQueryTest extends utest.Test {
 				Assert.fail("an answer requiring an attribute nobody here understands was taken: " + other);
 		}
 
-		var optional = new StunQuery(0, 3000);
+		var optional = new StunQuery(0, 3.0);
 		var tolerable = new StunMessage(StunMessage.BINDING_SUCCESS, optional.request.transactionId,
 			[StunMessage.xorMappedAddress("198.51.100.42", 51234), unknownAttribute(0xFFAA)]);
 
@@ -268,7 +268,7 @@ class StunQueryTest extends utest.Test {
 	public function testAnIPv6AnswerIsAnAnswer():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var reply = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
 			[StunMessage.xorMappedAddress("2001:db8::42", 51234, query.request.transactionId)]);
 
@@ -292,7 +292,7 @@ class StunQueryTest extends utest.Test {
 	public function testAKeptAnswerKeepsTheBytesItWasDecodedFrom():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000);
+		var query = new StunQuery(0, 3.0);
 		var datagram = fingerprinted(new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
 			[StunMessage.xorMappedAddress("198.51.100.42", 51234)]), false);
 
@@ -324,7 +324,7 @@ class StunQueryTest extends utest.Test {
 	public function testARequestCarriesWhatItIsGiven():Void {
 		if (unsupported()) return;
 
-		var query = new StunQuery(0, 3000, [StunMessage.changeRequest(true, false)]);
+		var query = new StunQuery(0, 3.0, [StunMessage.changeRequest(true, false)]);
 		var sent = StunMessage.decode(query.request.encode());
 
 		Assert.notNull(sent);

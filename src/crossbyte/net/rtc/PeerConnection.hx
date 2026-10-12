@@ -276,6 +276,16 @@ class PeerConnection {
 	**/
 	public var readyTimeout(default, set):Float = DEFAULT_READY_TIMEOUT;
 
+	/**
+		How long, in seconds, `gatherReflexive` keeps asking:
+		`StunClient.DEFAULT_TIMEOUT`, 3, unless changed. Read as each question
+		is asked. UDP reports nothing when a datagram is dropped, so a server
+		that never answers and one that was never reached look identical, and
+		only a deadline ends it: 0 or less sets none, and the question is
+		asked until it is answered or this connection closes, which fails it.
+	**/
+	public var stunTimeout:Float = StunClient.DEFAULT_TIMEOUT;
+
 	@:noCompletion private function set_readyTimeout(value:Float):Float {
 		if (!(value >= 0)) {
 			throw new ArgumentError('readyTimeout must be a number of seconds, 0 for no deadline, and was $value.');
@@ -1268,17 +1278,13 @@ class PeerConnection {
 		finish before `connect`. Host candidates are tried meanwhile, and the
 		reflexive one joins the checking when it lands.
 
-		@param timeoutMs How long to keep asking. UDP reports nothing when a
-		datagram is dropped, so a server that never answers and one that was
-		never reached look identical from here and only a deadline ends it:
-		0 or less sets no deadline: the question is asked until it is
-		answered or this connection closes, which fails it.
+		It is asked for `stunTimeout`.
 
 		@return The candidate that was added, or a failure naming why none was.
 		One query at a time: a second while one is outstanding fails rather than
 		displacing it, and chaining off this future asks the next server.
 	**/
-	public function gatherReflexive(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<IceCandidate> {
+	public function gatherReflexive(server:String, port:Int = 3478):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
 
 		if (__host != null) {
@@ -1308,7 +1314,7 @@ class PeerConnection {
 		// carrying the only question this connection asks about its own
 		// address is a thing to lose to one dropped packet, and a deadline
 		// alone would report the loss as a server that is not there.
-		__reflexiveQuery = new StunQuery(now, timeoutMs);
+		__reflexiveQuery = new StunQuery(now, stunTimeout);
 		__reflexiveFuture = future;
 		__reflexiveServer = server;
 		__reflexivePort = port;

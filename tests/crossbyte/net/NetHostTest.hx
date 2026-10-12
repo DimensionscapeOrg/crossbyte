@@ -286,9 +286,10 @@ class NetHostTest extends utest.Test {
 
 		host.allocateRelay("198.51.100.1", 3478, "user", "secret");
 		host.permitRelayedPeer("203.0.113.9");
-		host.dialRelayed("203.0.113.9", 4000, 250);
+		host.connectTimeout = 0.25;
+		host.dialRelayed("203.0.113.9", 4000);
 
-		Assert.equals("allocateRelay 198.51.100.1:3478 user|permitRelayedPeer 203.0.113.9|dialRelayed 203.0.113.9:4000 250",
+		Assert.equals("allocateRelay 198.51.100.1:3478 user|permitRelayedPeer 203.0.113.9|dialRelayed 203.0.113.9:4000 0.25",
 			own.calls.join("|"));
 
 		// And through the interface, for code that holds one.
@@ -370,16 +371,37 @@ private class RelayingHost implements INetHost {
 	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
 	public var onError(get, set):Reason->Void;
 	public var canDial(get, never):Bool;
+	public var connectTimeout(get, set):Float;
+	public var stunTimeout(get, set):Float;
+
+	private var __connectTimeout:Float = 20.0;
+	private var __stunTimeout:Float = 3.0;
+
+	private function get_connectTimeout():Float {
+		return __connectTimeout;
+	}
+
+	private function set_connectTimeout(value:Float):Float {
+		return __connectTimeout = value;
+	}
+
+	private function get_stunTimeout():Float {
+		return __stunTimeout;
+	}
+
+	private function set_stunTimeout(value:Float):Float {
+		return __stunTimeout = value;
+	}
 
 	public function new() {}
 
 	public function bind(address:String, port:Int):Void {}
 
-	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+	public function dial(address:String, port:Int):INetConnection {
 		return null;
 	}
 
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):crossbyte.Future<ReflexiveAddress> {
+	public function discoverPublicAddress(server:String, port:Int = 3478):crossbyte.Future<ReflexiveAddress> {
 		return null;
 	}
 
@@ -393,8 +415,8 @@ private class RelayingHost implements INetHost {
 		return null;
 	}
 
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
-		calls.push("dialRelayed " + address + ":" + port + " " + timeoutMs);
+	public function dialRelayed(address:String, port:Int):INetConnection {
+		calls.push("dialRelayed " + address + ":" + port + " " + connectTimeout);
 		return null;
 	}
 

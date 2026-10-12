@@ -390,6 +390,33 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	**/
 	public var ackDelay(default, set):Float = ReliableDatagramSocket.DEFAULT_ACK_DELAY;
 
+	/**
+		`ReliableDatagramSocket.connectTimeout` for each session this server
+		dials (`connect`, `connectRelayed`), in seconds: how long its handshake
+		may take, 20 unless changed. Read as each is dialled. 0 sets no
+		deadline, and the attempt goes on until the peer answers or the
+		session is closed.
+
+		@throws RangeError If set below zero, or to NaN.
+	**/
+	public var connectTimeout(default, set):Float = ReliableDatagramSocket.DEFAULT_CONNECT_TIMEOUT;
+
+	@:noCompletion private function set_connectTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new RangeError("A connect timeout cannot be negative.");
+		}
+		return connectTimeout = value;
+	}
+
+	/**
+		How long, in seconds, `discoverPublicAddress` keeps asking:
+		`StunClient.DEFAULT_TIMEOUT`, 3, unless changed. Read as each question
+		is asked. 0 or less sets no deadline, as it does for `connectTimeout`:
+		the question is asked until it is answered or this server closes,
+		since nothing else ends a question over UDP that nobody answers.
+	**/
+	public var stunTimeout:Float = StunClient.DEFAULT_TIMEOUT;
+
 	@:noCompletion private function set_ackDelay(value:Float):Float {
 		if (!(value >= 0) || value > ReliableDatagramSocket.MAX_ACK_DELAY) {
 			throw new RangeError('An acknowledgement delay is 0 to ${ReliableDatagramSocket.MAX_ACK_DELAY} seconds.');
@@ -1103,12 +1130,9 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		session here already, and a `congestionControlFor` that throws. On a
 		thread with no CrossByte runtime a name is looked up in the call.
 
+		The handshake may take `connectTimeout`.
+
 		@param address The peer's address, or a name.
-		@param timeoutMs How long the handshake may take, in milliseconds:
-		       the session's `connectTimeout`, which is in seconds. 20 seconds
-		       unless given; 0 sets no deadline, as it does for
-		       `connectTimeout`, and the attempt goes on until the peer answers
-		       or the session is closed.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
 		       sends it: copied now, and at most one frame
 		       (`ReliableDatagramSocket.MAX_ENCRYPTED_PAYLOAD_SIZE` with a key).
@@ -1122,16 +1146,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		not 32 bytes.
 		@throws crossbyte.errors.IllegalOperationError if given a key on a
 		target that cannot encrypt (`ReliableDatagramSocket.isEncryptionSupported`).
-		@throws RangeError if `payload` is larger than one frame, or
-		`timeoutMs` is negative.
+		@throws RangeError if `payload` is larger than one frame.
 	**/
-	public function connect(address:String, port:Int, timeoutMs:Int = 20000, ?payload:ByteArray,
-			?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
+	public function connect(address:String, port:Int, ?payload:ByteArray, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__checkTimeout(timeoutMs);
 		__checkKey(encryptionKey);
 
 		if (!bound) {
@@ -1159,7 +1180,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// Without a runtime on this thread there is nothing to hand an answer
 		// back to, so a name is looked up here.
 		if (Resolver.needsLookup(address) && Resolver.runtimeHere() != null) {
-			return __dialByName(address, port, timeoutMs / 1000, outgoing, encryptionKey);
+			return __dialByName(address, port, connectTimeout, outgoing, encryptionKey);
 		}
 
 		try {
@@ -1181,7 +1202,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
 		}
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs / 1000, outgoing,
+		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, connectTimeout, outgoing,
 			congestionControlFor(resolved, port), null, encryptionKey);
 		__file(resolved, port, socket);
 		return socket;
@@ -1328,16 +1349,6 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		}
 	}
 
-	/**
-		Refuses a negative timeout for a dialled session, as its
-		`connectTimeout` does, before anything is made for it.
-	**/
-	@:noCompletion private static inline function __checkTimeout(timeoutMs:Int):Void {
-		if (timeoutMs < 0) {
-			throw new RangeError("Invalid socket timeout specified.");
-		}
-	}
-
 	#if !nodejs
 	/**
 		`connect()` to a name: the session is made and returned now, and the
@@ -1427,15 +1438,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		than queued, because the two would race for the same reply.
 
 		`server` may be a name. It is looked up off the runtime's thread
-		before the question is asked, within `timeoutMs`, and a name that does
+		before the question is asked, within `stunTimeout`, and a name that does
 		not resolve fails the question as soon as that is known. On Node, Node
 		looks the name up for each request itself, and one that does not
 		resolve leaves the question to its deadline.
 
-		`timeoutMs` is how long to keep asking. 0 or less sets no deadline, as
-		it does for a session's `connectTimeout`: the question is asked until
-		it is answered or this server closes, since nothing else ends a
-		question over UDP that nobody answers.
+		It is asked for `stunTimeout`, 3 seconds unless changed.
 
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
@@ -1444,7 +1452,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		       `ArgumentError`; and with no cause for a second question while
 		       one is outstanding, or a target with no secure random source.
 	**/
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+	public function discoverPublicAddress(server:String, port:Int = 3478):Future<ReflexiveAddress> {
 		var future = new Future<ReflexiveAddress>();
 
 		if (__closed || !bound || !listening) {
@@ -1475,7 +1483,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 			return future;
 		}
 
-		var query = new StunQuery(haxe.Timer.stamp(), timeoutMs);
+		var query = new StunQuery(haxe.Timer.stamp(), stunTimeout);
 		__stunQuery = query;
 		__stunFuture = future;
 
@@ -1512,7 +1520,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 				// Only a question with a deadline gets here.
 				var damage:Null<String> = query.damage();
 				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
-					+ query.timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
+					+ query.timeout + " s" + (damage != null ? ": " + damage + "." : "."));
 				return;
 			}
 
@@ -1906,8 +1914,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		relay is to send: the peer's own relayed address, or whatever address
 		of its a pair ICE chose through the relay names.
 
-		@param timeoutMs As for `connect`: 20 seconds unless given, and 0 for
-		       no deadline.
+		The handshake may take `connectTimeout`, as for `connect`.
+
 		@param payload As for `connect`.
 		@param encryptionKey As for `connect`: the session's key, or null for
 		       a session in the clear. The relay forwards sealed datagrams
@@ -1916,16 +1924,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		no relay holding an address.
 		@throws ArgumentError If `address` is not an IPv4 address, or a session
 		to this endpoint already exists.
-		@throws RangeError if `payload` is larger than one frame, or
-		`timeoutMs` is negative.
+		@throws RangeError if `payload` is larger than one frame.
 	**/
-	public function connectRelayed(address:String, port:Int, timeoutMs:Int = 20000,
-			?payload:ByteArray, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
+	public function connectRelayed(address:String, port:Int, ?payload:ByteArray, ?encryptionKey:haxe.io.Bytes):ReliableDatagramSocket {
 		if (__closed || !bound || !listening) {
 			throw new IOError("Cannot dial from a server socket that is not bound and listening.");
 		}
 
-		__checkTimeout(timeoutMs);
 		__checkKey(encryptionKey);
 
 		if (relay == null || !relay.active) {
@@ -1946,7 +1951,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// The permission first, so the relay forwards the first CONNECT.
 		relay.permit(address, haxe.Timer.stamp());
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs / 1000, outgoing,
+		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, connectTimeout, outgoing,
 			congestionControlFor(address, port), relay, encryptionKey);
 		__file(address, port, socket);
 		return socket;

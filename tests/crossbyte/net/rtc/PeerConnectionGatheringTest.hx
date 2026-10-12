@@ -129,7 +129,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var gathered:IceCandidate = null;
 			var failure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 4000).then(c -> gathered = c, e -> failure = e);
+			connection.stunTimeout = 4.0;
+			connection.gatherReflexive("127.0.0.1", server.port).then(c -> gathered = c, e -> failure = e);
 			pumpUntil(() -> gathered != null || failure != null, 6.0);
 
 			Assert.isNull(failure, failure);
@@ -202,7 +203,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var gathered:IceCandidate = null;
 			var failure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 8000).then(c -> gathered = c, e -> failure = e);
+			connection.stunTimeout = 8.0;
+			connection.gatherReflexive("127.0.0.1", server.port).then(c -> gathered = c, e -> failure = e);
 			pumpUntil(() -> gathered != null || failure != null, 10.0);
 
 			Assert.isNull(failure, failure);
@@ -236,7 +238,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var gathered:IceCandidate = null;
 			var failure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 700).then(c -> gathered = c, e -> failure = e);
+			connection.stunTimeout = 0.7;
+			connection.gatherReflexive("127.0.0.1", server.port).then(c -> gathered = c, e -> failure = e);
 			pumpUntil(() -> gathered != null || failure != null, 6.0);
 
 			Assert.isNull(gathered, "a server that said nothing produced a candidate");
@@ -270,7 +273,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var gathered:IceCandidate = null;
 			var failure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 4000).then(c -> gathered = c, e -> failure = e);
+			connection.stunTimeout = 4.0;
+			connection.gatherReflexive("127.0.0.1", server.port).then(c -> gathered = c, e -> failure = e);
 			pumpUntil(() -> gathered != null || failure != null, 6.0);
 
 			Assert.isNull(gathered);
@@ -314,7 +318,7 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var gathered:IceCandidate = null;
 			var failure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 3000).then(c -> gathered = c, e -> failure = e);
+			connection.gatherReflexive("127.0.0.1", server.port).then(c -> gathered = c, e -> failure = e);
 
 			// A binding request of somebody else's, and a success carrying a
 			// mapped address, both with transactions this connection never
@@ -357,8 +361,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			var firstFailure:String = null;
 			var secondFailure:String = null;
 
-			connection.gatherReflexive("127.0.0.1", server.port, 3000).then(_ -> {}, e -> firstFailure = e);
-			connection.gatherReflexive("127.0.0.1", server.port, 3000).then(_ -> {}, e -> secondFailure = e);
+			connection.gatherReflexive("127.0.0.1", server.port).then(_ -> {}, e -> firstFailure = e);
+			connection.gatherReflexive("127.0.0.1", server.port).then(_ -> {}, e -> secondFailure = e);
 
 			pumpUntil(() -> secondFailure != null, 2.0);
 
@@ -379,7 +383,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 		var connection = new PeerConnection(true);
 		var failure:String = null;
 
-		connection.gatherReflexive("127.0.0.1", 3478, 1000).then(_ -> {}, e -> failure = e);
+		connection.stunTimeout = 1.0;
+		connection.gatherReflexive("127.0.0.1", 3478).then(_ -> {}, e -> failure = e);
 
 		Assert.notNull(failure, "gathering without a socket did not say so");
 
@@ -403,7 +408,8 @@ class PeerConnectionGatheringTest extends utest.Test {
 			connection.bind(0, "127.0.0.1");
 
 			var settled = false;
-			connection.gatherReflexive("127.0.0.1", server.port, 30000).then(_ -> settled = true, _ -> settled = true);
+			connection.stunTimeout = 30.0;
+			connection.gatherReflexive("127.0.0.1", server.port).then(_ -> settled = true, _ -> settled = true);
 
 			Assert.isFalse(settled, "the query ended before anything happened");
 			connection.close();

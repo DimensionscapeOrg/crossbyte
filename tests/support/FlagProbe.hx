@@ -25,7 +25,8 @@ class FlagProbe {
 		var settled = false;
 
 		try {
-			crossbyte.net.StunClient.discover("198.51.100.1", 3478, 1000).then(function(address) {
+			crossbyte.net.StunClient.timeout = 1.0;
+			crossbyte.net.StunClient.discover("198.51.100.1", 3478).then(function(address) {
 				Sys.println("FAIL: an address came back with no CSPRNG: " + address);
 				Sys.exit(1);
 			}, function(error) {

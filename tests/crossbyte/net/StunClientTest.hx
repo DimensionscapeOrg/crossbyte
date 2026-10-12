@@ -34,6 +34,10 @@ class StunClientTest extends utest.Test {
 
 	public static inline var REPORTED_PORT:Int = 51234;
 
+	public function teardown():Void {
+		StunClient.timeout = StunClient.DEFAULT_TIMEOUT;
+	}
+
 	/** The whole point: the address comes back, and it is the server's answer. **/
 	public function testTheAddressAServerReportsIsReturned():Void {
 		if (unsupported()) return;
@@ -43,7 +47,8 @@ class StunClientTest extends utest.Test {
 
 		try {
 			server.start();
-			StunClient.discover("127.0.0.1", server.port, 4000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 4.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 6.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -82,7 +87,8 @@ class StunClientTest extends utest.Test {
 			server.ignoreFirst = 2;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 9000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 9.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 11.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -111,7 +117,8 @@ class StunClientTest extends utest.Test {
 			server.ignoreEverything = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 900).then(answer.succeed, answer.fail);
+			StunClient.timeout = 0.9;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 6.0);
 
 			Assert.isNull(answer.address, "a server that said nothing produced an address");
@@ -147,7 +154,8 @@ class StunClientTest extends utest.Test {
 			server.start();
 			socket.bind(0, "127.0.0.1");
 
-			StunClient.discover("127.0.0.1", server.port, 0, socket).then(answer.succeed, answer.fail);
+			StunClient.timeout = 0;
+			StunClient.discover("127.0.0.1", server.port, socket).then(answer.succeed, answer.fail);
 			// Past three seconds, and the fourth ask, at 3.5 s.
 			pumpUntil(answer.settled, 4.0);
 
@@ -177,7 +185,8 @@ class StunClientTest extends utest.Test {
 
 		var answer:String = null;
 		var cause:Dynamic = null;
-		var future = StunClient.classifyFiltering("127.0.0.1", 3478, 0);
+		StunClient.timeout = 0;
+		var future = StunClient.classifyFiltering("127.0.0.1", 3478);
 		future.then(_ -> {}, function(error:String) {
 			answer = error;
 			cause = future.cause;
@@ -200,7 +209,8 @@ class StunClientTest extends utest.Test {
 		// .invalid never resolves (RFC 2606). The deadline is long enough
 		// that reaching it cannot pass for failing at once.
 		var started:Float = haxe.Timer.stamp();
-		StunClient.discover("stun.nowhere.invalid", 3478, 20000).then(answer.succeed, answer.fail);
+		StunClient.timeout = 20.0;
+		StunClient.discover("stun.nowhere.invalid", 3478).then(answer.succeed, answer.fail);
 		pumpUntil(answer.settled, 12.0);
 		var took:Float = haxe.Timer.stamp() - started;
 
@@ -221,7 +231,8 @@ class StunClientTest extends utest.Test {
 			server.refuse = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.address, "a refusal produced an address");
@@ -255,7 +266,8 @@ class StunClientTest extends utest.Test {
 			server.omitAddress = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.address, "a reply with no address produced one anyway");
@@ -296,7 +308,8 @@ class StunClientTest extends utest.Test {
 			server.forgeFirst = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -320,7 +333,8 @@ class StunClientTest extends utest.Test {
 		if (unsupported()) return;
 
 		var answer = new Outcome();
-		StunClient.discover("", 3478, 1000).then(answer.succeed, answer.fail);
+		StunClient.timeout = 1.0;
+		StunClient.discover("", 3478).then(answer.succeed, answer.fail);
 
 		// Refused before anything is bound or sent, so there is nothing to wait
 		// for: a query with no server should not cost a deadline to find out.
@@ -350,7 +364,8 @@ class StunClientTest extends utest.Test {
 			server.badFingerprintFirst = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -382,7 +397,8 @@ class StunClientTest extends utest.Test {
 			server.onlyDamaged = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 1200).then(answer.succeed, answer.fail);
+			StunClient.timeout = 1.2;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 4.0);
 
 			Assert.isNull(answer.address, "a damaged answer was believed");
@@ -414,7 +430,8 @@ class StunClientTest extends utest.Test {
 			server.unknownAttribute = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.address, "an answer that cannot be understood was used");
@@ -441,7 +458,8 @@ class StunClientTest extends utest.Test {
 			server.answerIPv6 = true;
 			server.start();
 
-			StunClient.discover("127.0.0.1", server.port, 6000).then(answer.succeed, answer.fail);
+			StunClient.timeout = 6.0;
+			StunClient.discover("127.0.0.1", server.port).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 8.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -489,9 +507,11 @@ class StunClientTest extends utest.Test {
 			second.start();
 			socket.bind(0, "127.0.0.1");
 
-			StunClient.discover("127.0.0.1", first.port, 4000, socket).then(fromFirst.succeed, fromFirst.fail);
+			StunClient.timeout = 4.0;
+			StunClient.discover("127.0.0.1", first.port, socket).then(fromFirst.succeed, fromFirst.fail);
 			pumpUntil(fromFirst.settled, 6.0);
-			StunClient.discover("127.0.0.1", second.port, 4000, socket).then(fromSecond.succeed, fromSecond.fail);
+			StunClient.timeout = 4.0;
+			StunClient.discover("127.0.0.1", second.port, socket).then(fromSecond.succeed, fromSecond.fail);
 			pumpUntil(fromSecond.settled, 6.0);
 
 			Assert.isNull(fromFirst.error, fromFirst.error);
@@ -535,7 +555,8 @@ class StunClientTest extends utest.Test {
 			});
 			socket.receive();
 
-			StunClient.discover("127.0.0.1", server.port, 4000, socket).then(answer.succeed, answer.fail);
+			StunClient.timeout = 4.0;
+			StunClient.discover("127.0.0.1", server.port, socket).then(answer.succeed, answer.fail);
 			pumpUntil(answer.settled, 6.0);
 
 			Assert.isNull(answer.error, answer.error);
@@ -559,10 +580,12 @@ class StunClientTest extends utest.Test {
 		var fromConnected = new Outcome();
 
 		try {
-			StunClient.discover("127.0.0.1", 3478, 1000, unbound).then(fromUnbound.succeed, fromUnbound.fail);
+			StunClient.timeout = 1.0;
+			StunClient.discover("127.0.0.1", 3478, unbound).then(fromUnbound.succeed, fromUnbound.fail);
 			connected.bind(0, "127.0.0.1");
 			connected.connect("127.0.0.1", 9);
-			StunClient.discover("127.0.0.1", 3478, 1000, connected).then(fromConnected.succeed, fromConnected.fail);
+			StunClient.timeout = 1.0;
+			StunClient.discover("127.0.0.1", 3478, connected).then(fromConnected.succeed, fromConnected.fail);
 
 			Assert.isTrue(fromUnbound.settled() && fromConnected.settled(), "refused later rather than at once");
 
@@ -602,7 +625,8 @@ class StunClientTest extends utest.Test {
 			server.start();
 			socket.bind(0, "127.0.0.1");
 
-			StunClient.probe("127.0.0.1", server.primaryPort, 4000, socket, true, true).then(function(p) probe = p, function(e) error = e);
+			StunClient.timeout = 4.0;
+			StunClient.probe("127.0.0.1", server.primaryPort, socket, true, true).then(function(p) probe = p, function(e) error = e);
 			pumpUntil(() -> probe != null || error != null, 6.0);
 
 			Assert.isNull(error, error);
@@ -697,7 +721,8 @@ class StunClientTest extends utest.Test {
 			server.omitOtherAddress = true;
 			server.start();
 
-			StunClient.classifyMapping("127.0.0.1", server.primaryPort, 2000).then(function(b) result = b, function(e) error = e);
+			StunClient.timeout = 2.0;
+			StunClient.classifyMapping("127.0.0.1", server.primaryPort).then(function(b) result = b, function(e) error = e);
 			pumpUntil(() -> result != null || error != null, 5.0);
 
 			Assert.isNull(result, "classified through a server that cannot answer from a second address");
@@ -730,7 +755,8 @@ class StunClientTest extends utest.Test {
 			server.ignoreChangeRequest = true;
 			server.start();
 
-			StunClient.classifyFiltering("127.0.0.1", server.primaryPort, 2000).then(function(b) result = b, function(e) error = e);
+			StunClient.timeout = 2.0;
+			StunClient.classifyFiltering("127.0.0.1", server.primaryPort).then(function(b) result = b, function(e) error = e);
 			pumpUntil(() -> result != null || error != null, 5.0);
 
 			Assert.isNull(result, "classified filtering through a server that never changed where it answered from");
@@ -774,8 +800,9 @@ class StunClientTest extends utest.Test {
 			}
 
 			// Short, since a filtering NAT is seen only by waiting one out.
-			var question = mappingTest ? StunClient.classifyMapping("127.0.0.1", server.primaryPort, 700,
-				socket) : StunClient.classifyFiltering("127.0.0.1", server.primaryPort, 700, socket);
+			StunClient.timeout = 0.7;
+			var question = mappingTest ? StunClient.classifyMapping("127.0.0.1", server.primaryPort,
+				socket) : StunClient.classifyFiltering("127.0.0.1", server.primaryPort, socket);
 			question.then(function(b) result = b, function(e) error = e);
 			pumpUntil(() -> result != null || error != null, 6.0);
 		} catch (e:Dynamic) {
