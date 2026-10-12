@@ -17,6 +17,7 @@ import sys.net.Socket;
 **/
 @:noCompletion
 @:access(sys.net.Socket)
+@:access(sys.net.Host)
 class ReusePort {
 	/**
 		Binds `socket` to `host`:`port` with `SO_REUSEPORT` set on it first.
@@ -64,6 +65,41 @@ class ReusePort {
 		socket.bind(host, port);
 		#else
 		throw new IllegalOperationError("reusePort is SO_REUSEPORT, available natively and on the jvm, on Linux.");
+		#end
+	}
+
+	/**
+		Binds the server's own socket to `host`:`port` with `SO_REUSEPORT`, to
+		hold the port without listening on it. The system shares connections
+		out among every socket on the port that listens, so a listening one
+		that nobody accepts from would be given its share and leave them
+		waiting: on Linux one connection in five with four runtimes.
+
+		Natively that is `bind`, which only binds. On the jvm a server
+		channel listens as it binds, so the socket's own channel, a
+		connection's, is bound instead, as `bind()` binds a client's socket
+		before it connects.
+
+		@throws IOError When the option cannot be set or the bind fails.
+		@throws IllegalOperationError Where there is no such option.
+	**/
+	public static function reserve(socket:Socket, host:Host, port:Int):Void {
+		#if (java || jvm)
+		var refusal:Null<String> = jvmRefusal();
+		if (refusal != null) {
+			throw new IllegalOperationError(refusal);
+		}
+		// Through the interface, as in bind.
+		var network:java.nio.channels.NetworkChannel = cast socket.channel;
+		try {
+			var option:java.net.SocketOption<java.lang.Boolean> = cast __jvmOption();
+			network.setOption(option, java.lang.Boolean.TRUE);
+		} catch (error:Dynamic) {
+			throw new IOError("SO_REUSEPORT could not be set: " + Std.string(error));
+		}
+		network.bind(new java.net.InetSocketAddress(host.wrapped, port));
+		#else
+		bind(socket, host, port);
 		#end
 	}
 

@@ -159,10 +159,11 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   reach the network, with `bytesPending`.
 - `ServerSocket.stopAccepting()` releases the port while open connections
   carry on.
-- One server on several cores: `ServerSocket.runtimes`, `runtimeCount` and
+- One server on several cores, natively, on the jvm, hl, neko and the
+  interpreter: `ServerSocket.runtimes`, `runtimeCount` and
   `selectRuntime` hand each accepted connection to a runtime, and
-  `reusePort` gives each runtime its own listener on Linux. Natively, on
-  the jvm, hl, neko and the interpreter. A runtime that exits gives back
+  `reusePort` gives each runtime its own listener on Linux, natively and
+  on the jvm from Java 9. A runtime that exits gives back
   the places its connections held under `maxConnections`, on a
   `ServerSocket`, an `HTTPServer` or a `ServerWebSocket`.
 - `IOErrorEvent.TIMEOUT_ERROR_ID` marks a connect that timed out, and a

@@ -1047,7 +1047,7 @@ class ServerWebSocket extends ServerSocket {
 			bound = true;
 			#else
 			this.localAddress = localAddress;
-			__bindListener(__webServerSocket, new Host(localAddress), localPort);
+			__bindListener(__webServerSocket, new Host(localAddress), localPort, true);
 
 			// Port 0 asks the operating system to choose. Report the port it
 			// actually assigned, matching ServerSocket: otherwise localPort

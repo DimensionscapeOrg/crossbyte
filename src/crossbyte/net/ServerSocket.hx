@@ -1020,7 +1020,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		#else
 		try {
 			var host:Host = new Host(localAddress);
-			__bindListener(__serverSocket, host, localPort);
+			__bindListener(__serverSocket, host, localPort, true);
 
 			this.localAddress = localAddress;
 			this.localPort = localPort == 0 ? __serverSocket.host().port : localPort;
@@ -1503,12 +1503,17 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		Binds a listener of this server's: with `SO_REUSEPORT` set first when
 		`reusePort` asks for it, so the listeners of every runtime can share
-		the port.
+		the port. `front` is true for the server's own socket, which with
+		`reusePort` holds the port and never listens (see `ReusePort.reserve`).
 	**/
-	@:noCompletion private function __bindListener(listener:Socket, host:Host, port:Int):Void {
+	@:noCompletion private function __bindListener(listener:Socket, host:Host, port:Int, front:Bool):Void {
 		#if (target.threaded && !js)
 		if (reusePort) {
-			crossbyte.net._internal.ReusePort.bind(listener, host, port);
+			if (front) {
+				crossbyte.net._internal.ReusePort.reserve(listener, host, port);
+			} else {
+				crossbyte.net._internal.ReusePort.bind(listener, host, port);
+			}
 			return;
 		}
 		#end
@@ -1535,7 +1540,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			for (_ in spread.replicas) {
 				var listener:Socket = __newListener();
 				opened.push(listener);
-				__bindListener(listener, host, localPort);
+				__bindListener(listener, host, localPort, false);
 				listener.listen(__nativeBacklog(backlog));
 			}
 		} catch (error:Dynamic) {
