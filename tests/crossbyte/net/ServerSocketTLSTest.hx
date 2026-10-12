@@ -956,4 +956,97 @@ class ServerSocketTLSTest extends utest.Test {
 		Assert.equals("[false,true,true]", output, "the first connection is a full handshake and the rest resume");
 	}
 	#end
+
+	#if (cpp || hl || neko || java || jvm)
+	/**
+		A connection the server accepted keeps working after the server
+		closes, over TLS as over plain TCP: `close()` stops the listening and
+		leaves connections already served open, as draining a server relies
+		on. On neko and HashLink each connection was given its listener's TLS
+		configuration, which the listener's close freed: the connection's next
+		read failed, and on neko one still in its handshake read freed memory
+		(on neko 2.3 on Windows, an access violation, as in MongoWireTest).
+	**/
+	public function testATlsConnectionOutlivesItsServersClose():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var server = new ServerSocket(true);
+		var peer:crossbyte.net.Socket = null;
+		var heard:String = "";
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(e:crossbyte.events.ServerSocketConnectEvent) {
+			peer = e.socket;
+			peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
+				var text:String = peer.readUTFBytes(peer.bytesAvailable);
+				heard += text;
+				peer.writeUTFBytes(text.toUpperCase());
+				peer.flush();
+			});
+			peer.writeUTFBytes("a");
+			peer.flush();
+		});
+		server.setCertificate(fixture.certificate, fixture.key);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		var port:Int = server.localPort;
+
+		// The client's thread writes what is read here and then releases the
+		// lock, so what it wrote is published to this thread.
+		var greeted = new sys.thread.Lock();
+		var serverClosed = new sys.thread.Lock();
+		var done = new sys.thread.Lock();
+		var received:String = null;
+		var failure:String = null;
+		sys.thread.Thread.create(() -> {
+			var client = new crossbyte._internal.socket.FlexSocket(true);
+			try {
+				client.setTimeout(10);
+				client.setCA(@:privateAccess fixture.certificate.__native);
+				client.connect("127.0.0.1", port);
+				var first:String = client.input.readString(1);
+				greeted.release();
+				if (!serverClosed.wait(20)) {
+					throw "the server was never closed";
+				}
+				client.output.writeString("b");
+				client.output.flush();
+				received = first + client.input.readString(1);
+			} catch (e:Dynamic) {
+				failure = Std.string(e);
+				greeted.release();
+			}
+			try client.close() catch (_:Dynamic) {}
+			done.release();
+		});
+
+		var deadline:Float = haxe.Timer.stamp() + 20;
+		var wasGreeted:Bool = false;
+		while (haxe.Timer.stamp() < deadline && !wasGreeted) {
+			runtime.pump(1 / 60, 0);
+			wasGreeted = greeted.wait(0.002);
+		}
+
+		server.close();
+		serverClosed.release();
+
+		var finished:Bool = false;
+		while (haxe.Timer.stamp() < deadline && !finished) {
+			runtime.pump(1 / 60, 0);
+			finished = done.wait(0.002);
+		}
+		if (peer != null) {
+			try peer.close() catch (_:Dynamic) {}
+		}
+
+		Assert.isTrue(wasGreeted, "the connection never came up");
+		Assert.isTrue(finished, "the client neither finished nor failed within the deadline");
+		Assert.isNull(failure, "the connection failed once its server closed: " + failure);
+		Assert.equals("aB", received, "the connection did not carry data both ways after its server closed");
+		Assert.equals("b", heard);
+	}
+	#end
 }

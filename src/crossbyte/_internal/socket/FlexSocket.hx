@@ -102,6 +102,9 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 			// on a slow server would stop every other thread at the next
 			// collection; see HlTlsSocket.
 			this = new crossbyte._internal.socket.HlTlsSocket();
+			#elseif neko
+			// So a listener's connections outlive its close; see NekoTlsSocket.
+			this = new crossbyte._internal.socket.NekoTlsSocket();
 			#else
 			this = new SSLSocket();
 			#end

@@ -820,13 +820,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		#else
 		// sys.ssl.Socket extends sys.net.Socket, so the accept/select paths
 		// below are identical for both modes.
-		#if cpp
-		// AlpnSocket only adds a hook to buildSSLConfig; until setALPN() is
-		// called it is an ordinary SSLSocket.
-		__serverSocket = secure ? new AlpnSocket() : new sys.net.Socket();
-		#else
-		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
-		#end
+		__serverSocket = secure ? __newSecureListener() : new sys.net.Socket();
 
 		if (secure) {
 			// sys.ssl.Socket leaves verifyCert null, which the stdlib maps to
@@ -1575,7 +1569,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		non-blocking, and with every TLS setting it was given.
 	**/
 	@:noCompletion private function __newListener():Socket {
-		var listener:Socket = #if cpp secure ? new AlpnSocket() : new sys.net.Socket() #else secure ? new SSLSocket() : new sys.net.Socket() #end;
+		var listener:Socket = secure ? __newSecureListener() : new sys.net.Socket();
 		if (secure) {
 			// As the constructor does: a server asks for client certificates
 			// only when told to, which the settings below may do.
@@ -1595,6 +1589,25 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		}
 		#end
 		return listener;
+	}
+
+	/**
+		A TLS listener of the kind this target needs. On neko and HashLink one
+		that gives each connection it accepts a TLS configuration of its own,
+		so a connection outlives its server's close (see `NekoTlsSocket`).
+	**/
+	@:noCompletion private static inline function __newSecureListener():Socket {
+		#if cpp
+		// AlpnSocket only adds a hook to buildSSLConfig; until setALPN() is
+		// called it is an ordinary SSLSocket.
+		return new AlpnSocket();
+		#elseif neko
+		return new crossbyte._internal.socket.NekoTlsSocket();
+		#elseif hl
+		return new crossbyte._internal.socket.HlTlsSocket();
+		#else
+		return new SSLSocket();
+		#end
 	}
 
 	/** Makes `listener` this server's own: a replica's, with `reusePort`. **/

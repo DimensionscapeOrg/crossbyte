@@ -28,11 +28,22 @@ import sys.ssl.Context;
 	reader taking a line a byte at a time would wait in `select` for data that
 	had already arrived.
 
-	A client socket. A server's accepted connections are the standard
-	library's; the servers here drive them without blocking, where a read that
-	finds nothing returns at once and there is no wait to mark.
+	The callbacks are a client's. A server's accepted connections read through
+	`ssl.hdll`'s own; the servers here drive them without blocking, where a
+	read that finds nothing returns at once and there is no wait to mark.
+
+	As a listener it gives each connection it accepts a TLS configuration of
+	its own. The standard library's `accept()` sets every connection up on the
+	listener's configuration, which the listener's `close()` frees under
+	connections still using it (mbedTLS needs a configuration to outlive
+	every connection set up on it): a connection still open when its server
+	closed, as a draining server's are, failed at its next read. Each
+	accepted connection's configuration is built as the listener's was, held
+	by that connection alone, and freed by its own `close()`, after its
+	context.
 **/
 @:access(sys.net.Socket)
+@:access(sys.ssl.Socket)
 class HlTlsSocket extends sys.ssl.Socket {
 	/**
 		What mbedTLS is handed for its callbacks: this socket and the two
@@ -60,6 +71,39 @@ class HlTlsSocket extends sys.ssl.Socket {
 			throw new Sys.SysError("Failed to connect on " + host.toString() + ":" + port);
 		if (isBlocking)
 			handshake();
+	}
+
+	/** The standard library's `accept`, the connection given a configuration of its own; see the class. **/
+	public override function accept():sys.ssl.Socket {
+		var accepted:sys.ssl.Socket = super.accept();
+		try {
+			// buildConfig puts the server-name callback it makes in a field,
+			// and the listener's own configuration still calls the one there
+			// now.
+			var listenersCallback = sniCallback;
+			var own:sys.ssl.Context.Config = buildConfig(true);
+			accepted.sniCallback = sniCallback;
+			sniCallback = listenersCallback;
+
+			// accept() set the connection up on the listener's configuration;
+			// nothing has been sent on it yet.
+			accepted.ssl.close();
+			accepted.ssl = null;
+			accepted.ssl = new Context(own);
+			accepted.ssl.setSocket(accepted.__s);
+			accepted.conf = own;
+
+			// What the configuration points at, kept as long as it is.
+			accepted.ownCert = ownCert;
+			accepted.ownKey = ownKey;
+			accepted.altSNIContexts = altSNIContexts;
+		} catch (e:Dynamic) {
+			try {
+				accepted.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+		return accepted;
 	}
 
 	/**

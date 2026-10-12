@@ -1444,6 +1444,10 @@ Fixes to code new in this release are not listed.
   end of the stream.
 - Natively, a TLS connection accepted before its listener closed no longer
   reads freed memory, and `alpnProtocol` still names what was agreed.
+- On neko and HashLink too, a TLS connection keeps working after its server
+  closes, as a draining server's do: its next read failed, and on neko 2.3
+  on Windows one still in its handshake crashed the process. Each accepted
+  connection there has a TLS configuration of its own.
 - On Linux and macOS a process with more than about a thousand descriptors
   can still connect and accept.
 - Socket errors on eval can be caught, where a reset or a port in use ended
