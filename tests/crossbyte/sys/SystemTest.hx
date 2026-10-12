@@ -384,9 +384,10 @@ class SystemTest extends utest.Test {
 		}
 		#end
 		#if neko
-		// neko's put_env throws for null on Windows, where setting a variable
-		// to nothing is how it is removed.
-		if (value == null && System.isWindows) {
+		// Before neko 2.4 put_env throws for null, on every system: it cannot
+		// remove a variable. Set to nothing instead, which is how Windows
+		// removes one, and which the XDG rules read as not set.
+		if (value == null) {
 			Sys.putEnv(name, "");
 			return;
 		}
