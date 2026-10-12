@@ -147,7 +147,11 @@ class TLSTestFixture {
 			}
 
 			if (!sys.FileSystem.exists(certPath) || !sys.FileSystem.exists(keyPath)) {
-				var staging:String = directory + "-" + Std.random(0x7FFFFFFF);
+				// A bound within neko's 31-bit Int: past it Std.random throws
+				// there, so on neko no pair was ever made, and every case asking
+				// for one passed without running unless another target had made
+				// that day's first.
+				var staging:String = directory + "-" + Std.random(0x3FFFFFFF);
 				sys.FileSystem.createDirectory(staging);
 
 				var altNames:Array<String> = [];

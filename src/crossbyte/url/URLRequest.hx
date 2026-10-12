@@ -296,9 +296,10 @@ class URLRequest {
 		certificate, and prefer `certAuthority` even then: with it off the
 		traffic is still encrypted, but anyone able to sit between the two ends
 		can present a certificate of their own and read all of it. In a browser
-		the browser decides, and this is not consulted; on neko, whose TLS
-		checks the server whatever it is told, it cannot be turned off, and a
-		request with it off is checked all the same.
+		the browser decides, and this is not consulted. On neko it does what
+		neko's own TLS does with it: neko 2.4.1 on Windows checks the server
+		whatever it is told, so a request with it off is checked all the same,
+		where neko 2.3.0 on Linux skips the check.
 	**/
 	public var verifyCert:Bool = true;
 

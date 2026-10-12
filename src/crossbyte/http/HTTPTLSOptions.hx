@@ -31,8 +31,10 @@ final class HTTPTLSOptions {
 	/**
 		Whether the server's certificate is checked: that it chains to a
 		trusted authority and names the host. `false` leaves the connection
-		encrypted but lets anyone able to sit in the middle read it. neko's
-		TLS checks whatever it is told, so there `false` changes nothing.
+		encrypted but lets anyone able to sit in the middle read it. On neko
+		it does what neko's own TLS does with it: neko 2.4.1 on Windows checks
+		the server whatever it is told, so there `false` changes nothing,
+		where neko 2.3.0 on Linux skips the check.
 	**/
 	public final verifyCert:Bool;
 

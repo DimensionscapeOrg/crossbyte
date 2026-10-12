@@ -91,7 +91,7 @@ class HTTPServerTLSTest extends utest.Test {
 					// Self-signed, so trusted as its own authority: the check
 					// then proves the server presented the certificate it was
 					// configured with, not merely something, as turning the check off
-					// would (which neko's TLS does not honour anyway).
+					// would (which neko 2.4.1's TLS does not honour anyway).
 					client.setCA(@:privateAccess fixture.certificate.__native);
 					client.connect("127.0.0.1", port);
 
@@ -254,6 +254,9 @@ class HTTPServerTLSTest extends utest.Test {
 
 		var server = __tlsServer(fixture);
 		var url:String = 'https://127.0.0.1:${server.port}/who';
+		#if neko
+		var nekoSkips:Bool = __nekoTlsSkipsTheCheck(server.port);
+		#end
 		var outcomes:Array<String> = [];
 		for (version in __versions()) {
 			// The fixture is in no system store, so the defaults refuse it, with
@@ -274,10 +277,18 @@ class HTTPServerTLSTest extends utest.Test {
 			Assert.isTrue(StringTools.trim(refused.substr(refused.indexOf(prefix) + prefix.length)).length > 0, "the refusal did not say why: " + refused);
 			Assert.isTrue(StringTools.startsWith(outcomes[i++], version + " trusting: COMPLETED conn "), "the authority the request named was not trusted");
 			#if neko
-			// neko's TLS checks the server whatever it is told: verifyCert =
-			// false cannot be honoured there, and the request is refused as a
-			// checked one would be rather than going out unchecked.
-			Assert.isTrue(outcomes[i++].indexOf("Connection Failed: ") >= 0, "verifyCert = false was taken on neko, whose TLS cannot skip the check");
+			// Whatever neko's own TLS does with verifyCert = false, the request
+			// does: neko 2.4.1 on Windows checks the server all the same, and
+			// the request is refused as a checked one; neko 2.3.0 on Linux
+			// skips the check, and the request goes out unchecked.
+			var unchecked:String = outcomes[i++];
+			if (nekoSkips) {
+				Assert.isTrue(StringTools.startsWith(unchecked, version + " unchecked: COMPLETED conn "),
+					"neko's TLS skips the check, and the request with verifyCert = false still checked: " + unchecked);
+			} else {
+				Assert.isTrue(unchecked.indexOf("Connection Failed: ") >= 0,
+					"neko's TLS cannot skip the check, and the request with verifyCert = false was not refused: " + unchecked);
+			}
 			#else
 			Assert.isTrue(StringTools.startsWith(outcomes[i++], version + " unchecked: COMPLETED conn "), "verifyCert = false still checked");
 			#end
@@ -551,6 +562,40 @@ class HTTPServerTLSTest extends utest.Test {
 		}
 		return finished ? (outcome != null ? outcome : "reported nothing") : "never returned";
 	}
+
+	#if neko
+	/**
+		Whether neko's own TLS, asked to, skips checking the server on `port`:
+		a handshake with verifyCert = false, through neko's `sys.ssl.Socket`
+		with nothing of CrossByte's HTTP client in the way. neko 2.4.1 on
+		Windows checks whatever it is told, and neko 2.3.0 on Linux does not.
+	**/
+	private static function __nekoTlsSkipsTheCheck(port:Int):Bool {
+		var skipped:Bool = false;
+		var handoff = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			var socket = new sys.ssl.Socket();
+			try {
+				socket.verifyCert = false;
+				socket.setTimeout(10);
+				socket.connect(new sys.net.Host("127.0.0.1"), port);
+				skipped = true;
+			} catch (_:Dynamic) {}
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			handoff.release();
+		});
+
+		var finished:Bool = false;
+		var deadline:Float = haxe.Timer.stamp() + 30;
+		while (!finished && haxe.Timer.stamp() < deadline) {
+			crossbyte.core.CrossByte.current().pump(1 / 60, 0);
+			finished = handoff.wait(0.002);
+		}
+		return skipped;
+	}
+	#end
 	#end
 
 	#if (cpp || java || jvm)
