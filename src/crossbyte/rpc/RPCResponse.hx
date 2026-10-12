@@ -267,7 +267,3 @@ class RPCResponse<T> extends Future<T> {
 		return super.__fail(message, cause);
 	}
 }
-
-/** A misspelling of `RPCResponse`, kept so code that used it still compiles. **/
-@:deprecated("RPCResonse is a misspelling: use RPCResponse")
-typedef RPCResonse<T> = RPCResponse<T>;

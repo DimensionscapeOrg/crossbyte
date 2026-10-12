@@ -2329,7 +2329,7 @@ an API added in this release has is not listed here.
 - `RPCHandler.MAX_FRAME_LEN` is `RPCSession.DEFAULT_MAX_FRAME_SIZE`, the
   default of `RPCSession.maxFrameSize`: 8 MiB, as it was.
 - `RPCResonse`, a misspelling of `RPCResponse` that rc.1 also exported, is
-  deprecated and warns where it is used: write `RPCResponse`.
+  gone: write `RPCResponse`.
 
 #### Data
 
