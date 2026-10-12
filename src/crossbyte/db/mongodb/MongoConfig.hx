@@ -161,7 +161,7 @@ typedef MongoWriteConcern = {
 	@:optional var journal:Bool;
 
 	/** Milliseconds to wait for `w` members before reporting a write concern error. **/
-	@:optional var wtimeout:Int;
+	@:optional var wtimeoutMS:Int;
 }
 
 /**

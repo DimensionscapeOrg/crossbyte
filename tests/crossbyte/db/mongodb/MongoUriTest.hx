@@ -52,7 +52,7 @@ class MongoUriTest extends utest.Test {
 		Assert.equals(0.0, s.socketTimeout);
 		Assert.equals("billing", s.appName);
 		Assert.equals("majority", s.writeConcern.w);
-		Assert.equals(500, s.writeConcern.wtimeout);
+		Assert.equals(500, s.writeConcern.wtimeoutMS);
 		Assert.isTrue(s.writeConcern.journal);
 		Assert.equals("SCRAM-SHA-256", s.authMechanism);
 		Assert.equals(2, MongoUri.settings({uri: "mongodb://h/?w=2"}).writeConcern.w);

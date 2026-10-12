@@ -347,7 +347,7 @@ class MongoCrudTest extends utest.Test {
 	}
 
 	public function testAWriteConcernErrorSaysWhatWasWritten():Void {
-		__start({writeConcern: {w: "majority", wtimeout: 100}});
+		__start({writeConcern: {w: "majority", wtimeoutMS: 100}});
 		server.replyNext("insert", new BsonDocument()
 			.add("n", 1)
 			.add("writeConcernError", new BsonDocument().add("code", 64).add("codeName", "WriteConcernFailed").add("errmsg", "waiting for replication timed out"))

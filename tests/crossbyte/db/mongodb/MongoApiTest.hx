@@ -72,7 +72,7 @@ class MongoApiTest extends utest.Test {
 
 	public function testAWriteConcernsWIsACountOrATag():Void {
 		Assert.isNull(TypeCheck.errorOf(({w: "majority"} : MongoWriteConcern)));
-		Assert.isNull(TypeCheck.errorOf(({w: 2, journal: true, wtimeout: 100} : MongoWriteConcern)));
+		Assert.isNull(TypeCheck.errorOf(({w: 2, journal: true, wtimeoutMS: 100} : MongoWriteConcern)));
 		Assert.notNull(TypeCheck.errorOf(({w: true} : MongoWriteConcern)), "a bool");
 		Assert.notNull(TypeCheck.errorOf(({w: 1.5} : MongoWriteConcern)), "a fraction");
 

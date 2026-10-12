@@ -1796,8 +1796,8 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			w.value("j", concern.journal, 2);
 		}
 
-		if (concern.wtimeout != null) {
-			w.value("wtimeout", concern.wtimeout, 2);
+		if (concern.wtimeoutMS != null) {
+			w.value("wtimeout", concern.wtimeoutMS, 2);
 		}
 
 		w.endDocument(at);

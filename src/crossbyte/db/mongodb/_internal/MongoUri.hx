@@ -414,7 +414,7 @@ class MongoUri {
 					out.writeConcern = {};
 				}
 
-				out.writeConcern.wtimeout = __millis(name, value);
+				out.writeConcern.wtimeoutMS = __millis(name, value);
 			case "journal":
 				if (out.writeConcern == null) {
 					out.writeConcern = {};
