@@ -30,11 +30,13 @@ enum abstract MySQLSSLMode(String) to String {
 	var VERIFY_IDENTITY = "VERIFY_IDENTITY";
 
 	/**
-		Accepts the names in any case, with `-` for `_` (`verify-identity`), so
-		a value from a configuration file maps. Anything else is refused rather
-		than read as a weaker mode.
+		The mode a string names, for a value from a configuration file: the
+		names in any case, with `-` for `_` (`verify-identity`). Anything else
+		is refused with an `ArgumentError` rather than read as a weaker mode.
+		A `String` is not taken as a mode without it, as a `PostgresSSLMode`
+		is not.
 	**/
-	@:from public static function ofString(value:String):MySQLSSLMode {
+	public static function ofString(value:String):MySQLSSLMode {
 		if (value == null) {
 			throw new ArgumentError("Invalid MySQL sslMode: null");
 		}

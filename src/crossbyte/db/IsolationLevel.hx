@@ -14,14 +14,14 @@ enum abstract IsolationLevel(String) to String {
 	var SERIALIZABLE = "SERIALIZABLE";
 
 	/**
-		Validating coercion from a raw string. Only the four levels are
-		accepted; separators (`-`, `_`) and case are normalized, so a level
-		as a server reports it (MySQL's `REPEATABLE-READ`) still maps. Any
-		other input is refused with an `ArgumentError`, so a string from
-		outside can never be put into a `SET ... ISOLATION LEVEL <v>`
-		statement.
+		The level a string names. Only the four levels are accepted;
+		separators (`-`, `_`) and case are normalized, so a level as a server
+		reports it (MySQL's `REPEATABLE-READ`) still maps. Any other input is
+		refused with an `ArgumentError`, so a string from outside can never be
+		put into a `SET ... ISOLATION LEVEL <v>` statement. A `String` is not
+		taken as a level without it.
 	**/
-	@:from public static function ofString(value:String):IsolationLevel {
+	public static function ofString(value:String):IsolationLevel {
 		if (value == null) {
 			throw new ArgumentError("Invalid isolation level: null");
 		}

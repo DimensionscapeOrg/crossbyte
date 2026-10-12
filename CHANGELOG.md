@@ -2459,7 +2459,10 @@ than waiting a thousand times as long: divide the old value by 1,000.
 - `crossbyte.db.mysql.IsolationLevel` and
   `crossbyte.db.postgres.PostgresIsolationLevel` are one
   `crossbyte.db.IsolationLevel`, with the same four values: import that
-  instead.
+  instead. It no longer takes a `String`: `isolationLevel =
+  "SERIALIZABLE"` is `isolationLevel = IsolationLevel.SERIALIZABLE`, and
+  `IsolationLevel.ofString` reads one from text, refusing anything but the
+  four.
 - `PostgresConfig.sslMode` is a `PostgresSSLMode`, where it was a
   `String`: `sslMode: "require"` is `sslMode: PostgresSSLMode.REQUIRE`,
   and the other modes are libpq's in capitals (`VERIFY_FULL` for

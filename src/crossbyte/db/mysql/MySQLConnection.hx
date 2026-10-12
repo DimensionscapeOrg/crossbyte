@@ -1115,8 +1115,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		if (rs != null && rs.hasNext()) {
-			var s:String = Std.string(Reflect.field(rs.next(), "lvl"));
-			return s; // let the enum-abstract coerce
+			return IsolationLevel.ofString(Std.string(Reflect.field(rs.next(), "lvl")));
 		}
 
 		return IsolationLevel.REPEATABLE_READ;

@@ -284,7 +284,7 @@ class MySQLNativeAuthTest extends utest.Test {
 
 	public function testAnUnknownSslModeIsRefused():Void {
 		Assert.raises(() -> MySQLSSLMode.ofString("verify-everything"), crossbyte.errors.ArgumentError);
-		var parsed:MySQLSSLMode = "verify-identity";
+		var parsed:MySQLSSLMode = MySQLSSLMode.ofString("verify-identity");
 		Assert.equals("VERIFY_IDENTITY", (parsed : String));
 	}
 
