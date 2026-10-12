@@ -46,7 +46,7 @@ final class SessionKeys {
  *
  * The client and server each derive an (rx, tx) pair from their own keypair
  * and the peer's public key; `client.rx == server.tx` and
- * `client.tx == server.rx`. The derived keys are suitable directly as `Aead`
+ * `client.tx == server.rx`. The derived keys are suitable directly as `AEAD`
  * keys.
  *
  * Available on supported native `cpp` targets via the statically linked

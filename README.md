@@ -308,7 +308,7 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
   through Connector/J. PostgreSQL natively through libpq, and on php through PDO. MongoDB over its wire protocol on
   hxcpp, the jvm, the interpreter, hl and neko. `ConnectionPool` and `AsyncDatabase` keep these blocking drivers
   off the runtime's thread. [docs/data.md](docs/data.md) has the details and limits.
-- **Crypto.** Natively, from libsodium and BLAKE3 compiled in: `Aead` (XChaCha20-Poly1305), `KeyExchange` and
+- **Crypto.** Natively, from libsodium and BLAKE3 compiled in: `AEAD` (XChaCha20-Poly1305), `KeyExchange` and
   `X25519`, `GenericHash` (BLAKE2b), `HKDF`, `Ed25519` and `Blake3`; from mbedTLS, RSA and ECDSA signatures
   (`PublicKeySignature`, `SignatureKey`). Elsewhere `isAvailable()` is false and they throw. `Argon2id` natively
   and on Node 24.7 or later; `BCrypt` everywhere, in Haxe, though hashing needs a secure random source. Secure

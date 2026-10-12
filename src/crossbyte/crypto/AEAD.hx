@@ -22,7 +22,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  * libsodium backend. Elsewhere every member but `isAvailable` throws an
  * `IllegalOperationError` naming the target.
  */
-class Aead {
+class AEAD {
 	/**
 	 * Length in bytes of an encryption key.
 	 */
@@ -85,7 +85,7 @@ class Aead {
 		}
 		return sealed;
 		#else
-		throw NativeOnly.error("Aead encryption");
+		throw NativeOnly.error("AEAD encryption");
 		#end
 	}
 
@@ -116,7 +116,7 @@ class Aead {
 		}
 		return (plaintextLength > 0) ? opened : Bytes.alloc(0);
 		#else
-		throw NativeOnly.error("Aead decryption");
+		throw NativeOnly.error("AEAD decryption");
 		#end
 	}
 
@@ -135,7 +135,7 @@ class Aead {
 		#if cpp
 		SodiumGlue.ensureAvailable();
 		#else
-		throw NativeOnly.error("Aead");
+		throw NativeOnly.error("AEAD");
 		#end
 	}
 }

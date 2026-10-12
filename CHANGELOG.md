@@ -487,7 +487,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   migrations.
 - Compression: `CompressionAlgorithm.LZ4_FRAME` and `ZLIB`, and
   `ByteArray.uncompress(algorithm, maxOutputSize)`.
-- Crypto from libsodium: `Aead` (XChaCha20-Poly1305), `X25519`,
+- Crypto from libsodium: `AEAD` (XChaCha20-Poly1305), `X25519`,
   `KeyExchange`, `GenericHash` (BLAKE2b), `HKDF`, `Argon2id`,
   `ConstantTime.equals` and `SecureMemory.wipe`.
 - `PublicKeySignature` and `SignatureKey`: RSA and ECDSA over SHA-256.

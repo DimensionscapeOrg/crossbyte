@@ -758,7 +758,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		login service that hands the client a key and a connect token over
 		HTTPS. The token is the client's `connect` payload, and this derives
 		the key from it (with `crossbyte.crypto.HKDF` and a secret only the
-		servers hold), or unwraps it (`crossbyte.crypto.Aead`). "Encrypted
+		servers hold), or unwraps it (`crossbyte.crypto.AEAD`). "Encrypted
 		sessions", in the class doc above, shows the login service, the
 		server and the client.
 

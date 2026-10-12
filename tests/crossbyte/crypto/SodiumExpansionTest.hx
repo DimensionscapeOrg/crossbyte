@@ -7,7 +7,7 @@ import crossbyte.test.Require;
 
 /**
  * Tests for the expanded libsodium bridge:
- * Aead, X25519, KeyExchange, GenericHash, HKDF, Argon2id, ConstantTime,
+ * AEAD, X25519, KeyExchange, GenericHash, HKDF, Argon2id, ConstantTime,
  * SecureMemory.
  *
  * Known-answer sources:
@@ -40,9 +40,9 @@ class SodiumExpansionTest extends utest.Test {
 	private static inline final HKDF_OKM_HEX:String = "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865";
 
 	public function testConstantsMatchLibsodiumAbi():Void {
-		Assert.equals(32, Aead.KEY_BYTES);
-		Assert.equals(24, Aead.NONCE_BYTES);
-		Assert.equals(16, Aead.TAG_BYTES);
+		Assert.equals(32, AEAD.KEY_BYTES);
+		Assert.equals(24, AEAD.NONCE_BYTES);
+		Assert.equals(16, AEAD.TAG_BYTES);
 		Assert.equals(32, X25519.SCALAR_BYTES);
 		Assert.equals(32, X25519.POINT_BYTES);
 		Assert.equals(32, KeyExchange.PUBLIC_KEY_BYTES);
@@ -62,75 +62,75 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testAeadKnownAnswerVector():Void {
 		#if cpp
-		Assert.isTrue(Aead.isAvailable());
+		Assert.isTrue(AEAD.isAvailable());
 
 		var key = Bytes.ofHex(XCHACHA_KEY_HEX);
 		var nonce = Bytes.ofHex(XCHACHA_NONCE_HEX);
 		var plaintext = Bytes.ofHex(XCHACHA_PLAINTEXT_HEX);
 		var aad = Bytes.ofHex(XCHACHA_AAD_HEX);
 
-		var sealed = Aead.encrypt(plaintext, nonce, key, aad);
-		Assert.equals(plaintext.length + Aead.TAG_BYTES, sealed.length);
+		var sealed = AEAD.encrypt(plaintext, nonce, key, aad);
+		Assert.equals(plaintext.length + AEAD.TAG_BYTES, sealed.length);
 		Assert.equals(XCHACHA_CIPHERTEXT_HEX + XCHACHA_TAG_HEX, sealed.toHex());
 
-		var opened = Aead.decrypt(sealed, nonce, key, aad);
+		var opened = AEAD.decrypt(sealed, nonce, key, aad);
 		Require.notNull(opened);
 		Assert.equals(plaintext.toHex(), opened.toHex());
 		#else
-		Assert.isFalse(Aead.isAvailable());
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.encrypt(Bytes.ofString("x"), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES))));
+		Assert.isFalse(AEAD.isAvailable());
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.encrypt(Bytes.ofString("x"), Bytes.alloc(AEAD.NONCE_BYTES), Bytes.alloc(AEAD.KEY_BYTES))));
 		// Not null, the answer for a forged message: every message would be
 		// refused, genuine ones included.
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.decrypt(Bytes.alloc(Aead.TAG_BYTES), Bytes.alloc(Aead.NONCE_BYTES), Bytes.alloc(Aead.KEY_BYTES))));
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.decrypt(Bytes.alloc(AEAD.TAG_BYTES), Bytes.alloc(AEAD.NONCE_BYTES), Bytes.alloc(AEAD.KEY_BYTES))));
 		// The target first, whatever the arguments.
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.encrypt(null, null, null)));
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.decrypt(null, null, null)));
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.encrypt(null, null, null)));
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.decrypt(null, null, null)));
 		#end
 	}
 
 	public function testAeadRejectsTamperingAndMisuse():Void {
 		#if cpp
-		var key = Aead.generateKey();
-		var nonce = Aead.generateNonce();
+		var key = AEAD.generateKey();
+		var nonce = AEAD.generateNonce();
 		var plaintext = Bytes.ofString("attack at dawn");
 		var aad = Bytes.ofString("header-v1");
 
-		var sealed = Aead.encrypt(plaintext, nonce, key, aad);
+		var sealed = AEAD.encrypt(plaintext, nonce, key, aad);
 
 		// Bit-flip in ciphertext body.
 		var tampered = sealed.sub(0, sealed.length);
 		tampered.set(3, tampered.get(3) ^ 0x01);
-		Assert.isNull(Aead.decrypt(tampered, nonce, key, aad));
+		Assert.isNull(AEAD.decrypt(tampered, nonce, key, aad));
 
 		// Bit-flip in tag.
 		var tamperedTag = sealed.sub(0, sealed.length);
 		tamperedTag.set(sealed.length - 1, tamperedTag.get(sealed.length - 1) ^ 0x80);
-		Assert.isNull(Aead.decrypt(tamperedTag, nonce, key, aad));
+		Assert.isNull(AEAD.decrypt(tamperedTag, nonce, key, aad));
 
 		// Wrong key, wrong nonce, wrong/missing AD.
-		Assert.isNull(Aead.decrypt(sealed, nonce, Aead.generateKey(), aad));
-		Assert.isNull(Aead.decrypt(sealed, Aead.generateNonce(), key, aad));
-		Assert.isNull(Aead.decrypt(sealed, nonce, key, Bytes.ofString("header-v2")));
-		Assert.isNull(Aead.decrypt(sealed, nonce, key));
+		Assert.isNull(AEAD.decrypt(sealed, nonce, AEAD.generateKey(), aad));
+		Assert.isNull(AEAD.decrypt(sealed, AEAD.generateNonce(), key, aad));
+		Assert.isNull(AEAD.decrypt(sealed, nonce, key, Bytes.ofString("header-v2")));
+		Assert.isNull(AEAD.decrypt(sealed, nonce, key));
 
 		// Truncation below the tag length can never authenticate.
-		Assert.isNull(Aead.decrypt(sealed.sub(0, Aead.TAG_BYTES - 1), nonce, key, aad));
+		Assert.isNull(AEAD.decrypt(sealed.sub(0, AEAD.TAG_BYTES - 1), nonce, key, aad));
 
 		// Empty plaintext round-trips (tag-only ciphertext).
-		var emptySealed = Aead.encrypt(Bytes.alloc(0), nonce, key);
-		Assert.equals(Aead.TAG_BYTES, emptySealed.length);
-		var emptyOpened = Aead.decrypt(emptySealed, nonce, key);
+		var emptySealed = AEAD.encrypt(Bytes.alloc(0), nonce, key);
+		Assert.equals(AEAD.TAG_BYTES, emptySealed.length);
+		var emptyOpened = AEAD.decrypt(emptySealed, nonce, key);
 		Require.notNull(emptyOpened);
 		Assert.equals(0, emptyOpened.length);
 
 		// Misuse throws rather than silently proceeding.
-		Assert.isTrue(throwsDynamic(() -> Aead.encrypt(plaintext, Bytes.alloc(Aead.NONCE_BYTES - 1), key)));
-		Assert.isTrue(throwsDynamic(() -> Aead.encrypt(plaintext, nonce, Bytes.alloc(Aead.KEY_BYTES + 1))));
-		Assert.isTrue(throwsDynamic(() -> Aead.decrypt(sealed, Bytes.alloc(1), key)));
-		Assert.isTrue(throwsDynamic(() -> Aead.decrypt(sealed, nonce, Bytes.alloc(0))));
+		Assert.isTrue(throwsDynamic(() -> AEAD.encrypt(plaintext, Bytes.alloc(AEAD.NONCE_BYTES - 1), key)));
+		Assert.isTrue(throwsDynamic(() -> AEAD.encrypt(plaintext, nonce, Bytes.alloc(AEAD.KEY_BYTES + 1))));
+		Assert.isTrue(throwsDynamic(() -> AEAD.decrypt(sealed, Bytes.alloc(1), key)));
+		Assert.isTrue(throwsDynamic(() -> AEAD.decrypt(sealed, nonce, Bytes.alloc(0))));
 		#else
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.generateKey()));
-		Assert.isTrue(throwsIllegalOperation(() -> Aead.generateNonce()));
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.generateKey()));
+		Assert.isTrue(throwsIllegalOperation(() -> AEAD.generateNonce()));
 		#end
 	}
 
@@ -184,9 +184,9 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.notEquals(clientKeys.rx.toHex(), clientKeys.tx.toHex());
 
 		// Session keys are usable AEAD keys end to end.
-		var nonce = Aead.generateNonce();
-		var sealed = Aead.encrypt(Bytes.ofString("kx roundtrip"), nonce, clientKeys.tx);
-		var opened = Aead.decrypt(sealed, nonce, serverKeys.rx);
+		var nonce = AEAD.generateNonce();
+		var sealed = AEAD.encrypt(Bytes.ofString("kx roundtrip"), nonce, clientKeys.tx);
+		var opened = AEAD.decrypt(sealed, nonce, serverKeys.rx);
 		Require.notNull(opened);
 		Assert.equals("kx roundtrip", opened.toString());
 
