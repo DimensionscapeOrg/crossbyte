@@ -8,6 +8,7 @@ import crossbyte.db.mysql.MySQLConnection;
 import crossbyte.db.mysql.MySQLStatement;
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
+import crossbyte.db.postgres.PostgresSSLMode;
 import crossbyte.db.postgres.PostgresStatement;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql.sqlite.CheckpointMode;
@@ -55,11 +56,20 @@ class DBSupportTest extends utest.Test {
 			user: "postgres",
 			password: "pw",
 			database: "main",
-			sslMode: "require",
+			sslMode: PostgresSSLMode.REQUIRE,
 			connectTimeout: 15
 		};
 		Assert.equals("db", postgres.host);
 		Assert.equals("require", postgres.sslMode);
+		// Spelt as libpq takes them, which is what reaches it.
+		Assert.equals("disable allow prefer require verify-ca verify-full", [
+			PostgresSSLMode.DISABLE,
+			PostgresSSLMode.ALLOW,
+			PostgresSSLMode.PREFER,
+			PostgresSSLMode.REQUIRE,
+			PostgresSSLMode.VERIFY_CA,
+			PostgresSSLMode.VERIFY_FULL
+		].join(" "));
 		Assert.equals(15, postgres.connectTimeout);
 
 		var mysql:MySQLConfig = {

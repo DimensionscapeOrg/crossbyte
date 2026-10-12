@@ -473,8 +473,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - Postgres: `PostgresConnection.requestParams(sql, params)` and
   `PostgresStatement.executeParams(params)` with `PostgresParameter`;
   `PostgresConfig.statementTimeout`, keepalive settings,
-  `tcpUserTimeout`, `connectionParameters` and `libraryPath`; and
-  `PostgresConnection.cancel()`.
+  `tcpUserTimeout`, `connectionParameters` and `libraryPath`;
+  `PostgresSSLMode` for `sslMode`; and `PostgresConnection.cancel()`.
 - SQLite: `attach()`, `detach()`, `loadSchema()` with
   `getSchemaResult()`, and `queueTimeout` (10 s) for an asynchronous
   connection.
@@ -2393,6 +2393,10 @@ an API added in this release has is not listed here.
   `crossbyte.db.postgres.PostgresIsolationLevel` are one
   `crossbyte.db.IsolationLevel`, with the same four values: import that
   instead.
+- `PostgresConfig.sslMode` is a `PostgresSSLMode`, where it was a
+  `String`: `sslMode: "require"` is `sslMode: PostgresSSLMode.REQUIRE`,
+  and the other modes are libpq's in capitals (`VERIFY_FULL` for
+  `"verify-full"`).
 - `MongoConnection` speaks MongoDB's wire protocol, and PHP's `mongodb`
   extension is no longer used. `MongoConnection.lastInsertRowID` is gone
   (it read 0 whatever was inserted): read `lastInsertId`, the `_id` of the

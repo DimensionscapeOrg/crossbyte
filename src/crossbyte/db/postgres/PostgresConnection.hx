@@ -170,9 +170,9 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			dsn.add(";dbname=");
 			dsn.add(database);
 
-			if (cfg.sslMode != null && cfg.sslMode != "") {
+			if (cfg.sslMode != null) {
 				dsn.add(";sslmode=");
-				dsn.add(cfg.sslMode);
+				dsn.add((cfg.sslMode : String));
 			}
 
 			if (cfg.connectTimeout != null && cfg.connectTimeout > 0) {

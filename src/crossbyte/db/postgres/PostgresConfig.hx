@@ -25,7 +25,12 @@ typedef PostgresConfig = {
 	@:optional var user:String;
 	@:optional var password:String;
 	@:optional var database:String;
-	@:optional var sslMode:String;
+
+	/**
+	 * How much TLS the connection insists on (libpq `sslmode`); unset leaves
+	 * it to libpq, whose default is `PREFER`. See `PostgresSSLMode`.
+	 */
+	@:optional var sslMode:PostgresSSLMode;
 
 	/**
 	 * Seconds libpq may take to connect, per address it tries (libpq
