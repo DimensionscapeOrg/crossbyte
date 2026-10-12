@@ -464,7 +464,7 @@ class PeerConnection {
 		var first = __makeAgent(isOfferer, this.credentials);
 		agent = first;
 
-		first.connected.then(pair -> __onPathFound(pair), function(error:String):Void {
+		first.established.then(pair -> __onPathFound(pair), function(error:String):Void {
 			// Not when an ICE restart replaced it, or is under way to: the new
 			// agent decides then, and closing this one fails its future.
 			if (first == agent && __restartAgent == null) {
@@ -856,7 +856,7 @@ class PeerConnection {
 		// One that cannot find a path is given up, and the old path decides,
 		// as it would have without a restart, rather than the connection
 		// failing however well the old path is still doing.
-		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
+		restarting.established.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
 			if (restarting == __restartAgent) {
 				__abandonRestart("The ICE restart found no path to the peer: " + error);
 			}
@@ -928,7 +928,7 @@ class PeerConnection {
 			@:privateAccess __host.__retire(this, previous.localCredentials.usernameFragment);
 		}
 
-		// Its `connected`, if still pending, fails as it closes; that handler
+		// Its `established`, if still pending, fails as it closes; that handler
 		// sees it is no longer the agent and lets it go.
 		previous.close();
 

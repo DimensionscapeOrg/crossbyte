@@ -1628,7 +1628,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		var agent = new IceAgent(controlling);
 		server.attachIceAgent(agent);
 
-		agent.connected.then(function(pair) {
+		agent.established.then(function(pair) {
 			var session = server.connect(pair.remote.address, pair.remote.port);
 		}, function(reason) {
 			trace("no path to the peer: " + reason);
@@ -1636,7 +1636,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		```
 
 		The agent still needs its candidates and the peer's credentials, and
-		`start`, as `IceAgent` describes. `connected` fails when every pair
+		`start`, as `IceAgent` describes. `established` fails when every pair
 		has, and when no pair has been selected `agent.timeout` seconds after
 		`start` (`IceAgent.DEFAULT_TIMEOUT`, 80, unless set), so code that
 		dials on it hears when it never will.

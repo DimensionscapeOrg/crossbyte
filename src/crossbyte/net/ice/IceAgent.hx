@@ -47,7 +47,7 @@ import haxe.Int64;
 	socket.addEventListener(DatagramSocketDataEvent.DATA, e -> agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp()));
 	CrossByte.current().addEventListener(TickEvent.TICK, _ -> agent.poll(haxe.Timer.stamp()));
 
-	agent.connected.then(function(pair) {
+	agent.established.then(function(pair) {
 		trace("use " + pair.remote.address + ":" + pair.remote.port);
 	});
 	```
@@ -230,7 +230,7 @@ class IceAgent {
 	/**
 		The pair traffic should use, once there is one.
 
-		It can change after `connected` resolves: the controlling peer may
+		It can change after `established` resolves: the controlling peer may
 		nominate another pair, and this agent follows. `onSelectedPairChanged`
 		says when.
 	**/
@@ -239,7 +239,7 @@ class IceAgent {
 	/**
 		Called when the selected pair changes after the first: the controlling
 		peer nominated another, which traffic should now use. The first is
-		reported by `connected`.
+		reported by `established`.
 	**/
 	public dynamic function onSelectedPairChanged(pair:IceCandidatePair):Void {}
 
@@ -253,11 +253,11 @@ class IceAgent {
 		FAILED for good, which `onStateChanged` reports. An ICE restart is a
 		new agent rather than a second result on this one.
 	**/
-	public var connected(default, null):Future<IceCandidatePair>;
+	public var established(default, null):Future<IceCandidatePair>;
 
 	/**
 		How long, in seconds from `start`, the agent has to select a pair
-		before it gives up: FAILED, and `connected` failed with a reason that
+		before it gives up: FAILED, and `established` failed with a reason that
 		says what it was waiting for. 0 for no deadline. Read at every poll, so
 		it can be changed while checking.
 
@@ -327,7 +327,7 @@ class IceAgent {
 		this.controlling = controlling;
 		this.localCredentials = localCredentials != null ? localCredentials : IceCredentials.generate();
 		this.tiebreaker = tiebreaker != null ? tiebreaker : __randomTiebreaker();
-		this.connected = new Future<IceCandidatePair>();
+		this.established = new Future<IceCandidatePair>();
 	}
 
 	/**
@@ -591,13 +591,13 @@ class IceAgent {
 		state = CLOSED;
 		__checks = [];
 
-		// A caller waiting on `connected` when the agent is closed under it
+		// A caller waiting on `established` when the agent is closed under it
 		// would otherwise wait forever. Nothing else settles this: the only
 		// other failure path is __settleIfFinished, which decides by looking
 		// at the checks, and the line above just emptied them, so after a
 		// close it can never conclude anything. Future.__fail is idempotent,
 		// so an agent that already found a path keeps its result.
-		@:privateAccess connected.__cancel("The agent was closed before a path was found.");
+		@:privateAccess established.__cancel("The agent was closed before a path was found.");
 	}
 
 	/** Every pair that has answered, best first. **/
@@ -729,7 +729,7 @@ class IceAgent {
 		}
 	}
 
-	/** Why an agent that ran out of time had not connected, for `connected`'s failure. **/
+	/** Why an agent that ran out of time had not connected, for `established`'s failure. **/
 	@:noCompletion private function __overdue():String {
 		var within:String = " within " + timeout + " seconds";
 
@@ -1338,7 +1338,7 @@ class IceAgent {
 		if (now - __consentedAt >= CONSENT_TIMEOUT) {
 			// `selectedPair` is left alone: it is what the path *was*, which
 			// is worth having when working out why a session stopped.
-			// `connected` resolved long ago and keeps its result.
+			// `established` resolved long ago and keeps its result.
 			__giveUp("The peer stopped answering consent checks.");
 			return;
 		}
@@ -1442,7 +1442,7 @@ class IceAgent {
 		__consentedAt = now;
 		__consentDueAt = now + CONSENT_INTERVAL;
 
-		@:privateAccess connected.__resolve(pair);
+		@:privateAccess established.__resolve(pair);
 		onStateChanged(CONNECTED);
 	}
 
@@ -1464,7 +1464,7 @@ class IceAgent {
 	@:noCompletion private function __giveUp(reason:String):Void {
 		state = FAILED;
 		__consentTransaction = null;
-		@:privateAccess connected.__fail(reason, null);
+		@:privateAccess established.__fail(reason, null);
 		onStateChanged(FAILED);
 	}
 

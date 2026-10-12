@@ -284,7 +284,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   congestion control and `bufferedAmount`. A peer advertising a receive
   window of 2 GiB or more, as some do to mean no limit, is sent to as one
   with that much room.
-- ICE: `IceAgent`, consent freshness (RFC 7675), role conflicts, ICE
+- ICE: `IceAgent`, whose `established` resolves with the pair it
+  selects, consent freshness (RFC 7675), role conflicts, ICE
   restart (`restartIce()`), trickle (`onLocalCandidate`,
   `addRemoteCandidate`) and `onSelectedPairChanged`. A check arriving from
   somewhere the peer never advertised makes a peer-reflexive candidate with

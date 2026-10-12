@@ -58,7 +58,7 @@ class IceAgentTest extends utest.Test {
 		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
 
 		var resolved:IceCandidatePair = null;
-		alice.connected.then(pair -> resolved = pair, _ -> {});
+		alice.established.then(pair -> resolved = pair, _ -> {});
 
 		alice.start(bob.localCredentials, 0);
 		bob.start(alice.localCredentials, 0);
@@ -79,7 +79,7 @@ class IceAgentTest extends utest.Test {
 		Assert.isTrue(alice.selectedPair.local.sameAs(bob.selectedPair.remote), "the two agents selected different paths");
 		Assert.isTrue(alice.selectedPair.remote.sameAs(bob.selectedPair.local), "the two agents selected different paths");
 
-		Assert.notNull(resolved, "the connected future never resolved");
+		Assert.notNull(resolved, "the established future never resolved");
 		Assert.equals(BOB_ADDRESS, alice.selectedPair.remote.address);
 		Assert.equals(ALICE_ADDRESS, bob.selectedPair.remote.address);
 	}
@@ -87,12 +87,12 @@ class IceAgentTest extends utest.Test {
 	/**
 		Closing an agent tells whoever was waiting on a path.
 
-		`connected` has exactly one failure path from the checks,
+		`established` has exactly one failure path from the checks,
 		__settleIfFinished, which decides by looking at them, and close()
 		empties them, so a close has to settle it itself. Otherwise an agent
 		closed mid-negotiation would leave its caller holding a future that
 		could not settle either way, and PeerConnection is one such caller: it
-		wires agent.connected to its own failure path in the constructor.
+		wires agent.established to its own failure path in the constructor.
 	**/
 	public function testClosingAnAgentTellsWhoeverWaitedForAPath():Void {
 		if (unsupported()) return;
@@ -105,14 +105,14 @@ class IceAgentTest extends utest.Test {
 
 		var resolved:Bool = false;
 		var failure:String = null;
-		alice.connected.then(_ -> resolved = true, error -> failure = error);
+		alice.established.then(_ -> resolved = true, error -> failure = error);
 
 		// Mid-negotiation: checks outstanding, nothing concluded either way.
 		alice.start(bob.localCredentials, 0);
 		alice.close();
 
 		Assert.isFalse(resolved, "a closed agent reported that it had found a path");
-		Assert.notNull(failure, "closing an agent left `connected` pending forever");
+		Assert.notNull(failure, "closing an agent left `established` pending forever");
 	}
 
 	/**
@@ -893,7 +893,7 @@ class IceAgentTest extends utest.Test {
 		var agent = new IceAgent(true, credentials("alice"));
 		var failure:String = null;
 
-		agent.connected.then(_ -> {}, error -> failure = error);
+		agent.established.then(_ -> {}, error -> failure = error);
 
 		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
 		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
@@ -918,7 +918,7 @@ class IceAgentTest extends utest.Test {
 		`__settleIfFinished` waits for every pair to fail, and with none there
 		is nothing to fail: without a deadline, an agent whose peer offered
 		only names, and from which no check came, would still be CHECKING ten
-		minutes on, and so would whatever waited on `connected`.
+		minutes on, and so would whatever waited on `established`.
 	**/
 	public function testAnAgentWithNothingToCheckGivesUpAtItsDeadline():Void {
 		if (unsupported()) return;
@@ -928,7 +928,7 @@ class IceAgentTest extends utest.Test {
 		var failure:String = null;
 		var failedAt:Float = -1;
 
-		agent.connected.then(_ -> {}, function(error:String):Void {
+		agent.established.then(_ -> {}, function(error:String):Void {
 			failure = error;
 			failedAt = now;
 		});
@@ -968,13 +968,13 @@ class IceAgentTest extends utest.Test {
 		wire.loseNominations = true;
 
 		var failure:String = null;
-		bob.connected.then(_ -> {}, error -> failure = error);
+		bob.established.then(_ -> {}, error -> failure = error);
 
 		// Alice fails too, her nomination never answered. Observed, because an
 		// unobserved failure is reported on the next tick by a listener added
 		// for it, one that outlives this case and is counted by any later
 		// case that counts the runtime's tick listeners.
-		alice.connected.then(_ -> {}, _ -> {});
+		alice.established.then(_ -> {}, _ -> {});
 
 		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
 		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
@@ -987,7 +987,7 @@ class IceAgentTest extends utest.Test {
 
 		Assert.isTrue(bob.validPairs().length > 0, "no pair answered, so this is not the case being tested");
 		Assert.equals(IceAgentState.FAILED, bob.state, "a controlled agent that was never nominated was still waiting");
-		Require.notNull(failure, "`connected` was never settled");
+		Require.notNull(failure, "`established` was never settled");
 		Assert.isTrue(failure.indexOf("nominated none") >= 0, "the reason does not say the nomination never came: " + failure);
 	}
 
@@ -1054,8 +1054,8 @@ class IceAgentTest extends utest.Test {
 		var alice = new IceAgent(true, credentials("alice"));
 		var bob = new IceAgent(false, credentials("bob"));
 		var failure:String = null;
-		alice.connected.then(_ -> {}, error -> failure = error);
-		bob.connected.then(_ -> {}, _ -> {});
+		alice.established.then(_ -> {}, error -> failure = error);
+		bob.established.then(_ -> {}, _ -> {});
 
 		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
 		var second:String = "10.0.0.4";
@@ -1147,7 +1147,7 @@ class IceAgentTest extends utest.Test {
 		var sent:Int = 0;
 
 		agent.onSend = (_, _, _) -> sent++;
-		agent.connected.then(_ -> {}, _ -> failedAt = now);
+		agent.established.then(_ -> {}, _ -> failedAt = now);
 		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
 		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
 		agent.start(credentials("bob"), 0);
@@ -1209,7 +1209,7 @@ class IceAgentTest extends utest.Test {
 
 		var agent = new IceAgent(true, credentials("alice"));
 		var failure:String = null;
-		agent.connected.then(_ -> {}, error -> failure = error);
+		agent.established.then(_ -> {}, error -> failure = error);
 
 		var relayed = new IceCandidate(RELAYED, "203.0.113.10", 49152);
 		var sent:Int = 0;
