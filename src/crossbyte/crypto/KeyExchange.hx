@@ -50,7 +50,7 @@ final class SessionKeys {
  * keys.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * libsodium backend. Elsewhere every member but `isSupported` throws an
  * `IllegalOperationError` naming the target.
  */
 class KeyExchange {
@@ -70,9 +70,11 @@ class KeyExchange {
 	public static inline final SESSION_KEY_BYTES:Int = 32;
 
 	/**
-	 * Returns `true` when the native key-exchange backend is available.
+	 * Whether the native key-exchange backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

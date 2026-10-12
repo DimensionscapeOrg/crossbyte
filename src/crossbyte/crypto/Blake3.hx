@@ -34,9 +34,11 @@ class Blake3 {
 	#end
 
 	/**
-	 * Returns `true` when the native BLAKE3 backend is available on this target.
+	 * Whether the native BLAKE3 backend is available on this target.
 	 */
-	public static inline function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static inline function get_isSupported():Bool {
 		#if cpp
 		return true;
 		#else

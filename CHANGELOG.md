@@ -489,7 +489,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `ByteArray.uncompress(algorithm, maxOutputSize)`.
 - Crypto from libsodium: `AEAD` (XChaCha20-Poly1305), `X25519`,
   `KeyExchange`, `GenericHash` (BLAKE2b), `HKDF`, `Argon2id`,
-  `ConstantTime.equals` and `SecureMemory.wipe`.
+  `ConstantTime.equals` and `SecureMemory.wipe`, each with `isSupported`.
 - `PublicKeySignature` and `SignatureKey`: RSA and ECDSA over SHA-256.
 - JWT: `RS256`, `ES256` and `EdDSA` signers; `JWKSet` and `JWK`;
   `JWT.verify`, which says why a token was refused (`JWTRejection`);
@@ -2431,8 +2431,10 @@ an API added in this release has is not listed here.
   `IllegalOperationError` where it answered `false`, and `keypair` and
   `signDetached` throw one where they threw a String; `Blake3`,
   `LocalConnection`, `SharedChannel` and `SharedObject` throw one where
-  they threw a String or an `ArgumentError`. Check `isAvailable()` or
-  `isSupported` first.
+  they threw a String or an `ArgumentError`. Check `isSupported` first.
+- `Blake3.isAvailable()` and `Ed25519.isAvailable()` are
+  `Blake3.isSupported` and `Ed25519.isSupported`, a static `Bool` as every
+  other class's feature check is: drop the parentheses.
 - `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
   random bytes, throws an `IllegalOperationError` on the interpreter, neko
   and HashLink, where it threw a String.

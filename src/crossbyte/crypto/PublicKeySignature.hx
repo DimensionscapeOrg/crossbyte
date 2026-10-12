@@ -53,7 +53,7 @@ enum abstract SignatureFormat(Int) from Int to Int {
  *
  * Available on native `cpp` targets. mbedTLS ships with hxcpp and is
  * already linked for TLS, so no extra dependency is introduced. Elsewhere
- * every member but `isAvailable` throws an `IllegalOperationError` naming
+ * every member but `isSupported` throws an `IllegalOperationError` naming
  * the target.
  */
 class PublicKeySignature {
@@ -61,9 +61,11 @@ class PublicKeySignature {
 	private static inline final UNAVAILABLE:String = "Public-key signing is only available on supported native cpp targets.";
 
 	/**
-	 * Returns `true` when the native backend is available.
+	 * Whether the native backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativePk.isAvailable();
 		#else

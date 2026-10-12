@@ -17,7 +17,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  * between 16 and 64 bytes must match libsodium peers.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * libsodium backend. Elsewhere every member but `isSupported` throws an
  * `IllegalOperationError` naming the target.
  */
 class GenericHash {
@@ -47,9 +47,11 @@ class GenericHash {
 	public static inline final KEY_BYTES_MAX:Int = 64;
 
 	/**
-	 * Returns `true` when the native BLAKE2b backend is available.
+	 * Whether the native BLAKE2b backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

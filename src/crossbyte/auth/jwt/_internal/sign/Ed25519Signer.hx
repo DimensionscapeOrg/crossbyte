@@ -19,7 +19,7 @@ import crossbyte.crypto._internal.NativeOnly;
  * matching public key. A signer without a private key is verify-only.
  *
  * Requires the native Ed25519 backend; construction throws on targets where
- * `Ed25519.isAvailable()` is false: an `IllegalOperationError` naming the
+ * `Ed25519.isSupported` is false: an `IllegalOperationError` naming the
  * target off native cpp.
  */
 class Ed25519Signer implements IJWTSigner {
@@ -39,7 +39,7 @@ class Ed25519Signer implements IJWTSigner {
 	}
 
 	public function new(publicKeys:StringMap<Bytes>, ?privateKey:Bytes, ?signKeyId:String) {
-		if (!Ed25519.isAvailable()) {
+		if (!Ed25519.isSupported) {
 			#if cpp
 			throw "Ed25519Signer requires the native Ed25519 backend: " + Ed25519.availabilityMessage();
 			#else

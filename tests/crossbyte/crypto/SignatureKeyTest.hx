@@ -28,10 +28,10 @@ import sys.thread.Thread;
 class SignatureKeyTest extends utest.Test {
 	public function testTheBackendIsNativeOnly():Void {
 		#if cpp
-		Assert.isTrue(PublicKeySignature.isAvailable());
+		Assert.isTrue(PublicKeySignature.isSupported);
 		#else
 		var pem:String = "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----";
-		Assert.isFalse(PublicKeySignature.isAvailable());
+		Assert.isFalse(PublicKeySignature.isSupported);
 		Assert.raises(() -> SignatureKey.fromPublicPem(pem), crossbyte.errors.IllegalOperationError);
 		Assert.raises(() -> SignatureKey.fromPrivatePem(""), crossbyte.errors.IllegalOperationError);
 		// Each throws, rather than answering as though the key or signature were

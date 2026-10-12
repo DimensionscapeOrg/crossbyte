@@ -18,7 +18,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  * `sha256` for the full extract-then-expand flow.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * libsodium backend. Elsewhere every member but `isSupported` throws an
  * `IllegalOperationError` naming the target.
  */
 class HKDF {
@@ -33,9 +33,11 @@ class HKDF {
 	public static inline final SHA256_EXPAND_MAX_BYTES:Int = 8160;
 
 	/**
-	 * Returns `true` when the native HKDF backend is available.
+	 * Whether the native HKDF backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

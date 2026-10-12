@@ -58,7 +58,7 @@ class PkSigner implements IJWTSigner {
 		if (algorithm != JWTAlgorithm.RS256 && algorithm != JWTAlgorithm.ES256) {
 			throw 'PkSigner supports RS256 and ES256, not "$algorithm"';
 		}
-		if (!PublicKeySignature.isAvailable()) {
+		if (!PublicKeySignature.isSupported) {
 			#if cpp
 			throw "PkSigner requires the native mbedTLS backend, which this hxcpp does not expose.";
 			#else

@@ -155,7 +155,7 @@ class PkJwtTest extends utest.Test {
 	}
 	#else
 	public function testPkSignersRequireNativeBackend():Void {
-		Assert.isFalse(PublicKeySignature.isAvailable());
+		Assert.isFalse(PublicKeySignature.isSupported);
 
 		var keys = new StringMap<String>();
 		keys.set("k1", "not-a-key");

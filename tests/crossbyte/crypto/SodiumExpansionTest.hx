@@ -62,7 +62,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testAeadKnownAnswerVector():Void {
 		#if cpp
-		Assert.isTrue(AEAD.isAvailable());
+		Assert.isTrue(AEAD.isSupported);
 
 		var key = Bytes.ofHex(XCHACHA_KEY_HEX);
 		var nonce = Bytes.ofHex(XCHACHA_NONCE_HEX);
@@ -77,7 +77,7 @@ class SodiumExpansionTest extends utest.Test {
 		Require.notNull(opened);
 		Assert.equals(plaintext.toHex(), opened.toHex());
 		#else
-		Assert.isFalse(AEAD.isAvailable());
+		Assert.isFalse(AEAD.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> AEAD.encrypt(Bytes.ofString("x"), Bytes.alloc(AEAD.NONCE_BYTES), Bytes.alloc(AEAD.KEY_BYTES))));
 		// Not null, the answer for a forged message: every message would be
 		// refused, genuine ones included.
@@ -136,7 +136,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testX25519Rfc7748Vectors():Void {
 		#if cpp
-		Assert.isTrue(X25519.isAvailable());
+		Assert.isTrue(X25519.isSupported);
 
 		var aliceSecret = Bytes.ofHex(X25519_ALICE_SK_HEX);
 		var bobSecret = Bytes.ofHex(X25519_BOB_SK_HEX);
@@ -158,7 +158,7 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> X25519.scalarmultBase(Bytes.alloc(X25519.SCALAR_BYTES - 1))));
 		Assert.isTrue(throwsDynamic(() -> X25519.scalarmult(aliceSecret, Bytes.alloc(X25519.POINT_BYTES + 1))));
 		#else
-		Assert.isFalse(X25519.isAvailable());
+		Assert.isFalse(X25519.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> X25519.scalarmultBase(Bytes.alloc(X25519.SCALAR_BYTES))));
 		Assert.isTrue(throwsIllegalOperation(() -> X25519.scalarmult(null, null)));
 		#end
@@ -166,7 +166,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testKeyExchangeSessionKeysAgree():Void {
 		#if cpp
-		Assert.isTrue(KeyExchange.isAvailable());
+		Assert.isTrue(KeyExchange.isSupported);
 
 		var client = KeyExchange.keypair();
 		var server = KeyExchange.keypair();
@@ -192,7 +192,7 @@ class SodiumExpansionTest extends utest.Test {
 
 		Assert.isTrue(throwsDynamic(() -> KeyExchange.clientSessionKeys(client.publicKey, Bytes.alloc(1), server.publicKey)));
 		#else
-		Assert.isFalse(KeyExchange.isAvailable());
+		Assert.isFalse(KeyExchange.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.keypair()));
 		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.clientSessionKeys(null, null, null)));
 		Assert.isTrue(throwsIllegalOperation(() -> KeyExchange.serverSessionKeys(null, null, null)));
@@ -201,7 +201,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testGenericHashKnownAnswersAndKeying():Void {
 		#if cpp
-		Assert.isTrue(GenericHash.isAvailable());
+		Assert.isTrue(GenericHash.isSupported);
 
 		Assert.equals(BLAKE2B_512_ABC_HEX, GenericHash.hash(Bytes.ofString("abc"), null, 64).toHex());
 		Assert.equals(BLAKE2B_512_EMPTY_HEX, GenericHash.hash(Bytes.alloc(0), null, 64).toHex());
@@ -221,7 +221,7 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> GenericHash.hash(Bytes.ofString("abc"), null, GenericHash.BYTES_MAX + 1)));
 		Assert.isTrue(throwsDynamic(() -> GenericHash.hash(Bytes.ofString("abc"), Bytes.alloc(GenericHash.KEY_BYTES_MAX + 1))));
 		#else
-		Assert.isFalse(GenericHash.isAvailable());
+		Assert.isFalse(GenericHash.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> GenericHash.hash(Bytes.ofString("abc"))));
 		Assert.isTrue(throwsIllegalOperation(() -> GenericHash.hash(null, null, 0)));
 		#end
@@ -229,7 +229,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testHkdfRfc5869Vector():Void {
 		#if cpp
-		Assert.isTrue(HKDF.isAvailable());
+		Assert.isTrue(HKDF.isSupported);
 
 		var ikm = Bytes.ofHex(HKDF_IKM_HEX);
 		var salt = Bytes.ofHex(HKDF_SALT_HEX);
@@ -251,7 +251,7 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> HKDF.sha256Expand(prk, info, HKDF.SHA256_EXPAND_MAX_BYTES + 1)));
 		Assert.isTrue(throwsDynamic(() -> HKDF.sha256Expand(Bytes.alloc(HKDF.SHA256_PRK_BYTES - 1), info, 16)));
 		#else
-		Assert.isFalse(HKDF.isAvailable());
+		Assert.isFalse(HKDF.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> HKDF.sha256(Bytes.ofString("ikm"), null, null, 32)));
 		Assert.isTrue(throwsIllegalOperation(() -> HKDF.sha256Expand(null, null, 0)));
 		#end
@@ -259,7 +259,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testArgon2idHashVerifyAndDerive():Void {
 		#if cpp
-		Assert.isTrue(Argon2id.isAvailable());
+		Assert.isTrue(Argon2id.isSupported);
 
 		var hash = Argon2id.hash("correct horse battery staple", Argon2id.OPSLIMIT_MIN, Argon2id.MEMLIMIT_MIN);
 		Assert.isTrue(StringTools.startsWith(hash, "$argon2id$"));
@@ -285,7 +285,7 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.isTrue(throwsDynamic(() -> Argon2id.derive("passphrase", Bytes.alloc(Argon2id.SALT_BYTES - 1), 32, Argon2id.OPSLIMIT_MIN, Argon2id.MEMLIMIT_MIN)));
 		Assert.isTrue(throwsDynamic(() -> Argon2id.derive("passphrase", saltA, 0, Argon2id.OPSLIMIT_MIN, Argon2id.MEMLIMIT_MIN)));
 		#else
-		Assert.isFalse(Argon2id.isAvailable());
+		Assert.isFalse(Argon2id.isSupported);
 		Assert.isTrue(throwsIllegalOperation(() -> Argon2id.hash("pw")));
 		// Throws as hash does. Answering false here would refuse every password
 		// on a target that could not check one, and look like a working check.
@@ -295,7 +295,7 @@ class SodiumExpansionTest extends utest.Test {
 
 	public function testConstantTimeEqualsAndSecureWipe():Void {
 		#if cpp
-		Assert.isTrue(ConstantTime.isAvailable());
+		Assert.isTrue(ConstantTime.isSupported);
 
 		var a = Bytes.ofHex("00112233445566778899aabbccddeeff");
 		var b = Bytes.ofHex("00112233445566778899aabbccddeeff");

@@ -100,18 +100,18 @@ class PasswordOffloadTest extends utest.Test {
 
 	public function testArgon2idIsAvailableOnNativeAndNodeAndThrowsElsewhere():Void {
 		#if cpp
-		Assert.isTrue(Argon2id.isAvailable());
+		Assert.isTrue(Argon2id.isSupported);
 		#elseif nodejs
 		// Node has had crypto.argon2 only since 24.7, and an older one has to
 		// say so rather than claim it: the answer is checked against Node's
 		// own module, not assumed. CI's Windows image runs an older Node.
 		var present:Bool = js.Syntax.code("typeof require('crypto').argon2 === 'function'");
-		Assert.equals(present, Argon2id.isAvailable());
+		Assert.equals(present, Argon2id.isSupported);
 		if (!present) {
 			__assertArgon2idThrows();
 		}
 		#else
-		Assert.isFalse(Argon2id.isAvailable());
+		Assert.isFalse(Argon2id.isSupported);
 		__assertArgon2idThrows();
 		#end
 	}
@@ -125,7 +125,7 @@ class PasswordOffloadTest extends utest.Test {
 	}
 
 	public function testArgon2idVerifiesHashesFromEveryImplementation():Void {
-		if (!Argon2id.isAvailable()) {
+		if (!Argon2id.isSupported) {
 			Assert.raises(() -> Argon2id.verify(ARGON_FROM_NODE, "password"));
 			return;
 		}
@@ -166,7 +166,7 @@ class PasswordOffloadTest extends utest.Test {
 
 		pumpUntil(() -> good.completed && bad.completed && made.completed, 30, finished -> {
 			Assert.isTrue(finished, "every future completed");
-			if (Argon2id.isAvailable()) {
+			if (Argon2id.isSupported) {
 				Assert.isTrue(good.succeeded && good.result == true);
 				Assert.isTrue(bad.succeeded && bad.result == false);
 				Assert.isTrue(made.succeeded, made.error);

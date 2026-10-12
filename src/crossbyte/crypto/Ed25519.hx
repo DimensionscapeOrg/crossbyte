@@ -25,7 +25,7 @@ import crossbyte.crypto._internal.NativeSodium;
  *
  * Every other target has no backend, and there `keypair`, `signDetached` and
  * `verifyDetached` throw an `IllegalOperationError` naming it; check
- * `isAvailable` first.
+ * `isSupported` first.
  */
 class Ed25519 {
 	/**
@@ -49,12 +49,14 @@ class Ed25519 {
 	#end
 
 	/**
-	 * Returns `true` when the native Ed25519 backend is available on the current
+	 * Whether the native Ed25519 backend is available on the current
 	 * process and target.
 	 *
-	 * On unsupported targets this returns `false`.
+	 * On unsupported targets it is `false`.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

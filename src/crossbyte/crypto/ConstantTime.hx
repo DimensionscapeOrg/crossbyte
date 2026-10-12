@@ -21,9 +21,11 @@ import crossbyte.crypto._internal.SodiumGlue;
  */
 class ConstantTime {
 	/**
-	 * Returns `true` when the hardened native comparison backend is in use.
+	 * Whether the hardened native comparison backend is in use.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

@@ -19,7 +19,7 @@ class CryptoTest extends utest.Test {
 
 	public function testBlake3AvailabilityAndDeterministicHashing():Void {
 		#if cpp
-		Assert.isTrue(Blake3.isAvailable());
+		Assert.isTrue(Blake3.isSupported);
 		Assert.isTrue(Blake3.simdDegree() >= 1);
 		Assert.equals("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262", Blake3.hashHex(Bytes.alloc(0)));
 		Assert.equals("6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85", Blake3.hashStringHex("abc"));
@@ -28,7 +28,7 @@ class CryptoTest extends utest.Test {
 		Assert.equals(Blake3.hashHex(Bytes.ofString("abc")), Blake3.hashStringHex("abc"));
 		Assert.isTrue(throwsDynamic(() -> Blake3.hash(Bytes.ofString("abc"), -1)));
 		#else
-		Assert.isFalse(Blake3.isAvailable());
+		Assert.isFalse(Blake3.isSupported);
 		Assert.equals(0, Blake3.simdDegree());
 		Assert.isTrue(throwsIllegalOperation(() -> Blake3.hash(Bytes.ofString("abc"))));
 		// The target first, rather than a zero-length digest.
@@ -77,7 +77,7 @@ class CryptoTest extends utest.Test {
 		// vendored sources wherever hxcpp builds, and the POSIX crypto suite
 		// runs this on Linux and macOS to hold that to account.
 		#if cpp
-		Assert.isTrue(Ed25519.isAvailable());
+		Assert.isTrue(Ed25519.isSupported);
 		Assert.equals("libsodium is available.", Ed25519.availabilityMessage());
 		// Malformed signatures and keys are refused, not thrown for.
 		Assert.isFalse(Ed25519.verifyDetached(null, message, Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
@@ -94,7 +94,7 @@ class CryptoTest extends utest.Test {
 		var tampered = Bytes.ofString("hullo");
 		Assert.isFalse(Ed25519.verifyDetached(signature, tampered, keyPair.publicKey));
 		#else
-		Assert.isFalse(Ed25519.isAvailable());
+		Assert.isFalse(Ed25519.isSupported);
 		Assert.equals("Ed25519 is only available on supported native cpp targets.", Ed25519.availabilityMessage());
 		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.keypair()));
 		Assert.isTrue(throwsIllegalOperation(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));

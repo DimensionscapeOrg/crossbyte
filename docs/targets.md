@@ -1,8 +1,7 @@
 # Targets
 
 CrossByte builds natively through hxcpp, and for the JVM, Node.js, HashLink, Neko and the Haxe interpreter. Native
-builds have every feature. What a target cannot do, its class says at the member, usually through `isSupported` or
-`isAvailable()`.
+builds have every feature. What a target cannot do, its class says at the member, usually through `isSupported`.
 
 ## Native (hxcpp)
 

@@ -19,7 +19,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  * messages.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * libsodium backend. Elsewhere every member but `isSupported` throws an
  * `IllegalOperationError` naming the target.
  */
 class AEAD {
@@ -39,9 +39,11 @@ class AEAD {
 	public static inline final TAG_BYTES:Int = 16;
 
 	/**
-	 * Returns `true` when the native AEAD backend is available.
+	 * Whether the native AEAD backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

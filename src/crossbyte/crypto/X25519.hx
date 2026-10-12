@@ -17,7 +17,7 @@ import crossbyte.crypto._internal.SodiumGlue;
  * raw shared point.
  *
  * Available on supported native `cpp` targets via the statically linked
- * libsodium backend. Elsewhere every member but `isAvailable` throws an
+ * libsodium backend. Elsewhere every member but `isSupported` throws an
  * `IllegalOperationError` naming the target.
  */
 class X25519 {
@@ -32,9 +32,11 @@ class X25519 {
 	public static inline final POINT_BYTES:Int = 32;
 
 	/**
-	 * Returns `true` when the native X25519 backend is available.
+	 * Whether the native X25519 backend is available.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#else

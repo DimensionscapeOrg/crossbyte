@@ -32,7 +32,7 @@ import crossbyte.utils.IntParse;
  * through the statically linked libsodium, and on Node 24.7 and later through
  * Node's own `crypto.argon2`, with hashes interchangeable between the two. Every
  * method throws an `IllegalOperationError` where neither exists, naming the
- * target, or on Node the version; check `isAvailable` first.
+ * target, or on Node the version; check `isSupported` first.
  *
  * A hash at the interactive limits holds 64 MiB and a core for tens of
  * milliseconds, and the moderate and sensitive limits for far longer. On a
@@ -111,10 +111,12 @@ class Argon2id {
 	@:noCompletion private static var __dummy:Null<String> = null;
 
 	/**
-	 * Returns `true` when an Argon2id backend is available: libsodium on native
+	 * Whether an Argon2id backend is available: libsodium on native
 	 * targets, `crypto.argon2` on Node.
 	 */
-	public static function isAvailable():Bool {
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
 		#elseif nodejs
@@ -399,7 +401,7 @@ class Argon2id {
 
 	/**
 	 * Whether this Node has `crypto.argon2`, added in 24.7. Checked rather than
-	 * assumed, so an older Node answers `isAvailable` truthfully.
+	 * assumed, so an older Node answers `isSupported` truthfully.
 	 */
 	@:noCompletion private static function __nodeHasArgon2():Bool {
 		var crypto:Dynamic = __nodeCrypto();
