@@ -29,8 +29,8 @@ import sys.thread.Tls;
  * argument or one that is handed that handle.
  *
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
- * For ActionScript's `setTimeout` and `setInterval`, which can also be called
- * from a thread with no runtime, see `crossbyte.utils.GlobalTimer`.
+ * For timers by id that can also be set from a thread with no runtime, see
+ * `crossbyte.utils.GlobalTimer`.
  *
  * **Handles.** A runtime numbers the timers it arms, so a handle is not given
  * again until 2^31 timers have been armed on that runtime (ten hours at

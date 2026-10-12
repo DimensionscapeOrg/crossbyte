@@ -41,7 +41,7 @@ class HaxeTimerTest extends utest.Test {
 		var timer = new HxTimer(100);
 		timer.run = () -> fired++;
 		var global = 0;
-		var id = GlobalTimer.setInterval(() -> global++, 100);
+		var id = GlobalTimer.setInterval(0.1, () -> global++);
 
 		for (_ in 0...24) {
 			runtime.pump(1 / 12, 0);
@@ -50,7 +50,7 @@ class HaxeTimerTest extends utest.Test {
 		GlobalTimer.clearInterval(id);
 
 		Assert.isTrue(fired >= 19 && fired <= 20, "a 100ms haxe.Timer ran " + fired + " times in 2s");
-		Assert.isTrue(global >= 19 && global <= 20, "a 100ms GlobalTimer.setInterval ran " + global + " times in 2s");
+		Assert.isTrue(global >= 19 && global <= 20, "a 0.1 s GlobalTimer.setInterval ran " + global + " times in 2s");
 	}
 
 	public function testTimeoutsArmedTogetherRunInTheOrderTheyWereArmed():Void {
@@ -60,7 +60,7 @@ class HaxeTimerTest extends utest.Test {
 		var order:Array<String> = [];
 		for (i in 0...3) {
 			HxTimer.delay(() -> order.push("delay" + i), 0);
-			GlobalTimer.setTimeout(() -> order.push("global" + i), 0);
+			GlobalTimer.setTimeout(0, () -> order.push("global" + i));
 		}
 		runtime.pump(0, 0);
 		Assert.equals("delay0,global0,delay1,global1,delay2,global2", order.join(","));
@@ -89,7 +89,7 @@ class HaxeTimerTest extends utest.Test {
 		var timer = new HxTimer(10);
 		timer.run = () -> fired++;
 		var global = 0;
-		var id = GlobalTimer.setInterval(() -> global++, 10);
+		var id = GlobalTimer.setInterval(0.01, () -> global++);
 		for (_ in 0...24) {
 			runtime.pump(1 / 12, 0);
 		}
@@ -105,7 +105,7 @@ class HaxeTimerTest extends utest.Test {
 		var fast = fired - timerBehind;
 		Assert.isTrue(fast >= 9 && fast <= 12, 'a 10ms haxe.Timer ran $fast times in 100ms of 1ms passes');
 		fast = global - globalBehind;
-		Assert.isTrue(fast >= 9 && fast <= 12, 'a 10ms GlobalTimer.setInterval ran $fast times in 100ms of 1ms passes');
+		Assert.isTrue(fast >= 9 && fast <= 12, 'a 0.01 s GlobalTimer.setInterval ran $fast times in 100ms of 1ms passes');
 	}
 
 	public function testStoppingOneTimerLeavesTheOthersRunning():Void {

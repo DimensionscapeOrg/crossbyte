@@ -8,15 +8,16 @@ import sys.thread.Mutex;
 #end
 
 /**
-	ActionScript's `setTimeout` and `setInterval`, by id, on `haxe.Timer`,
-	with delays in milliseconds as there. `crossbyte.Timer` is the runtime's
-	own, in seconds.
+	Timers by id, callable from any thread, on `haxe.Timer`.
 
-	`setTimeout(closure, delay)` calls `closure` once, `delay` milliseconds
-	from now, and `setInterval(closure, delay)` every `delay` milliseconds;
-	each returns the id `clearTimeout` or `clearInterval` takes. Given an
-	`args` array after the delay, either calls a function of any arity with
-	those arguments, as ActionScript's do.
+	`setTimeout(delay, closure)` calls `closure` once, `delay` seconds from
+	now, and `setInterval(interval, closure)` every `interval` seconds; each
+	returns the id `clearTimeout` or `clearInterval` takes. Given an `args`
+	array after the function, either calls a function of any arity with
+	those arguments.
+
+	`crossbyte.Timer` is the runtime's own, in seconds too, and handed a
+	handle rather than an id; it runs on a runtime's thread only.
 
 	A timer runs where a `haxe.Timer` made on the calling thread would: on
 	that thread's runtime (the primordial runtime on the primordial thread, a
@@ -28,6 +29,9 @@ import sys.thread.Mutex;
 	under a lock wherever there are threads, so threads setting and
 	clearing timers at once are never issued one id twice, and a
 	`clearTimeout` never stops another thread's timer.
+
+	From ActionScript: there the function comes first and the delay is in
+	milliseconds, so `setTimeout(f, 500)` is `setTimeout(0.5, f)` here.
 **/
 final class GlobalTimer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
@@ -64,96 +68,101 @@ final class GlobalTimer {
 	}
 
 	/**
-		Calls `closure` every `delay` milliseconds until `clearInterval` is
+		Calls `closure` every `interval` seconds until `clearInterval` is
 		called with the id this returns. Until then the interval holds
 		`closure`, and what it reaches.
 
-		The delay is in milliseconds and comes after the function, as in
-		ActionScript and JavaScript. `crossbyte.Timer.setInterval` takes
-		seconds, delay first, and runs on a runtime's thread only.
-
+		@param interval The interval, in seconds.
 		@param closure The function to call.
-		@param delay The interval, in milliseconds.
 		@return The id to pass to `clearInterval`.
 	**/
-	overload extern public static inline function setInterval(closure:Void->Void, delay:Int):UInt {
-		return __setIntervalVoid(closure, delay);
+	overload extern public static inline function setInterval(interval:Float, closure:Void->Void):UInt {
+		return __setIntervalVoid(interval, closure);
 	}
 
 	/**
-		`setInterval` for any function, called with `args`, as ActionScript's
-		takes it: through a dynamic call, and through reflection past four
-		arguments. A `Void->Void` function is taken by the overload above,
-		which calls it directly.
+		`setInterval` for any function, called with `args`: through a
+		dynamic call, and through reflection past four arguments. A
+		`Void->Void` function is taken by the overload above, which calls it
+		directly.
 	**/
-	overload extern public static inline function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
-		return __setInterval(closure, delay, args);
+	overload extern public static inline function setInterval(interval:Float, closure:Function, args:Array<Dynamic> = null):UInt {
+		return __setInterval(interval, closure, args);
 	}
 
-	@:noCompletion private static function __setIntervalVoid(closure:Void->Void, delay:Int):UInt {
+	@:noCompletion private static function __setIntervalVoid(interval:Float, closure:Void->Void):UInt {
 		var id = __nextID();
-		__setTimer(id, __running(delay, closure));
+		__setTimer(id, __running(interval, closure));
 		return id;
 	}
 
-	@:noCompletion private static function __setInterval(closure:Function, delay:Int, args:Array<Dynamic>):UInt {
+	@:noCompletion private static function __setInterval(interval:Float, closure:Function, args:Array<Dynamic>):UInt {
 		var id = __nextID();
-		__setTimer(id, __running(delay, __onInterval.bind(id, closure, args)));
+		__setTimer(id, __running(interval, __onInterval.bind(id, closure, args)));
 		return id;
 	}
 
 	/**
-		A `haxe.Timer` running `run`, given before the timer is handed to its
-		runtime: given after, a runtime on another thread could run the timer
-		before it had one. See `haxe.Timer.__given`.
+		A `haxe.Timer` running `run` every `interval` seconds, given before the
+		timer is handed to its runtime: given after, a runtime on another
+		thread could run the timer before it had one. See
+		`haxe.Timer.__given`.
 	**/
-	@:noCompletion private static inline function __running(delay:Int, run:Void->Void):HxTimer {
+	@:noCompletion private static inline function __running(interval:Float, run:Void->Void):HxTimer {
 		#if lime_cffi
-		var timer = new HxTimer(delay);
+		var timer = new HxTimer(crossbyte._internal.Millis.of(interval));
 		timer.run = run;
 		return timer;
 		#else
-		return @:privateAccess HxTimer.__given(delay, _ -> run());
+		return @:privateAccess HxTimer.__givenSeconds(interval, _ -> run());
+		#end
+	}
+
+	/** A `haxe.Timer` that stops itself and runs `run` once, `delay` seconds from now. **/
+	@:noCompletion private static inline function __once(delay:Float, run:Void->Void):HxTimer {
+		#if lime_cffi
+		return HxTimer.delay(run, crossbyte._internal.Millis.of(delay));
+		#else
+		return @:privateAccess HxTimer.__givenSeconds(delay, timer -> {
+			timer.stop();
+			run();
+		});
 		#end
 	}
 
 	/**
-		Calls `closure` once, `delay` milliseconds from now, unless
-		`clearTimeout` is called first with the id this returns.
+		Calls `closure` once, `delay` seconds from now, unless `clearTimeout`
+		is called first with the id this returns.
 
-		The delay is in milliseconds and comes after the function, as in
-		ActionScript and JavaScript. `crossbyte.Timer.setTimeout` takes
-		seconds, delay first, and runs on a runtime's thread only.
-
+		@param delay The delay, in seconds.
 		@param closure The function to call.
-		@param delay The delay, in milliseconds.
 		@return The id to pass to `clearTimeout`.
 	**/
-	overload extern public static inline function setTimeout(closure:Void->Void, delay:Int):UInt {
-		return __setTimeoutVoid(closure, delay);
+	overload extern public static inline function setTimeout(delay:Float, closure:Void->Void):UInt {
+		return __setTimeoutVoid(delay, closure);
 	}
 
 	/**
-		`setTimeout` for any function, called with `args`, as ActionScript's
-		takes it: through a dynamic call, and through reflection past four
-		arguments. A `Void->Void` function is taken by the overload above.
+		`setTimeout` for any function, called with `args`: through a dynamic
+		call, and through reflection past four arguments. A `Void->Void`
+		function is taken by the overload above.
 	**/
-	overload extern public static inline function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
-		return __setTimeout(closure, delay, args);
+	overload extern public static inline function setTimeout(delay:Float, closure:Function, args:Array<Dynamic> = null):UInt {
+		return __setTimeout(delay, closure, args);
 	}
 
-	@:noCompletion private static function __setTimeoutVoid(closure:Void->Void, delay:Int):UInt {
+	@:noCompletion private static function __setTimeoutVoid(delay:Float, closure:Void->Void):UInt {
 		var id = __nextID();
-		__setTimer(id, HxTimer.delay(() -> {
+		__setTimer(id, __once(delay, () -> {
 			__removeTimer(id);
 			closure();
-		}, delay));
+		}));
 		return id;
 	}
 
-	@:noCompletion private static function __setTimeout(closure:Function, delay:Int, args:Array<Dynamic>):UInt {
+	@:noCompletion private static function __setTimeout(delay:Float, closure:Function, args:Array<Dynamic>):UInt {
 		var id = __nextID();
-		__setTimer(id, HxTimer.delay(__onTimeout.bind(id, closure, args), delay));
+		__setTimer(id, __once(delay, __onTimeout.bind(id, closure, args)));
 		return id;
 	}
 

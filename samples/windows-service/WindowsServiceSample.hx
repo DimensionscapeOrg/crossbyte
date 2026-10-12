@@ -80,7 +80,7 @@ class WindowsServiceSample extends ServerApplication {
 		// Asking for longer than the drain can take. The SCM assumes a service
 		// that has said nothing for its wait hint has hung, and kills it, so
 		// the hint has to cover the whole drain, not the optimistic case.
-		ProcessLifecycle.reportServiceStopPending(Std.int(DRAIN_SECONDS * 1000) + 10000);
+		ProcessLifecycle.reportServiceStopping(DRAIN_SECONDS + 10);
 
 		server.drain(DRAIN_SECONDS, function():Void {
 			Logger.info("drain complete; reporting service stopped");

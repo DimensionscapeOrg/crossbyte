@@ -114,6 +114,16 @@ final class ProcessLifecycle {
 	 */
 	public static var deferServiceStop:Bool = false;
 
+	/**
+	 * How long, in seconds, `installServiceControl` waits for its handshake
+	 * with the SCM to settle: 5 unless set, or 0 for no limit. Reaching it
+	 * means neither outcome was reported, which should not happen; it is a
+	 * bound, not a delay, and both outcomes normally arrive in a few
+	 * milliseconds. A negative or NaN one is refused by
+	 * `installServiceControl` with an `ArgumentError`, on every target.
+	 */
+	public static var serviceHandshakeTimeout:Float = 5.0;
+
 	@:noCompletion private static var __requested:Bool = false;
 	@:noCompletion private static var __dispatched:Bool = false;
 	@:noCompletion private static var __callbacks:Array<() -> Void> = [];
@@ -288,20 +298,18 @@ final class ProcessLifecycle {
 	 * ProcessLifecycle.installServiceControl("MyService");
 	 * ```
 	 *
+	 * The handshake is waited for `serviceHandshakeTimeout` at most.
+	 *
 	 * @param serviceName The name the service is registered under. Ignored by
 	 *        Windows for a single-service process, but it is what appears in
 	 *        the service's own error reporting, so pass the real one.
-	 * @param connectTimeoutMs How long to wait for the handshake to settle,
-	 *        5000 by default, or 0 for no limit. Reaching it means neither
-	 *        outcome was reported, which should not happen; it is a bound,
-	 *        not a delay, and both outcomes normally arrive in a few
-	 *        milliseconds.
-	 * @throws ArgumentError For a negative `connectTimeoutMs`, on every
-	 *         target.
+	 * @throws ArgumentError For a negative or NaN `serviceHandshakeTimeout`,
+	 *         on every target.
 	 */
-	public static function installServiceControl(serviceName:String, connectTimeoutMs:Int = 5000):Bool {
-		if (connectTimeoutMs < 0) {
-			throw new ArgumentError('installServiceControl connectTimeoutMs must not be negative ($connectTimeoutMs); 0 is no limit.');
+	public static function installServiceControl(serviceName:String):Bool {
+		var timeout:Float = serviceHandshakeTimeout;
+		if (!(timeout >= 0)) {
+			throw new ArgumentError('ProcessLifecycle.serviceHandshakeTimeout must be 0 or more seconds ($timeout); 0 is no limit.');
 		}
 
 		installDefaultHandlers();
@@ -312,7 +320,7 @@ final class ProcessLifecycle {
 		// Polled here rather than waited on in native code: a Haxe thread
 		// parked inside a Win32 wait is a thread hxcpp's collector cannot see
 		// stop, which would block collection for every other thread.
-		var deadline:Float = connectTimeoutMs == 0 ? Math.POSITIVE_INFINITY : haxe.Timer.stamp() + connectTimeoutMs / 1000;
+		var deadline:Float = timeout == 0 ? Math.POSITIVE_INFINITY : haxe.Timer.stamp() + timeout;
 		while (NativeServiceControl.attachState() == NativeServiceControl.PENDING && haxe.Timer.stamp() < deadline) {
 			crossbyte._internal.system.Sleep.sleep(0.002);
 		}
@@ -320,7 +328,7 @@ final class ProcessLifecycle {
 		var state:Int = NativeServiceControl.attachState();
 
 		if (state == NativeServiceControl.PENDING) {
-			Logger.error('Service control handshake did not settle within ${connectTimeoutMs}ms; continuing as a console process');
+			Logger.error('Service control handshake did not settle within ${timeout} s; continuing as a console process');
 		}
 
 		return state == NativeServiceControl.ATTACHED;
@@ -331,8 +339,9 @@ final class ProcessLifecycle {
 
 	/**
 	 * Tells the SCM the stop is still in progress and to allow another
-	 * `waitHintMs` before treating the process as hung. Call it repeatedly
-	 * from a drain that outlasts the default 30-second hint.
+	 * `waitHint` seconds before treating the process as hung. Call it
+	 * repeatedly from a drain that outlasts the default 30-second hint. The
+	 * SCM counts whole milliseconds, so a hint is rounded up to one.
 	 *
 	 * The SCM takes no hint without a limit, so 0 is the default hint, 30
 	 * seconds, rather than none: the one place in CrossByte where 0 is not
@@ -340,15 +349,16 @@ final class ProcessLifecycle {
 	 *
 	 * A no-op when not running as a service.
 	 *
-	 * @throws ArgumentError For a negative `waitHintMs`, on every target.
+	 * @throws ArgumentError For a negative or NaN `waitHint`, on every
+	 *         target.
 	 */
-	public static function reportServiceStopPending(waitHintMs:Int = 30000):Void {
-		if (waitHintMs < 0) {
-			throw new ArgumentError('reportServiceStopPending waitHintMs must not be negative ($waitHintMs).');
+	public static function reportServiceStopping(waitHint:Float = 30.0):Void {
+		if (!(waitHint >= 0)) {
+			throw new ArgumentError('reportServiceStopping waitHint must be 0 or more seconds ($waitHint).');
 		}
 
 		#if cpp
-		NativeServiceControl.reportStopPending(waitHintMs);
+		NativeServiceControl.reportStopPending(crossbyte._internal.Millis.of(waitHint));
 		#end
 	}
 

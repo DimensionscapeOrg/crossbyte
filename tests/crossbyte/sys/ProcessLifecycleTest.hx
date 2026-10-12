@@ -349,11 +349,13 @@ class ProcessLifecycleTest extends utest.Test {
 		// The test process is started by a shell, not by the SCM, so attaching
 		// has to settle on "not a service" rather than hang or claim otherwise.
 		// A short bound keeps a regression here from stalling the suite.
-		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService", 3000));
+		ProcessLifecycle.serviceHandshakeTimeout = 3.0;
+		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService"));
 		Assert.isFalse(ProcessLifecycle.isService);
 
 		// Idempotent, and still not a service the second time.
-		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService", 3000));
+		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService"));
+		ProcessLifecycle.serviceHandshakeTimeout = 5.0;
 
 		#if (cpp && windows)
 		// Specifically "the SCM did not start us", not "the handshake failed":
@@ -379,7 +381,10 @@ class ProcessLifecycleTest extends utest.Test {
 		else here attaches, that would read PENDING.
 	**/
 	public function testServiceControlWithATimeoutOfZeroWaitsForTheHandshake():Void {
-		Assert.isFalse(ProcessLifecycle.installServiceControl("CrossByteTestService", 0));
+		ProcessLifecycle.serviceHandshakeTimeout = 0;
+		var attached:Bool = ProcessLifecycle.installServiceControl("CrossByteTestService");
+		ProcessLifecycle.serviceHandshakeTimeout = 5.0;
+		Assert.isFalse(attached);
 
 		#if (cpp && windows)
 		Assert.equals(crossbyte.sys._internal.NativeServiceControl.NOT_A_SERVICE,
@@ -387,12 +392,16 @@ class ProcessLifecycleTest extends utest.Test {
 		#end
 	}
 
-	/** A negative bound is refused, on every target, rather than read as 0. **/
+	/** A negative or NaN bound is refused, on every target, rather than read as 0. **/
 	public function testServiceControlRefusesANegativeTimeout():Void {
-		Assert.raises(() -> ProcessLifecycle.installServiceControl("CrossByteTestService", -1), crossbyte.errors.ArgumentError);
-		Assert.raises(() -> ProcessLifecycle.reportServiceStopPending(-1), crossbyte.errors.ArgumentError);
+		for (bad in [-1.0, Math.NaN]) {
+			ProcessLifecycle.serviceHandshakeTimeout = bad;
+			Assert.raises(() -> ProcessLifecycle.installServiceControl("CrossByteTestService"), crossbyte.errors.ArgumentError);
+			Assert.raises(() -> ProcessLifecycle.reportServiceStopping(bad), crossbyte.errors.ArgumentError);
+		}
+		ProcessLifecycle.serviceHandshakeTimeout = 5.0;
 		// 0 is the SCM's default hint, there being no hint without a limit.
-		ProcessLifecycle.reportServiceStopPending(0);
+		ProcessLifecycle.reportServiceStopping(0);
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);
 	}
 
@@ -400,9 +409,9 @@ class ProcessLifecycleTest extends utest.Test {
 		// Every one of these is a no-op off the SCM. The point is that a server
 		// written for service deployment can call them unconditionally and still
 		// run from a console.
-		ProcessLifecycle.reportServiceStopPending(1000);
+		ProcessLifecycle.reportServiceStopping(1.0);
 		ProcessLifecycle.reportServiceStopped(0);
-		ProcessLifecycle.reportServiceStopPending();
+		ProcessLifecycle.reportServiceStopping();
 		ProcessLifecycle.reportServiceStopped();
 
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);

@@ -139,7 +139,7 @@ class Timer {
 	private var __stopped:Bool;
 
 	public function new(time_ms:Int) {
-		__start(time_ms);
+		__start(time_ms / 1000);
 	}
 
 	/**
@@ -147,22 +147,30 @@ class Timer {
 		runtime. Made on a thread other than its runtime's, a timer is armed
 		there through the post queue as it is made, and a runtime quick enough
 		could run it before the caller had given it a function, once with
-		none. `delay` and `crossbyte.utils.GlobalTimer` make theirs here.
+		none. `delay` makes its timers here.
 	**/
 	@:noCompletion private static function __given(time_ms:Int, run:Timer->Void):Timer {
+		return __givenSeconds(time_ms / 1000, run);
+	}
+
+	/**
+		`__given` for an interval in seconds, which is how
+		`crossbyte.utils.GlobalTimer` takes its delays.
+	**/
+	@:noCompletion private static function __givenSeconds(seconds:Float, run:Timer->Void):Timer {
 		var timer:Timer = Type.createEmptyInstance(Timer);
 		timer.run = () -> run(timer);
-		timer.__start(time_ms);
+		timer.__start(seconds);
 		return timer;
 	}
 
-	private function __start(time_ms:Int):Void {
+	private function __start(seconds:Float):Void {
 		__home = null;
 		__handle = 0;
 		__due = 0.0;
 		__armed = false;
 		__stopped = false;
-		__interval = time_ms > 0 ? time_ms / 1000 : 0.0;
+		__interval = seconds > 0 ? seconds : 0.0;
 
 		var home:CrossByte = __homeForThisThread();
 		if (home == null) {

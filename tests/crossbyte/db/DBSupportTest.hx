@@ -259,8 +259,8 @@ class DBSupportTest extends utest.Test {
 		connection.readUncommitted = false;
 		Assert.isFalse(connection.readUncommitted);
 
-		connection.busyTimeout = 250;
-		Assert.equals(250, connection.busyTimeout);
+		connection.lockWaitTimeout = 0.25;
+		Assert.equals(0.25, connection.lockWaitTimeout);
 
 		connection.tempStore = TempStoreMode.MEMORY;
 		Assert.equals(TempStoreMode.MEMORY, connection.tempStore);

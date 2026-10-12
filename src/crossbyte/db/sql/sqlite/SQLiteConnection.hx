@@ -163,8 +163,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public var walAutoCheckpoint(get, set):Int;
 
 	/**
-	 * Milliseconds to wait on a locked database before failing:
-	 * `DEFAULT_BUSY_TIMEOUT`, 5,000, as `open()` and `openAsync()` leave it.
+	 * Seconds to wait on a locked database before failing:
+	 * `DEFAULT_LOCK_WAIT_TIMEOUT`, 5, as `open()` and `openAsync()` leave it.
 	 * `0` fails at once, with "database is locked", which is SQLite's own
 	 * default.
 	 *
@@ -178,12 +178,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	 * matters more than the write.
 	 *
 	 * Getter/Setter wrap `PRAGMA busy_timeout`, which holds for this
-	 * connection alone.
+	 * connection alone and counts whole milliseconds: a wait is rounded up
+	 * to one.
 	 */
-	public var busyTimeout(get, set):Int;
+	public var lockWaitTimeout(get, set):Float;
 
-	/** `busyTimeout` as a connection opens: 5,000 milliseconds. **/
-	public static inline var DEFAULT_BUSY_TIMEOUT:Int = 5000;
+	/** `lockWaitTimeout` as a connection opens: 5 seconds. **/
+	public static inline var DEFAULT_LOCK_WAIT_TIMEOUT:Float = 5.0;
 
 	/**
 	 * Memory-mapped I/O window size in bytes.
@@ -1421,7 +1422,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		// Not through the properties: on an asynchronous connection this is
 		// the worker opening, and a property would ask the worker.
 		__setCacheSize(DEFAULT_CACHE_SIZE);
-		__connection.request('PRAGMA busy_timeout = $DEFAULT_BUSY_TIMEOUT;');
+		__connection.request('PRAGMA busy_timeout = ${crossbyte._internal.Millis.of(DEFAULT_LOCK_WAIT_TIMEOUT)};');
 	}
 
 	private function __onSQLWorkerComplete(e:ThreadEvent):Void {}
@@ -2191,7 +2192,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return value;
 	}
 
-	private function get_busyTimeout():Int {
+	private function get_lockWaitTimeout():Float {
 		var row:Dynamic = __pragmaFirstRow("busy_timeout");
 
 		if (row == null) {
@@ -2203,12 +2204,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			value = Reflect.field(row, "timeout");
 		}
 
+		// Milliseconds, as SQLite counts them.
 		var parsed = value != null ? Std.parseInt(Std.string(value)) : null;
-		return parsed != null ? parsed : 0;
+		return parsed != null && parsed > 0 ? parsed / 1000 : 0;
 	}
 
-	private function set_busyTimeout(v:Int):Int {
-		__pragma("busy_timeout=" + v);
+	private function set_lockWaitTimeout(v:Float):Float {
+		__pragma("busy_timeout=" + crossbyte._internal.Millis.of(v));
 
 		return v;
 	}

@@ -7,7 +7,7 @@ import utest.Assert;
 class GlobalTimerTest extends utest.Test {
 	public function testSetTimeoutInvokesClosureWithEmptyArgs():Void {
 		var fired = 0;
-		GlobalTimer.setTimeout(() -> fired++, 100, []);
+		GlobalTimer.setTimeout(0.1, () -> fired++, []);
 
 		CrossByte.current().pump(0.1, 0);
 		Assert.equals(1, fired);
@@ -15,7 +15,7 @@ class GlobalTimerTest extends utest.Test {
 
 	public function testClearTimeoutCancelsPendingCallback():Void {
 		var fired = 0;
-		var id = GlobalTimer.setTimeout(() -> fired++, 100);
+		var id = GlobalTimer.setTimeout(0.1, () -> fired++);
 
 		GlobalTimer.clearTimeout(id);
 		CrossByte.current().pump(0.1, 0);
@@ -24,13 +24,13 @@ class GlobalTimerTest extends utest.Test {
 
 	public function testAWrappedIdDoesNotTakeOverALiveTimer():Void {
 		var fired = 0;
-		var live = GlobalTimer.setInterval(() -> fired++, 100);
+		var live = GlobalTimer.setInterval(0.1, () -> fired++);
 
 		// As if 2^32 timers had come and gone since: the counter has wrapped,
 		// and the next id is the live one's.
 		@:privateAccess GlobalTimer.__wrapped = true;
 		@:privateAccess GlobalTimer.__lastTimerID = live - 1;
-		var next = GlobalTimer.setTimeout(() -> {}, 100);
+		var next = GlobalTimer.setTimeout(0.1, () -> {});
 		// Every id from here on is past any issued before the rewind.
 		@:privateAccess GlobalTimer.__wrapped = false;
 		Assert.notEquals(live, next, "a new timer took a live one's id");
@@ -53,8 +53,8 @@ class GlobalTimerTest extends utest.Test {
 		var interval:UInt = 0;
 		var child:CrossByte = CrossByte.make(DEFAULT, HEAP, configured -> {
 			configured.addEventListener(crossbyte.events.Event.INIT, _ -> {
-				timeout = GlobalTimer.setTimeout(() -> {}, 60000);
-				interval = GlobalTimer.setInterval(() -> {}, 60000);
+				timeout = GlobalTimer.setTimeout(60.0, () -> {});
+				interval = GlobalTimer.setInterval(60.0, () -> {});
 				configured.exit();
 			});
 		});
@@ -81,8 +81,8 @@ class GlobalTimerTest extends utest.Test {
 		var done = new sys.thread.Lock();
 		sys.thread.Thread.create(() -> {
 			haxe.Timer.delay(() -> delayed++, 0);
-			GlobalTimer.setTimeout(() -> timedOut++, 0);
-			interval = GlobalTimer.setInterval(() -> ticks++, 0);
+			GlobalTimer.setTimeout(0, () -> timedOut++);
+			interval = GlobalTimer.setInterval(0, () -> ticks++);
 			done.release();
 		});
 		Assert.isTrue(done.wait(5.0), "the thread did not finish");
@@ -117,7 +117,7 @@ class GlobalTimerTest extends utest.Test {
 			sys.thread.Thread.create(() -> {
 				try {
 					for (_ in 0...perThread) {
-						mine.push(GlobalTimer.setTimeout(() -> {}, 3600000));
+						mine.push(GlobalTimer.setTimeout(3600.0, () -> {}));
 					}
 					for (id in mine) {
 						GlobalTimer.clearTimeout(id);
@@ -164,7 +164,7 @@ class GlobalTimerTest extends utest.Test {
 
 	public function testClearIntervalStopsRepeatingCallback():Void {
 		var fired = 0;
-		var id = GlobalTimer.setInterval(() -> fired++, 100);
+		var id = GlobalTimer.setInterval(0.1, () -> fired++);
 
 		CrossByte.current().pump(0.1, 0);
 		Assert.equals(1, fired);

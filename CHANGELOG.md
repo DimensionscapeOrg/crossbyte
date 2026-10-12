@@ -1062,7 +1062,7 @@ says how.
   is sent as its type. (Upgrading)
 - A native MySQL connection uses TLS whenever the server offers it
   (`sslMode` `PREFERRED`). (Upgrading)
-- `SQLiteConnection.busyTimeout` is 5 seconds as a connection opens.
+- `SQLiteConnection.lockWaitTimeout` is 5 seconds as a connection opens.
   (Upgrading)
 - SQLite statements are prepared once and kept (64 texts): a statement with
   six values runs in 0.8 to 2.2 µs where it took 4.0 to 7.3. Postgres
@@ -1855,6 +1855,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
 | `URLRequest.idleTimeout`, 30000 | `readTimeout`, 30 |
 | `URLRequestDefaults.idleTimeout`, 0 (unset) | `readTimeout`, 0 (unset) |
 | `HTTPRequestContext.timeout`, as the request's | `readTimeout`, as the request's |
+| `GlobalTimer.setTimeout(closure, delay)` | `setTimeout(delay, closure)`, the delay first |
+| `GlobalTimer.setInterval(closure, delay)` | `setInterval(interval, closure)`, the interval first |
+| `SQLiteConnection.busyTimeout`, 5000 as it opens | `lockWaitTimeout`, 5 |
 
 #### Runtime
 
@@ -1893,7 +1896,7 @@ than waiting a thousand times as long: divide the old value by 1,000.
   returned the primordial runtime. Capture the runtime on its own thread and
   hand work to it with `CrossByte.post`.
 - `CrossByte.pump` is two inline overloads, and `GlobalTimer.setTimeout`
-  and `setInterval` are overloads too: every call compiles as it did, but
+  and `setInterval` are overloads too (see Durations for their arguments):
   none of them is a value any more (`var step = runtime.pump`, or a call
   through `Dynamic`, does not compile or find it). Wrap it,
   `(delta) -> runtime.pump(delta)`.
@@ -2417,9 +2420,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
 - An SQLite connection opened with `SQLiteMode.READ` refuses to write:
   open with `UPDATE` to write.
 - A `SQLiteConnection` waits up to 5 seconds for another connection's
-  write lock, `busyTimeout` as it opens, where it failed at once with
+  write lock, `lockWaitTimeout` as it opens, where it failed at once with
   "database is locked". On a synchronous connection the wait is on the
-  calling thread: set `busyTimeout = 0` where failing at once is wanted,
+  calling thread: set `lockWaitTimeout = 0` where failing at once is wanted,
   or less where a runtime's thread calls it.
 - On an asynchronous `SQLiteConnection`, `request()` and the properties
   that ask SQLite wait for the work queued before them (`queueTimeout`),

@@ -143,8 +143,8 @@ class SQLiteNativeTest extends utest.Test {
 		// A second connection cannot take the write lock now.
 		var other:SQLiteConnection = new SQLiteConnection();
 		other.open(path, SQLiteMode.UPDATE, false, 4096);
-		// Refused at once, rather than after busyTimeout's 5 s.
-		other.busyTimeout = 0;
+		// Refused at once, rather than after lockWaitTimeout's 5 s.
+		other.lockWaitTimeout = 0;
 		var locked:Bool = false;
 
 		try {
@@ -433,7 +433,7 @@ class SQLiteNativeTest extends utest.Test {
 		// Told not to wait: refused at once.
 		var impatient:SQLiteConnection = new SQLiteConnection();
 		impatient.open(path, SQLiteMode.UPDATE, false, 4096);
-		impatient.busyTimeout = 0;
+		impatient.lockWaitTimeout = 0;
 		var refused:String = null;
 		try {
 			impatient.request("INSERT INTO t VALUES (2)");
@@ -447,7 +447,7 @@ class SQLiteNativeTest extends utest.Test {
 		// one waits on the lock.
 		var waiter:SQLiteConnection = new SQLiteConnection();
 		waiter.open(path, SQLiteMode.UPDATE, false, 4096);
-		Assert.equals(SQLiteConnection.DEFAULT_BUSY_TIMEOUT, waiter.busyTimeout);
+		Assert.equals(SQLiteConnection.DEFAULT_LOCK_WAIT_TIMEOUT, waiter.lockWaitTimeout);
 		var committed:sys.thread.Lock = new sys.thread.Lock();
 		sys.thread.Thread.create(function() {
 			crossbyte.sys.System.sleep(0.3);
@@ -502,14 +502,14 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.isTrue(__count(connection, "main.sqlite_stat1") > 0, "analyze() gathered nothing to remove");
 		Assert.isTrue(__count(connection, "extra.sqlite_stat1") > 0, "analyze() gathered nothing to remove");
 
-		connection.busyTimeout = 1234;
+		connection.lockWaitTimeout = 1.234;
 		connection.begin();
 		connection.deanalyze();
 
 		Assert.equals(0, __count(connection, "main.sqlite_stat1"));
 		Assert.equals(0, __count(connection, "extra.sqlite_stat1"), "an attached database kept its statistics");
 		Assert.equals(50, __count(connection, "t"), "the tables went with the statistics");
-		Assert.equals(1234, connection.busyTimeout);
+		Assert.equals(1.234, connection.lockWaitTimeout);
 		Assert.isTrue(connection.inTransaction, "the open transaction was ended");
 		Assert.same([SQLEvent.OPEN, SQLEvent.ANALYZE, SQLEvent.DEANALYZE], events);
 		connection.rollback();
