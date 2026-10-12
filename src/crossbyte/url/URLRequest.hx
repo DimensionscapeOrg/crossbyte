@@ -90,7 +90,7 @@ class URLRequest {
 	public var httpVersion:HTTPVersion;
 
 	/**
-		How long, in milliseconds, the request may go with nothing arriving
+		How long, in seconds, the request may go with nothing arriving
 		(waiting for the response, reading its body, and connecting too but on
 		Node, where it starts once the connection is made) before it is
 		abandoned with an `IO_ERROR`. Time without progress, not a deadline on
@@ -108,16 +108,16 @@ class URLRequest {
 		coming.
 
 		Bytes arriving reset it, so a server sending a byte at a time is
-		waited for however long it takes; `headTimeout` and `totalTimeout`
-		are what a trickle cannot reset.
+		waited for however long it takes; `responseHeaderTimeout` and
+		`loadTimeout` are what a trickle cannot reset.
 
-		Taken from `URLRequestDefaults.idleTimeout` when that is greater than
-		zero, and 30000 otherwise.
+		Taken from `URLRequestDefaults.readTimeout` when that is greater than
+		zero, and 30 otherwise.
 	**/
-	public var idleTimeout:Int;
+	public var readTimeout:Float;
 
 	/**
-		How long, in milliseconds, the response's head (its status line and
+		How long, in seconds, the response's head (its status line and
 		header fields, after any `1xx`) has to arrive once the request has
 		been sent, before the load is abandoned with an `IO_ERROR`. A
 		deadline, not an idle timeout: bytes trickling in do not move it, so
@@ -125,10 +125,10 @@ class URLRequest {
 		than waited on for as long as it keeps sending. Counted afresh for
 		each redirect's request.
 
-		Defaults to 300000, five minutes, as Node's own `fetch` waits for
+		Defaults to 300, five minutes, as Node's own `fetch` waits for
 		headers; `0` or less is no deadline. A long poll whose server holds
 		its answer longer than this needs it raised, as it needs
-		`idleTimeout` raised.
+		`readTimeout` raised.
 
 		Natively, on the jvm, the interpreter and Node, counted from when the
 		request has gone, so an upload's time is not counted against it. In a
@@ -136,10 +136,10 @@ class URLRequest {
 		that makes a cross-origin request need a preflight, from when the
 		request is handed to the browser.
 	**/
-	public var headTimeout:Int = 300000;
+	public var responseHeaderTimeout:Float = 300.0;
 
 	/**
-		How long, in milliseconds, the whole load may take, from `load()` to
+		How long, in seconds, the whole load may take, from `load()` to
 		its `COMPLETE` (the wait for a thread, the name's lookup, connecting,
 		every redirect, sending the request and reading all of the response),
 		before it is abandoned with an `IO_ERROR`. The request is cancelled
@@ -148,14 +148,14 @@ class URLRequest {
 		Defaults to `0`, no deadline: a download that keeps moving is waited
 		for however long it takes, which is right for a large file over a slow
 		link. Set one for a server you do not trust: without it a response
-		trickled a byte at a time, which resets `idleTimeout` with every byte,
+		trickled a byte at a time, which resets `readTimeout` with every byte,
 		is waited for for as long as it lasts.
 
 		Kept by the loader's runtime, which delivers the load's events, and
 		measured by the clock, `haxe.Timer.stamp()`: a runtime that is not
 		running ends nothing, as it delivers nothing.
 	**/
-	public var totalTimeout:Int = 0;
+	public var loadTimeout:Float = 0.0;
 
 	/**
 		The most bytes a response body may take as it arrives (before any
@@ -367,10 +367,10 @@ class URLRequest {
 		contentType = null;
 		followRedirects = URLRequestDefaults.followRedirects;
 
-		if (URLRequestDefaults.idleTimeout > 0) {
-			idleTimeout = URLRequestDefaults.idleTimeout;
+		if (URLRequestDefaults.readTimeout > 0) {
+			readTimeout = URLRequestDefaults.readTimeout;
 		} else {
-			idleTimeout = 30000;
+			readTimeout = 30.0;
 		}
 
 		manageCookies = URLRequestDefaults.manageCookies;

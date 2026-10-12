@@ -21,7 +21,7 @@ class URLLoader extends EventDispatcher {
 	/**
 	 * How many loads run at once, at most, across every `URLLoader` in the
 	 * process. More wait their turn, in the order they were made, each for
-	 * its request's `idleTimeout` at most: one still waiting then fails with
+	 * its request's `readTimeout` at most: one still waiting then fails with
 	 * an `IO_ERROR` saying so, rather than wait for as long as the loads
 	 * ahead of it take. Defaults to 16.
 	 *

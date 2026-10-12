@@ -150,7 +150,7 @@ class HttpTest extends utest.Test {
 		var completed:Bytes = null;
 		var error:String = null;
 
-		var http = new Http("https://example.com/resource", "POST", ["X-Test: yes"], {page: 1}, "text/plain", "body", HttpVersion.HTTP_2, 5000,
+		var http = new Http("https://example.com/resource", "POST", ["X-Test: yes"], {page: 1}, "text/plain", "body", HttpVersion.HTTP_2, 5.0,
 			"TestAgent", false);
 		http.onStatus = code -> statusCodes.push(code);
 		http.onProgress = (loaded:Int, total:Int) -> progress.push({loaded: loaded, total: total});
@@ -176,7 +176,7 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(backend.lastContext.data.isText);
 		Assert.equals("body", backend.lastContext.data.text);
 		Assert.equals("body", backend.lastContext.data.toBytes().toString());
-		Assert.equals(5000, backend.lastContext.timeout);
+		Assert.equals(5.0, backend.lastContext.readTimeout);
 		Assert.equals("TestAgent", backend.lastContext.userAgent);
 		Assert.isFalse(backend.lastContext.followRedirects);
 		Assert.notNull(backend.lastContext.onHeaders);
@@ -485,9 +485,10 @@ class HttpTest extends utest.Test {
 		case shorter than 30 seconds can see, so the mapping is asserted itself.
 	**/
 	public function testAnIdleTimeoutOfZeroIsNoLimit():Void {
-		Assert.equals(0.0, Http.__idleSeconds(0));
-		Assert.equals(0.0, Http.__idleSeconds(-1));
-		Assert.equals(1.5, Http.__idleSeconds(1500));
+		Assert.equals(0.0, Http.__seconds(0));
+		Assert.equals(0.0, Http.__seconds(-1));
+		Assert.equals(0.0, Http.__seconds(Math.NaN));
+		Assert.equals(1.5, Http.__seconds(1.5));
 	}
 
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
@@ -1006,7 +1007,7 @@ class HttpTest extends utest.Test {
 		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nSet-Cookie: session=abc123\r\nContent-Length: 0\r\n\r\n",
 			"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 
-		var http = new Http('http://127.0.0.1:${fixture.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 10000, "CrossByte", true,
+		var http = new Http('http://127.0.0.1:${fixture.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 10.0, "CrossByte", true,
 			false);
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
 		http.load();
@@ -1238,8 +1239,8 @@ class HttpTest extends utest.Test {
 	public function testATrickledHeadEndsAtItsDeadline():Void {
 		var head:String = "HTTP/1.1 200 OK\r\nX-Slow: " + StringTools.rpad("", "s", 60) + "\r\nContent-Length: 2\r\n\r\nok";
 		var fixture = serveTrickled("", head, 0.05);
-		var http = new Http('http://127.0.0.1:${fixture.port}/slow-head', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2000);
-		http.headTimeout = 600;
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow-head', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2.0);
+		http.responseHeaderTimeout = 0.6;
 		var completed:Bytes = null;
 		var failure:String = null;
 		http.onComplete = data -> completed = data;
@@ -1251,15 +1252,15 @@ class HttpTest extends utest.Test {
 		fixture.waitDone();
 
 		Assert.isNull(completed, "a head trickled for five seconds completed under a 0.6 s deadline");
-		Assert.isTrue(failure != null && failure.indexOf("did not arrive within 600 ms") >= 0, "the failure does not name the head's deadline: " + failure);
+		Assert.isTrue(failure != null && failure.indexOf("did not arrive within 0.6 s") >= 0, "the failure does not name the head's deadline: " + failure);
 		Assert.isTrue(took >= 0.5 && took < 2.5, 'a 0.6 s head deadline ended the request after $took s');
 	}
 
 	/** The head's deadline stops with the head: a body trickling after it is the idle timeout's. **/
 	public function testTheHeadDeadlineDoesNotCountTheBody():Void {
 		var fixture = serveTrickled("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 16\r\n\r\n", "abcdefghijklmnop", 0.05);
-		var http = new Http('http://127.0.0.1:${fixture.port}/slow-body', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2000);
-		http.headTimeout = 300;
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow-body', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 2.0);
+		http.responseHeaderTimeout = 0.3;
 		var completed:Bytes = null;
 		var failure:String = null;
 		http.onComplete = data -> completed = data;
@@ -1289,7 +1290,7 @@ class HttpTest extends utest.Test {
 			return new Host(name);
 		};
 		try {
-			var http = new Http('http://crossbyte-${Std.random(0x3FFFFFFF)}.test:9/', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 400);
+			var http = new Http('http://crossbyte-${Std.random(0x3FFFFFFF)}.test:9/', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 0.4);
 			var failure:String = null;
 			http.onError = (message, ?data) -> failure = message;
 			var started:Float = haxe.Timer.stamp();
@@ -1431,7 +1432,7 @@ class HttpTest extends utest.Test {
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 		var crlf:String = String.fromCharCode(13) + String.fromCharCode(10);
 		var http = new Http('http://127.0.0.1:${fixture.port}/', "POST", null, null, "text/plain" + crlf + "Injected-Type: yes", "body", HttpVersion.HTTP_1_1,
-			10000, "Agent" + crlf + "Injected-Agent: yes");
+			10.0, "Agent" + crlf + "Injected-Agent: yes");
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
 		http.load();
 		fixture.waitDone();
@@ -1567,7 +1568,7 @@ class HttpTest extends utest.Test {
 		});
 
 		var failure:Null<String> = null;
-		var http = new Http('https://127.0.0.1:$port/silent', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 1000);
+		var http = new Http('https://127.0.0.1:$port/silent', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 1.0);
 		http.onComplete = _ -> failure = "completed";
 		http.onError = (message, ?_) -> failure = message;
 		var started:Float = haxe.Timer.stamp();
@@ -1589,7 +1590,7 @@ class HttpTest extends utest.Test {
 		// Handed to the socket as milliseconds as seconds, this would wait until
 		// the server gave up, three seconds on, rather than 300 ms.
 		var fixture = holdRequest(false);
-		var http = new Http('http://127.0.0.1:${fixture.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 300);
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 0.3);
 		var completed:Bool = false;
 		var failure:String = null;
 		http.onComplete = _ -> completed = true;
@@ -1702,7 +1703,7 @@ class HttpTest extends utest.Test {
 		// The cancel shuts the socket down rather than closing it, which wakes
 		// a waiting read on every target and tells the server at once.
 		var fixture = holdRequest(false);
-		var http = new Http('http://127.0.0.1:${fixture.port}/held', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 5000);
+		var http = new Http('http://127.0.0.1:${fixture.port}/held', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 5.0);
 		var failure:String = null;
 		http.onError = (message, ?data) -> failure = message;
 		var token = http.cancelToken;

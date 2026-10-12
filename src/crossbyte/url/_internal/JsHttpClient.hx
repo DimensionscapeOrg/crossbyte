@@ -26,8 +26,9 @@ import haxe.io.Bytes;
  * cannot drift in what they report even though almost nothing about how they
  * work is shared. Where the platform leaves a choice, they make the one the
  * native client makes: redirects are followed, dropping credentials when one
- * leaves the origin, `idleTimeout` is time without progress rather than a
- * deadline on the whole exchange, and `headTimeout` and `totalTimeout` are
+ * leaves the origin, `readTimeout` is time without progress rather than a
+ * deadline on the whole exchange, and `responseHeaderTimeout` and
+ * `loadTimeout` are
  * deadlines nothing arriving moves, kept by the runtime's timers and
  * checked against the clock (see `Deadline`).
  */
@@ -199,14 +200,14 @@ class JsHttpClient {
 		// client lets it (xhr.timeout would end it).
 		function armIdle():Void {
 			stopIdle();
-			if (request.idleTimeout > 0 && !settled) {
+			if (request.readTimeout > 0 && !settled) {
 				idle = haxe.Timer.delay(function():Void {
 					if (!settle()) {
 						return;
 					}
 					xhr.abort();
 					onError("HTTP request timed out: " + url);
-				}, request.idleTimeout);
+				}, crossbyte._internal.Millis.of(request.readTimeout));
 			}
 		}
 
@@ -333,11 +334,12 @@ class JsHttpClient {
 		// From the send, since the browser says when an upload has gone only
 		// to a listener on `xhr.upload`, which makes a cross-origin request
 		// one that needs a preflight.
-		if (request.headTimeout > 0) {
-			head = new Deadline(request.headTimeout, () -> abandon("The response head did not arrive within " + request.headTimeout + " ms of the request"));
+		if (request.responseHeaderTimeout > 0) {
+			head = new Deadline(request.responseHeaderTimeout,
+				() -> abandon("The response head did not arrive within " + request.responseHeaderTimeout + " s of the request"));
 		}
-		if (request.totalTimeout > 0) {
-			total = new Deadline(request.totalTimeout, () -> abandon("The load did not complete within " + request.totalTimeout + " ms"));
+		if (request.loadTimeout > 0) {
+			total = new Deadline(request.loadTimeout, () -> abandon("The load did not complete within " + request.loadTimeout + " s"));
 		}
 		xhr.send(__body(body));
 	}
@@ -525,8 +527,8 @@ class JsHttpClient {
 			onCancelled = () -> abandon(CANCELLED);
 			token.onCancel(onCancelled);
 		}
-		if (request.totalTimeout > 0 && !settled) {
-			total = new Deadline(request.totalTimeout, () -> abandon("The load did not complete within " + request.totalTimeout + " ms"));
+		if (request.loadTimeout > 0 && !settled) {
+			total = new Deadline(request.loadTimeout, () -> abandon("The load did not complete within " + request.loadTimeout + " s"));
 		}
 
 		var headers:haxe.DynamicAccess<String> = {};
@@ -787,8 +789,8 @@ class JsHttpClient {
 
 			// An idle timeout, as Node's setTimeout is and the native client's
 			// socket timeout is.
-			if (request.idleTimeout > 0) {
-				clientRequest.setTimeout(request.idleTimeout, function(_) {
+			if (request.readTimeout > 0) {
+				clientRequest.setTimeout(crossbyte._internal.Millis.of(request.readTimeout), function(_) {
 					clientRequest.destroy();
 					fail("HTTP request timed out: " + target);
 				});
@@ -797,13 +799,14 @@ class JsHttpClient {
 			// The head's deadline, from the request having gone ("finish" is
 			// Node saying its last byte went to the socket) to the response.
 			// Nothing arriving moves it, as bytes arriving move the idle one.
-			if (request.headTimeout > 0) {
+			if (request.responseHeaderTimeout > 0) {
 				clientRequest.on("finish", function() {
 					if (settled || answered || current != clientRequest) {
 						return;
 					}
 					stopHead();
-					head = new Deadline(request.headTimeout, () -> abandon("The response head did not arrive within " + request.headTimeout + " ms of the request"));
+					head = new Deadline(request.responseHeaderTimeout,
+						() -> abandon("The response head did not arrive within " + request.responseHeaderTimeout + " s of the request"));
 				});
 			}
 
@@ -872,7 +875,7 @@ class JsHttpClient {
 			}
 		}
 
-		var idleTimeout:Int = request.idleTimeout;
+		var idleTimeout:Int = crossbyte._internal.Millis.of(request.readTimeout);
 		// No agent is named, so the request takes the socket this hands it.
 		options.createConnection = function(_:Dynamic, oncreate:(error:Dynamic, ?socket:Dynamic) -> Void):Dynamic {
 			var socket:Dynamic = js.node.Tls.connect(connectOptions);
@@ -1070,8 +1073,8 @@ private class Deadline {
 	private var __timer:Null<haxe.Timer> = null;
 	private var __stopped:Bool = false;
 
-	public function new(ms:Int, then:Void->Void) {
-		__due = haxe.Timer.stamp() + ms / 1000;
+	public function new(seconds:Float, then:Void->Void) {
+		__due = haxe.Timer.stamp() + seconds;
 		__then = then;
 		__arm();
 	}

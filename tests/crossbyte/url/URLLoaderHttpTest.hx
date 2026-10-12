@@ -500,13 +500,13 @@ Content-Length: ${body.length}
 			events.push("complete " + loader.data);
 			if (++loads == 1) {
 				var next = new URLRequest('http://127.0.0.1:${fixture.port}/second');
-				next.idleTimeout = 2000;
+				next.readTimeout = 2.0;
 				loader.load(next);
 			}
 		});
 		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error " + event.text));
 		var first = new URLRequest('http://127.0.0.1:${fixture.port}/first');
-		first.idleTimeout = 2000;
+		first.readTimeout = 2.0;
 		loader.load(first);
 
 		pumpUntil(() -> events.length >= 2);
@@ -625,7 +625,7 @@ Content-Length: ${body.length}
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
 		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error: " + event.text));
 		var request = new URLRequest('http://127.0.0.1:${port}/held');
-		request.idleTimeout = 2000;
+		request.readTimeout = 2.0;
 		loader.load(request);
 
 		var inFlight = false;
@@ -657,7 +657,7 @@ Content-Length: ${body.length}
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 1);
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("data: " + loader.data));
 		var next = new URLRequest('http://127.0.0.1:${fixture.port}/next');
-		next.idleTimeout = 2000;
+		next.readTimeout = 2.0;
 		loader.load(next);
 		pumpUntil(() -> events.length >= 2);
 		fixture.waitDone();
@@ -666,15 +666,15 @@ Content-Length: ${body.length}
 	#end
 
 	/**
-		A body trickled a byte at a time ends at the request's `totalTimeout`.
+		A body trickled a byte at a time ends at the request's `loadTimeout`.
 		Each byte resets the idle timeout, so without a total bound this one
 		(five seconds of body) would run to the end of it.
 	**/
 	public function testATrickledBodyEndsAtTheTotalTimeout():Void {
 		var fixture = serveTrickled("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\n", StringTools.rpad("", "t", 100), 0.05);
 		var request = new URLRequest('http://127.0.0.1:${fixture.port}/trickle');
-		request.idleTimeout = 2000;
-		request.totalTimeout = 700;
+		request.readTimeout = 2.0;
+		request.loadTimeout = 0.7;
 		var loader = new URLLoader();
 		var events:Array<String> = [];
 		loader.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
@@ -686,7 +686,7 @@ Content-Length: ${body.length}
 		var took:Float = haxe.Timer.stamp() - started;
 
 		Assert.equals(1, events.length, "the load did not end once: " + events);
-		Assert.isTrue(events.length > 0 && events[0].indexOf("did not complete within 700 ms") >= 0, "the load did not end at its deadline: " + events);
+		Assert.isTrue(events.length > 0 && events[0].indexOf("did not complete within 0.7 s") >= 0, "the load did not end at its deadline: " + events);
 		Assert.isTrue(took >= 0.6 && took < 3.0, 'a 0.7 s deadline ended the load after $took s');
 
 		// And nothing more is said of it, however much more its thread says
@@ -712,7 +712,7 @@ Content-Length: ${body.length}
 		chunks.add("0\r\n\r\n");
 		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + chunks.toString(), 1);
 		var request = new URLRequest('http://127.0.0.1:${fixture.port}/chunks');
-		request.idleTimeout = 5000;
+		request.readTimeout = 5.0;
 		var loader = new URLLoader();
 		var progress:Array<Int> = [];
 		var done:Bool = false;
@@ -738,7 +738,7 @@ Content-Length: ${body.length}
 	public function testALoadWithinItsTotalTimeoutCompletes():Void {
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 5"], "hello"), 1);
 		var request = new URLRequest('http://127.0.0.1:${fixture.port}/quick');
-		request.totalTimeout = 5000;
+		request.loadTimeout = 5.0;
 		var result = load(request);
 		fixture.waitDone();
 		Assert.isNull(result.error, result.error);
@@ -746,7 +746,7 @@ Content-Length: ${body.length}
 	}
 
 	/**
-		A load waiting for a thread waits its `idleTimeout` at most. With
+		A load waiting for a thread waits its `readTimeout` at most. With
 		every thread taken by loads whose servers hold them, it would otherwise
 		wait for as long as they do, and a load whose server trickles holds its
 		thread for good.
@@ -760,7 +760,7 @@ Content-Length: ${body.length}
 		first.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> firstEvents.push(event.text));
 		first.addEventListener(Event.COMPLETE, _ -> firstEvents.push("complete"));
 		var holding = new URLRequest('http://127.0.0.1:${held.port}/held');
-		holding.idleTimeout = 5000;
+		holding.readTimeout = 5.0;
 		first.load(holding);
 		pumpUntil(() -> held.requests.length > 0, 3.0);
 		Assert.equals(1, held.requests.length, "the first load never reached its server");
@@ -770,7 +770,7 @@ Content-Length: ${body.length}
 		second.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push(event.text));
 		second.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
 		var queued = new URLRequest('http://127.0.0.1:${held.port}/queued');
-		queued.idleTimeout = 500;
+		queued.readTimeout = 0.5;
 		var started:Float = haxe.Timer.stamp();
 		second.load(queued);
 		pumpUntil(() -> events.length > 0, 4.0);
@@ -781,7 +781,7 @@ Content-Length: ${body.length}
 		held.done.wait(3.0);
 
 		Assert.equals(1, events.length, "the queued load did not end once: " + events);
-		Assert.isTrue(events.length > 0 && events[0].indexOf("did not start within 500 ms") >= 0, "the queued load did not say it waited for a thread: " + events);
+		Assert.isTrue(events.length > 0 && events[0].indexOf("did not start within 0.5 s") >= 0, "the queued load did not say it waited for a thread: " + events);
 		Assert.isTrue(took >= 0.4 && took < 2.5, 'a 0.5 s limit on the wait ended it after $took s');
 		Assert.same([], firstEvents);
 	}
@@ -863,7 +863,7 @@ Content-Length: ${body.length}
 	}
 
 	private static function load(request:URLRequest):URLLoaderHttpResult {
-		request.idleTimeout = 2000;
+		request.readTimeout = 2.0;
 		var loader = new URLLoader();
 		var result:URLLoaderHttpResult = {
 			complete: false,

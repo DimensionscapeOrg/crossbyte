@@ -55,11 +55,11 @@ class Http {
 	public static inline var DEFAULT_MAX_RESPONSE_HEADER_SIZE:Int = 64 * 1024;
 
 	/**
-		Milliseconds a response's head has to arrive once its request has
-		gone, unless the request says otherwise: `URLRequest.headTimeout`'s
+		Seconds a response's head has to arrive once its request has gone,
+		unless the request says otherwise: `URLRequest.responseHeaderTimeout`'s
 		default, five minutes, as Node's own `fetch` waits for headers.
 	**/
-	public static inline var DEFAULT_HEAD_TIMEOUT:Int = 300000;
+	public static inline var DEFAULT_RESPONSE_HEADER_TIMEOUT:Float = 300.0;
 
 	/**
 	 * Bytes one chunk-size line may take, extensions included. A size is
@@ -149,16 +149,16 @@ class Http {
 	public var maxResponseHeaderSize:Int = DEFAULT_MAX_RESPONSE_HEADER_SIZE;
 
 	/**
-		Milliseconds each response's head (its status line and header
-		fields, after any 1xx) has to arrive once its request has gone;
-		`0` or less is no deadline. `URLRequest.headTimeout` sets it, per
+		Seconds each response's head (its status line and header fields,
+		after any 1xx) has to arrive once its request has gone; `0` or less
+		is no deadline. `URLRequest.responseHeaderTimeout` sets it, per
 		load.
 
 		Bytes trickled in reset an idle timeout, so without this a server
 		sending its head a byte at a time could hold the request for as long
 		as it liked.
 	**/
-	public var headTimeout:Int = DEFAULT_HEAD_TIMEOUT;
+	public var responseHeaderTimeout:Float = DEFAULT_RESPONSE_HEADER_TIMEOUT;
 
 	/**
 		The TLS an `https` request asks for, or null for the defaults:
@@ -180,7 +180,7 @@ class Http {
 	private var __status:Int = 0;
 	private var __data:Null<crossbyte.http.HTTPRequestBody>;
 	private var __requestData:Dynamic;
-	private var __timeout:Int;
+	private var __readTimeout:Float;
 	private var __connected:Bool = false;
 	private var __version:String;
 	private var __method:String;
@@ -223,13 +223,13 @@ class Http {
 	@:noCompletion public static var poolConnections:Bool = true;
 
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
-			data:Null<crossbyte.http.HTTPRequestBody> = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
+			data:Null<crossbyte.http.HTTPRequestBody> = null, version:HttpVersion = HttpVersion.HTTP_1_1, readTimeout:Float = 10.0, userAgent:String = "CrossByte", followRedirects:Bool = true,
 			manageCookies:Bool = true, followInsecureRedirects:Bool = false) {
 		__followInsecureRedirects = followInsecureRedirects;
 		__url = new URL(url);
 		__headers = headers;
 		__requestData = requestData;
-		__timeout = timeout;
+		__readTimeout = readTimeout;
 		__method = method;
 		__contentType = contentType;
 		__data = data;
@@ -692,7 +692,7 @@ class Http {
 			contentType: __contentType,
 			data: __data,
 			version: version,
-			timeout: __timeout,
+			readTimeout: __readTimeout,
 			userAgent: __userAgent,
 			followRedirects: __followRedirects,
 			followInsecureRedirects: __followInsecureRedirects,
@@ -707,7 +707,7 @@ class Http {
 			maxBodySize: maxBodySize,
 			maxRedirects: maxRedirects,
 			maxResponseHeaderSize: maxResponseHeaderSize,
-			headTimeout: headTimeout,
+			responseHeaderTimeout: responseHeaderTimeout,
 			tls: tls,
 			onProgress: onProgress,
 			onError: onError,
@@ -1081,7 +1081,7 @@ class Http {
 			__connected = true;
 			__reusedSocket = true;
 			try {
-				kept.setTimeout(__idleSeconds(__timeout));
+				kept.setTimeout(__seconds(__readTimeout));
 			} catch (_:Dynamic) {
 				// Closed under this thread, which only a cancel does.
 				__close();
@@ -1108,9 +1108,8 @@ class Http {
 				__fail(CANCELLED);
 				return;
 			}
-			// Seconds, where `timeout` is milliseconds. The same conversion as
-			// the HTTP/2 backend's; see __idleSeconds.
-			socket.setTimeout(__idleSeconds(__timeout));
+			// 0 for none, as the HTTP/2 backend sets it; see __seconds.
+			socket.setTimeout(__seconds(__readTimeout));
 			if (hopTls != null) {
 				hopTls.configure(socket);
 			}
@@ -1119,7 +1118,7 @@ class Http {
 			// The wait ends at the idle timeout, the resolver's own limit, or a
 			// cancel; the host keeps the name, so TLS still asks for it and
 			// checks it.
-			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(__url.host, __idleSeconds(__timeout), cancelToken);
+			var address:sys.net.Host = crossbyte._internal.net.Resolver.lookup(__url.host, __seconds(__readTimeout), cancelToken);
 			socket.connectHost(address, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
@@ -1128,7 +1127,7 @@ class Http {
 			// refused port), as the WebSocket client says it. A timeout is said
 			// as one: natively it would read "Blocked".
 			__fail("Connection Failed: "
-				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer' + (__timeout > 0 ? ' within ${__idleSeconds(__timeout)} s' : '') : __describe(e)));
+				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer' + (__readTimeout > 0 ? ' within ${__readTimeout} s' : '') : __describe(e)));
 			return;
 		}
 
@@ -1157,13 +1156,13 @@ class Http {
 	}
 
 	/**
-		The socket timeout, in seconds, for an idle timeout of `milliseconds`:
-		`0`, which a socket takes as none, for `0` or less, as on every
-		socket and WebSocket.
+		The socket timeout for a timeout of `seconds`: `0`, which a socket
+		takes as none, for `0` or less (and NaN), as on every socket and
+		WebSocket.
 	**/
 	@:allow(crossbyte.http.HTTP2Backend)
-	private static inline function __idleSeconds(milliseconds:Int):Float {
-		return milliseconds > 0 ? milliseconds / 1000 : 0;
+	private static inline function __seconds(seconds:Float):Float {
+		return seconds > 0 ? seconds : 0;
 	}
 
 	/**
@@ -1263,7 +1262,7 @@ class Http {
 	}
 
 	/**
-		Reads the response's head, within `headTimeout` from now: the request
+		Reads the response's head, within `responseHeaderTimeout` from now: the request
 		has just gone. Its reads are held to the deadline as well as to the
 		idle timeout, so a server trickling its head a byte at a time, which
 		resets an idle timeout with each byte, is given up at the deadline.
@@ -1273,7 +1272,7 @@ class Http {
 			return;
 		}
 
-		__headDeadline = headTimeout > 0 ? haxe.Timer.stamp() + headTimeout / 1000.0 : 0;
+		__headDeadline = responseHeaderTimeout > 0 ? haxe.Timer.stamp() + responseHeaderTimeout : 0;
 		try {
 			__readHead();
 		} catch (e:Dynamic) {
@@ -1290,7 +1289,7 @@ class Http {
 			__clamped = false;
 			if (__socket != null) {
 				try {
-					__socket.setTimeout(__idleSeconds(__timeout));
+					__socket.setTimeout(__seconds(__readTimeout));
 				} catch (_:Dynamic) {}
 			}
 		}
@@ -1338,7 +1337,7 @@ class Http {
 					// takes the request and trickles, or holds, its answer is
 					// not one that had closed.
 					__close();
-					__fail("The response head did not arrive within " + headTimeout + " ms of the request");
+					__fail("The response head did not arrive within " + responseHeaderTimeout + " s of the request");
 					return;
 				}
 				if (first && __reusedSocket) {
@@ -1497,7 +1496,7 @@ class Http {
 			if (left <= 0) {
 				throw new HeadTimedOut();
 			}
-			var idle:Float = __idleSeconds(__timeout);
+			var idle:Float = __seconds(__readTimeout);
 			if (idle <= 0 || left < idle) {
 				// Never under a millisecond, which a socket would read as no
 				// timeout at all.

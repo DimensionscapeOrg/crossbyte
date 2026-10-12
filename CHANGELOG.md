@@ -348,8 +348,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - PHP: `phpTimeout` (30 s; a 504), `phpMaxResponseSize` (8 MiB; a 502)
   and `phpMaxExchanges` (64), and PHP served on Node.
 - `serveDotFiles`, off by default.
-- Client limits and deadlines per request: `URLRequest.headTimeout`
-  (5 min), `totalTimeout`, `maxBodySize` (64 MB), `maxDecompressedSize`
+- Client limits and deadlines per request: `URLRequest.responseHeaderTimeout`
+  (5 min), `loadTimeout`, `maxBodySize` (64 MB), `maxDecompressedSize`
   (64 MB), `maxRedirects` (10) and `maxResponseHeaderSize` (64 KB).
 - Client TLS per request: `URLRequest.verifyCert`, `certAuthority`,
   `clientCertificate` with `clientKey`, and `pinnedPublicKeys`
@@ -985,7 +985,7 @@ says how.
 - A redirect to another origin drops `Authorization`,
   `Proxy-Authorization` and a hand-set `Cookie`, and `https` to `http` is
   refused unless `followInsecureRedirects` is set. (Upgrading)
-- `URLRequest.idleTimeout = 0` is no idle limit natively too. (Upgrading)
+- `URLRequest.readTimeout = 0` is no idle limit natively too. (Upgrading)
 - `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`,
   so they no longer block the runtime. (Upgrading)
 - The native client's process-wide limits (`Http.MAX_*`) are per-request
@@ -1603,8 +1603,8 @@ Fixes to code new in this release are not listed.
 - A precompressed `.gz` is sent to a client that also takes Brotli, and gzip
   no longer names a file `data`.
 - A conditional request dated after 2038 is answered 304.
-- The client honours `idleTimeout` in milliseconds (the default 30 s waited
-  over eight hours), holds a response's header section to 64 KB, refuses a
+- The client honours its idle timeout (the default 30 s waited over eight
+  hours), holds a response's header section to 64 KB, refuses a
   `Content-Length` past its limit before allocating, and bounds
   decompression while it decodes.
 - A request body over 16 KB reaches the server whole over `https`, where
@@ -1852,6 +1852,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
 | rc.1, in milliseconds | 1.0, in seconds |
 | --- | --- |
 | `Socket.timeout` (and so `WebSocket.timeout`), 20000 | `connectTimeout`, 20 |
+| `URLRequest.idleTimeout`, 30000 | `readTimeout`, 30 |
+| `URLRequestDefaults.idleTimeout`, 0 (unset) | `readTimeout`, 0 (unset) |
+| `HTTPRequestContext.timeout`, as the request's | `readTimeout`, as the request's |
 
 #### Runtime
 
@@ -2242,16 +2245,16 @@ than waiting a thousand times as long: divide the old value by 1,000.
   `MAX_DECOMPRESSED_BODY_SIZE` and `MAX_RESPONSE_HEADER_BYTES` are gone: set
   `maxRedirects`, `maxBodySize`, `maxDecompressedSize` and
   `maxResponseHeaderSize` on each `URLRequest` instead. A custom
-  `HTTPBackend` reads them, and `headTimeout`, from its
+  `HTTPBackend` reads them, and `responseHeaderTimeout`, from its
   `HTTPRequestContext`.
-- `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
+- `URLRequest.readTimeout = 0` is no idle limit natively too, where it was
   30 seconds.
-- A load fails once it has waited its `idleTimeout` for one of
+- A load fails once it has waited its `readTimeout` for one of
   `URLLoader.maxConcurrentLoads` (16) threads, and a response's head must
-  arrive within `URLRequest.headTimeout`, five minutes, of its request.
-  Raise `maxConcurrentLoads` or `idleTimeout` for many slow loads at once,
-  and `headTimeout` with `idleTimeout` for a long poll held longer than
-  five minutes.
+  arrive within `URLRequest.responseHeaderTimeout`, five minutes, of its
+  request. Raise `maxConcurrentLoads` or `readTimeout` for many slow loads
+  at once, and `responseHeaderTimeout` with `readTimeout` for a long poll
+  held longer than five minutes.
 - A redirect to another origin drops `Authorization`,
   `Proxy-Authorization` and a `Cookie` set in `requestHeaders`, and a
   redirect from `https` to `http` is refused unless

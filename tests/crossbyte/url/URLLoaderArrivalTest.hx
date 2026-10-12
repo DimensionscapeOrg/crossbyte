@@ -66,7 +66,7 @@ class URLLoaderArrivalTest extends utest.Test {
 				request.method = URLRequestMethod.POST;
 				request.contentType = "application/octet-stream";
 				request.data = e.data;
-				request.idleTimeout = 3000;
+				request.readTimeout = 3.0;
 				loader.load(request);
 			}
 		});

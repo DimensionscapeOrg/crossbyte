@@ -202,7 +202,7 @@ class HTTPServerTLSTest extends utest.Test {
 			var handoff = new sys.thread.Lock();
 			sys.thread.Thread.create(() -> {
 				try {
-					var http = new Http('https://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", body, version, 5000);
+					var http = new Http('https://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", body, version, 5.0);
 					http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 					http.onError = (message, ?data) -> outcome = message;
 					http.load();
@@ -543,7 +543,7 @@ class HTTPServerTLSTest extends utest.Test {
 		var handoff = new sys.thread.Lock();
 		sys.thread.Thread.create(() -> {
 			try {
-				var http = new Http(url, "GET", null, null, null, null, version != null ? version : HTTPVersion.HTTP_1_1, 5000);
+				var http = new Http(url, "GET", null, null, null, null, version != null ? version : HTTPVersion.HTTP_1_1, 5.0);
 				http.tls = tls;
 				http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 				http.onError = (message, ?data) -> outcome = message;

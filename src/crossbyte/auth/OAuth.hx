@@ -252,12 +252,10 @@ class OAuth {
 		// The client's own idle limit as a backstop; the deadline below is what
 		// bounds the whole exchange, drip-fed answers included. With no
 		// deadline, the request keeps the client's defaults. A second at
-		// least, and none past what an Int of milliseconds holds, where the
-		// deadline bounds the exchange anyway.
+		// least.
 		var deadlined:Bool = __hasDeadline();
 		if (deadlined) {
-			var idle:Float = Math.max(1, __timeout) * 1000;
-			request.idleTimeout = idle < 2147483647 ? Std.int(idle) : 0;
+			request.readTimeout = Math.max(1, __timeout);
 		}
 
 		var loader:URLLoader = new URLLoader();

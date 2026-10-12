@@ -65,10 +65,11 @@ import haxe.io.Bytes;
  * once a hop leaves the origin the request started at. A hop to an origin
  * already connected to rides that connection.
  *
- * The request's `timeout` is an idle limit on its stream, as it is on the
- * HTTP/1.1 client's socket: the longest the response may go with nothing
- * arriving for it. `0` or less is none, as it is there. Its `headTimeout`
- * is a deadline on each hop's response head, counted from the request
+ * The request's `readTimeout` is an idle limit on its stream, as it is on
+ * the HTTP/1.1 client's socket: the longest the response may go with
+ * nothing arriving for it. `0` or less is none, as it is there. Its
+ * `responseHeaderTimeout` is a deadline on each hop's response head, counted
+ * from the request
  * being sent, and its `maxBodySize` and `maxResponseHeaderSize` hold the
  * response as they hold it over HTTP/1.1: the header section counted as
  * HPACK counts it, and never past the 64 KB a connection tells the server
@@ -260,8 +261,8 @@ class HTTP2Backend implements HTTPBackend {
 			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
 			var authority:String = HttpSyntax.authority(url.host, port, secure ? 443 : 80);
 			var body:Null<Bytes> = __body(method, data);
-			// 0, for 0 or less, is none: see Http.__idleSeconds.
-			var timeout:Float = Http.__idleSeconds(context.timeout);
+			// 0, for 0 or less, is none: see Http.__seconds.
+			var timeout:Float = Http.__seconds(context.readTimeout);
 			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;
 			var fields:Array<HpackHeader> = __headers(headers, context.userAgent, contentType, body, cookie);
 
@@ -280,7 +281,7 @@ class HTTP2Backend implements HTTPBackend {
 					// The request's limit on a body, and its deadline on the
 					// head, as the HTTP/1.1 client holds them.
 					stream = session.execute(method, scheme, authority, __target(url, query), fields, body, timeout, context.cancelToken,
-						context.maxBodySize, Http.__idleSeconds(context.headTimeout));
+						context.maxBodySize, Http.__seconds(context.responseHeaderTimeout));
 				} catch (e:H2ConnectionError) {
 					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
 						// Cancelled as it was about to start: refused before
@@ -393,7 +394,7 @@ class HTTP2Backend implements HTTPBackend {
 
 		// An idle limit, as the HTTP/1.1 client sets on its socket: the
 		// handshake's reads give up after it, however many there are.
-		var timeout:Float = Http.__idleSeconds(context.timeout);
+		var timeout:Float = Http.__seconds(context.readTimeout);
 		socket.setTimeout(timeout);
 
 		// Published to the token for as long as the connect runs, which is

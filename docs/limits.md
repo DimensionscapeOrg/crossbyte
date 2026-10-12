@@ -185,21 +185,21 @@ in it. A broadcast throws nothing for one session: one not open, or closing, is 
 ## HTTP clients
 
 What a server you call can cost you is bounded per request, on the `URLRequest`, so one caller's settings never
-reach another's requests. Its timeouts are in milliseconds, as AIR's `URLRequest.idleTimeout` was:
+reach another's requests:
 
 | `URLRequest` | Default | Bounds |
 | --- | --- | --- |
-| `idleTimeout` | 30,000 ms | time with nothing arriving; natively, on the jvm and the interpreter also the wait for a load thread past `URLLoader.maxConcurrentLoads` |
-| `headTimeout` | 300,000 ms | the response's head, from the request having gone; bytes trickling in do not move it |
-| `totalTimeout` | none | the whole load, from `load()` to `COMPLETE` |
+| `readTimeout` | 30 s | time with nothing arriving; natively, on the jvm and the interpreter also the wait for a load thread past `URLLoader.maxConcurrentLoads` |
+| `responseHeaderTimeout` | 300 s | the response's head, from the request having gone; bytes trickling in do not move it |
+| `loadTimeout` | none | the whole load, from `load()` to `COMPLETE` |
 | `maxBodySize` | 64 MiB | the body on the wire; a larger `Content-Length` is refused before it is read |
 | `maxDecompressedSize` | 64 MiB | what the body decodes to |
 | `maxResponseHeaderSize` | 64 KiB | the status line and header fields, 1xx responses included |
 | `maxRedirects` | 10 | redirects followed before the load fails |
 
 `0` or less lifts any of them. An idle timeout alone does not bound a request: a server sending a byte at a time
-resets it with every byte, so give a request to a server you do not trust a `totalTimeout`. A custom `HTTPBackend`
-reads the same limits from its `HTTPRequestContext`; the loader cancels a request past its `totalTimeout` through
+resets it with every byte, so give a request to a server you do not trust a `loadTimeout`. A custom `HTTPBackend`
+reads the same limits from its `HTTPRequestContext`; the loader cancels a request past its `loadTimeout` through
 the context's `cancelToken`.
 
 **Names.** A socket's connect by name, and every client request, looks the name up on one of four threads the

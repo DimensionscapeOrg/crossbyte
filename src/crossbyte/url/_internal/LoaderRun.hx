@@ -34,8 +34,8 @@ enum LoaderMessage {
  * runtime turn, not a post per read.
  *
  * The load's deadlines that its thread cannot keep are kept here, on the
- * loader's runtime: `URLRequest.totalTimeout`, and the wait for a thread,
- * which `URLRequest.idleTimeout` bounds: a load still queued has no
+ * loader's runtime: `URLRequest.loadTimeout`, and the wait for a thread,
+ * which `URLRequest.readTimeout` bounds: a load still queued has no
  * thread to notice it has waited too long. Each is a runtime timer, armed
  * only when the load has one, and checked against `haxe.Timer.stamp()` when
  * it fires, so a runtime whose clock runs ahead of the wall's does not end a
@@ -105,14 +105,14 @@ class LoaderRun {
 	**/
 	public function start():Void {
 		var now:Float = haxe.Timer.stamp();
-		var total:Int = __request.totalTimeout;
-		var idle:Int = __request.idleTimeout;
+		var total:Float = __request.loadTimeout;
+		var idle:Float = __request.readTimeout;
 		if (idle > 0 && (total <= 0 || idle < total)) {
-			__queueDeadline = now + idle / 1000.0;
+			__queueDeadline = now + idle;
 			__armQueue();
 		}
 		if (total > 0) {
-			__totalDeadline = now + total / 1000.0;
+			__totalDeadline = now + total;
 			__armTotal();
 		}
 		LoadPool.run(execute);
@@ -148,7 +148,7 @@ class LoaderRun {
 			__armQueue();
 			return;
 		}
-		__expire("The load did not start within " + __request.idleTimeout + " ms: all " + LoadPool.maxThreads
+		__expire("The load did not start within " + __request.readTimeout + " s: all " + LoadPool.maxThreads
 			+ " of URLLoader.maxConcurrentLoads were busy with loads ahead of it");
 	}
 
@@ -161,7 +161,7 @@ class LoaderRun {
 			__armTotal();
 			return;
 		}
-		__expire("The load did not complete within " + __request.totalTimeout + " ms");
+		__expire("The load did not complete within " + __request.loadTimeout + " s");
 	}
 
 	/**
@@ -231,7 +231,7 @@ class LoaderRun {
 			}
 
 			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion,
-				request.idleTimeout, request.userAgent, request.followRedirects, request.manageCookies, request.followInsecureRedirects);
+				request.readTimeout, request.userAgent, request.followRedirects, request.manageCookies, request.followInsecureRedirects);
 
 			// Created on the loader's thread before the load was queued, so
 			// close() can reach a request that has already started.
@@ -241,7 +241,7 @@ class LoaderRun {
 			http.maxBodySize = request.maxBodySize;
 			http.maxRedirects = request.maxRedirects;
 			http.maxResponseHeaderSize = request.maxResponseHeaderSize;
-			http.headTimeout = request.headTimeout;
+			http.responseHeaderTimeout = request.responseHeaderTimeout;
 			// Only when the request asks for something other than the defaults,
 			// so the pool shares connections between requests that do not.
 			var tls:crossbyte.http.HTTPTLSOptions = new crossbyte.http.HTTPTLSOptions(request.verifyCert, request.certAuthority,

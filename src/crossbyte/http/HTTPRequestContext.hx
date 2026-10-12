@@ -65,11 +65,10 @@ final class HTTPRequestContext {
 	public var version:HTTPVersion;
 
 	/**
-	 * Idle timeout in milliseconds: the longest the request may go with
-	 * nothing arriving for it. `0` or less is none; see
-	 * `URLRequest.idleTimeout`.
+	 * Idle timeout in seconds: the longest the request may go with nothing
+	 * arriving for it. `0` or less is none; see `URLRequest.readTimeout`.
 	 */
-	public var timeout:Int;
+	public var readTimeout:Float;
 
 	/** Value to send as the `User-Agent` request header. */
 	public var userAgent:String;
@@ -129,17 +128,17 @@ final class HTTPRequestContext {
 	public var maxResponseHeaderSize:Int = 64 * 1024;
 
 	/**
-	 * Milliseconds the response's head (its status and header fields, after
-	 * any 1xx) has to arrive once the request has been sent, on each hop,
-	 * before the request fails; `0` or less is no deadline. Unlike `timeout`,
+	 * Seconds the response's head (its status and header fields, after any
+	 * 1xx) has to arrive once the request has been sent, on each hop, before
+	 * the request fails; `0` or less is no deadline. Unlike `readTimeout`,
 	 * bytes arriving do not move it. Absent means five minutes, the built-in
-	 * client's default. See `URLRequest.headTimeout`.
+	 * client's default. See `URLRequest.responseHeaderTimeout`.
 	 *
-	 * `URLRequest.totalTimeout`, the whole request's deadline, is not here:
+	 * `URLRequest.loadTimeout`, the whole request's deadline, is not here:
 	 * the loader keeps it, and a request past it is cancelled through
 	 * `cancelToken`.
 	 */
-	public var headTimeout:Int = 300000;
+	public var responseHeaderTimeout:Float = 300.0;
 
 	#if !(js && !nodejs)
 	/**

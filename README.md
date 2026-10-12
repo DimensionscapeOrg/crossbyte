@@ -160,7 +160,7 @@ import crossbyte.url.URLLoader;
 import crossbyte.url.URLRequest;
 
 var request = new URLRequest("https://api.example.com/report");
-request.totalTimeout = 60000; // the whole load, in milliseconds
+request.loadTimeout = 60; // the whole load, in seconds
 request.maxBodySize = 4 * 1024 * 1024;
 var loader = new URLLoader();
 loader.addEventListener(Event.COMPLETE, _ -> trace(loader.data));

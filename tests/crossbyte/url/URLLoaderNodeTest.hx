@@ -431,7 +431,7 @@ class URLLoaderNodeTest extends utest.Test {
 
 	/** Records what `loader` dispatches into `events`, as "COMPLETE <data>" or "IO_ERROR <text>". */
 	/**
-		A head trickled a byte at a time ends at the request's `headTimeout`;
+		A head trickled a byte at a time ends at the request's `responseHeaderTimeout`;
 		each byte resets Node's idle timeout, which alone would never end it.
 	**/
 	public function testATrickledHeadEndsAtItsDeadline(async:Async):Void {
@@ -439,30 +439,30 @@ class URLLoaderNodeTest extends utest.Test {
 		serveTrickled("", head, 50, (port, close) -> {
 			var started:Float = haxe.Timer.stamp();
 			loadWith('http://127.0.0.1:$port/slow-head', request -> {
-				request.idleTimeout = 2000;
-				request.headTimeout = 600;
+				request.readTimeout = 2.0;
+				request.responseHeaderTimeout = 0.6;
 			}, outcome -> {
 				var took:Float = haxe.Timer.stamp() - started;
 				close();
-				Assert.equals("error The response head did not arrive within 600 ms of the request", outcome);
+				Assert.equals("error The response head did not arrive within 0.6 s of the request", outcome);
 				Assert.isTrue(took >= 0.5 && took < 2.5, 'a 0.6 s head deadline ended the load after $took s');
 				async.done();
 			});
 		});
 	}
 
-	/** A body trickled a byte at a time ends at the request's `totalTimeout`. **/
+	/** A body trickled a byte at a time ends at the request's `loadTimeout`. **/
 	public function testATrickledBodyEndsAtTheTotalTimeout(async:Async):Void {
 		serveTrickled("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n", StringTools.rpad("", "t", 100), 50, (port, close) -> {
 			var started:Float = haxe.Timer.stamp();
 			loadWith('http://127.0.0.1:$port/slow-body', request -> {
-				request.idleTimeout = 2000;
-				request.headTimeout = 300;
-				request.totalTimeout = 700;
+				request.readTimeout = 2.0;
+				request.responseHeaderTimeout = 0.3;
+				request.loadTimeout = 0.7;
 			}, outcome -> {
 				var took:Float = haxe.Timer.stamp() - started;
 				close();
-				Assert.equals("error The load did not complete within 700 ms", outcome);
+				Assert.equals("error The load did not complete within 0.7 s", outcome);
 				Assert.isTrue(took >= 0.6 && took < 3.0, 'a 0.7 s deadline ended the load after $took s');
 				async.done();
 			});

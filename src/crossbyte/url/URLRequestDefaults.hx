@@ -11,17 +11,16 @@ class URLRequestDefaults {
 	public static var followRedirects:Bool = true;
 
 	/**
-		The default `idleTimeout` for new URLRequest objects, in milliseconds:
-		how long the client waits for a response after the connection is
-		established before abandoning the request. Setting the property on a
-		request overrides this.
+		The default `readTimeout` for new URLRequest objects, in seconds: how
+		long a request may go with nothing arriving before it is abandoned.
+		Setting the property on a request overrides this.
 
 		The default value is 0, which here means unset rather than no limit:
 		a request takes this value only when it is greater than zero, and
-		otherwise starts at 30000. To give a request no limit, set its own
-		`idleTimeout` to `0`.
+		otherwise starts at 30. To give a request no limit, set its own
+		`readTimeout` to `0`.
 	**/
-	public static var idleTimeout:Int = 0;
+	public static var readTimeout:Float = 0.0;
 
 	/**
 		The default `manageCookies` for new URLRequest objects. Setting the

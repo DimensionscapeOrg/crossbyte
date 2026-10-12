@@ -61,7 +61,7 @@ class HTTP2BackendTest extends utest.Test {
 		var body:Bytes = null;
 		var error:String = null;
 
-		var http = new Http('http://127.0.0.1:${server.port}/greet', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/greet', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onStatus = code -> status = code;
 		http.onHeaders = received -> headers = received;
 		http.onComplete = data -> body = data;
@@ -92,7 +92,7 @@ class HTTP2BackendTest extends utest.Test {
 		var completed:Bytes = null;
 		var error:String = null;
 		var errorBody:Bytes = null;
-		var http = new Http('http://127.0.0.1:${server.port}/missing', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/missing', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> completed = data;
 		http.onError = (message, ?data) -> {
 			error = message;
@@ -122,7 +122,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var completed:Bytes = null;
 		var error:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/zipped', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/zipped', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> completed = data;
 		http.onError = (message, ?data) -> error = message;
 
@@ -142,7 +142,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var http = new Http('http://127.0.0.1:${server.port}/path?x=1', "GET", ["X-Custom: yes", "Connection: keep-alive", "Host: elsewhere.example"],
-			null, null, null, HttpVersion.HTTP_2, 5000, "CrossByteTest");
+			null, null, null, HttpVersion.HTTP_2, 5.0, "CrossByteTest");
 		http.load();
 		server.waitDone();
 
@@ -186,7 +186,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var completed:Null<Bytes> = null;
 		var error:Null<String> = null;
-		var http = new Http('http://127.0.0.1:${server.port}/crumbs', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/crumbs', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> completed = data;
 		http.onError = (message, ?data) -> error = message;
 		http.load();
@@ -220,7 +220,7 @@ class HTTP2BackendTest extends utest.Test {
 		var started:Float = haxe.Timer.stamp();
 		for (i in 0...3) {
 			Thread.create(() -> {
-				var http = new Http('https://127.0.0.1:${server.port}/silent/$i', "GET", null, null, null, null, HttpVersion.HTTP_2, 1000);
+				var http = new Http('https://127.0.0.1:${server.port}/silent/$i', "GET", null, null, null, null, HttpVersion.HTTP_2, 1.0);
 				http.onComplete = _ -> {
 					guard.acquire();
 					outcomes.push("completed");
@@ -437,7 +437,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var body:Bytes = null;
-		var http = new Http('http://[::1]:${server.port}/v6', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://[::1]:${server.port}/v6', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> body = data;
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
 		http.load();
@@ -458,9 +458,9 @@ class HTTP2BackendTest extends utest.Test {
 		var server = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
-		var unset = new Http('http://127.0.0.1:${server.port}/plain', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var unset = new Http('http://127.0.0.1:${server.port}/plain', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		unset.load();
-		var own = new Http('http://127.0.0.1:${server.port}/own', "GET", ["Accept-Encoding: gzip"], null, null, null, HttpVersion.HTTP_2, 5000);
+		var own = new Http('http://127.0.0.1:${server.port}/own', "GET", ["Accept-Encoding: gzip"], null, null, null, HttpVersion.HTTP_2, 5.0);
 		own.load();
 		server.stop();
 
@@ -479,7 +479,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
-		var http = new Http('http://127.0.0.1:${server.port}/submit', "POST", null, null, "text/plain", "payload body", HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/submit', "POST", null, null, "text/plain", "payload body", HttpVersion.HTTP_2, 5.0);
 		var status:Int = -1;
 		http.onStatus = code -> status = code;
 		http.load();
@@ -499,7 +499,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var http = new Http('http://127.0.0.1:${server.port}/secure', "GET", ["Authorization: Bearer secret-token"], null, null, null,
-			HttpVersion.HTTP_2, 5000);
+			HttpVersion.HTTP_2, 5.0);
 		http.load();
 		server.waitDone();
 
@@ -601,7 +601,7 @@ class HTTP2BackendTest extends utest.Test {
 		var cancelledDone = new Lock();
 		var survivorDone = new Lock();
 
-		var doomed = new Http('http://127.0.0.1:${server.port}/doomed', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var doomed = new Http('http://127.0.0.1:${server.port}/doomed', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		doomed.onError = (message, ?data) -> cancelledError = message;
 		doomed.onComplete = data -> cancelledError = "COMPLETED " + data.toString();
 
@@ -669,7 +669,7 @@ class HTTP2BackendTest extends utest.Test {
 		var outcome:String = null;
 		var done = new Lock();
 
-		var http = new Http('http://127.0.0.1:${server.port}/partial', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/partial', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> outcome = message;
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 
@@ -701,7 +701,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var error:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/never', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/never', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> error = message;
 		http.cancelToken.cancel();
 		http.load();
@@ -721,7 +721,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var first:String = null;
 		var done = new Lock();
-		var slow = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var slow = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		slow.onComplete = data -> first = "COMPLETED " + data.toString();
 		slow.onError = (message, ?data) -> first = message;
 		Thread.create(() -> {
@@ -734,7 +734,7 @@ class HTTP2BackendTest extends utest.Test {
 		}
 
 		var second:String = null;
-		var cancelled = new Http('http://127.0.0.1:${server.port}/never', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var cancelled = new Http('http://127.0.0.1:${server.port}/never', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		cancelled.onComplete = data -> second = "COMPLETED " + data.toString();
 		cancelled.onError = (message, ?data) -> second = message;
 		cancelled.cancelToken.cancel();
@@ -1000,7 +1000,7 @@ class HTTP2BackendTest extends utest.Test {
 		var body:String = null;
 		var error:String = null;
 
-		var http = new Http('http://127.0.0.1:$port$path', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:$port$path', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> body = data.toString();
 		http.onError = (message, ?data) -> error = message;
 		http.load();
@@ -1020,7 +1020,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var error:String = null;
 		var completed:Bool = false;
-		var http = new Http('http://127.0.0.1:${server.port}/gone', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/gone', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> error = message;
 		http.onComplete = _ -> completed = true;
 
@@ -1040,7 +1040,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var error:String = null;
 		var completed:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> error = message;
 		http.onComplete = data -> completed = data.toString();
 
@@ -1061,7 +1061,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var error:String = null;
 		var completed:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> error = message;
 		http.onComplete = data -> completed = data.toString();
 
@@ -1134,7 +1134,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var started:Float = haxe.Timer.stamp();
-		var outcome:String = __upload(server.port, 1500);
+		var outcome:String = __upload(server.port, 1.5);
 		var took:Float = haxe.Timer.stamp() - started;
 
 		// The timeout runs while the body waits on the window, and a frame on
@@ -1160,7 +1160,7 @@ class HTTP2BackendTest extends utest.Test {
 		var outcome:String = null;
 		var done = new Lock();
 		var http = new Http('http://127.0.0.1:${server.port}/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(100000),
-			HttpVersion.HTTP_2, 20000);
+			HttpVersion.HTTP_2, 20.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 
@@ -1195,7 +1195,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/hang', "GET", null, null, null, null, HttpVersion.HTTP_2, 1500);
+		var http = new Http('http://127.0.0.1:${server.port}/hang', "GET", null, null, null, null, HttpVersion.HTTP_2, 1.5);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1211,7 +1211,7 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	/** POSTs more than the default 65535-byte window can carry. */
-	private function __upload(port:Int, timeout:Int = 20000):String {
+	private function __upload(port:Int, timeout:Float = 20.0):String {
 		var outcome:String = null;
 		var http = new Http('http://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(100000),
 			HttpVersion.HTTP_2, timeout);
@@ -1232,7 +1232,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var error:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onError = (message, ?data) -> error = message;
 		http.load();
 		server.waitDone();
@@ -1254,7 +1254,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var statuses:Array<Int> = [];
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/dir/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/dir/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onStatus = status -> statuses.push(status);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
@@ -1280,7 +1280,7 @@ class HTTP2BackendTest extends utest.Test {
 		var outcome:String = null;
 		var http = new Http('http://127.0.0.1:${origin.port}/start', "GET",
 			["Authorization: Bearer sk-live-secret", "Proxy-Authorization: Basic cHJveHk=", "Cookie: sid=caller-set", "X-Trace: t-1"], null, null, null,
-			HttpVersion.HTTP_2, 5000);
+			HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1310,7 +1310,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/submit', "POST", null, null, "text/plain", "payload", HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/submit', "POST", null, null, "text/plain", "payload", HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1339,7 +1339,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1368,7 +1368,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var ten = hops(10);
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${ten.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${ten.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1377,7 +1377,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		var endless = hops(-1);
 		outcome = null;
-		http = new Http('http://127.0.0.1:${endless.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http = new Http('http://127.0.0.1:${endless.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1395,7 +1395,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.maxRedirects = 2;
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
@@ -1403,7 +1403,7 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("Exceeded the number of allowed redirects", outcome);
 
 		outcome = null;
-		http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http = new Http('http://127.0.0.1:${server.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1419,7 +1419,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/padded', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/padded', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.maxResponseHeaderSize = 1024;
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
@@ -1448,8 +1448,8 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/later', "GET", null, null, null, null, HttpVersion.HTTP_2, 2000);
-		http.headTimeout = 600;
+		var http = new Http('http://127.0.0.1:${server.port}/later', "GET", null, null, null, null, HttpVersion.HTTP_2, 2.0);
+		http.responseHeaderTimeout = 0.6;
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		var started:Float = haxe.Timer.stamp();
@@ -1467,7 +1467,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1481,7 +1481,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000, "CrossByte", false);
+		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5.0, "CrossByte", false);
 		http.onStatus = status -> outcome = "status " + status;
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1503,7 +1503,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 600);
+		var http = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 0.6);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -1513,7 +1513,7 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	/**
-		A timeout of `0` is no limit, as `URLRequest.idleTimeout` says and as
+		A timeout of `0` is no limit, as `URLRequest.readTimeout` says and as
 		it is on JavaScript: a stream waits for its answer however long it
 		takes, rather than the session taking `0` as a wait of none and failing
 		the stream at once (one setting with two meanings, depending on the
@@ -1553,7 +1553,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:String = null;
-		var http = new Http('http://127.0.0.1:${server.port}/stalls', "GET", null, null, null, null, HttpVersion.HTTP_2, 500);
+		var http = new Http('http://127.0.0.1:${server.port}/stalls', "GET", null, null, null, null, HttpVersion.HTTP_2, 0.5);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		var started:Float = haxe.Timer.stamp();
@@ -1591,7 +1591,7 @@ class HTTP2BackendTest extends utest.Test {
 		var completed:Null<Bytes> = null;
 		var error:Null<String> = null;
 		try {
-			var http = new Http('http://127.0.0.1:${server.port}/endless', "GET", null, null, null, null, HttpVersion.HTTP_2, 10000);
+			var http = new Http('http://127.0.0.1:${server.port}/endless', "GET", null, null, null, null, HttpVersion.HTTP_2, 10.0);
 			http.maxBodySize = 256 * 1024;
 			http.onComplete = data -> completed = data;
 			http.onError = (message, ?data) -> error = message;
@@ -1645,7 +1645,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:Null<String> = null;
-		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/flood', null, 1500, 10, value -> outcome = value);
+		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/flood', null, 1.5, 10, value -> outcome = value);
 		// Its threads are let go by the client alone: the server still has
 		// not read a byte.
 		H2ConnectionPool.closeAll();
@@ -1669,7 +1669,7 @@ class HTTP2BackendTest extends utest.Test {
 		HTTPBackendRegistry.register(new HTTP2Backend());
 
 		var outcome:Null<String> = null;
-		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/upload', Bytes.alloc(64 * 1024 * 1024), 1500, 10, value -> outcome = value);
+		var took:Float = __loadWithin('http://127.0.0.1:${server.port}/upload', Bytes.alloc(64 * 1024 * 1024), 1.5, 10, value -> outcome = value);
 		// The connection was given up with the request: its writer, held in
 		// a write the server is not taking, is ended without the server's
 		// help.
@@ -1859,7 +1859,7 @@ class HTTP2BackendTest extends utest.Test {
 		waiting `seconds` at most for it, and answers how long it took.
 		`report` is given the outcome, or nothing if there was none in time.
 	**/
-	private static function __loadWithin(url:String, body:Null<Bytes>, timeout:Int, seconds:Float, report:String->Void):Float {
+	private static function __loadWithin(url:String, body:Null<Bytes>, timeout:Float, seconds:Float, report:String->Void):Float {
 		var outcome:Null<String> = null;
 		var done = new Lock();
 		var http = new Http(url, body != null ? "POST" : "GET", null, null, body != null ? "application/octet-stream" : null, body, HttpVersion.HTTP_2,

@@ -261,7 +261,7 @@ class URLLoaderBrowserTest extends utest.Test {
 	}
 
 	/**
-		A head that never comes ends at the request's `headTimeout`, and the
+		A head that never comes ends at the request's `responseHeaderTimeout`, and the
 		request is aborted; the idle timeout alone is kept from ever firing by
 		a server sending a byte at a time. The browser is kept from sending at
 		all here, which is a head that never comes.
@@ -271,31 +271,31 @@ class URLLoaderBrowserTest extends utest.Test {
 		var restoreSend:Void->Void = replace("send", (_, _, _) -> null);
 		var restoreAbort:Void->Void = wrap("abort", (_, _) -> aborted++);
 		var request:URLRequest = new URLRequest("/index.html");
-		request.idleTimeout = 0;
-		request.headTimeout = 300;
+		request.readTimeout = 0;
+		request.responseHeaderTimeout = 0.3;
 		var outcome:String = null;
 		loadThen(request, done -> outcome = done);
 		NetPump.until(() -> outcome != null, 5.0, _ -> {
 			restoreSend();
 			restoreAbort();
-			Assert.equals("error The response head did not arrive within 300 ms of the request", outcome);
+			Assert.equals("error The response head did not arrive within 0.3 s of the request", outcome);
 			Assert.equals(1, aborted, "the request was not aborted at its deadline");
 			async.done();
 		});
 	}
 
-	/** And the whole load ends at its `totalTimeout`. **/
+	/** And the whole load ends at its `loadTimeout`. **/
 	public function testALoadEndsAtItsTotalTimeout(async:Async):Void {
 		var restoreSend:Void->Void = replace("send", (_, _, _) -> null);
 		var request:URLRequest = new URLRequest("/index.html");
-		request.idleTimeout = 0;
-		request.headTimeout = 0;
-		request.totalTimeout = 300;
+		request.readTimeout = 0;
+		request.responseHeaderTimeout = 0;
+		request.loadTimeout = 0.3;
 		var outcome:String = null;
 		loadThen(request, done -> outcome = done);
 		NetPump.until(() -> outcome != null, 5.0, _ -> {
 			restoreSend();
-			Assert.equals("error The load did not complete within 300 ms", outcome);
+			Assert.equals("error The load did not complete within 0.3 s", outcome);
 			async.done();
 		});
 	}
