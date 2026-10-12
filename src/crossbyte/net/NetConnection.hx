@@ -100,18 +100,18 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * var connection = NetConnection.fromWebSocket(socket);
 	 * ```
 	 *
-	 * @param connectTimeout For `local://`, whose connect waits for a listener
-	 * on the calling thread: how long, in seconds; 0 for no deadline, and
-	 * 0.05 or less for a single try.
-	 * `LocalConnection.connectTimeout` when left out. The other transports
-	 * connect without waiting and ignore it.
+	 * A `local://` connect waits on the calling thread for a listener, for
+	 * `LocalConnection.connectTimeout`'s default, 5 seconds. For another
+	 * wait, make the `LocalConnection`, set its `connectTimeout`, connect it
+	 * and wrap it with `fromLocalConnection`. The other transports connect
+	 * without waiting.
+	 *
 	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
-	 * took the connection within `connectTimeout`, where the other
-	 * transports report a failed connect through `onError` and `onClose`
-	 * alone.
+	 * took the connection in that time, where the other transports report a
+	 * failed connect through `onError` and `onClose` alone.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			?connectTimeout:Float, readEnabled:Bool = false):Void {
+			readEnabled:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
@@ -159,9 +159,6 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.onReady = onReady;
 				connection.onError = onError;
 				connection.readEnabled = readEnabled;
-				if (connectTimeout != null) {
-					connection.connectTimeout = connectTimeout;
-				}
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
 			#end
@@ -184,6 +181,25 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 			default:
 				throw new crossbyte.errors.ArgumentError(__unsupported(uri));
 		}
+	}
+
+	/**
+		A connection to `uri` whose `local://` connect waits `connectTimeout`
+		seconds for a listener rather than the default; any other URI as the
+		constructor makes it. `RPCSession.dial` makes its single tries here.
+	**/
+	@:allow(crossbyte.rpc.RPCSession)
+	@:noCompletion private static function __dialWithin(uri:String, connectTimeout:Float):NetConnection {
+		#if !js
+		var endpoint:Endpoint = parseURL(uri);
+		if (endpoint.protocol == LOCAL) {
+			var connection = new LocalConnection();
+			connection.connectTimeout = connectTimeout;
+			connection.connect(endpoint.address);
+			return fromLocalConnection(connection);
+		}
+		#end
+		return new NetConnection(uri);
 	}
 
 	@:noCompletion private static function __unsupported(uri:String):String {
