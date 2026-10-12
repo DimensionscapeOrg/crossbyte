@@ -22,7 +22,7 @@ typedef PostgresRawResult = crossbyte.db.postgres.PostgresRawResult;
  * Every integer is a signed little-endian 32-bit value, written and read a byte
  * at a time so neither side depends on the host's endianness, but for
  * `affectedRows`, unsigned 64 bits as two halves, low first, and
- * `lastInsertRowID`, unsigned 32.
+ * `lastInsertRowId`, unsigned 32.
  *
  * Parameter block:
  * ```
@@ -38,7 +38,7 @@ typedef PostgresRawResult = crossbyte.db.postgres.PostgresRawResult;
  * status : i32   0 = ok, 1 = error
  * error:   messageLength : i32, message bytes
  * ok:      affectedRows : u32 low, u32 high
- *          lastInsertRowID : u32
+ *          lastInsertRowId : u32
  *          fieldCount : i32
  *          fieldCount times: nameLength : i32, name bytes
  *          rowCount : i32
@@ -114,7 +114,7 @@ class PostgresWire {
 			fields: head.fields,
 			rows: rows,
 			affectedRows: head.affectedRows,
-			lastInsertRowID: head.lastInsertRowID,
+			lastInsertRowId: head.lastInsertRowId,
 			command: __command(cursor)
 		};
 	}
@@ -149,7 +149,7 @@ class PostgresWire {
 			rows.push(row);
 		}
 
-		return new PostgresRows(head.fields, rows, head.affectedRows, head.lastInsertRowID, __command(cursor));
+		return new PostgresRows(head.fields, rows, head.affectedRows, head.lastInsertRowId, __command(cursor));
 	}
 
 	/**
@@ -203,7 +203,7 @@ class PostgresWire {
 
 		var low:Float = cursor.readUInt();
 		var affectedRows:Float = cursor.readUInt() * 4294967296.0 + low;
-		var lastInsertRowID:Float = cursor.readUInt();
+		var lastInsertRowId:Float = cursor.readUInt();
 
 		var fieldCount:Int = cursor.readInt();
 
@@ -241,7 +241,7 @@ class PostgresWire {
 			fields: fields,
 			rowCount: rowCount,
 			affectedRows: affectedRows,
-			lastInsertRowID: lastInsertRowID
+			lastInsertRowId: lastInsertRowId
 		};
 	}
 
@@ -430,7 +430,7 @@ private class Head {
 	public var fields:Array<String>;
 	public var rowCount:Int;
 	public var affectedRows:Float;
-	public var lastInsertRowID:Float;
+	public var lastInsertRowId:Float;
 }
 
 /** `request()`'s rows, decoded, with what the server said of the statement. **/
@@ -439,14 +439,14 @@ class PostgresRows {
 	public var fields(default, null):Array<String>;
 	public var rows(default, null):Array<Dynamic>;
 	public var affectedRows(default, null):Float;
-	public var lastInsertRowID(default, null):Float;
+	public var lastInsertRowId(default, null):Float;
 	public var command(default, null):Null<String>;
 
-	public function new(fields:Array<String>, rows:Array<Dynamic>, affectedRows:Float, lastInsertRowID:Float, command:Null<String>) {
+	public function new(fields:Array<String>, rows:Array<Dynamic>, affectedRows:Float, lastInsertRowId:Float, command:Null<String>) {
 		this.fields = fields;
 		this.rows = rows;
 		this.affectedRows = affectedRows;
-		this.lastInsertRowID = lastInsertRowID;
+		this.lastInsertRowId = lastInsertRowId;
 		this.command = command;
 	}
 }

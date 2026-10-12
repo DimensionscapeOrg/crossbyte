@@ -4,7 +4,7 @@ package crossbyte.net;
 enum Reason {
 	/**
 		A deadline passed: a connect not made within its socket's
-		`connectTimeout` (an `ioError` whose `errorID` is
+		`connectTimeout` (an `ioError` whose `errorId` is
 		`IOErrorEvent.TIMEOUT_ERROR_ID`), or a connection its owner closed
 		for silence.
 	**/

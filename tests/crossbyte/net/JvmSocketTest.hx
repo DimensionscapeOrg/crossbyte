@@ -328,7 +328,7 @@ class JvmSocketTest extends utest.Test {
 		frame whatever the wall clock did.
 	**/
 	private static function __outcome(e:IOErrorEvent):String {
-		return (e.errorID == IOErrorEvent.TIMEOUT_ERROR_ID ? "timeout: " : "refused: ") + e.text;
+		return (e.errorId == IOErrorEvent.TIMEOUT_ERROR_ID ? "timeout: " : "refused: ") + e.text;
 	}
 
 	/** A port nothing listens on, found by listening on one and stopping. **/

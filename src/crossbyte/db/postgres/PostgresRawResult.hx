@@ -24,16 +24,16 @@ final class PostgresRawResult {
 	public final affectedRows:Float;
 
 	/** `PQoidValue`: an unsigned 32-bit OID, 0 on PostgreSQL 12 and later. **/
-	public final lastInsertRowID:Float;
+	public final lastInsertRowId:Float;
 
 	/** The server's command tag (`INSERT 0 1`, `COMMIT`, `ROLLBACK`), or null when the bridge sent none. **/
 	public final command:Null<String>;
 
-	public function new(fields:Array<String>, rows:Array<Array<Null<Bytes>>>, affectedRows:Float, lastInsertRowID:Float, ?command:String) {
+	public function new(fields:Array<String>, rows:Array<Array<Null<Bytes>>>, affectedRows:Float, lastInsertRowId:Float, ?command:String) {
 		this.fields = fields;
 		this.rows = rows;
 		this.affectedRows = affectedRows;
-		this.lastInsertRowID = lastInsertRowID;
+		this.lastInsertRowId = lastInsertRowId;
 		this.command = command;
 	}
 }

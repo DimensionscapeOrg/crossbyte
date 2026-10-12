@@ -11,7 +11,7 @@ class SQLError extends Error {
 		@param operation What was being done.
 		@param details What the database said, as `details()` gives it.
 		@param message The error's message.
-		@param id The database's error number, where it has one; see `Error.errorID`.
+		@param id The database's error number, where it has one; see `Error.errorId`.
 	**/
 	public function new(operation:String, details:String = "", message:String = "", id:Int = 0) {
 		super(message, id);

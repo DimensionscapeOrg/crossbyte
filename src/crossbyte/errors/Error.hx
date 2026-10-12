@@ -3,7 +3,7 @@ package crossbyte.errors;
 import haxe.CallStack;
 
 /**
-	The base error type, carrying a message and a number, `errorID`.
+	The base error type, carrying a message and a number, `errorId`.
 
 	It extends `haxe.Exception`, so an Error can be thrown and caught like any
 	other exception, and carries its own call stack: see `getCallStack`.
@@ -26,7 +26,7 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		server's error code, a MySQL error number, or the `id` an application
 		passed. 0 otherwise, which is every error CrossByte raises of its own.
 	**/
-	public var errorID(default, null):Int;
+	public var errorId(default, null):Int;
 
 	/** What went wrong. **/
 	#if (haxe_ver < "4.1.0")
@@ -38,7 +38,7 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 
 	/**
 		@param message What went wrong.
-		@param id The error's number, where it has one; see `errorID`.
+		@param id The error's number, where it has one; see `errorId`.
 	**/
 	public function new(message:String = "", id:Int = 0) {
 		#if (haxe_ver >= "4.1.0")
@@ -47,7 +47,7 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		this.message = message;
 		#end
 
-		this.errorID = id;
+		this.errorId = id;
 		name = "Error";
 	}
 

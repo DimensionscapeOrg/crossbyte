@@ -302,7 +302,7 @@ class MongoCrudTest extends utest.Test {
 		}
 
 		Require.notNull(ordered);
-		Assert.equals(MongoError.DUPLICATE_KEY, ordered.errorID);
+		Assert.equals(MongoError.DUPLICATE_KEY, ordered.errorId);
 		Assert.equals("DuplicateKey", ordered.codeName);
 		Assert.equals(1, ordered.writeErrors.length);
 		Assert.isTrue(Std.isOfType(ordered.writeErrors[0], MongoError.MongoWriteError));
@@ -339,7 +339,7 @@ class MongoCrudTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.MAX_TIME_MS_EXPIRED, error.errorID);
+		Assert.equals(MongoError.MAX_TIME_MS_EXPIRED, error.errorId);
 		Assert.equals("MaxTimeMSExpired", error.codeName);
 		Assert.equals("find", error.operation);
 		Assert.isTrue(error.message.indexOf("operation exceeded time limit") >= 0);
@@ -362,7 +362,7 @@ class MongoCrudTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.WRITE_CONCERN_FAILED, error.errorID);
+		Assert.equals(MongoError.WRITE_CONCERN_FAILED, error.errorId);
 		Require.notNull(error.writeConcernError);
 		Assert.equals(1, error.result.inserted);
 
@@ -468,7 +468,7 @@ class MongoCrudTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(10107, error.errorID);
+		Assert.equals(10107, error.errorId);
 		// The first batch went in before the second was refused.
 		Require.notNull(error.result);
 		Assert.equals(2, error.result.inserted);
@@ -637,7 +637,7 @@ class MongoCrudTest extends utest.Test {
 
 		Require.notNull(caught);
 		Assert.isTrue(Std.isOfType(caught, MongoError));
-		Assert.equals(13, (cast caught : MongoError).errorID);
+		Assert.equals(13, (cast caught : MongoError).errorId);
 		Assert.isTrue(caught.details().indexOf("not authorized") >= 0);
 		Assert.isFalse(statement.executing);
 

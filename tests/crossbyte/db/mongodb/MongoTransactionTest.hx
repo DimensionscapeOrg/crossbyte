@@ -19,7 +19,7 @@ import utest.Assert;
 	Transactions on a connection's session, and the pool that has to end
 	the ones a borrower leaves open.
 
-	`inTransaction` and `lastInsertRowID` read what happened; a pool
+	`inTransaction` and `lastInsertRowId` read what happened; a pool
 	trusting an `inTransaction` that always read false would hand the next
 	borrower a transaction the last one left.
 **/

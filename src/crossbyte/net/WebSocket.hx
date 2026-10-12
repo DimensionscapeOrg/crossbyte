@@ -1209,18 +1209,18 @@ class WebSocket extends Socket {
 
 	@:noCompletion override private function socket_onError(e):Void {
 		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
-		__framingFailed(failed != null ? failed.text : null, failed != null ? failed.errorID : 0);
+		__framingFailed(failed != null ? failed.text : null, failed != null ? failed.errorId : 0);
 	}
 
 	/** The session underneath has failed, saying `text`. **/
-	@:noCompletion private function __framingFailed(text:Null<String>, errorID:Int):Void {
+	@:noCompletion private function __framingFailed(text:Null<String>, errorId:Int):Void {
 		// An IOErrorEvent carrying what went wrong, so a listener typed for
 		// IOErrorEvent gets one, and a refused certificate or a connect that
 		// failed arrives with an account of which it was.
 		//
 		// A deadline that passed says so with its id, which a NetConnection
 		// over this socket reports as Reason.Timeout.
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text == null ? "" : text, errorID));
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text == null ? "" : text, errorId));
 	}
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {

@@ -616,7 +616,7 @@ class SocketTest extends utest.Test {
 		client.addEventListener(Event.CLOSE, _ -> events.push("close"));
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
 			events.push("ioerror");
-			timedOut = e.errorID == IOErrorEvent.TIMEOUT_ERROR_ID;
+			timedOut = e.errorId == IOErrorEvent.TIMEOUT_ERROR_ID;
 		});
 
 		// A port nothing listens on, obtained rather than assumed: a port

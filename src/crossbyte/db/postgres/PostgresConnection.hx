@@ -56,7 +56,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		of a row inserted, ask the statement for it: `INSERT ... RETURNING
 		id`.
 	**/
-	public var lastInsertRowID(get, null):Float;
+	public var lastInsertRowId(get, null):Float;
 
 	/**
 		The rows the last statement changed, or a `SELECT` returned, as the
@@ -97,7 +97,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
 	@:noCompletion private var __isolationLevel:IsolationLevel = IsolationLevel.REPEATABLE_READ;
-	@:noCompletion private var __lastInsertRowID:Float = 0;
+	@:noCompletion private var __lastInsertRowId:Float = 0;
 	@:noCompletion private var __lastAffectedRows:Float = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
@@ -392,7 +392,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var block:Bytes = __requestBlock(sql);
 		var decoded:PostgresRows = PostgresWire.decodeRows(block, __shapes);
 		__lastAffectedRows = decoded.affectedRows;
-		__lastInsertRowID = decoded.lastInsertRowID;
+		__lastInsertRowId = decoded.lastInsertRowId;
 		__lastCommand = decoded.command;
 		return new PostgresResultSet(decoded.rows, decoded.fields);
 		#else
@@ -422,7 +422,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			}
 		}
 
-		__lastInsertRowID = __lastInsertId();
+		__lastInsertRowId = __lastInsertId();
 		return new PostgresResultSet(rows);
 		#end
 	}
@@ -493,7 +493,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		// cannot read as a statement that matched nothing.
 		var result:PostgresRawResult = PostgresWire.decodeResult(Bytes.ofData(data));
 		__lastAffectedRows = result.affectedRows;
-		__lastInsertRowID = result.lastInsertRowID;
+		__lastInsertRowId = result.lastInsertRowId;
 		return result;
 		#else
 		throw new IOError("Bound parameters need the native libpq bridge, which this target does not have.");
@@ -611,8 +611,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 	#end
 
-	private function get_lastInsertRowID():Float {
-		return __lastInsertRowID;
+	private function get_lastInsertRowId():Float {
+		return __lastInsertRowId;
 	}
 
 	private function get_affectedRows():Float {
@@ -762,12 +762,12 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	@:noCompletion private function __lastInsertId():Float {
 		if (__connection == null) {
-			return __lastInsertRowID;
+			return __lastInsertRowId;
 		}
 		try {
 			return __count(__connection.lastInsertId());
 		} catch (_:Dynamic) {
-			return __lastInsertRowID;
+			return __lastInsertRowId;
 		}
 	}
 

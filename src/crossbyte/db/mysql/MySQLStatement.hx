@@ -298,7 +298,7 @@ class MySQLStatement extends EventDispatcher {
 		in 32 bits, a count past 2^32 wraps back into range there and is
 		taken as it is.
 
-		Natively `lastInsertRowID` is the statement's own as well, read as it
+		Natively `lastInsertRowId` is the statement's own as well, read as it
 		ran. Elsewhere it is the connection's as the page is taken (asked in
 		SQL on hl and neko), so another statement run in between answers
 		for it there.

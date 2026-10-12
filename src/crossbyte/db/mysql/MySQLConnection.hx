@@ -78,7 +78,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		read it in 32 bits and wrap one past 2^32 back into range, it is asked
 		for so every time, the same round trip their own read makes.
 	**/
-	public var lastInsertRowID(get, null):Float;
+	public var lastInsertRowId(get, null):Float;
 
 	/**
 		The rows the last statement changed, as the server counts them: a
@@ -889,7 +889,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return __inTransaction || __autocommitOff;
 	}
 
-	private function get_lastInsertRowID():Float {
+	private function get_lastInsertRowId():Float {
 		return __insertIdFloat();
 	}
 

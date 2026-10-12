@@ -248,7 +248,7 @@ class PostgresStatement extends EventDispatcher {
 	@:noCompletion private function __noteCounts():Void {
 		var connection:PostgresConnection = __sqlConnection;
 		__affected = connection != null ? connection.affectedRows : 0;
-		__rowId = connection != null ? connection.lastInsertRowID : 0;
+		__rowId = connection != null ? connection.lastInsertRowId : 0;
 	}
 
 	/**

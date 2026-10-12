@@ -97,7 +97,7 @@ class MongoIntegrationTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.AUTHENTICATION_FAILED, error.errorID);
+		Assert.equals(MongoError.AUTHENTICATION_FAILED, error.errorId);
 	}
 
 	public function testEveryTypeSurvivesTheServer():Void {
@@ -171,7 +171,7 @@ class MongoIntegrationTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.CURSOR_NOT_FOUND, error.errorID);
+		Assert.equals(MongoError.CURSOR_NOT_FOUND, error.errorId);
 	}
 
 	public function testWritesReportWhatTheyDid():Void {
@@ -214,7 +214,7 @@ class MongoIntegrationTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.DUPLICATE_KEY, error.errorID);
+		Assert.equals(MongoError.DUPLICATE_KEY, error.errorId);
 		Assert.equals(1, error.writeErrors[0].index);
 		Assert.equals(1, error.result.inserted);
 	}

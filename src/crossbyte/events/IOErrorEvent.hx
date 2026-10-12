@@ -7,14 +7,14 @@ import crossbyte.events.Event;
 
 	Valid only during the listener call: a `Socket` hands the same one out
 	again for its next error, as it does its `connect`, `close` and
-	`socketData` events. Read `text` and `errorID` there, or keep a
+	`socketData` events. Read `text` and `errorId` there, or keep a
 	`clone()`; see `Event`.
 **/
 class IOErrorEvent extends ErrorEvent {
 	public static inline var IO_ERROR:EventType<IOErrorEvent> = "ioError";
 
 	/**
-		The `errorID` of an `ioError` that reports a deadline passing rather
+		The `errorId` of an `ioError` that reports a deadline passing rather
 		than a refusal or a failure (a `Socket` connect not made within its
 		`connectTimeout`, the name's lookup and the TLS handshake counted with
 		it),
@@ -29,7 +29,7 @@ class IOErrorEvent extends ErrorEvent {
 	}
 
 	override public function clone():Event {
-		var event = new IOErrorEvent(type, text, errorID);
+		var event = new IOErrorEvent(type, text, errorId);
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;

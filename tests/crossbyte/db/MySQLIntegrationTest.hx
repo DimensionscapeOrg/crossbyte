@@ -137,7 +137,7 @@ class MySQLIntegrationTest extends utest.Test {
 		statement.execute();
 
 		var inserted = Require.notNull(statement.getResult());
-		Assert.isTrue(inserted.lastInsertRowID > 0);
+		Assert.isTrue(inserted.lastInsertRowId > 0);
 
 		var row:Dynamic = __rows('SELECT * FROM $table WHERE email = \'values@example.com\'')[0];
 		Assert.isTrue(Reflect.hasField(row, "name"));

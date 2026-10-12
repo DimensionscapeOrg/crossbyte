@@ -78,7 +78,7 @@ class PostgresWireTest extends utest.Test {
 
 		Assert.same(["id", "payload"], result.fields);
 		Assert.equals(3, result.affectedRows);
-		Assert.equals(7, result.lastInsertRowID);
+		Assert.equals(7, result.lastInsertRowId);
 		Assert.equals(2, result.rows.length);
 		Assert.equals("1", result.rows[0][0].toString());
 		// Survives as bytes. JSON could not represent this at all.
@@ -94,14 +94,14 @@ class PostgresWireTest extends utest.Test {
 		block.ok(5000000001.0, 3000000000.0, ["n"]);
 		var result = PostgresWire.decodeResult(block.finish());
 		Assert.equals(5000000001.0, result.affectedRows);
-		Assert.equals(3000000000.0, result.lastInsertRowID);
+		Assert.equals(3000000000.0, result.lastInsertRowId);
 
 		// 2^53, the last whole number a Float is sure of, and the largest OID.
 		var largest = new ResultBlock();
 		largest.ok(9007199254740992.0, 4294967295.0, []);
 		var decoded = PostgresWire.decodeResult(largest.finish());
 		Assert.equals(9007199254740992.0, decoded.affectedRows);
-		Assert.equals(4294967295.0, decoded.lastInsertRowID);
+		Assert.equals(4294967295.0, decoded.lastInsertRowId);
 	}
 
 	public function testResultCarriesValuesThatAreNotValidUtf8():Void {
@@ -159,7 +159,7 @@ class PostgresWireTest extends utest.Test {
 		// so the check itself must not hold the one arithmetic that defeats it.
 		var raw = new BytesBuffer();
 		__int(raw, PostgresWire.STATUS_OK);
-		// affectedRows, in two halves, and lastInsertRowID.
+		// affectedRows, in two halves, and lastInsertRowId.
 		__int(raw, 0);
 		__int(raw, 0);
 		__int(raw, 0);
@@ -264,12 +264,12 @@ private class ResultBlock {
 
 	public function new() {}
 
-	public function ok(affectedRows:Float, lastInsertRowID:Float, fields:Array<String>):Void {
+	public function ok(affectedRows:Float, lastInsertRowId:Float, fields:Array<String>):Void {
 		__writeInt(__head, PostgresWire.STATUS_OK);
 		// Unsigned 64 bits, low half first, then the OID unsigned.
 		__writeUInt(__head, affectedRows % 4294967296.0);
 		__writeUInt(__head, Math.ffloor(affectedRows / 4294967296.0));
-		__writeUInt(__head, lastInsertRowID);
+		__writeUInt(__head, lastInsertRowId);
 		__writeInt(__head, fields.length);
 		__fieldCount = fields.length;
 

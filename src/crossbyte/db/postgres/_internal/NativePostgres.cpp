@@ -444,7 +444,7 @@ namespace {
 		int rows = api->PQntuples(result);
 		int fields = api->PQnfields(result);
 
-		// status, affectedRows (8), lastInsertRowID, fieldCount, rowCount.
+		// status, affectedRows (8), lastInsertRowId, fieldCount, rowCount.
 		long long size = 24;
 
 		for (int field = 0; field < fields; ++field) {

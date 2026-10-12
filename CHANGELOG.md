@@ -2055,13 +2055,16 @@ than waiting a thousand times as long: divide the old value by 1,000.
   catch the class, or `crossbyte.errors.Error`, which they all extend.
 - `Error.getStackTrace()` is gone: call `getCallStack()`, which every
   target has.
-- An error's `errorID` is the number its source gives it (a MongoDB or
+- `Error.errorID` and `ErrorEvent.errorID` are `errorId`, and every
+  `lastInsertRowID` is `lastInsertRowId`, spelt as `requestId` and
+  `sessionId` are.
+- An error's `errorId` is the number its source gives it (a MongoDB or
   MySQL error number), and 0 for CrossByte's own: an `EOFError` carried
   Flash's 2030, and a `File` or `FileStream` `IOError` AIR's 3001 to 3014.
   Tell `File`'s failures apart by their message.
 - `SQLError.detailID` and `detailArguments` are gone, and so are the
   constructor's last two arguments: a `MySQLError`'s number is its `code`
-  (and `errorID`), and a `MongoError`'s labels are its `errorLabels`.
+  (and `errorId`), and a `MongoError`'s labels are its `errorLabels`.
 
 #### TCP
 
@@ -2385,9 +2388,9 @@ than waiting a thousand times as long: divide the old value by 1,000.
 
 #### Data
 
-- Counts and ids are `Float`s, exact past 2^31: `lastInsertRowID`,
+- Counts and ids are `Float`s, exact past 2^31: `lastInsertRowId`,
   `totalChanges` and `DBStats`' page counts of `SQLiteConnection`;
-  `affectedRows` and `lastInsertRowID` of `MySQLConnection`,
+  `affectedRows` and `lastInsertRowId` of `MySQLConnection`,
   `PostgresConnection` and `PostgresRawResult`; and
   `MongoConnection.affectedRows`. `FKViolation.rowid` is a `Null<Float>`,
   and `SQLiteConnection.cacheSize` an `Int`, negative for a size in KiB.

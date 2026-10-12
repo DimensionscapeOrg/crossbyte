@@ -571,7 +571,7 @@ class FileTest extends utest.Test {
 		var texts:Array<String> = [for (error in errors) error.text];
 		Assert.equals(1, texts.filter(text -> text.indexOf("does not exist") >= 0).length, texts.join("; "));
 		Assert.equals(1, texts.filter(text -> text.indexOf("is not a directory") >= 0).length, texts.join("; "));
-		Assert.same([0, 0], [for (error in errors) error.errorID]);
+		Assert.same([0, 0], [for (error in errors) error.errorId]);
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
@@ -586,12 +586,12 @@ class FileTest extends utest.Test {
 		HaxeFile.saveContent(full.resolvePath("inside.txt").nativePath, "x");
 		var missing = root.resolvePath("missing");
 
-		// What an IOError says, with its errorID, 0, as CrossByte's own are.
+		// What an IOError says, with its errorId, 0, as CrossByte's own are.
 		function failure(call:Void->Void):String {
 			try {
 				call();
 			} catch (e:crossbyte.errors.IOError) {
-				return e.errorID + " " + e.message;
+				return e.errorId + " " + e.message;
 			} catch (e:Dynamic) {
 				return "not an IOError: " + Std.string(e);
 			}

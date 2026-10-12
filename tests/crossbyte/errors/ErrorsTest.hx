@@ -6,12 +6,12 @@ class ErrorsTest extends utest.Test {
 	public function testBaseErrorDefaultsAndMessageOverride():Void {
 		var err = new Error();
 		Assert.equals("Error", err.name);
-		Assert.equals(0, err.errorID);
+		Assert.equals(0, err.errorId);
 		Assert.equals("Error", err.toString());
 
 		var withMessage = new Error("boom", 7);
 		Assert.equals("boom", withMessage.toString());
-		Assert.equals(7, withMessage.errorID);
+		Assert.equals(7, withMessage.errorId);
 	}
 
 	public function testAnErrorCarriesItsOwnCallStack():Void {
@@ -124,13 +124,13 @@ class ErrorsTest extends utest.Test {
 		Assert.equals("EOFError", eof.name);
 		Assert.equals("the frame ended inside its header", eof.message);
 		Assert.equals("the frame ended inside its header", eof.toString());
-		Assert.equals(99, eof.errorID);
+		Assert.equals(99, eof.errorId);
 
 		// Without one, a message of its own and no number: what every reader
 		// here throws.
 		var plain = new EOFError();
 		Assert.equals("EOFError", plain.name);
-		Assert.equals(0, plain.errorID);
+		Assert.equals(0, plain.errorId);
 		Assert.equals("End of file was encountered", plain.message);
 		Assert.equals("End of file was encountered", plain.toString());
 		Assert.equals("End of file was encountered", new EOFError("").message);
@@ -141,7 +141,7 @@ class ErrorsTest extends utest.Test {
 
 		Assert.equals("SQLError", sql.name);
 		Assert.equals("execute", sql.operation);
-		Assert.equals(42, sql.errorID);
+		Assert.equals(42, sql.errorId);
 		Assert.equals("constraint failed", sql.details());
 		Assert.equals("Database exploded", sql.toString());
 	}

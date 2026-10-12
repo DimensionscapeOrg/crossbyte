@@ -493,9 +493,9 @@ class MySQLDriverTest extends utest.Test {
 		statement.text = "INSERT INTO t (x) VALUES (1)";
 		statement.execute();
 
-		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
+		Assert.equals(3000000000.0, statement.getResult().lastInsertRowId);
 		// The connection's own, whole as well, not an Int held at 2^31 - 1.
-		Assert.equals(3000000000.0, statement.sqlConnection.lastInsertRowID);
+		Assert.equals(3000000000.0, statement.sqlConnection.lastInsertRowId);
 
 		// One in range is taken as it is, with nothing more asked, but on
 		// hl and neko, where it is always asked in SQL; see below.
@@ -503,7 +503,7 @@ class MySQLDriverTest extends utest.Test {
 		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "7"}]);
 		var asked:Int = wire.sent.length;
 		statement.execute();
-		Assert.equals(7.0, statement.getResult().lastInsertRowID);
+		Assert.equals(7.0, statement.getResult().lastInsertRowId);
 		#if (hl || neko)
 		Assert.equals(asked + 2, wire.sent.length);
 		#else
@@ -524,8 +524,8 @@ class MySQLDriverTest extends utest.Test {
 		statement.text = "INSERT INTO t (x) VALUES (1)";
 		statement.execute();
 
-		Assert.equals(4294967297.0, statement.getResult().lastInsertRowID);
-		Assert.equals(4294967297.0, statement.sqlConnection.lastInsertRowID);
+		Assert.equals(4294967297.0, statement.getResult().lastInsertRowId);
+		Assert.equals(4294967297.0, statement.sqlConnection.lastInsertRowId);
 	}
 	#end
 
@@ -589,7 +589,7 @@ class MySQLDriverTest extends utest.Test {
 		var statement:MySQLStatement = __statement(wire);
 		statement.text = "INSERT INTO t (x) VALUES (1)";
 		statement.execute();
-		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
+		Assert.equals(3000000000.0, statement.getResult().lastInsertRowId);
 
 		// The same SQLSTATE from the server (a value out of range for its
 		// column, with MySQL's error number) is still a failure.

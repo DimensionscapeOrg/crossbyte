@@ -1205,7 +1205,7 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	/** An IOError saying what went wrong; its `errorID` is 0, as CrossByte's own are. **/
+	/** An IOError saying what went wrong; its `errorId` is 0, as CrossByte's own are. **/
 	@:noCompletion private static inline function __ioError(message:String):IOError {
 		return new IOError(message);
 	}
@@ -2315,7 +2315,7 @@ final class File extends EventDispatcher {
 		if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 			if (#if (haxe_ver >= 4.2) Std.isOfType #else Std.is #end (e, Error)) {
 				var error = (e : Error);
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, error.message, error.errorID));
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, error.message, error.errorId));
 			} else {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR));
 			}

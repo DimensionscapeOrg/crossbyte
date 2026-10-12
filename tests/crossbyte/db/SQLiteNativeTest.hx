@@ -244,7 +244,7 @@ class SQLiteNativeTest extends utest.Test {
 		insert.sqlConnection = connection;
 		insert.text = "INSERT INTO t (id, v) VALUES (3000000001, 100)";
 		insert.execute();
-		Assert.equals(3000000001.0, insert.getResult().lastInsertRowID);
+		Assert.equals(3000000001.0, insert.getResult().lastInsertRowId);
 		connection.close();
 	}
 
@@ -383,7 +383,7 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.raises(() -> connection.begin(), IllegalOperationError);
 		Assert.raises(() -> connection.request("SELECT 1"), IllegalOperationError);
 		Assert.raises(function() {
-			var id:Float = connection.lastInsertRowID;
+			var id:Float = connection.lastInsertRowId;
 		}, IllegalOperationError);
 
 		connection.open(path, SQLiteMode.UPDATE, false, 4096);
@@ -1023,7 +1023,7 @@ class SQLiteNativeTest extends utest.Test {
 		insert.text = "INSERT INTO t (id, v) VALUES (3000000000, 'a')";
 		insert.execute();
 		// The insert queued just before has run when these answer.
-		Assert.equals(3000000000.0, connection.lastInsertRowID);
+		Assert.equals(3000000000.0, connection.lastInsertRowId);
 		Assert.equals(1.0, connection.totalChanges);
 		Assert.same(["t"], connection.tableList());
 		Assert.equals(1, __count(connection, "t"));

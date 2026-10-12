@@ -12,7 +12,7 @@ class EOFError extends IOError {
 	/**
 		@param message What ran out. Without one, the message is "End of file
 			   was encountered".
-		@param id The error's number, 0 unless given; see `Error.errorID`.
+		@param id The error's number, 0 unless given; see `Error.errorId`.
 	**/
 	public function new(message:String = null, id:Int = 0) {
 		// Either is kept as given, so a reader's account of what ran out
@@ -20,6 +20,6 @@ class EOFError extends IOError {
 		super(message == null || message == "" ? "End of file was encountered" : message);
 
 		name = "EOFError";
-		errorID = id;
+		errorId = id;
 	}
 }

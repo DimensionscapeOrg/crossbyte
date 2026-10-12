@@ -62,7 +62,7 @@ import sys.net.Socket as SysSocket;
 	  done).
 	- `ioError` for a connect that failed (refused, a name that does not
 	  resolve, a handshake that failed, or not made within `connectTimeout`, whose
-	  event's `errorID` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and nothing
+	  event's `errorId` is then `IOErrorEvent.TIMEOUT_ERROR_ID`), and nothing
 	  after it, since no connection came up: no `close` follows, as in AIR.
 	  Once connected, for a write that failed; the connection's `close`
 	  follows.
@@ -255,7 +255,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		How long, in seconds, a connect may take before it fails with an
-		`ioError` whose `errorID` is `IOErrorEvent.TIMEOUT_ERROR_ID`: 20
+		`ioError` whose `errorId` is `IOErrorEvent.TIMEOUT_ERROR_ID`: 20
 		unless set.
 
 		0 means no deadline: the connect is waited on for as long as the
@@ -3716,7 +3716,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		} else {
 			@:privateAccess {
 				__pooledIOErrorEvent.text = text;
-				__pooledIOErrorEvent.errorID = id;
+				__pooledIOErrorEvent.errorId = id;
 				__pooledIOErrorEvent.target = null;
 				__pooledIOErrorEvent.currentTarget = null;
 			}

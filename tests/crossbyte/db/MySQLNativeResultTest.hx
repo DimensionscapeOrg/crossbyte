@@ -197,7 +197,7 @@ class MySQLNativeResultTest extends utest.Test {
 	public function testCountsPastThirtyTwoBitsAreWhole():Void {
 		// The client reads both from the statement's answer, as an Int64 past
 		// 2^31, and the connection holds them whole: affectedRows and
-		// lastInsertRowID are not Ints held at 2^31 - 1.
+		// lastInsertRowId are not Ints held at 2^31 - 1.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "UPDATE")) {
 				session.ok(3000000000.0, 5000000001.0);
@@ -210,7 +210,7 @@ class MySQLNativeResultTest extends utest.Test {
 		var connection:MySQLConnection = __open();
 		connection.request("UPDATE users SET name = 'x'");
 		Assert.equals(3000000000.0, connection.affectedRows);
-		Assert.equals(5000000001.0, connection.lastInsertRowID);
+		Assert.equals(5000000001.0, connection.lastInsertRowId);
 		connection.close();
 	}
 
@@ -218,7 +218,7 @@ class MySQLNativeResultTest extends utest.Test {
 		// A statement's rowsAffected is not the length of the client's result:
 		// for a write, that is the count as an Int, held at 2^31 - 1 though the
 		// client has it whole; for a SELECT read a page at a time, the rows read
-		// so far. And its lastInsertRowID is not read from the connection as
+		// so far. And its lastInsertRowId is not read from the connection as
 		// the page is taken, which after a SELECT in between would be 0.
 		__server.onQuery = function(session, sql) {
 			if (StringTools.startsWith(sql, "UPDATE")) {
@@ -263,7 +263,7 @@ class MySQLNativeResultTest extends utest.Test {
 
 		var inserted = Require.notNull(insert.getResult());
 		Assert.equals(1.0, inserted.rowsAffected);
-		Assert.equals(5000000001.0, inserted.lastInsertRowID);
+		Assert.equals(5000000001.0, inserted.lastInsertRowId);
 
 		select.next(-1);
 		Assert.equals(0.0, Require.notNull(select.getResult()).rowsAffected);
@@ -298,7 +298,7 @@ class MySQLNativeResultTest extends utest.Test {
 		statement.execute();
 		var inserted = Require.notNull(statement.getResult());
 		// Past 2^31, where lastInsertId(), an Int, runs out.
-		Assert.equals(3000000001.0, inserted.lastInsertRowID);
+		Assert.equals(3000000001.0, inserted.lastInsertRowId);
 		Assert.equals(1.0, inserted.rowsAffected);
 		Assert.equals(1, connection.affectedRows);
 

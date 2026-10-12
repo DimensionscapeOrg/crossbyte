@@ -38,7 +38,7 @@ class WebsocketEvent {
 		On an error: the `IOErrorEvent` id the owner reports it with:
 		`IOErrorEvent.TIMEOUT_ERROR_ID` for a deadline that passed, else 0.
 	**/
-	public var errorID:Int = 0;
+	public var errorId:Int = 0;
 
 	public function new(type:String, target:WebSocket, ?message:ByteArray, ?text:String, code:Int = 0, ?reason:String) {
 		this.type = type;

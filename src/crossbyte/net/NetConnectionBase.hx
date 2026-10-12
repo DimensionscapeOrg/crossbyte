@@ -177,7 +177,7 @@ abstract class NetConnectionBase implements CloseObservable {
 
 	/** What an `ioError` tells the callbacks: `Reason.Timeout` for a deadline that passed. **/
 	@:noCompletion private static function __reasonOf(error:crossbyte.events.IOErrorEvent):Reason {
-		return error.errorID == crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID ? Reason.Timeout : Reason.Error(error.text);
+		return error.errorId == crossbyte.events.IOErrorEvent.TIMEOUT_ERROR_ID ? Reason.Timeout : Reason.Error(error.text);
 	}
 
 	/**

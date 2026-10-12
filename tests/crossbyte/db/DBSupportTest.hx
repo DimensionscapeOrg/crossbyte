@@ -35,7 +35,7 @@ class DBSupportTest extends utest.Test {
 		Assert.same(rows, result.data);
 		Assert.equals(4.0, result.rowsAffected);
 		Assert.isFalse(result.complete);
-		Assert.equals(9.0, result.lastInsertRowID);
+		Assert.equals(9.0, result.lastInsertRowId);
 	}
 
 	public function testConfigTypedefsAndEnumsHoldExpectedValues():Void {
@@ -279,7 +279,7 @@ class DBSupportTest extends utest.Test {
 		insert.execute();
 		var insertResult = insert.getResult();
 		Assert.notNull(insertResult);
-		Assert.isTrue(connection.lastInsertRowID > 0);
+		Assert.isTrue(connection.lastInsertRowId > 0);
 		Assert.equals(1, connection.totalChanges);
 
 		var select = new SQLiteStatement();
@@ -349,8 +349,8 @@ class DBSupportTest extends utest.Test {
 		var result = insert.getResult();
 
 		Require.notNull(result);
-		Assert.equals(1727600000000.0, result.lastInsertRowID, "the statement's result");
-		Assert.equals(1727600000000.0, connection.lastInsertRowID, "the connection");
+		Assert.equals(1727600000000.0, result.lastInsertRowId, "the statement's result");
+		Assert.equals(1727600000000.0, connection.lastInsertRowId, "the connection");
 		connection.close();
 	}
 

@@ -115,7 +115,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	/**
 		The `_id` of the last document this connection inserted (the one it
 		had, or the `ObjectId` made for it), or `null`. MongoDB has no row
-		ids, so this stands where SQLite's and MySQL's `lastInsertRowID` does.
+		ids, so this stands where SQLite's and MySQL's `lastInsertRowId` does.
 	**/
 	public var lastInsertId(get, null):Dynamic;
 

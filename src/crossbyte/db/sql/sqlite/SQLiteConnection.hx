@@ -44,7 +44,7 @@ import haxe.Int64;
  *
  * An asynchronous connection (`openAsync()`) is used by its worker alone.
  * What answers at once (`request()`, and the properties and methods that
- * ask SQLite, such as `journalMode`, `lastInsertRowID` or `stats()`) is
+ * ask SQLite, such as `journalMode`, `lastInsertRowId` or `stats()`) is
  * run by the worker in its turn, behind the work queued before it, while
  * the calling thread waits for the answer, for at most `queueTimeout`.
  * `connected` and `getSchemaResult()` answer from what the connection has
@@ -91,7 +91,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		Seconds a call that answers at once waits on an asynchronous
 		connection for its turn: `request()`, and every property and method
-		that asks SQLite: `journalMode`, `lastInsertRowID`, `stats()` and
+		that asks SQLite: `journalMode`, `lastInsertRowId`, `stats()` and
 		the rest. The worker runs such a call behind the work queued before
 		it, so what it answers is the connection's state once that work is
 		done. A call not started within this many seconds is withdrawn
@@ -111,7 +111,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		after an error does not.
 	**/
 	public var inTransaction(get, null):Bool;
-	public var lastInsertRowID(get, null):Float;
+	public var lastInsertRowId(get, null):Float;
 	public var pageSize(get, null):UInt;
 
 	/**
@@ -2050,8 +2050,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		return __inTransaction;
 	}
 
-	private function get_lastInsertRowID():Float {
-		return __now("lastInsertRowID", __lastRowId);
+	private function get_lastInsertRowId():Float {
+		return __now("lastInsertRowId", __lastRowId);
 	}
 
 	/**

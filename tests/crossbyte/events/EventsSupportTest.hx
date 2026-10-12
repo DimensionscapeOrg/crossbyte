@@ -46,7 +46,7 @@ class EventsSupportTest extends utest.Test {
 		var ioClone:IOErrorEvent = cast new IOErrorEvent(IOErrorEvent.IO_ERROR, "disk full", 42).clone();
 		Assert.equals(IOErrorEvent.IO_ERROR, ioClone.type);
 		Assert.equals("disk full", ioClone.text);
-		Assert.equals(42, ioClone.errorID);
+		Assert.equals(42, ioClone.errorId);
 
 		var sqlError = new SQLError("query", "extra", "boom", 7);
 		var sqlClone:SQLErrorEvent = cast new SQLErrorEvent(SQLErrorEvent.ERROR, sqlError).clone();

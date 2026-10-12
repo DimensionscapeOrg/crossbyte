@@ -145,7 +145,7 @@ class ArrivalsTest extends utest.Test {
 		var error = new IOErrorEvent(IOErrorEvent.IO_ERROR, "why", 7);
 		error.__kill();
 		Assert.isNull(error.text);
-		Assert.equals(-1, error.errorID);
+		Assert.equals(-1, error.errorId);
 	}
 
 	public function testAKilledMessageEventMakesNoTextFromItsDeadBytes():Void {

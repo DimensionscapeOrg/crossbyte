@@ -3239,17 +3239,17 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	}
 	#end
 
-	private function __onError(errorMessage:String, errorID:Int = 0):Void {
+	private function __onError(errorMessage:String, errorId:Int = 0):Void {
 		__errorReported = true;
 		var owner = __owner;
 		if (owner != null) {
-			@:privateAccess owner.__framingFailed(errorMessage, errorID);
+			@:privateAccess owner.__framingFailed(errorMessage, errorId);
 			return;
 		}
 		var listener = onerror;
 		if (listener != null) {
 			var event = new WebsocketEvent(WebsocketEvent.ERROR, this, null, errorMessage);
-			event.errorID = errorID;
+			event.errorId = errorId;
 			listener(event);
 		}
 	}

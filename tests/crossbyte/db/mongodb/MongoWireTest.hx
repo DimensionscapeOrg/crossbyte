@@ -162,7 +162,7 @@ class MongoWireTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.AUTHENTICATION_FAILED, error.errorID);
+		Assert.equals(MongoError.AUTHENTICATION_FAILED, error.errorId);
 		Assert.equals("AuthenticationFailed", error.codeName);
 		Assert.isFalse(connection.connected);
 	}
@@ -199,7 +199,7 @@ class MongoWireTest extends utest.Test {
 		}
 
 		Require.notNull(error);
-		Assert.equals(MongoError.UNAUTHORIZED, error.errorID);
+		Assert.equals(MongoError.UNAUTHORIZED, error.errorId);
 		// A refusal is not a broken connection.
 		Assert.isTrue(connection.ping());
 	}

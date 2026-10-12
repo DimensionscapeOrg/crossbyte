@@ -6,15 +6,15 @@ import crossbyte.events.Event;
 class ErrorEvent extends TextEvent {
 	public static inline var ERROR:EventType<ErrorEvent> = "error";
 
-	public var errorID(default, null):Int;
+	public var errorId(default, null):Int;
 
 	public function new(type:String, text:String = "", id:Int = 0) {
 		super(type, text);
-		this.errorID = id;
+		this.errorId = id;
 	}
 
 	override public function clone():Event {
-		var event = new ErrorEvent(type, text, errorID);
+		var event = new ErrorEvent(type, text, errorId);
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;
@@ -22,6 +22,6 @@ class ErrorEvent extends TextEvent {
 
 	@:noCompletion override private function __kill():Void {
 		super.__kill();
-		errorID = -1;
+		errorId = -1;
 	}
 }
