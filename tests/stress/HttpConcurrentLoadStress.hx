@@ -103,11 +103,11 @@ class HttpConcurrentLoadStress implements StressCase {
 		// The clients are gone; let the server observe their closes and settle
 		// its accounting before it is asked what it still holds.
 		var settleUntil:Float = haxe.Timer.stamp() + 3.0;
-		while (haxe.Timer.stamp() < settleUntil && server.activeConnections > 0) {
+		while (haxe.Timer.stamp() < settleUntil && server.connectionCount > 0) {
 			runtime.pump(1 / 120, 0);
 		}
 
-		var leftOpen:Int = server.activeConnections;
+		var leftOpen:Int = server.connectionCount;
 
 		try {
 			server.close();

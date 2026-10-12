@@ -23,8 +23,8 @@ interface INetHost {
 	/** Transport protocol served by this host. */
 	public var protocol(default, null):Protocol;
 	/**
-		The most connections the host serves at once; `0` or less keeps no
-		count. 10,000 by default (`ServerSocket.DEFAULT_MAX_CONNECTIONS`).
+		The most connections the host serves at once; `0` or less sets no
+		limit. 10,000 by default (`ServerSocket.DEFAULT_MAX_CONNECTIONS`).
 		A TCP or WebSocket host's is its server's `maxConnections`: a TCP
 		connection arriving at the limit is closed as it is accepted, before
 		`onAccept` (its peer sees the connection accepted and closed at

@@ -780,6 +780,7 @@ class ServerSpreadTest extends utest.Test {
 			}
 		}
 		Assert.equals(3, landed.length);
+		Assert.equals(3, server.connectionCount, "the connections across the runtimes were not counted together");
 		var past:sys.net.Socket = SpreadSupport.connect(server.localPort);
 		Assert.isTrue(SpreadSupport.ended(past), "a connection past the limit across the runtimes was left open");
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 1, WAIT), "the refusal was not counted");
@@ -792,8 +793,8 @@ class ServerSpreadTest extends utest.Test {
 			}
 		}
 		SpreadSupport.stop([first]);
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.connections == 3 - onFirst, WAIT),
-			'a runtime that exited kept its places: ${server.__spread.connections} counted');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 3 - onFirst, WAIT),
+			'a runtime that exited kept its places: ${server.connectionCount} counted');
 		clients.push(SpreadSupport.connect(server.localPort));
 		Assert.notNull(SpreadSupport.pop(arrived, WAIT), "a place given back by a runtime that exited was not taken");
 

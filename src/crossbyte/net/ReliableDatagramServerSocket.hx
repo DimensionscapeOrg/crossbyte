@@ -336,6 +336,22 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	public var listening(default, null):Bool = false;
 
 	/**
+		The sessions this server holds that have finished their handshake
+		and not yet closed: those it accepted, and those `connect` and
+		`connectRelayed` dialled through it. A session is counted as its
+		handshake finishes (before this server's `connect` event for one it
+		accepted) and let go of as it closes. One still in its handshake is
+		not counted yet; `maxPendingConnections` bounds those a peer opened.
+	**/
+	public var sessionCount(get, never):Int;
+
+	@:noCompletion private var __sessionCount:Int = 0;
+
+	@:noCompletion private inline function get_sessionCount():Int {
+		return __sessionCount;
+	}
+
+	/**
 		The local IP address on which the server is bound.
 	**/
 	public var localAddress(get, never):String;
@@ -1011,6 +1027,8 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 				connection.abort();
 			} catch (_:Dynamic) {}
 		}
+		// Each let itself go as it closed; none is left whichever did not.
+		__sessionCount = 0;
 
 		// After the sessions, whose FINs a relayed one sends through it, and
 		// before the socket, which carries the relay's own goodbye.
@@ -2978,6 +2996,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	}
 
 	@:noCompletion private function __onSocketClosed(socket:ReliableDatagramSocket):Void {
+		if (socket.__inSessionCount) {
+			socket.__inSessionCount = false;
+			if (__sessionCount > 0) {
+				__sessionCount--;
+			}
+		}
 		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
 		__unfile(socket.remoteAddress, socket.remotePort);
 		__delist(socket);
@@ -3004,6 +3028,10 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		// The peer answered, so the address is its own and the slot is free
 		// again. Done before the outgoing check below, which returns early.
 		__releasePending(__endpointKey(socket.remoteAddress, socket.remotePort));
+		if (!socket.__inSessionCount) {
+			socket.__inSessionCount = true;
+			__sessionCount++;
+		}
 
 		// Only sessions a peer opened to us. A session `connect()` dialled is
 		// registered here too, because that is how its replies get routed, but

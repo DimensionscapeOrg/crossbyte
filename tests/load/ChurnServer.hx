@@ -316,10 +316,10 @@ class ChurnServer {
 			serverWsMessagesPerSecond: Math.round(wsMessages / wall),
 			acceptedPerSecond: round(accepted / wall),
 			open: {
-				http: http.activeConnections,
-				https: https.activeConnections,
-				ws: ws.clientCount,
-				wss: wss.clientCount
+				http: http.connectionCount,
+				https: https.connectionCount,
+				ws: ws.connectionCount,
+				wss: wss.connectionCount
 			},
 			wsOpened: wsOpened,
 			wsClosed: wsClosed,
@@ -373,10 +373,10 @@ class ChurnServer {
 				phases: phases,
 				errorsSeen: errorsSeen,
 				open: {
-					http: http.activeConnections,
-					https: https.activeConnections,
-					ws: ws.clientCount,
-					wss: wss.clientCount
+					http: http.connectionCount,
+					https: https.connectionCount,
+					ws: ws.connectionCount,
+					wss: wss.connectionCount
 				},
 				heapLiveMB: ProcessStats.mb(after.heapLive),
 				heapReservedMB: ProcessStats.mb(after.heapReserved),

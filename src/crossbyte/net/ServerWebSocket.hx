@@ -418,7 +418,7 @@ class ServerWebSocket extends ServerSocket {
 		__metrics = registry;
 		var name:String = (prefix == null || prefix == "") ? "websocket" : prefix;
 
-		registry.gaugeFn(name + "_sessions", () -> clientCount, null, "Sessions currently established.");
+		registry.gaugeFn(name + "_sessions", () -> connectionCount, null, "Sessions currently established.");
 
 		registry.gaugeFn(name + "_output_buffer_bytes_max", () -> __maxOutputBuffer(), null,
 			"Largest amount of unsent frame data held by any one session.");
@@ -561,18 +561,12 @@ class ServerWebSocket extends ServerSocket {
 		}
 	}
 
-	/**
-		Client connections that have completed their handshake and not yet
-		closed. Maintained so `drain()` can shut them down deliberately.
-
-		On a server spread over `runtimes`, every runtime's together: each
-		keeps its own sessions, and this adds up what each has as it is
-		read, so a session that opened or closed on another thread a moment
-		ago may not be in it yet.
-	**/
-	public var clientCount(get, never):Int;
-
-	private function get_clientCount():Int {
+	// `connectionCount` here is the sessions that have completed their
+	// opening handshake and not yet closed. On a server spread over
+	// `runtimes`, every runtime's together: each keeps its own sessions, and
+	// this adds up what each has as it is read, so a session that opened or
+	// closed on another thread a moment ago may not be in it yet.
+	@:noCompletion override private function get_connectionCount():Int {
 		var count:Int = __clients.length;
 		#if (target.threaded && !js)
 		if (__spread != null) {

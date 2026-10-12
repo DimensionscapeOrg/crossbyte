@@ -59,7 +59,7 @@ class ServerWebSocketUpgradeReapTest extends utest.Test {
 				HTTPTestSupport.pumpUntilAsync(() -> pending(server) == 0, 3.0, function(reaped:Bool):Void {
 					Assert.isTrue(reaped, "a session that never upgraded was still being waited on");
 					Assert.isTrue(session.registryClosed, "a session that never upgraded was forgotten rather than closed");
-					Assert.equals(0, server.clientCount, "a session that never upgraded was counted as established");
+					Assert.equals(0, server.connectionCount, "a session that never upgraded was counted as established");
 
 					try client.close() catch (_:Dynamic) {}
 					try server.close() catch (_:Dynamic) {}

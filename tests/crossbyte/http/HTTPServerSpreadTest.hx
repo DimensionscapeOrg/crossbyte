@@ -64,10 +64,10 @@ class HTTPServerSpreadTest extends utest.Test {
 					'request $n on connection $i ran off its connection\'s runtime');
 			}
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 4, WAIT), 'activeConnections is ${server.activeConnections}, not 4');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 4, WAIT), 'connectionCount is ${server.connectionCount}, not 4');
 
 		SpreadSupport.closeAll(clients);
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 0, WAIT), 'activeConnections is ${server.activeConnections} once every client left');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 0, WAIT), 'connectionCount is ${server.connectionCount} once every client left');
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop([acceptor, first, second]);
 	}
@@ -101,7 +101,7 @@ class HTTPServerSpreadTest extends utest.Test {
 					'stream $n on HTTP/2 connection $i ran off its connection\'s runtime');
 			}
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 2, WAIT));
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 2, WAIT));
 
 		SpreadSupport.closeAll(clients);
 		SpreadSupport.on(acceptor, () -> server.close());
@@ -140,11 +140,11 @@ class HTTPServerSpreadTest extends utest.Test {
 		for (i in 3...5) {
 			Assert.isTrue(statuses[i] == 503 || statuses[i] == 0, 'connection $i past the limit across the runtimes was served: $statuses');
 		}
-		Assert.equals(3, server.activeConnections);
+		Assert.equals(3, server.connectionCount);
 
 		// One goes, and there is room for one more, on either runtime.
 		clients[0].close();
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 2, WAIT));
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 2, WAIT));
 		var again = SpreadSupport.connect(server.localPort);
 		clients.push(again);
 		Assert.equals(200, HttpWire.get(again, "/again").status, "a place freed on one runtime was not taken");
@@ -269,7 +269,7 @@ class HTTPServerSpreadTest extends utest.Test {
 			clients.push(client);
 			Assert.equals(200, HttpWire.get(client, '/d$i').status);
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 4, WAIT));
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 4, WAIT));
 
 		// From this thread: handed to the server's runtime.
 		server.drain(5.0, () -> drained.add(SpreadSupport.where(acceptor)));
@@ -278,7 +278,7 @@ class HTTPServerSpreadTest extends utest.Test {
 		for (i in 0...clients.length) {
 			Assert.isTrue(SpreadSupport.ended(clients[i]), 'connection $i was left open by drain()');
 		}
-		Assert.equals(0, server.activeConnections);
+		Assert.equals(0, server.connectionCount);
 		Assert.isFalse(server.listening);
 		Assert.isTrue(SpreadSupport.waitFor(() -> made[0].__didExit && made[1].__didExit, WAIT), "the runtimes made for the server outlived its drain");
 
@@ -362,7 +362,7 @@ class HTTPServerSpreadTest extends utest.Test {
 		}
 		Assert.equals(expected, served[0] + served[1] + served[2] + served[3], "a request ran off its connection's runtime");
 		Assert.isTrue(registry.toPrometheus().indexOf('http_requests_total{status="2xx"} $expected') >= 0, "the requests counted were not every runtime's");
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.activeConnections == 0, WAIT), 'activeConnections is ${server.activeConnections} once every client left');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 0, WAIT), 'connectionCount is ${server.connectionCount} once every client left');
 
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop(workers.concat([acceptor]));
@@ -418,7 +418,7 @@ class HTTPServerSpreadTest extends utest.Test {
 			Assert.isTrue(SpreadSupport.ended(clients[i]), 'connection $i stayed open after its answer in the drain');
 		}
 		Assert.equals("own", SpreadSupport.pop(drained, WAIT), "drain() did not finish on the server's runtime");
-		Assert.equals(0, server.activeConnections);
+		Assert.equals(0, server.connectionCount);
 
 		SpreadSupport.closeAll(clients);
 		SpreadSupport.stop([acceptor, first, second]);

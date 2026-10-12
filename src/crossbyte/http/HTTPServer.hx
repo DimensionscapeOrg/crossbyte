@@ -63,7 +63,7 @@ class HTTPServer extends ServerSocket {
 	// sockets cannot get in past the limit or outlive drain().
 	private var __sniffing:ObjectMap<CBSocket, Float>;
 	// ServerSocket.maxConnections, which the configuration sets: the front's,
-	// on a server spread over runtimes; 0 or less for no count.
+	// on a server spread over runtimes; 0 or less for no limit.
 	private var __maxConnections(get, never):Int;
 
 	private inline function get___maxConnections():Int {
@@ -215,15 +215,11 @@ class HTTPServer extends ServerSocket {
 		}
 	}
 
-	/**
-		Number of client connections currently being served.
-
-		On a server spread over runtimes, every runtime's together: the count
-		`maxConnections` is held to.
-	**/
-	public var activeConnections(get, never):Int;
-
-	private function get_activeConnections():Int {
+	// `connectionCount` here is the client connections being served, over
+	// HTTP/1.1 or HTTP/2, and those whose first bytes have not yet said
+	// which: the count `maxConnections` is held to. On a server spread over
+	// runtimes, every runtime's together.
+	@:noCompletion override private function get_connectionCount():Int {
 		#if (target.threaded && !js)
 		if (__spread != null) {
 			return __spread.connections;
@@ -283,7 +279,7 @@ class HTTPServer extends ServerSocket {
 		#if (target.threaded && !js)
 		if (__spread != null) {
 			// Each runtime drains its own; this finishes once they all have.
-			Logger.info('HTTP Server draining: ${activeConnections} active connection(s) across ${__spread.runtimes.length} runtimes');
+			Logger.info('HTTP Server draining: ${connectionCount} connection(s) across ${__spread.runtimes.length} runtimes');
 			__drainReplicas(timeoutSeconds, (replica, drained) -> (cast replica : HTTPServer).drain(timeoutSeconds, drained),
 				() -> __finishDrain(onComplete));
 			return;
@@ -855,7 +851,7 @@ class HTTPServer extends ServerSocket {
 		// Bound to the live counter rather than mirrored, so the gauge
 		// cannot drift from the server's own accounting.
 		// Every runtime's, on a server spread over several.
-		registry.gaugeFn(prefix + "_active_connections", () -> activeConnections, null, "Client connections currently being served.");
+		registry.gaugeFn(prefix + "_active_connections", () -> connectionCount, null, "Client connections currently being served.");
 
 		// Aggregates across connections, never a series per peer: a label
 		// carrying a client address would create a time series that

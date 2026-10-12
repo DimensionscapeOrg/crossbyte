@@ -771,6 +771,53 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(bob);
 	}
 
+	/**
+		`sessionCount` counts the sessions a server accepted and those it
+		dialled, once each has finished its handshake, and lets each go as
+		it closes, whichever end closes it.
+	**/
+	public function testAServerCountsItsSessions():Void {
+		if (!requireDatagramSupport()) return;
+
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var acceptedByBob:Array<ReliableDatagramSocket> = [];
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> acceptedByBob.push(e.socket));
+
+			var toBob = alice.connect("127.0.0.1", bob.localPort);
+			Assert.equals(0, alice.sessionCount, "a session still in its handshake was counted");
+			client.connect("127.0.0.1", bob.localPort);
+			pumpUntil(() -> toBob.connected && client.connected && acceptedByBob.length == 2 && alice.sessionCount == 1, 5.0);
+
+			Assert.equals(1, alice.sessionCount, "the session the server dialled was not counted");
+			Assert.equals(2, bob.sessionCount, "the sessions the server accepted were not counted");
+
+			// The peer closes one: the server hears it go.
+			client.close();
+			pumpUntil(() -> bob.sessionCount == 1, 5.0);
+			Assert.equals(1, bob.sessionCount, "a session its peer closed was still counted");
+
+			// The server's side closes the other.
+			toBob.close();
+			pumpUntil(() -> alice.sessionCount == 0 && bob.sessionCount == 0, 5.0);
+			Assert.equals(0, alice.sessionCount, "a session the server dialled and closed was still counted");
+			Assert.equals(0, bob.sessionCount);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(alice);
+		closeServerQuietly(bob);
+	}
+
 	public function testDiallingRefusesWhatItCannotHonour():Void {
 		if (!requireDatagramSupport()) return;
 

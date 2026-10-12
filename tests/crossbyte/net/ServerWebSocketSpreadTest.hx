@@ -86,7 +86,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 			Assert.isTrue(hook != null && hook.runtime == expected[i] && hook.thread == expected[i].__ownerThread,
 				'the upgrade hook for session $i was not asked on its runtime');
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 4, WAIT), 'clientCount is ${server.clientCount}, not 4');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 4, WAIT), 'connectionCount is ${server.connectionCount}, not 4');
 
 		for (i in 0...clients.length) {
 			WebSocketWire.sendText(clients[i], "hello" + i);
@@ -97,10 +97,10 @@ class ServerWebSocketSpreadTest extends utest.Test {
 		// Ended by the client: its close is told on its runtime too.
 		WebSocketWire.sendClose(clients[0], 1000);
 		Assert.equals("close:own", SpreadSupport.pop(seen, WAIT), "a session's close was told off its runtime");
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 3, WAIT), 'clientCount is ${server.clientCount} once one closed, not 3');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 3, WAIT), 'connectionCount is ${server.connectionCount} once one closed, not 3');
 
 		SpreadSupport.closeAll(clients);
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 0, WAIT), 'clientCount is ${server.clientCount} once every client left');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 0, WAIT), 'connectionCount is ${server.connectionCount} once every client left');
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop([acceptor, first, second]);
 	}
@@ -185,7 +185,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 		for (i in 0...held.length) {
 			Assert.isTrue(held[i] > 0, 'runtime $i held none of the sessions: $held');
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 0, WAIT), 'clientCount is ${server.clientCount} once every client left');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 0, WAIT), 'connectionCount is ${server.connectionCount} once every client left');
 
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop(workers.concat([acceptor]));
@@ -238,7 +238,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 		}
 		Assert.equals(20, held[0] + held[1], "a session opened off the runtime that accepted it");
 		Assert.isTrue(held[0] > 0 && held[1] > 0, 'the kernel gave one runtime every session: $held');
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 20, WAIT));
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 20, WAIT));
 
 		SpreadSupport.closeAll(clients);
 		SpreadSupport.on(acceptor, () -> server.close());
@@ -274,7 +274,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.handshakeFailures == 4, WAIT), 'upgrades that ran out of time were counted ${server.handshakeFailures} times, not 4');
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.pendingHandshakeCount() == 0, WAIT));
-		Assert.equals(0, server.clientCount);
+		Assert.equals(0, server.connectionCount);
 
 		SpreadSupport.closeAll(silent);
 		SpreadSupport.on(acceptor, () -> server.close());
@@ -311,13 +311,13 @@ class ServerWebSocketSpreadTest extends utest.Test {
 				clients.push(client);
 			}
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 3, WAIT), 'clientCount is ${server.clientCount}, not 3');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 3, WAIT), 'connectionCount is ${server.connectionCount}, not 3');
 		Assert.isNull(WebSocketWire.open(server.localPort), "a fourth session opened past maxConnections across the runtimes");
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 1, WAIT), 'refusedConnections is ${server.refusedConnections}, not 1');
 
 		// One leaves, and its place is the next one's, whichever runtime.
 		WebSocketWire.sendClose(clients[0], 1000);
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 2, WAIT), "the session that left was still counted");
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 2, WAIT), "the session that left was still counted");
 		var next = WebSocketWire.open(server.localPort);
 		Assert.notNull(next, "a place freed on one runtime was not taken");
 		if (next != null) {
@@ -358,7 +358,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 				clients.push(client);
 			}
 		}
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 3, WAIT), 'clientCount is ${server.clientCount}, not 3');
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 3, WAIT), 'connectionCount is ${server.connectionCount}, not 3');
 		var onFirst:Int = SpreadSupport.on(first, () -> (cast server.__spread.replicas[0] : ServerWebSocket).__clients.length);
 		Assert.isTrue(onFirst > 0, "no session opened on the runtime that exits");
 		Assert.equals(3, server.__spread.connections);
@@ -482,7 +482,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 			SpreadSupport.pop(opened, WAIT);
 		}
 		Assert.equals(4, clients.length);
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.clientCount == 4, WAIT));
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.connectionCount == 4, WAIT));
 
 		SpreadSupport.on(acceptor, () -> {
 			server.drain(5.0, () -> drained.add(SpreadSupport.where(acceptor)), 1001);
@@ -496,7 +496,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 		}
 
 		Assert.equals("own", SpreadSupport.pop(drained, WAIT), "drain() did not finish on the server's runtime");
-		Assert.equals(0, server.clientCount, "sessions were left after drain()");
+		Assert.equals(0, server.connectionCount, "sessions were left after drain()");
 		Assert.isFalse(server.listening);
 		Assert.isTrue(SpreadSupport.waitFor(() -> made[0].__didExit && made[1].__didExit, WAIT), "the runtimes made for the server outlived its drain");
 

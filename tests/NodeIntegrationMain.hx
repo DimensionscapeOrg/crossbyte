@@ -958,7 +958,7 @@ class NodeIntegrationMain extends Application {
 		wsListener.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {
 			wsAccepted = cast event.socket;
 			check("the server accepted a session", wsAccepted != null, "no socket on the event");
-			check("the server counts its sessions", wsListener.clientCount == 1, "clientCount " + wsListener.clientCount);
+			check("the server counts its sessions", wsListener.connectionCount == 1, "connectionCount " + wsListener.connectionCount);
 
 			wsAccepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 				var request = wsAccepted.readUTFBytes(wsAccepted.bytesAvailable);

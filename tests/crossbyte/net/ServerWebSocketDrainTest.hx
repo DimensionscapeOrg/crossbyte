@@ -39,7 +39,7 @@ class ServerWebSocketDrainTest extends utest.Test {
 			pumpUntil(() -> @:privateAccess server.__pendingUpgrades.length == 0, 3.0);
 
 			Assert.equals(0, @:privateAccess server.__pendingUpgrades.length, "a session that never upgraded was still being waited on");
-			Assert.equals(0, server.clientCount, "a session that never upgraded was counted as established");
+			Assert.equals(0, server.connectionCount, "a session that never upgraded was counted as established");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -88,7 +88,7 @@ class ServerWebSocketDrainTest extends utest.Test {
 		server.listen();
 
 		Assert.isTrue(server.listening);
-		Assert.equals(0, server.clientCount);
+		Assert.equals(0, server.connectionCount);
 
 		server.stopAccepting();
 		Assert.isFalse(server.listening);
@@ -120,7 +120,7 @@ class ServerWebSocketDrainTest extends utest.Test {
 		Assert.isTrue(completed);
 		Assert.isTrue(server.draining);
 		Assert.isFalse(server.listening);
-		Assert.equals(0, server.clientCount);
+		Assert.equals(0, server.connectionCount);
 
 		// The listener was genuinely released: the port can be rebound.
 		var successor = new ServerSocket();

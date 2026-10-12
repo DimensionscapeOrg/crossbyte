@@ -120,8 +120,8 @@ class HTTPServerH2Test extends utest.Test {
 
 			var started:Float = haxe.Timer.stamp();
 			HTTPTestSupport.pumpUntilAsync(function():Bool {
-				if (server.activeConnections > peak) {
-					peak = server.activeConnections;
+				if (server.connectionCount > peak) {
+					peak = server.connectionCount;
 				}
 				return haxe.Timer.stamp() - started > 2.0 || Lambda.foreach(closed, c -> c);
 			}, 4.0, function(_):Void {

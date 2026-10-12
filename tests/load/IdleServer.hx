@@ -109,12 +109,12 @@ class IdleServer {
 		var giveUpAt:Float = Timer.stamp() + 30 + clients / (rate * procs) * 2;
 		var waiting:Int = -1;
 		waiting = crossbyte.Timer.setInterval(0.25, 0.25, () -> {
-			if (server.clientCount < clients && Timer.stamp() < giveUpAt) {
+			if (server.connectionCount < clients && Timer.stamp() < giveUpAt) {
 				return;
 			}
 			crossbyte.Timer.clear(waiting);
 			connectedAt = Timer.stamp();
-			Report.emit({kind: "idle-connected", open: server.clientCount, of: clients, seconds: round(connectedAt - started)});
+			Report.emit({kind: "idle-connected", open: server.connectionCount, of: clients, seconds: round(connectedAt - started)});
 			crossbyte.Timer.setTimeout(settle, __beginMeasuring);
 		});
 	}
@@ -122,10 +122,10 @@ class IdleServer {
 	function __beginMeasuring():Void {
 		__gc();
 		steady = ProcessStats.sample();
-		var n:Int = server.clientCount > 0 ? server.clientCount : 1;
+		var n:Int = server.connectionCount > 0 ? server.connectionCount : 1;
 		Report.emit({
 			kind: "idle-steady",
-			open: server.clientCount,
+			open: server.connectionCount,
 			heapLiveMB: ProcessStats.mb(steady.heapLive),
 			rssMB: ProcessStats.mb(steady.rss),
 			privateMB: ProcessStats.mb(steady.privateBytes),
@@ -152,7 +152,7 @@ class IdleServer {
 		Report.emit({
 			kind: "idle-window",
 			t: round(now - runFrom),
-			open: server.clientCount,
+			open: server.connectionCount,
 			corePercent: round(cpu / wall * 100),
 			kernelShare: round((sample.kernel - windowSample.kernel) / Math.max(1e-9, (sample.user - windowSample.user) + (sample.kernel - windowSample.kernel))),
 			heapLiveMB: ProcessStats.mb(sample.heapLive),
@@ -173,11 +173,11 @@ class IdleServer {
 		var end = ProcessStats.sample();
 		var wall:Float = Timer.stamp() - runFrom;
 		var cpu:Float = (end.cpu - runSample.cpu);
-		var n:Int = steady == null ? 1 : Std.int(Math.max(1, server.clientCount));
+		var n:Int = steady == null ? 1 : Std.int(Math.max(1, server.connectionCount));
 		Report.emit({
 			kind: "idle-summary",
 			clients: clients,
-			open: server.clientCount,
+			open: server.connectionCount,
 			seconds: round(wall),
 			corePercent: round(cpu / wall * 100),
 			userPercent: round((end.user - runSample.user) / wall * 100),
@@ -195,7 +195,7 @@ class IdleServer {
 		var giveUpAt:Float = Timer.stamp() + 120;
 		var watch:Int = -1;
 		watch = crossbyte.Timer.setInterval(0.5, 0.5, () -> {
-			if ((server.clientCount > 0 || children.running > 0) && Timer.stamp() < giveUpAt) {
+			if ((server.connectionCount > 0 || children.running > 0) && Timer.stamp() < giveUpAt) {
 				return;
 			}
 			crossbyte.Timer.clear(watch);
@@ -205,7 +205,7 @@ class IdleServer {
 				var clean:Bool = children.failed == 0 && clientErrors == 0 && clientClosedEarly == 0;
 				Report.emit({
 					kind: "idle-after",
-					open: server.clientCount,
+					open: server.connectionCount,
 					heapLiveMB: ProcessStats.mb(after.heapLive),
 					baselineHeapLiveMB: ProcessStats.mb(baseline.heapLive),
 					rssMB: ProcessStats.mb(after.rss),

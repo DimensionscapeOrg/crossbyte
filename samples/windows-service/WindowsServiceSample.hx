@@ -75,7 +75,7 @@ class WindowsServiceSample extends ServerApplication {
 	}
 
 	private function __handleShutdown():Void {
-		Logger.info("stop requested; draining", ["connections" => Std.string(server.activeConnections)]);
+		Logger.info("stop requested; draining", ["connections" => Std.string(server.connectionCount)]);
 
 		// Asking for longer than the drain can take. The SCM assumes a service
 		// that has said nothing for its wait hint has hung, and kills it, so

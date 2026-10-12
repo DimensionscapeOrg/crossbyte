@@ -149,7 +149,7 @@ class WebSocketSessionTest extends utest.Test {
 				}
 				Assert.isTrue(peer.ended, "the refused connection was left open");
 				Assert.equals(0, sessions.length, "a refused upgrade opened a session");
-				Assert.equals(0, server.clientCount);
+				Assert.equals(0, server.connectionCount);
 				peer.close();
 				finish();
 			});
@@ -594,7 +594,7 @@ class WebSocketSessionTest extends utest.Test {
 			}, 5.0, function(_) {
 				Assert.equals(1006, code, "a peer that answered nothing was never given up");
 				Assert.isTrue(reason != null && reason.indexOf("idle") >= 0, "the close did not say the peer was idle: " + reason);
-				Assert.equals(0, server.clientCount, "the dead session is still counted");
+				Assert.equals(0, server.connectionCount, "the dead session is still counted");
 				peer.close();
 				finish();
 			});
@@ -620,7 +620,7 @@ class WebSocketSessionTest extends utest.Test {
 				// Three idle timeouts, nothing sent either way but the pings.
 				NetPump.wait(2.0, function() {
 					Assert.isFalse(closed, "a peer answering every ping was closed as idle");
-					Assert.equals(1, server.clientCount);
+					Assert.equals(1, server.connectionCount);
 					try client.close() catch (_:Dynamic) {}
 					finish();
 				});

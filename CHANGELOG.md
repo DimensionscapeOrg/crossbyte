@@ -140,11 +140,12 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   mbedTLS 3.6.7, TLS 1.3 is negotiated with every peer that offers it.
 - Limits on a server: `ServerSocket.admit(address, port)`, asked before
   any TLS work; `maxAcceptsPerTick` (64); `maxPendingHandshakes` (256);
-  `maxConnections` (10,000); `maxPendingHandshakesPerAddress` (16); and
-  the counts `refusedConnections`, `acceptFailures` and
-  `handshakeFailures`. They are `Float`s, as `PeerConnection.refusedChannels`
-  is, exact to 2^53, so a flood that goes on for long enough cannot wrap
-  one past 2^31 into a negative number.
+  `maxConnections` (10,000); `maxPendingHandshakesPerAddress` (16);
+  `connectionCount`, the connections open, also on `ServerWebSocket` (its
+  sessions) and `HTTPServer`; and the counts `refusedConnections`,
+  `acceptFailures` and `handshakeFailures`. They are `Float`s, as
+  `PeerConnection.refusedChannels` is, exact to 2^53, so a flood that goes
+  on for long enough cannot wrap one past 2^31 into a negative number.
 - Limits on a connection: `Socket.maxOutputBufferSize`,
   `outputOverflowPolicy` and `outputBufferLength` for what waits for a
   peer, and `maxInputBufferSize` (16 MiB) with `inputOverflowPolicy`
@@ -208,7 +209,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - A payload on the CONNECT, up to 1,200 bytes, shown to
   `admit(address, port, payload)` before anything is allocated and kept as
   `connectPayload`. `maxPendingConnections` (256) bounds half-open
-  sessions.
+  sessions, and `ReliableDatagramServerSocket.sessionCount` counts those
+  open.
 - Join cookies: `ReliableDatagramServerSocket.joinValidation`
   (`UNDER_PRESSURE` by default, `ALWAYS`, `NEVER`) and
   `joinValidationThreshold` (64) answer a CONNECT with a stateless cookie,
@@ -262,7 +264,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `maxMessageSize` (1 MiB), `closeTimeout` (5 s) and
   `maxOutputBufferSize` (8 MiB).
 - Graceful shutdown: `stopAccepting()`, `drain(timeout, ?onComplete,
-  closeCode)`, `clientCount`, `draining` and `WebSocket.closeWith(code,
+  closeCode)`, `connectionCount`, `draining` and `WebSocket.closeWith(code,
   reason)`. `publishMetrics()` adds session counts to a `Metrics`
   registry.
 - `runtimes`, `runtimeCount`, `selectRuntime` and `reusePort`, as on
@@ -336,7 +338,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   are compressed as they go. `fileCacheSize` (16 MB) keeps small static
   files in memory.
 - `HTTPServer.drain(timeout, ?onComplete)` finishes in-flight requests
-  before closing.
+  before closing, and `connectionCount` says how many connections are
+  open.
 - Metrics: `HTTPServerConfig.metrics` and `metricsPrefix`.
 - One server on several cores: `HTTPServerConfig.runtimes`,
   `runtimeCount` and `reusePort`.

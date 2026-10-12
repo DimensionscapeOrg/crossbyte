@@ -56,6 +56,7 @@ class ServerSocketLimitsTest extends utest.Test {
 			}, 10.0, function(_) {
 				NetPump.until(() -> __ended(peers) >= 1, 5.0, function(_) {
 					Assert.equals(2, announced.length, "a raw server announced past its limit");
+					Assert.equals(2, server.connectionCount, "the connection past the limit was counted as open");
 					Assert.equals(1, server.refusedConnections, "the connection past the limit was not counted");
 					Assert.isTrue(peers[2].ended, "the connection past the limit was not closed");
 					Assert.isFalse(peers[0].ended || peers[1].ended, "a connection within the limit was closed");
@@ -125,14 +126,14 @@ class ServerSocketLimitsTest extends utest.Test {
 			NetPump.until(() -> announced.length >= 1, 5.0, function(_) {
 				// The peer hangs up: the server reads its end, and lets go.
 				peers[0].close();
-				NetPump.until(() -> server.__openCount == 0, 5.0, function(_) {
-					Assert.equals(0, server.__openCount, "a connection its peer closed kept its place");
+				NetPump.until(() -> server.connectionCount == 0, 5.0, function(_) {
+					Assert.equals(0, server.connectionCount, "a connection its peer closed kept its place");
 					peers.push(new WirePeer(server.localPort));
 					NetPump.until(() -> announced.length >= 2, 5.0, function(_) {
 						Assert.equals(2, announced.length, "the next connection was not taken");
 						// The server closes it.
 						announced[1].close();
-						Assert.equals(0, server.__openCount, "a connection the server closed kept its place");
+						Assert.equals(0, server.connectionCount, "a connection the server closed kept its place");
 						peers.push(new WirePeer(server.localPort));
 						NetPump.until(() -> announced.length >= 3, 5.0, function(_) {
 							Assert.equals(3, announced.length);
@@ -145,7 +146,7 @@ class ServerSocketLimitsTest extends utest.Test {
 		});
 	}
 
-	/** `0` keeps no count. **/
+	/** `0` sets no limit, and the connections are still counted. **/
 	@:timeout(20000)
 	public function testNoLimitTakesEveryConnection(async:Async):Void {
 		var server = new ServerSocket();
@@ -159,6 +160,9 @@ class ServerSocketLimitsTest extends utest.Test {
 			NetPump.until(() -> announced.length >= 5, 5.0, function(_) {
 				Assert.equals(5, announced.length);
 				Assert.equals(0, server.refusedConnections);
+				Assert.equals(5, server.connectionCount, "a server with no limit did not count its connections");
+				announced[0].close();
+				Assert.equals(4, server.connectionCount, "a connection the server closed was still counted");
 				__finish(server, announced, peers, async);
 			});
 		});

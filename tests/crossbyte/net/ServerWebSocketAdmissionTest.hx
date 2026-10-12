@@ -52,7 +52,7 @@ class ServerWebSocketAdmissionTest extends utest.Test {
 				Assert.isTrue(closed, "the refused peer was never closed");
 				Assert.same(["127.0.0.1"], asked);
 				Assert.isFalse(everPending, "a refused peer was taken on as a session");
-				Assert.equals(0, server.clientCount);
+				Assert.equals(0, server.connectionCount);
 				closeQuietly(client);
 				server.close();
 				async.done();

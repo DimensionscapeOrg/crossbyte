@@ -78,7 +78,7 @@ class WebSocketMemoryTest extends utest.Test {
 					return __held(framing) < 1024;
 				}, 2.0, function(_) {
 					Assert.isTrue(__held(framing) < 1024, 'a quiet session still held ${__held(framing)} bytes for its messages');
-					Assert.equals(1, server.clientCount, "the session went with its storage");
+					Assert.equals(1, server.connectionCount, "the session went with its storage");
 					done();
 				});
 			});
@@ -224,12 +224,12 @@ class WebSocketMemoryTest extends utest.Test {
 			session.addEventListener(Event.CLOSE, function(_) {
 				closed = true;
 				// Off the server's list before anything hears of the close.
-				Assert.equals(0, server.clientCount, "the session was still listed as its close was heard");
+				Assert.equals(0, server.connectionCount, "the session was still listed as its close was heard");
 			});
 			peer.close();
 			NetPump.until(() -> closed, 5.0, function(_) {
 				Assert.isTrue(closed);
-				Assert.equals(0, server.clientCount);
+				Assert.equals(0, server.connectionCount);
 				done();
 			});
 		});

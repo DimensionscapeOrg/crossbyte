@@ -351,7 +351,7 @@ class HTTPStreamingTest extends utest.Test {
 
 		function finish(parked:Bool):Void {
 			var streaming:Bool = handler != null && handler.__streaming;
-			var open:Int = server.activeConnections;
+			var open:Int = server.connectionCount;
 			try client.close() catch (_:Dynamic) {}
 			try server.close() catch (_:Dynamic) {}
 			try root.deleteDirectory(true) catch (_:Dynamic) {}
@@ -385,7 +385,7 @@ class HTTPStreamingTest extends utest.Test {
 				if (handler.__streaming) {
 					handler.__streamStallDeadline = haxe.Timer.stamp() - 1;
 				}
-				return !handler.__streaming && server.activeConnections == 0;
+				return !handler.__streaming && server.connectionCount == 0;
 			}, 3.0, _ -> finish(true));
 		});
 	}
@@ -408,8 +408,8 @@ class HTTPStreamingTest extends utest.Test {
 				server.__sweep(haxe.Timer.stamp());
 				server.__sweep(haxe.Timer.stamp() + 31);
 			}
-			HTTPTestSupport.pumpWallUntilAsync(() -> server.activeConnections == 0, parked ? 3.0 : 0.0, function(_):Void {
-				var open:Int = server.activeConnections;
+			HTTPTestSupport.pumpWallUntilAsync(() -> server.connectionCount == 0, parked ? 3.0 : 0.0, function(_):Void {
+				var open:Int = server.connectionCount;
 				try client.close() catch (_:Dynamic) {}
 				try server.close() catch (_:Dynamic) {}
 				Assert.isTrue(parked, "the responses never stalled, so this shows nothing" + __heldSaw);

@@ -1132,6 +1132,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// Where this session is in its server's list of them (see
 	// `ReliableDatagramServerSocket.broadcast`), or -1 for none.
 	@:noCompletion private var __listedAt:Int = -1;
+	// Whether its server counts it in `sessionCount`: from its handshake's
+	// end until it closes.
+	@:noCompletion private var __inSessionCount:Bool = false;
 	@:noCompletion private var __retransmitHandle:Int = -1;
 
 	/**

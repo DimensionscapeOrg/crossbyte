@@ -31,7 +31,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 		__upgradeOfSize(HEADER_LIMIT, function(server, peer, head) {
 			Assert.notNull(head, "a request at the limit was not answered");
 			Assert.isTrue(head != null && head.indexOf(" 101 ") > 0, "a request at the limit was not upgraded: " + head);
-			Assert.equals(1, server.clientCount, "a request at the limit did not become a session");
+			Assert.equals(1, server.connectionCount, "a request at the limit did not become a session");
 		}, async);
 	}
 
@@ -43,7 +43,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 	public function testAnUpgradeRequestPastTheLimitIsRefusedWith431(async:Async):Void {
 		__upgradeOfSize(HEADER_LIMIT + 1, function(server, peer, head) {
 			Assert.isTrue(head != null && head.indexOf(" 431 ") > 0, "a request past the limit was not refused with 431: " + head);
-			Assert.equals(0, server.clientCount, "a request past the limit became a session");
+			Assert.equals(0, server.connectionCount, "a request past the limit became a session");
 			NetPump.until(() -> {
 				peer.poll();
 				return peer.ended;
@@ -110,7 +110,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 					Assert.isTrue(peer.ended, 'a request without end was still being read after $sent bytes');
 					Assert.isTrue(sent <= max + 256 * 1024, 'the request was refused only after $sent bytes, against a limit of $max');
 					Assert.isTrue(held <= max + 128 * 1024, 'the session held $held bytes of the request, against a limit of $max');
-					Assert.equals(0, server.clientCount);
+					Assert.equals(0, server.connectionCount);
 					peer.close();
 					server.close();
 					async.done();
@@ -447,7 +447,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 				}, 5.0, function(_) {
 					Assert.isTrue(third.head() != null && third.head().indexOf(" 503 ") > 0, "the third session was not answered 503: " + third.head());
 					Assert.isTrue(third.ended, "the refused connection was left open");
-					Assert.equals(2, server.clientCount);
+					Assert.equals(2, server.connectionCount);
 					Assert.equals(2, asked, "upgrade was asked about a session that could not open");
 					Assert.equals(1, server.refusedConnections);
 					Assert.equals(0, server.handshakeFailures, "a refusal was counted as a failed handshake");
@@ -455,7 +455,7 @@ class ServerWebSocketLimitsTest extends utest.Test {
 					// One goes, and the next is taken.
 					first.close();
 					var fourth = new WirePeer(server.localPort);
-					NetPump.until(() -> server.clientCount < 2, 5.0, function(_) {
+					NetPump.until(() -> server.connectionCount < 2, 5.0, function(_) {
 						fourth.upgrade();
 						NetPump.until(() -> {
 							fourth.poll();

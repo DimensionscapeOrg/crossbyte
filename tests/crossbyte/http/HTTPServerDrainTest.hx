@@ -44,7 +44,7 @@ class HTTPServerDrainTest extends utest.Test {
 			var port:Int = server.localPort;
 
 			Assert.isFalse(server.draining);
-			Assert.equals(0, server.activeConnections);
+			Assert.equals(0, server.connectionCount);
 			Assert.isTrue(server.listening);
 
 			var completed:Bool = false;
@@ -55,7 +55,7 @@ class HTTPServerDrainTest extends utest.Test {
 			Assert.isTrue(completed);
 			Assert.isTrue(server.draining);
 			Assert.isFalse(server.listening);
-			Assert.equals(0, server.activeConnections);
+			Assert.equals(0, server.connectionCount);
 
 			// The listener was genuinely released: the port can be rebound.
 			var successor = new crossbyte.net.ServerSocket();
@@ -111,7 +111,7 @@ class HTTPServerDrainTest extends utest.Test {
 			client.addEventListener(Event.CLOSE, _ -> closed = true);
 
 			HTTPTestSupport.connectThen(client, server, function():Void {
-				HTTPTestSupport.pumpUntilAsync(() -> server.activeConnections == 1, 2.0, function(accepted:Bool):Void {
+				HTTPTestSupport.pumpUntilAsync(() -> server.connectionCount == 1, 2.0, function(accepted:Bool):Void {
 					Assert.isTrue(accepted, "the silent connection was not counted (http2Enabled=" + http2 + ")");
 
 					var started:Float = haxe.Timer.stamp();
@@ -175,7 +175,7 @@ class HTTPServerDrainTest extends utest.Test {
 		HTTPTestSupport.connectThen(client, server, function():Void {
 			HTTPTestSupport.pumpUntilAsync(() -> raw.indexOf("drain fixture") >= 0, 2.0, function(_):Void {
 				Assert.isTrue(raw.indexOf("drain fixture") >= 0);
-				Assert.equals(1, server.activeConnections);
+				Assert.equals(1, server.connectionCount);
 
 				// The connection is between requests: there is nothing in
 				// flight to wait for, so drain closes it in the walk and
@@ -184,7 +184,7 @@ class HTTPServerDrainTest extends utest.Test {
 				var completed = false;
 				server.drain(30.0, () -> completed = true);
 				Assert.isTrue(completed);
-				Assert.equals(0, server.activeConnections);
+				Assert.equals(0, server.connectionCount);
 
 				HTTPTestSupport.pumpUntilAsync(() -> closeSeen, 2.0, function(_):Void {
 					Assert.isTrue(closeSeen);
@@ -248,7 +248,7 @@ class HTTPServerDrainTest extends utest.Test {
 				// In-flight work holds the drain open; severing it here is
 				// exactly what drain() exists to avoid.
 				Assert.isFalse(completed);
-				Assert.equals(1, server.activeConnections);
+				Assert.equals(1, server.connectionCount);
 
 				release();
 

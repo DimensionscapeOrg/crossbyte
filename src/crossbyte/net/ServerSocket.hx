@@ -157,8 +157,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public var maxPendingHandshakes:Int = 256;
 
 	/**
-		The most connections this server keeps open at once. `0` or less
-		keeps no count. 10,000 by default.
+		The most connections this server keeps open at once, as
+		`connectionCount` counts them. `0` or less sets no limit. 10,000 by
+		default.
 
 		A connection arriving while this many are open is closed as soon as
 		it is accepted (before any TLS handshake, before a `Socket` is made
@@ -269,12 +270,40 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		return count;
 	}
 
+	/**
+		The connections this server holds open: the count `maxConnections`
+		holds it to, kept whether or not there is a limit. A connection is
+		counted as its `connect` event is dispatched and let go of as it
+		closes, whichever end closes it; one still in its TLS handshake is not
+		counted yet (see `pendingHandshakeCount()`).
+
+		The servers built on this one count in their protocol's terms: a
+		`ServerWebSocket` its sessions that have finished their opening
+		handshake, and an `HTTPServer` the connections it is serving.
+
+		On a server spread over `runtimes`, every runtime's together. A
+		`ServerWebSocket` adds up each runtime's sessions as it is read, so
+		a session that opened or closed on another thread a moment ago may
+		not be in it yet.
+	**/
+	public var connectionCount(get, never):Int;
+
+	@:noCompletion private function get_connectionCount():Int {
+		#if (target.threaded && !js)
+		if (__spread != null) {
+			return __spread.connections;
+		}
+		#end
+		return __openCount;
+	}
+
 	// Connections still in their handshake, by address; shared with every
 	// replica of a spread server. See maxPendingHandshakesPerAddress.
 	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
 
-	// Connections open, counted against maxConnections where this server
-	// counts them itself and is on one runtime; see __countsOpen.
+	// Connections open, where this server counts them itself (see
+	// __countsOpen): all of them on one runtime, this runtime's share on a
+	// replica.
 	@:noCompletion private var __openCount:Int = 0;
 
 	/**
@@ -2000,14 +2029,14 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 
 	/**
-		Whether this server holds its connections to `maxConnections` here,
-		as each is announced: a server whose own class takes each connection
-		as it is announced (an `HTTPServer`, a `ServerWebSocket`) counts
-		them in its protocol's terms instead.
+		Whether this server counts its connections here, as each is
+		announced, for `connectionCount` and `maxConnections`: a server whose
+		own class takes each connection as it is announced (an `HTTPServer`,
+		a `ServerWebSocket`) counts them in its protocol's terms instead.
 	**/
 	@:noCompletion private inline function __countsOpen():Bool {
 		var front:ServerSocket = __front != null ? __front : this;
-		return front.__ownConnect == null && front.maxConnections > 0;
+		return front.__ownConnect == null;
 	}
 
 	/**
@@ -2016,10 +2045,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		for good by `__claimOpen` as it is announced.
 	**/
 	@:noCompletion private function __atOpenLimit():Bool {
-		if (!__countsOpen()) {
+		var front:ServerSocket = __front != null ? __front : this;
+		if (!__countsOpen() || front.maxConnections <= 0) {
 			return false;
 		}
-		var front:ServerSocket = __front != null ? __front : this;
 		#if (target.threaded && !js)
 		var spread:ServerSpread = __spread != null ? __spread : __shared;
 		if (spread != null) {
@@ -2031,13 +2060,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Counts a connection about to be announced against `maxConnections`:
-		whether there was room. On a spread server checked and counted in one
-		step, across every runtime, so two cannot take the last place. The
-		socket tells this server when it closes.
+		whether there was room (always, with no limit). On a spread server
+		checked and counted in one step, across every runtime, so two cannot
+		take the last place. The socket tells this server when it closes.
 	**/
 	@:noCompletion private function __claimOpen(socket:CBSocket):Bool {
 		var front:ServerSocket = __front != null ? __front : this;
-		var limit:Int = front.maxConnections;
+		var limit:Int = front.maxConnections > 0 ? front.maxConnections : 0x7FFFFFFF;
 		#if (target.threaded && !js)
 		if (__shared != null) {
 			if (!__shared.claimConnection(limit)) {
