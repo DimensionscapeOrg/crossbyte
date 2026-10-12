@@ -97,7 +97,7 @@ abstract RPCCallWriter(RPCFrame) {
 		Sends the call, as `call` does: on a connection that has ended it is
 		dropped, as a one-way call is.
 
-		@throws ArgumentError When the call is over `RPCSession.maxFrameLength`.
+		@throws ArgumentError When the call is over `RPCSession.maxFrameSize`.
 		@throws IllegalOperationError When it was sent or cancelled already.
 	**/
 	public inline function send():Void {

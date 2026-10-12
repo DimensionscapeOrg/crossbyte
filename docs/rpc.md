@@ -352,7 +352,7 @@ class LimitedChatHandler extends ChatHandler {
  A
 refusal the other side's session made is a single value, and allocates
 nothing to be told. A call that cannot go at all (its connection
-has ended, or it is over `maxFrameLength`) is told before its `...Then`
+has ended, or it is over `maxFrameSize`) is told before its `...Then`
 method returns. A receiver that throws is logged, and nothing else is
 affected.
 
@@ -707,7 +707,7 @@ session.onUnreadableFrame = (op, requestId, reason) -> {
 };
 ```
 
-A frame larger than this side takes (over its `maxFrameLength`, 8 MiB unless
+A frame larger than this side takes (over its `maxFrameSize`, 8 MiB unless
 set, or more than its connection holds to read whole, a TCP socket's
 `maxInputBufferSize`, 16 MiB unless set) is refused as its head arrives and
 read past as the rest does, and the connection carries on: a request is
@@ -719,7 +719,7 @@ answer. Nothing after it would line up, so the session closes the
 connection, and every call still waiting on it fails.
 
 A frame too long is caught before it is sent as well: a request over the
-sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
+sending session's `maxFrameSize` fails at once with an `ArgumentError` as its
 `cause` (`Unsent`), a one-way call throws one, and an answer too long is not
 sent: its caller is answered `TooLarge`, and `onHandlerError` is told. Both
 ends of a connection should agree on the limit.
@@ -1175,7 +1175,7 @@ it was sent sets `chunkLength` to `0`, and every answer goes whole.
 
 Pieces go over TCP, WebSocket and reliable UDP, to a peer whose hello says it
 reads them (every 1.0 session's does); to any other an answer goes whole.
-Each answer in pieces counts toward the reader's `maxFrameLength`, which it
+Each answer in pieces counts toward the reader's `maxFrameSize`, which it
 learns from the first piece, and the reader holds no more than a few times
 what has arrived of it. An answer that is one `Bytes` is put together in that
 `Bytes` itself, so its reader holds it once.

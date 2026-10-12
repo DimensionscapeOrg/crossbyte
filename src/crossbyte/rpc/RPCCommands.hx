@@ -253,7 +253,7 @@ abstract class RPCCommands {
 		call.
 
 		@throws ArgumentError When the call is over its session's
-		`RPCSession.maxFrameLength`: it went out without complaint and ended
+		`RPCSession.maxFrameSize`: it went out without complaint and ended
 		the connection on the other side.
 		@throws IllegalOperationError When these commands have no session.
 	**/

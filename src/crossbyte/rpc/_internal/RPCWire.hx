@@ -51,7 +51,7 @@ class RPCWire {
 		all. A reader holds them until the last, then reads the frame as if
 		it had come whole. At most
 		`MAX_CHUNK_STREAMS` answers go in pieces at once, and each counts
-		toward `RPCSession.maxFrameLength`. Only answers are sent so, and only
+		toward `RPCSession.maxFrameSize`. Only answers are sent so, and only
 		to a peer whose hello declared `CAPABILITY_CHUNKS`.
 	**/
 	public static inline final FLAG_CHUNK:Int = 0x40;

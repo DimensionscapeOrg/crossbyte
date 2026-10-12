@@ -185,9 +185,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		larger than the other side's limit ends the connection there, failing
 		every call waiting on it. `0` removes the limit.
 	**/
-	public var maxFrameLength:Int = RPCHandler.MAX_FRAME_LEN;
+	public var maxFrameSize:Int = DEFAULT_MAX_FRAME_SIZE;
 
-	/** Default for `maxOutputPending`: 16 MiB, two of the largest frames `maxFrameLength` lets go by default. **/
+	/** Default for `maxFrameSize`: 8 MiB. **/
+	public static inline final DEFAULT_MAX_FRAME_SIZE:Int = 8 * 1024 * 1024;
+
+	/** Default for `maxOutputPending`: 16 MiB, two of the largest frames `maxFrameSize` lets go by default. **/
 	public static inline final DEFAULT_MAX_OUTPUT_PENDING:Int = 16 * 1024 * 1024;
 
 	/**
@@ -199,7 +202,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		makes this side hold every answer, without end.
 
 		Checked as each frame is sent, against what was still waiting before
-		it, so one frame as large as `maxFrameLength` never trips it.
+		it, so one frame as large as `maxFrameSize` never trips it.
 		Reliable UDP and local IPC bound what waits themselves; what waits
 		here of answers going in pieces (see `chunkLength`) counts on every
 		transport. `0` removes the limit.
@@ -949,7 +952,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		`runtimeCall` writes the same frame value by value and `registerArgs`
 		reads it where it lies, allocating nothing.
 
-		@throws ArgumentError When the call is over `maxFrameLength`.
+		@throws ArgumentError When the call is over `maxFrameSize`.
 		@throws String When an argument is of a type the runtime lane does not carry.
 	**/
 	public function call(op:Int, ?args:Array<Dynamic>):Void {
@@ -962,7 +965,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 *
 	 * The response payload is decoded through the runtime codec and resolved into a
 	 * normal `RPCResponse<T>`. A call that cannot go fails at once: over
-	 * `maxFrameLength`, with an `ArgumentError` as its cause; on a connection
+	 * `maxFrameSize`, with an `ArgumentError` as its cause; on a connection
 	 * that has ended, with the `Reason` it ended with; and when the send
 	 * throws, with what it threw.
 	 *
@@ -1239,7 +1242,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		stays connected. Only a length that cannot be trusted ends it.
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
-		final maxLength:Int = maxFrameLength;
+		final maxLength:Int = maxFrameSize;
 		while (input.bytesAvailable >= 9 || (__skipping > 0 && input.bytesAvailable > 0)) {
 			if (__skipping > 0) {
 				__skip(input);
@@ -1419,10 +1422,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return true;
 	}
 
-	/** Why a frame of `payloadLen` bytes was refused: past `maxFrameLength`, or past what the connection holds. **/
+	/** Why a frame of `payloadLen` bytes was refused: past `maxFrameSize`, or past what the connection holds. **/
 	@:noCompletion private function __tooLargeWhy(payloadLen:Int):String {
-		if (maxFrameLength > 0 && payloadLen > maxFrameLength) {
-			return "An RPC frame of " + payloadLen + " bytes is over the other side's " + maxFrameLength + "-byte maxFrameLength";
+		if (maxFrameSize > 0 && payloadLen > maxFrameSize) {
+			return "An RPC frame of " + payloadLen + " bytes is over the other side's " + maxFrameSize + "-byte maxFrameSize";
 		}
 		return "An RPC frame of " + payloadLen + " bytes is more than the other side's connection holds to read it whole ("
 			+ (__connection : NetConnectionBase).__inputCapacity() + " bytes; for TCP its Socket.maxInputBufferSize)";
@@ -1434,7 +1437,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (chunks == null) {
 			chunks = __chunks = new RPCChunks(cast this);
 		}
-		chunks.arrived(stream, input, frameEnd, last, maxFrameLength);
+		chunks.arrived(stream, input, frameEnd, last, maxFrameSize);
 	}
 
 	/** An answer that arrived in pieces, whole: read as a frame that came so. **/
@@ -1909,7 +1912,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Sends a compiled call's answer, framed by the handler's generated code.
-		One too large to send (over `maxFrameLength`, or larger than the
+		One too large to send (over `maxFrameSize`, or larger than the
 		connection carries whole and not going in pieces) throws an `RPCError`
 		of `RPCFailure.TooLarge`, which its caller is answered with, and
 		`onHandlerError` is told.
@@ -1987,7 +1990,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Sends a request's frame, or fails `response` at once when it cannot go:
-		the connection has ended, the frame is over `maxFrameLength`, or the
+		the connection has ended, the frame is over `maxFrameSize`, or the
 		send throws. Nothing is left waiting on an answer that cannot come.
 	**/
 	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
@@ -2032,11 +2035,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-		Sends a one-way call's frame. Over `maxFrameLength` it throws; on a
+		Sends a one-way call's frame. Over `maxFrameSize` it throws; on a
 		connection that has ended it is dropped, since nobody is told what
 		becomes of a one-way call.
 
-		@throws ArgumentError When the call is over `maxFrameLength`.
+		@throws ArgumentError When the call is over `maxFrameSize`.
 	**/
 	@:noCompletion private function __sendCallFrame(framed:RPCFrame):Void {
 		if (__oversized(framed)) {
@@ -2139,13 +2142,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return false;
 	}
 
-	/** Whether `framed`, finished, holds more than `maxFrameLength` after its 4-byte length. **/
+	/** Whether `framed`, finished, holds more than `maxFrameSize` after its 4-byte length. **/
 	@:noCompletion private inline function __oversized(framed:RPCFrame):Bool {
-		return maxFrameLength > 0 && framed.payloadLength > maxFrameLength;
+		return maxFrameSize > 0 && framed.payloadLength > maxFrameSize;
 	}
 
 	@:noCompletion private function __oversizedMessage(what:String, framed:RPCFrame):String {
-		return what + " of " + framed.payloadLength + " bytes is over the " + maxFrameLength + "-byte RPC frame limit";
+		return what + " of " + framed.payloadLength + " bytes is over the " + maxFrameSize + "-byte RPC frame limit";
 	}
 
 	/**
@@ -2382,7 +2385,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** Room a runtime frame is begun with: it grows as its values are written. **/
 	@:noCompletion private static inline final RUNTIME_ROOM:Int = 64;
 
-	/** One over `maxFrameLength` throws, as `__sendAnswer` does. **/
+	/** One over `maxFrameSize` throws, as `__sendAnswer` does. **/
 	@:noCompletion private function __sendRuntimeResponse(op:Int, requestId:Int, value:Dynamic):Void {
 		final framed:RPCFrame = __takeFrame(RUNTIME_ROOM, RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE, op, requestId);
 		try {

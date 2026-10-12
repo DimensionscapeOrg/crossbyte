@@ -425,7 +425,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - A hello as each connection starts: `RPCSession.PROTOCOL_VERSION`,
   `peerVersion`, `peerCapabilities`, `peerCallsFingerprint`,
   `peerAnswersFingerprint` and `onHello`.
-- `RPCSession.maxFrameLength` (8 MiB) and `RPCHandler.session`, the
+- `RPCSession.maxFrameSize` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
 - Large answers in pieces: an answer longer than `RPCSession.chunkLength`
   (64 KiB) goes in pieces between the frames sent while it goes, as HTTP/2's
@@ -438,7 +438,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   reliable UDP one past its 256 KB `maxOutputBufferSize`, where it ended
   the session. Up to four answers go at once; what waits
   counts toward `maxOutputPending`, and each answer toward the reader's
-  `maxFrameLength`. Negotiated in the hello, so a peer without it gets whole
+  `maxFrameSize`. Negotiated in the hello, so a peer without it gets whole
   answers. Calls keep their order; an answer in pieces can complete after a
   frame sent later, and `chunkLength = 0` sends every answer whole. The
   guide's "On the wire" describes every frame. An answer of one `Bytes` is
@@ -1002,7 +1002,7 @@ says how.
   allocate nothing natively or on the JVM, where they allocated 344 and
   168 bytes.
 - A frame larger than its reader takes is refused and read past, and the
-  connection goes on: a call past the reader's `maxFrameLength` or past what
+  connection goes on: a call past the reader's `maxFrameSize` or past what
   its TCP socket holds (`maxInputBufferSize`), which waited for good there,
   fails `RPCFailure.TooLarge` at once, as does an answer past the caller's
   limit, or past what the answering side's local IPC carries. A call over a
@@ -1010,7 +1010,7 @@ says how.
   peer's 1 MiB `maxMessageSize` closed the connection; one over reliable UDP
   past its `maxOutputBufferSize`, or over local IPC past its 8 MiB message,
   fails `Unsent` as it is made, where it ended the session or went nowhere.
-  A frame past the reader's `maxFrameLength` ended the connection.
+  A frame past the reader's `maxFrameSize` ended the connection.
 - `RPCSession.onUnreadableFrame` is a property, and the reason it is told
   is made only once it is set: a call for a method the other side has not
   got, refused to a receiver, allocates nothing where it allocated 240 bytes
@@ -1645,7 +1645,7 @@ Fixes to code new in this release are not listed.
 - A method returning `Null<T>` answers correctly, where the first answer that
   was not null closed the connection.
 - A call to a session with no handler is answered rather than left
-  waiting, and a frame over `maxFrameLength` is refused before it is sent.
+  waiting, and a frame over `maxFrameSize` is refused before it is sent.
 - A session on a listening `LocalConnection` answers every client, not only
   the first.
 - On the JVM a handler of more than about twenty methods, or commands of
@@ -2314,6 +2314,8 @@ an API added in this release has is not listed here.
   	case TimedOut | Cancelled | Stopped | Disconnected(_) | Unsent(_) | Unreadable(_): giveUp();
   }
   ```
+- `RPCHandler.MAX_FRAME_LEN` is `RPCSession.DEFAULT_MAX_FRAME_SIZE`, the
+  default of `RPCSession.maxFrameSize`: 8 MiB, as it was.
 - `RPCResonse`, a misspelling of `RPCResponse` that rc.1 also exported, is
   deprecated and warns where it is used: write `RPCResponse`.
 

@@ -56,8 +56,8 @@ class RPCCallWriterTest extends utest.Test {
 		// the values written after the one byte kept for it move along.
 		for (total in [0, 1, 127, 128, 300, 16383, 16384, 20000]) {
 			var pair = new SessionPair();
-			pair.server.maxFrameLength = 0;
-			pair.client.maxFrameLength = 0;
+			pair.server.maxFrameSize = 0;
+			pair.client.maxFrameSize = 0;
 			var got:Array<Dynamic> = null;
 			pair.server.register(OP, args -> {
 				got = args;
@@ -133,7 +133,7 @@ class RPCCallWriterTest extends utest.Test {
 
 	public function testACallOverTheFrameLimitIsRefused():Void {
 		var pair = new SessionPair();
-		pair.client.maxFrameLength = 64;
+		pair.client.maxFrameSize = 64;
 		var writer = pair.client.runtimeCall(OP);
 		for (i in 0...20) {
 			writer.int(i);
@@ -161,11 +161,11 @@ class RPCCallWriterTest extends utest.Test {
 	}
 
 	/** The frames `send` puts on the wire, as hex, the hello left out. **/
-	static function framesOf(send:RPCSession<Dynamic, Dynamic>->Void, maxFrameLength:Int = -1):Array<String> {
+	static function framesOf(send:RPCSession<Dynamic, Dynamic>->Void, maxFrameSize:Int = -1):Array<String> {
 		var link = LinkedConnection.pair();
 		var session:RPCSession<Dynamic, Dynamic> = new RPCSession(link.client);
-		if (maxFrameLength >= 0) {
-			session.maxFrameLength = maxFrameLength;
+		if (maxFrameSize >= 0) {
+			session.maxFrameSize = maxFrameSize;
 		}
 		var frames:Array<String> = [];
 		link.server.readEnabled = true;

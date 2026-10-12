@@ -20,7 +20,7 @@ import utest.Assert;
 	`maxMessageSize` closed the connection; over reliable UDP one larger
 	than the session's 256 KB `maxOutputBufferSize` ended the session; over
 	local IPC one larger than its 8 MiB message went nowhere, and its caller
-	waited. And a frame past the reader's `maxFrameLength` ended the
+	waited. And a frame past the reader's `maxFrameSize` ended the
 	connection.
 
 	Not in the portable suite: these pump real sockets until something has
@@ -39,13 +39,13 @@ class RPCOversizeTest extends utest.Test {
 		final server = new RPCSession(link.server, null, handler);
 		final passed:Array<String> = [];
 		server.onUnreadableFrame = (op, id, why) -> passed.push(why);
-		server.maxFrameLength = 1000;
+		server.maxFrameSize = 1000;
 		final told = new SizeReceiver();
 		final big = commands.echo(Bytes.alloc(5000));
 		commands.echoThen(Bytes.alloc(5000), told);
 		commands.drop(Bytes.alloc(5000));
 		Assert.isTrue(Type.enumEq(TooLarge, big.failure), "a call past the reader's limit failed as " + big.failure);
-		Assert.stringContains("1000-byte maxFrameLength", big.error);
+		Assert.stringContains("1000-byte maxFrameSize", big.error);
 		Assert.isTrue(Type.enumEq(TooLarge, told.failures[0]));
 		Assert.equals(0, handler.dropped, "a one-way call past the limit ran");
 		Assert.equals(3, passed.length, "onUnreadableFrame was not told of each");
@@ -58,7 +58,7 @@ class RPCOversizeTest extends utest.Test {
 		final commands = new SizeCommands();
 		final client = new RPCSession<SizeCommands>(link.client, commands);
 		final server = new RPCSession(link.server, null, new SizeHandler());
-		client.maxFrameLength = 1000;
+		client.maxFrameSize = 1000;
 		final big = commands.make(5000);
 		Assert.isTrue(Type.enumEq(TooLarge, big.failure), "an answer past the caller's limit failed as " + big.failure);
 		Assert.equals(7, commands.size(7).result, "the session did not answer after it");
@@ -74,7 +74,7 @@ class RPCOversizeTest extends utest.Test {
 		final server = new RPCSession(link.server, null, handler);
 		link.client.deliver();
 		link.server.deliver();
-		server.maxFrameLength = 1000;
+		server.maxFrameSize = 1000;
 		final big = commands.echo(Bytes.alloc(3000));
 		commands.drop(Bytes.alloc(10));
 		final bytes = new ByteArray();
@@ -152,10 +152,10 @@ class RPCOversizeTest extends utest.Test {
 		final listener = new crossbyte.ipc.LocalConnection();
 		listener.listen(name);
 		final server = new RPCSession(NetConnection.fromLocalConnection(listener), null, new SizeHandler());
-		server.maxFrameLength = 32 * 1024 * 1024;
+		server.maxFrameSize = 32 * 1024 * 1024;
 		final commands = new SizeCommands();
 		final client = RPCSession.dial('local://$name', commands);
-		client.maxFrameLength = 32 * 1024 * 1024;
+		client.maxFrameSize = 32 * 1024 * 1024;
 		Pair.pump(() -> client.up && client.peerVersion > 0, 5.0);
 		try {
 			final call = commands.echo(Bytes.alloc(9 * 1024 * 1024));

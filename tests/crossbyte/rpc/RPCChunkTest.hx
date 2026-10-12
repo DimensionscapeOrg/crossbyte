@@ -13,7 +13,7 @@ import utest.Assert;
 	(`RPCWire.FLAG_CHUNK`) between the frames sent while it goes, to a peer
 	that reads them, so a small answer behind it is not held up for the
 	whole of it; and it arrives whole. The limits hold with pieces: a piece
-	counts toward the reader's `maxFrameLength` and the sender's
+	counts toward the reader's `maxFrameSize` and the sender's
 	`maxOutputPending`, at most four answers go at once, and a peer that
 	breaks the rules ends the connection.
 
@@ -125,7 +125,7 @@ class RPCChunkTest extends utest.Test {
 
 	public function testAnAnswerInPiecesCountsTowardTheReadersFrameLimit():Void {
 		final pair = new ChunkPair();
-		pair.client.maxFrameLength = 200000;
+		pair.client.maxFrameSize = 200000;
 		final answer = pair.commands.big(300000);
 		pair.settle();
 		switch (answer.failure) {
@@ -229,13 +229,13 @@ class RPCChunkTest extends utest.Test {
 	**/
 	public function testWithNoFrameLimitAnAnswerNoBufferCanHoldEndsTheConnectionAtOnce():Void {
 		final pair = new ChunkPair();
-		pair.client.maxFrameLength = 0;
+		pair.client.maxFrameSize = 0;
 		pair.link.server.send(ChunkPair.piece(1, false, [RPCWire.FLAG_RESPONSE, 1, 2, 3, 4], 0x7FFFFFFC));
 		pair.link.server.deliver();
 		Assert.isFalse(pair.link.client.open, "an answer no buffer can hold was begun");
 
 		final held = new ChunkPair();
-		held.client.maxFrameLength = 0;
+		held.client.maxFrameSize = 0;
 		held.link.server.send(ChunkPair.piece(1, false, [RPCWire.FLAG_RESPONSE, 1, 2, 3, 4], 0x7FFFFFFB));
 		held.link.server.deliver();
 		Assert.isTrue(held.link.client.open, "an answer a buffer can hold was refused");

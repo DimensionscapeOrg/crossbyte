@@ -86,7 +86,7 @@ abstract RPCRequestWriter<T>(RPCFrame) {
 
 	/**
 		Sends the request, as `request` does, and returns its response. A
-		request that cannot go fails at once: over `maxFrameLength`, with an
+		request that cannot go fails at once: over `maxFrameSize`, with an
 		`ArgumentError` as its cause; on a connection that has ended, with the
 		`Reason` it ended with; when the send throws, with what it threw.
 

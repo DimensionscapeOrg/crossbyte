@@ -151,7 +151,7 @@ class RPCEdgesTest extends utest.Test {
 
 	public function testAnArgumentOverTheFrameLimitIsUnsent():Void {
 		final edge = new Edge();
-		edge.client.maxFrameLength = 64;
+		edge.client.maxFrameSize = 64;
 		final big = StringTools.lpad("", "x", 100);
 		final response = edge.commands.echo(big);
 		edge.commands.echoThen(big, edge.told);

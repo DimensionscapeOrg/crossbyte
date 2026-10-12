@@ -71,7 +71,7 @@ class RPCFrame extends ByteArrayData {
 	/** The bytes the buffer holds before it has to grow. **/
 	public var capacity(get, never):Int;
 
-	/** The bytes after the length, once finished: what `maxFrameLength` limits. **/
+	/** The bytes after the length, once finished: what `maxFrameSize` limits. **/
 	public var payloadLength(get, never):Int;
 
 	public function new(room:Int) {

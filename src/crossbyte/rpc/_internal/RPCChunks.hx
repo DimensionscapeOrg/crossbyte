@@ -31,7 +31,7 @@ import haxe.io.Bytes;
 	**Receiving.** The pieces of an answer are appended to a buffer of its
 	own, which grows as they arrive, so a peer can make this side hold no
 	more than four times what it has sent; each answer within
-	`maxFrameLength`, and at most
+	`maxFrameSize`, and at most
 	`MAX_CHUNK_STREAMS` at once. The whole is read as a frame that came
 	whole.
 **/

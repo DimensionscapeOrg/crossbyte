@@ -67,8 +67,6 @@ import crossbyte.io.ByteArrayInput;
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.rpc.RPCCommands)
 abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
-	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
-
 	/**
 		The session whose call is running, while one is: a method reads it to
 		tell its callers apart: `session.data` for what the application

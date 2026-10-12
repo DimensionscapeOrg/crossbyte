@@ -318,11 +318,11 @@ class RPCReceiverTest extends utest.Test {
 	public function testACallThatCannotGoIsUnsent():Void {
 		var fixture = new Fixture();
 		var heard = new Heard();
-		fixture.client.maxFrameLength = 64;
+		fixture.client.maxFrameSize = 64;
 		var big = fixture.commands.echoThen([for (_ in 0...100) "x"].join(""), heard);
 		Assert.same([big], heard.failureCalls);
 		Assert.isTrue(heard.failures[0].match(Unsent(_)), "not unsent: " + heard.failures[0]);
-		fixture.client.maxFrameLength = 0;
+		fixture.client.maxFrameSize = 0;
 
 		fixture.link.client.failSends = true;
 		var refused = fixture.commands.addThen(1, 2, heard);
