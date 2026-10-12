@@ -90,6 +90,13 @@ On Linux, HashLink polls its sockets through `select`, which cannot watch a desc
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
 
+**A listener kept as another function type, on HashLink.** A function passed where another function type is wanted
+is wrapped there, and a function wrapped twice is not the one wrapped once. So a listener added as it was made and
+removed through a copy kept as another type is not found, and stays: a lambda whose body returns a value (`e ->
+count++`) added directly, then removed through a `Map<String, Event->Void>` or a field typed `Event->Void` that holds
+it. Give the listener the type it is kept as where it is made (`var listener:Event->Void = e -> count++;`), or add and
+remove the same variable.
+
 Neko's threads run at once but contend for its allocator: a server spread over runtimes answered 1.4 times as many
 requests on two runtimes as on one, and no more on four.
 

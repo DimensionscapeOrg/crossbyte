@@ -382,7 +382,11 @@ class EventDispatcherTest extends utest.Test {
 		var listeners:Map<String, Event->Void> = new Map();
 		var types:Array<String> = [for (i in 0...14) "type" + i];
 		for (type in types) {
-			var listener = (event:Event) -> heard.push(type + ":" + event.type);
+			// Typed as the map holds it, so the one function is added and
+			// removed. Left to its own type (it returns push's Int), HashLink
+			// wraps it again for the map, and the map's copy is not the
+			// listener added: see docs/targets.md.
+			var listener:Event->Void = (event:Event) -> heard.push(type + ":" + event.type);
 			listeners.set(type, listener);
 			dispatcher.addEventListener(type, listener);
 		}
