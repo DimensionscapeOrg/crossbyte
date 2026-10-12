@@ -365,7 +365,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			// An event, as documented, rather than a throw. Posted, so that a
 			// listener added after this returns hears it.
 			var text:String = 'Could not open "${file.nativePath}" to ${Std.string(fileMode)}: ${__describe(e)}';
-			if (!__postIoError(text, 3003)) {
+			if (!__postIoError(text)) {
 				throw new IOError(text);
 			}
 			return;
@@ -1854,9 +1854,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		Dispatches an ioError after this call returns, on the runtime's
 		thread; false if there is no runtime here to do it.
 	**/
-	@:noCompletion private function __postIoError(text:String, id:Int):Bool {
+	@:noCompletion private function __postIoError(text:String):Bool {
 		try {
-			return CrossByte.current().post(() -> dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text, id)));
+			return CrossByte.current().post(() -> dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text)));
 		} catch (_:Dynamic) {
 			return false;
 		}

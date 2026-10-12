@@ -529,7 +529,7 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `ByteArray` containing the file's contents.
-	 * @throws IOError The file does not exist (3003) or cannot be read.
+	 * @throws IOError The file does not exist or cannot be read.
 	 */
 	public static function getFileBytes(path:String):ByteArray {
 		try {
@@ -544,7 +544,7 @@ final class File extends EventDispatcher {
 	 *
 	 * @param path The path to the file.
 	 * @return A `String` containing the file's contents.
-	 * @throws IOError The file does not exist (3003) or cannot be read.
+	 * @throws IOError The file does not exist or cannot be read.
 	 */
 	public static function getFileText(path:String):String {
 		try {
@@ -565,7 +565,7 @@ final class File extends EventDispatcher {
 		try {
 			FileOps.saveBytes(path, bytes);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+			throw __ioError('Could not write "$path": ${Std.string(e)}');
 		}
 	}
 
@@ -580,7 +580,7 @@ final class File extends EventDispatcher {
 		try {
 			FileOps.saveBytes(path, Bytes.ofString(text));
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$path": ${Std.string(e)}', 0);
+			throw __ioError('Could not write "$path": ${Std.string(e)}');
 		}
 	}
 
@@ -937,7 +937,7 @@ final class File extends EventDispatcher {
 		var newPath:String = newLocation.__path;
 
 		if (!FileSystem.exists(__path)) {
-			throw __ioError('"$__path" does not exist.', 3003);
+			throw __ioError('"$__path" does not exist.');
 		}
 
 		// Onto itself, whatever overwrite says. The standard library's copy
@@ -946,17 +946,17 @@ final class File extends EventDispatcher {
 		// same file (its name in another case, a hard link, a path through a
 		// junction).
 		if (FileOps.sameFile(__path, newPath, System.isWindows)) {
-			throw __ioError('"$__path" and "$newPath" are the same file, and copying it onto itself would empty it.', 3011);
+			throw __ioError('"$__path" and "$newPath" are the same file, and copying it onto itself would empty it.');
 		}
 
 		if (!overwrite && FileSystem.exists(newPath)) {
-			throw __ioError('"$newPath" exists, and overwrite is false.', 3011);
+			throw __ioError('"$newPath" exists, and overwrite is false.');
 		}
 
 		// Nor a directory into itself, which copied what it had just copied
 		// until the path grew too long.
 		if (isDirectory && __inside(__path, newPath)) {
-			throw __ioError('Cannot copy "$__path" into itself, as "$newPath".', 3014);
+			throw __ioError('Cannot copy "$__path" into itself, as "$newPath".');
 		}
 
 		if (cancelled == null) {
@@ -997,7 +997,7 @@ final class File extends EventDispatcher {
 					var child:String = Path.join([target, item]);
 
 					if (!overwrite && FileSystem.exists(child)) {
-						throw __ioError('"$child" exists, and overwrite is false.', 3011);
+						throw __ioError('"$child" exists, and overwrite is false.');
 					}
 
 					__copyPath(Path.join([source, item]), child, overwrite, cancelled);
@@ -1033,12 +1033,12 @@ final class File extends EventDispatcher {
 			// path it actually happened on. Re-wrapping it here would bury both.
 			throw e;
 		} catch (e:Dynamic) {
-			// The source was checked above, so whatever went wrong is not what
-			// 3003 says: a permission denial, a full disk and a file held open
+			// The source was checked above, so whatever went wrong is not that
+			// it is missing: a permission denial, a full disk and a file held open
 			// by another process are not a missing file, and reporting them as
 			// one would send whoever reads the error looking for the wrong
 			// thing entirely.
-			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
+			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}');
 		}
 	}
 
@@ -1205,11 +1205,9 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	/** An IOError carrying one of AIR's error numbers, as File's documentation promises. **/
-	@:noCompletion private static function __ioError(message:String, id:Int):IOError {
-		var error:IOError = new IOError(message);
-		@:privateAccess error.errorID = id;
-		return error;
+	/** An IOError saying what went wrong; its `errorID` is 0, as CrossByte's own are. **/
+	@:noCompletion private static inline function __ioError(message:String):IOError {
+		return new IOError(message);
 	}
 
 	/**
@@ -1283,7 +1281,7 @@ final class File extends EventDispatcher {
 		try {
 			FileSystem.createDirectory(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not create the directory "$__path": ${Std.string(e)}', FileSystem.exists(__path) ? 3002 : 0);
+			throw __ioError('Could not create the directory "$__path": ${Std.string(e)}');
 		}
 	}
 
@@ -1316,11 +1314,11 @@ final class File extends EventDispatcher {
 	/** deleteDirectory, which `cancelled`, when given, can stop between entries. **/
 	@:noCompletion private function __deleteDirectory(deleteDirectoryContents:Bool, cancelled:Null<Void->Bool>):Void {
 		if (!FileSystem.exists(__path)) {
-			throw __ioError('"$__path" does not exist.', 3003);
+			throw __ioError('"$__path" does not exist.');
 		}
 
 		if (!FileSystem.isDirectory(__path)) {
-			throw __ioError('"$__path" is not a directory; deleteFile() deletes a file.', 3007);
+			throw __ioError('"$__path" is not a directory; deleteFile() deletes a file.');
 		}
 
 		if (deleteDirectoryContents) {
@@ -1330,11 +1328,11 @@ final class File extends EventDispatcher {
 				} catch (e:FileCancelled) {
 					throw e;
 				} catch (e:Dynamic) {
-					throw __ioError('Could not delete "${Path.join([__path, item])}": ${Std.string(e)}', 3012);
+					throw __ioError('Could not delete "${Path.join([__path, item])}": ${Std.string(e)}');
 				}
 			}
 		} else if (__listPath(__path).length > 0) {
-			throw __ioError('"$__path" is not empty, and deleteDirectoryContents is false.', 3010);
+			throw __ioError('"$__path" is not empty, and deleteDirectoryContents is false.');
 		}
 
 		// Each failure says what it was (a directory held open, a permission
@@ -1342,7 +1340,7 @@ final class File extends EventDispatcher {
 		try {
 			FileSystem.deleteDirectory(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}');
 		}
 	}
 
@@ -1368,8 +1366,8 @@ final class File extends EventDispatcher {
 	/**
 		Deletes the file.
 
-		@throws	IOError The file does not exist (3003), is a directory (3006), or could not be deleted
-		(3012). On Windows a file that is open cannot be deleted, unless whatever has it open allowed that:
+		@throws	IOError The file does not exist, is a directory, or could not be deleted. On Windows a
+		file that is open cannot be deleted, unless whatever has it open allowed that:
 		most programs do not, nor does `FileStream` except on Node.
 
 		The following code creates a temporary file and then calls the deleteFile() method to delete it.
@@ -1385,17 +1383,17 @@ final class File extends EventDispatcher {
 	**/
 	public function deleteFile():Void {
 		if (!FileSystem.exists(__path)) {
-			throw __ioError('"$__path" does not exist.', 3003);
+			throw __ioError('"$__path" does not exist.');
 		}
 
 		if (FileSystem.isDirectory(__path)) {
-			throw __ioError('"$__path" is a directory; deleteDirectory() deletes one.', 3006);
+			throw __ioError('"$__path" is a directory; deleteDirectory() deletes one.');
 		}
 
 		try {
 			FileSystem.deleteFile(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not delete "$__path": ${Std.string(e)}', 3012);
+			throw __ioError('Could not delete "$__path": ${Std.string(e)}');
 		}
 	}
 
@@ -1492,14 +1490,14 @@ final class File extends EventDispatcher {
 		}, (files:Array<File>) -> dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files)));
 	}
 
-	/** An IOError unless this is a directory: 3003 when nothing is there, 3007 when a file is. **/
+	/** An IOError unless this is a directory: one for nothing there, another for a file. **/
 	@:noCompletion private function __checkDirectory():Void {
 		if (!FileSystem.exists(__path)) {
-			throw __ioError('"$__path" does not exist.', 3003);
+			throw __ioError('"$__path" does not exist.');
 		}
 
 		if (!FileSystem.isDirectory(__path)) {
-			throw __ioError('"$__path" is not a directory.', 3007);
+			throw __ioError('"$__path" is not a directory.');
 		}
 	}
 
@@ -1559,7 +1557,7 @@ final class File extends EventDispatcher {
 	/**
 		Loads a file synchronously. The data is loaded into the data property of the File instance.
 
-		@throws IOError The file does not exist (3003) or cannot be read.
+		@throws IOError The file does not exist or cannot be read.
 	**/
 	public function load():Void {
 		// Unset first: a load that fails leaves no data from an earlier one.
@@ -1582,7 +1580,7 @@ final class File extends EventDispatcher {
 			var size:Float = __sizeNow();
 
 			if (size > 2147483647.0) {
-				throw __ioError('"$__path" is larger than 2 GB, more than one ByteArray holds.', 3005);
+				throw __ioError('"$__path" is larger than 2 GB, more than one ByteArray holds.');
 			}
 
 			var data:Bytes = Bytes.alloc(Std.int(size));
@@ -1692,7 +1690,7 @@ final class File extends EventDispatcher {
 		var target:String = newLocation.__path;
 
 		if (!FileSystem.exists(source)) {
-			throw __ioError('"$source" does not exist.', 3003);
+			throw __ioError('"$source" does not exist.');
 		}
 
 		if (FileOps.sameFile(source, target, windows)) {
@@ -1705,25 +1703,25 @@ final class File extends EventDispatcher {
 				try {
 					FileSystem.rename(source, target);
 				} catch (e:Dynamic) {
-					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}', 3006);
+					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}');
 				}
 
 				return;
 			}
 
-			throw __ioError('"$source" and "$target" are the same file.', 3011);
+			throw __ioError('"$source" and "$target" are the same file.');
 		}
 
 		var targetExists:Bool = FileSystem.exists(target);
 
 		if (targetExists && !overwrite) {
-			throw __ioError('"$target" exists, and overwrite is false.', 3011);
+			throw __ioError('"$target" exists, and overwrite is false.');
 		}
 
 		var sourceIsDirectory:Bool = FileSystem.isDirectory(source);
 
 		if (sourceIsDirectory && __inside(source, target)) {
-			throw __ioError('Cannot move "$source" into itself, as "$target".', 3014);
+			throw __ioError('Cannot move "$source" into itself, as "$target".');
 		}
 
 		var targetParts:FilePathParts = FilePath.parse(FileSystem.absolutePath(target), windows);
@@ -1743,7 +1741,7 @@ final class File extends EventDispatcher {
 			try {
 				FileOps.replace(source, target);
 			} catch (e:Dynamic) {
-				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}', 3006);
+				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}');
 			}
 
 			return;
@@ -1761,7 +1759,7 @@ final class File extends EventDispatcher {
 			try {
 				FileSystem.rename(target, aside);
 			} catch (e:Dynamic) {
-				throw __ioError('Could not move "$target" out of the way: ${Std.string(e)}', 3006);
+				throw __ioError('Could not move "$target" out of the way: ${Std.string(e)}');
 			}
 		}
 
@@ -1790,7 +1788,7 @@ final class File extends EventDispatcher {
 				throw e;
 			}
 
-			throw __ioError('Could not move "$source" to "$target": ${Std.string(e)}', 3006);
+			throw __ioError('Could not move "$source" to "$target": ${Std.string(e)}');
 		}
 
 		if (across) {
@@ -1798,7 +1796,7 @@ final class File extends EventDispatcher {
 			try {
 				__removePath(source);
 			} catch (e:Dynamic) {
-				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}', 3012);
+				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}');
 			}
 		}
 
@@ -1806,7 +1804,7 @@ final class File extends EventDispatcher {
 			try {
 				__removePath(aside);
 			} catch (e:Dynamic) {
-				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}', 3012);
+				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}');
 			}
 		}
 	}
@@ -1886,7 +1884,7 @@ final class File extends EventDispatcher {
 		throw new IllegalOperationError("A browser cannot open a file in another application.");
 		#else
 		if (!FileSystem.exists(__path)) {
-			throw __ioError('"$__path" does not exist.', 3003);
+			throw __ioError('"$__path" does not exist.');
 		}
 
 		var path:String = FilePath.normalize(FileSystem.absolutePath(__path), System.isWindows);
@@ -2135,7 +2133,7 @@ final class File extends EventDispatcher {
 		       The caller's again once this returns, to change or reuse.
 		@param overwrite Whether to replace a file already there.
 		@throws ArgumentError `data` is null.
-		@throws IOError A file is there and `overwrite` is false (3002), or the file cannot be written.
+		@throws IOError A file is there and `overwrite` is false, or the file cannot be written.
 	**/
 	public function save(data:ByteArray, overwrite:Bool = false):Void {
 		// Each failure says what it was (a missing directory, a permission
@@ -2145,13 +2143,13 @@ final class File extends EventDispatcher {
 		}
 
 		if (exists && overwrite == false) {
-			throw __ioError('"$__path" exists, and overwrite is false.', 3002);
+			throw __ioError('"$__path" exists, and overwrite is false.');
 		}
 
 		try {
 			FileOps.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$__path": ${Std.string(e)}', 0);
+			throw __ioError('Could not write "$__path": ${Std.string(e)}');
 		}
 
 		// What was saved, kept as a copy, read from the start as a load would
@@ -2631,12 +2629,12 @@ final class File extends EventDispatcher {
 	}
 	#end
 
-	/** An IOError for `path`: 3003 when it is not there, else what went wrong. **/
+	/** An IOError for `path`: that it is not there, or else what went wrong. **/
 	@:noCompletion private static function __missingOr(path:String, cause:Dynamic):IOError {
 		if (!FileSystem.exists(path)) {
-			return __ioError('"$path" does not exist.', 3003);
+			return __ioError('"$path" does not exist.');
 		}
-		return __ioError('Could not examine "$path": ${Std.string(cause)}', 3001);
+		return __ioError('Could not examine "$path": ${Std.string(cause)}');
 	}
 
 	/**

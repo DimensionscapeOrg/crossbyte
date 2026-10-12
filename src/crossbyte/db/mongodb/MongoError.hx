@@ -75,7 +75,7 @@ class MongoError extends SQLError {
 		// errorID is the server's code: the field every CrossByte error has for
 		// one. Not a field of its own named code, which on php would redefine
 		// the native Exception's.
-		super(operation, message, summary, errorCode, errorCode, errorLabels);
+		super(operation, message, summary, errorCode);
 		name = "MongoError";
 		this.codeName = codeName == null ? "" : codeName;
 		this.errorLabels = errorLabels == null ? [] : errorLabels;

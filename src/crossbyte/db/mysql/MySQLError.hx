@@ -27,7 +27,7 @@ class MySQLError extends SQLError {
 	public var sqlState(default, null):String;
 
 	public function new(operation:String, details:String, message:String, code:Int = 0, sqlState:String = "HY000") {
-		super(operation, details, message, code, code);
+		super(operation, details, message, code);
 		name = "MySQLError";
 		this.code = code;
 		this.sqlState = (sqlState == null || sqlState == "") ? "HY000" : sqlState;

@@ -1744,7 +1744,7 @@ Fixes to code new in this release are not listed.
   `spaceAvailable`, `isHidden` and the user directories answer correctly;
   `openWithDefaultApplication()` works; `clone()` copies no listeners;
   `deleteDirectory` on a missing path no longer crashes natively; paths
-  like `/root` work; and failures are `IOError`s with AIR's error numbers.
+  like `/root` work; and failures are `IOError`s that say what failed.
 - `File.createTempFile` and `createTempDirectory` use unguessable names and
   create exclusively, so another user cannot steer them.
 - `Resources` reads only inside `resourcesDir`. (Upgrading)
@@ -2053,6 +2053,15 @@ than waiting a thousand times as long: divide the old value by 1,000.
   second `Application`); and a `crossbyte.errors.Error` where libsodium,
   BLAKE3 or mbedTLS failed. `catch (e:String)` no longer catches them:
   catch the class, or `crossbyte.errors.Error`, which they all extend.
+- `Error.getStackTrace()` is gone: call `getCallStack()`, which every
+  target has.
+- An error's `errorID` is the number its source gives it (a MongoDB or
+  MySQL error number), and 0 for CrossByte's own: an `EOFError` carried
+  Flash's 2030, and a `File` or `FileStream` `IOError` AIR's 3001 to 3014.
+  Tell `File`'s failures apart by their message.
+- `SQLError.detailID` and `detailArguments` are gone, and so are the
+  constructor's last two arguments: a `MySQLError`'s number is its `code`
+  (and `errorID`), and a `MongoError`'s labels are its `errorLabels`.
 
 #### TCP
 

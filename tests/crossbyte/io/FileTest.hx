@@ -568,13 +568,14 @@ class FileTest extends utest.Test {
 
 		Assert.isNull(raised);
 		Assert.equals(2, errors.length);
-		var ids:Array<Int> = [for (error in errors) error.errorID];
-		ids.sort(Reflect.compare);
-		Assert.same([3003, 3007], ids);
+		var texts:Array<String> = [for (error in errors) error.text];
+		Assert.equals(1, texts.filter(text -> text.indexOf("does not exist") >= 0).length, texts.join("; "));
+		Assert.equals(1, texts.filter(text -> text.indexOf("is not a directory") >= 0).length, texts.join("; "));
+		Assert.same([0, 0], [for (error in errors) error.errorID]);
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
-	public function testFailuresAreIOErrorsWithAirsNumbers():Void {
+	public function testFailuresAreIOErrorsSayingWhatFailed():Void {
 		// IOError, as documented, not a base Error or a bare string, which
 		// `catch (e:IOError)` would miss.
 		var root = File.createTempDirectory();
@@ -585,30 +586,34 @@ class FileTest extends utest.Test {
 		HaxeFile.saveContent(full.resolvePath("inside.txt").nativePath, "x");
 		var missing = root.resolvePath("missing");
 
-		function id(call:Void->Void):Int {
+		// What an IOError says, with its errorID, 0, as CrossByte's own are.
+		function failure(call:Void->Void):String {
 			try {
 				call();
 			} catch (e:crossbyte.errors.IOError) {
-				return e.errorID;
+				return e.errorID + " " + e.message;
 			} catch (e:Dynamic) {
-				return -1;
+				return "not an IOError: " + Std.string(e);
 			}
-			return -2;
+			return "nothing thrown";
+		}
+		function says(expected:String, call:Void->Void, ?pos:haxe.PosInfos):Void {
+			var said:String = failure(call);
+			Assert.isTrue(StringTools.startsWith(said, "0 ") && said.indexOf(expected) >= 0, 'expected "$expected", got: $said', pos);
 		}
 
-		Assert.equals(3003, id(() -> missing.deleteDirectory()));
-		Assert.equals(3010, id(() -> full.deleteDirectory(false)));
-		Assert.equals(3007, id(() -> file.deleteDirectory()));
-		Assert.equals(3003, id(() -> missing.deleteFile()));
-		Assert.equals(3007, id(() -> file.getDirectoryListing()));
-		Assert.equals(3003, id(() -> missing.getDirectoryListing()));
-		Assert.equals(3003, id(() -> missing.load()));
-		Assert.equals(3003, id(() -> File.getFileBytes(missing.nativePath)));
-		Assert.equals(3003, id(() -> File.getFileText(missing.nativePath)));
-		Assert.equals(3002, id(() -> file.save(ByteArray.fromBytes(Bytes.ofString("y")))));
+		says("does not exist", () -> missing.deleteDirectory());
+		says("is not empty", () -> full.deleteDirectory(false));
+		says("is not a directory", () -> file.deleteDirectory());
+		says("does not exist", () -> missing.deleteFile());
+		says("is not a directory", () -> file.getDirectoryListing());
+		says("does not exist", () -> missing.getDirectoryListing());
+		says("does not exist", () -> missing.load());
+		says("does not exist", () -> File.getFileBytes(missing.nativePath));
+		says("does not exist", () -> File.getFileText(missing.nativePath));
+		says("overwrite is false", () -> file.save(ByteArray.fromBytes(Bytes.ofString("y"))));
 		// Under a file, where no directory can be.
-		Assert.notEquals(-2, id(() -> file.resolvePath("sub").createDirectory()));
-		Assert.notEquals(-1, id(() -> file.resolvePath("sub").createDirectory()));
+		says("Could not create the directory", () -> file.resolvePath("sub").createDirectory());
 
 		// Still there: nothing above deleted what it refused to.
 		Assert.isTrue(full.resolvePath("inside.txt").exists);
@@ -669,7 +674,7 @@ class FileTest extends utest.Test {
 		}
 
 		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), Std.string(raised));
-		Assert.equals(3012, (raised : crossbyte.errors.IOError).errorID);
+		Assert.isTrue(StringTools.startsWith((raised : crossbyte.errors.IOError).message, "Could not delete"), Std.string(raised));
 		Assert.equals(-1, Std.string(raised).indexOf("not empty"), Std.string(raised));
 
 		try root.deleteDirectory(true) catch (_:Dynamic) {}

@@ -126,22 +126,22 @@ class ErrorsTest extends utest.Test {
 		Assert.equals("the frame ended inside its header", eof.toString());
 		Assert.equals(99, eof.errorID);
 
-		// Without one, Flash's own: what every reader here throws.
+		// Without one, a message of its own and no number: what every reader
+		// here throws.
 		var plain = new EOFError();
 		Assert.equals("EOFError", plain.name);
-		Assert.equals(2030, plain.errorID);
+		Assert.equals(0, plain.errorID);
 		Assert.equals("End of file was encountered", plain.message);
 		Assert.equals("End of file was encountered", plain.toString());
 		Assert.equals("End of file was encountered", new EOFError("").message);
 	}
 
 	public function testSQLErrorExposesMetadataAndDetails():Void {
-		var sql = new SQLError("execute", "constraint failed", "Database exploded", 42, 9, ["users", "email"]);
+		var sql = new SQLError("execute", "constraint failed", "Database exploded", 42);
 
 		Assert.equals("SQLError", sql.name);
 		Assert.equals("execute", sql.operation);
-		Assert.equals(9, sql.detailID);
-		Assert.same(["users", "email"], sql.detailArguments);
+		Assert.equals(42, sql.errorID);
 		Assert.equals("constraint failed", sql.details());
 		Assert.equals("Database exploded", sql.toString());
 	}

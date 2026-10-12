@@ -1,18 +1,21 @@
 package crossbyte.errors;
 
-/** Describes a database-layer failure with optional vendor-specific metadata. */
+/** A database failure: what was being done, and what the database said. */
 class SQLError extends Error {
-	public var detailArguments(default, null):Array<String>;
-	public var detailID(default, null):Int;
+	/** What was being done: an `SQLEvent` type, or `"request"`, `"migrate"` and the like. **/
 	public var operation(default, null):String;
 
 	private var __details:String;
 
-	public function new(operation:String, details:String = "", message:String = "", id:Int = 0, detailID:Int = -1, detailArgs:Array<String> = null) {
+	/**
+		@param operation What was being done.
+		@param details What the database said, as `details()` gives it.
+		@param message The error's message.
+		@param id The database's error number, where it has one; see `Error.errorID`.
+	**/
+	public function new(operation:String, details:String = "", message:String = "", id:Int = 0) {
 		super(message, id);
 		name = "SQLError";
-		detailArguments = detailArgs;
-		this.detailID = detailID;
 		this.operation = operation;
 		this.__details = details;
 	}
