@@ -99,7 +99,9 @@ final class ConcurrencyLimiter {
 	public var closed(default, null):Bool = false;
 
 	private var __limit:Int;
-	private var __clock:Void->Float;
+	// Null for the default, haxe.Timer.stamp(), asked directly: natively a
+	// closure answering a Float boxes its answer, on every call.
+	private var __clock:Null<Void->Float>;
 
 	// Waiting permits in arrival order, from __head on. A permit withdrawn
 	// from the middle stays where it is until the head reaches it, and
@@ -145,7 +147,7 @@ final class ConcurrencyLimiter {
 		this.__limit = limit;
 		this.maxQueued = maxQueued;
 		this.maxWait = maxWait;
-		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
+		this.__clock = clock;
 	}
 
 	/**
@@ -173,7 +175,7 @@ final class ConcurrencyLimiter {
 		// callback that throws carries its exception out of here before a
 		// permit is made, rather than with one that holds its capacity and
 		// is never handed to anyone who could release it.
-		__settle(__clock());
+		__settle(__now());
 		__deliver();
 
 		var permit:ConcurrencyPermit = null;
@@ -209,7 +211,7 @@ final class ConcurrencyLimiter {
 		} else if (cost > __limit) {
 			__reject(permit, EXCEEDS_LIMIT);
 		} else {
-			var now:Float = __clock();
+			var now:Float = __now();
 			__settle(now);
 
 			if (queued == 0 && __fits(cost)) {
@@ -228,16 +230,37 @@ final class ConcurrencyLimiter {
 	}
 
 	/**
-	 * Refuses every waiter whose wait has run out, then admits whoever the
-	 * capacity now fits. Call it from your tick.
+	 * Refuses every waiter whose wait has run out by the clock, then admits
+	 * whoever the capacity now fits. Call it from your tick.
 	 *
-	 * @param now The time to judge deadlines by; the clock's by default.
+	 * `sweep()` and `sweep(now)` are two functions rather than one taking
+	 * an optional time, which natively and on the jvm is boxed on its way
+	 * in. Each is inlined where it is called, and is not a value to pass
+	 * on: pass `() -> limiter.sweep()`.
+	 *
 	 * @return How many waiters were refused with `TIMED_OUT`.
 	 */
-	public function sweep(?now:Float):Int {
-		var expired:Int = closed ? 0 : __settle(now == null ? __clock() : now);
+	public overload extern inline function sweep():Int {
+		return __sweepAt(__now());
+	}
+
+	/**
+	 * The same, judging deadlines by `now`.
+	 *
+	 * @return How many waiters were refused with `TIMED_OUT`.
+	 */
+	public overload extern inline function sweep(now:Float):Int {
+		return __sweepAt(now);
+	}
+
+	private function __sweepAt(now:Float):Int {
+		var expired:Int = closed ? 0 : __settle(now);
 		__deliver();
 		return expired;
+	}
+
+	private inline function __now():Float {
+		return __clock == null ? haxe.Timer.stamp() : __clock();
 	}
 
 	/**
@@ -287,7 +310,7 @@ final class ConcurrencyLimiter {
 			inFlight -= permit.cost;
 
 			if (!closed) {
-				__settle(__clock());
+				__settle(__now());
 			}
 			__deliver();
 			return true;
@@ -468,7 +491,7 @@ final class ConcurrencyLimiter {
 		__limit = value;
 
 		if (!closed) {
-			__settle(__clock());
+			__settle(__now());
 		}
 		__deliver();
 		return value;

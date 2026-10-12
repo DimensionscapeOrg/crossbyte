@@ -1233,6 +1233,12 @@ Fixes to code new in this release are not listed.
   its way in however it is given, natively or on the jvm (24 bytes a
   sweep given a field or a call's answer). Neither is a value to pass on:
   pass `() -> map.sweep()`.
+- `ConcurrencyLimiter` and `Membership` allocate nothing for the time,
+  natively or on the jvm. Their default clock is asked without a closure,
+  whose answer natively was boxed (24 bytes a call), and
+  `ConcurrencyLimiter.sweep`, `Membership.heard` and `Membership.sweep`
+  are each two functions, with a time and without, where an optional time
+  was boxed on its way in (24 bytes).
 - A `ListedMap` boxes no key or index natively, nor an index on the jvm:
   natively a `get` of a String key takes 22 ns rather than 27 at 1,000
   keys and allocates nothing rather than 32 bytes, and a replaced value

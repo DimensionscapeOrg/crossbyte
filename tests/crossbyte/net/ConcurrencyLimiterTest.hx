@@ -455,4 +455,38 @@ class ConcurrencyLimiterTest extends utest.Test {
 		Assert.equals(0, limiter.sweep());
 		Assert.isTrue(permit.waiting);
 	}
+
+	/**
+		A sweep allocates nothing natively or on the jvm, however its time is
+		given. The default clock was a closure, whose `Float` answer natively
+		is boxed (24 bytes a sweep), and `sweep(now)` took an optional
+		`Float`, boxed on its way in (24 bytes natively and on the jvm).
+	**/
+	public function testASweepAllocatesNothing():Void {
+		#if (cpp || jvm)
+		var limiter = new ConcurrencyLimiter(4, 16, Math.POSITIVE_INFINITY);
+		__time = haxe.Timer.stamp();
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			() -> sum += limiter.sweep(),
+			() -> {
+				var now:Float = __time;
+				sum += limiter.sweep(now);
+			},
+			() -> sum += limiter.sweep(__time)
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "a sweep allocated " + reading);
+		}
+		Assert.equals(0, sum);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	static var __time:Float = 0;
 }

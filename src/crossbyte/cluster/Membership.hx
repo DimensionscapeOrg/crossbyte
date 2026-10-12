@@ -84,7 +84,9 @@ class Membership {
 	// timeout rather than every tick. Exact after a sweep that looked, and
 	// only ever earlier than the truth between them.
 	private var __earliest:Float = Math.POSITIVE_INFINITY;
-	private var __clock:Void->Float;
+	// Null for the default, haxe.Timer.stamp(), asked directly: natively a
+	// closure answering a Float boxes its answer, on every call.
+	private var __clock:Null<Void->Float>;
 
 	/**
 		@param timeout Seconds a node may go unheard before it is gone, or 0
@@ -106,23 +108,34 @@ class Membership {
 
 		this.timeout = timeout;
 		this.maxNodes = maxNodes;
-		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
+		this.__clock = clock;
 		this.__heard = new StringMap();
 	}
 
 	/**
 		Records that a node was heard from.
 
-		@param now When, by the clock this was made with; left out, or
-		       negative, it asks that clock.
+		`heard(node)` asks the clock this was made with, and
+		`heard(node, now)` takes the time (a negative one asks the clock).
+		They are two functions rather than one taking an optional time, which
+		on the jvm is boxed on its way in; each is inlined where it is called.
+
 		@return Whether this is the first time it has been heard from since
-		        @return Whether this is the first time it has been heard from since
-		                it was last alive, which is when `onJoin` fires. Returns
-		                false for a name refused by `maxNodes` or longer than
-		                `MAX_NAME_LENGTH`.
+		        it was last alive, which is when `onJoin` fires. Returns false
+		        for a name refused by `maxNodes` or longer than
+		        `MAX_NAME_LENGTH`.
 		@throws ArgumentError For a null or empty name, and a `now` of NaN.
 	**/
-	public function heard(node:String, now:Float = -1):Bool {
+	public overload extern inline function heard(node:String):Bool {
+		return __hear(node, -1);
+	}
+
+	/** `heard(node)`, at `now` by the clock this was made with. **/
+	public overload extern inline function heard(node:String, now:Float):Bool {
+		return __hear(node, now);
+	}
+
+	private function __hear(node:String, now:Float):Bool {
 		if (node == null || node == "") {
 			throw new ArgumentError("A node needs a name.");
 		}
@@ -156,12 +169,22 @@ class Membership {
 	/**
 		Drops whatever has gone unheard for longer than `timeout`.
 
-		@param now When, by the clock this was made with; left out, or
-		       negative, it asks that clock.
+		`sweep()` asks the clock this was made with, and `sweep(now)` takes
+		the time (a negative one asks the clock), as `heard` does.
+
 		@return How many left: always 0 with a `timeout` of 0.
 		@throws ArgumentError For a `now` of NaN.
 	**/
-	public function sweep(now:Float = -1):Int {
+	public overload extern inline function sweep():Int {
+		return __sweepAt(-1);
+	}
+
+	/** `sweep()`, at `now` by the clock this was made with. **/
+	public overload extern inline function sweep(now:Float):Int {
+		return __sweepAt(now);
+	}
+
+	private function __sweepAt(now:Float):Int {
 		var at:Float = __when(now);
 		if (timeout == 0 || at - __earliest < timeout) {
 			return 0;
@@ -252,7 +275,7 @@ class Membership {
 			throw new ArgumentError("A membership was given a time of NaN.");
 		}
 
-		return now < 0 ? __clock() : now;
+		return now < 0 ? (__clock == null ? haxe.Timer.stamp() : __clock()) : now;
 	}
 
 	/**

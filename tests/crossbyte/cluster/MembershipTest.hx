@@ -250,4 +250,45 @@ class MembershipTest extends utest.Test {
 		Assert.isFalse(alive.has("a"));
 		Assert.raises(() -> alive.sweep(Math.NaN), ArgumentError);
 	}
+
+	/**
+		Hearing from a node and sweeping allocate nothing natively or on the
+		jvm, however the time is given. The default clock was a closure,
+		whose `Float` answer natively is boxed (24 bytes a call), and a time
+		given to `heard` or `sweep` was an optional `Float`, boxed on its way
+		in on the jvm (24 bytes).
+	**/
+	public function testHearingAndSweepingAllocateNothing():Void {
+		#if (cpp || jvm)
+		var alive = new Membership(1e9);
+		alive.heard("a");
+		__time = haxe.Timer.stamp();
+		var sum:Int = 0;
+		var ops:Array<Void->Void> = [
+			() -> if (alive.heard("a")) sum++,
+			() -> {
+				var now:Float = __time;
+				if (alive.heard("a", now)) sum++;
+			},
+			() -> sum += alive.sweep(),
+			() -> {
+				var now:Float = __time;
+				sum += alive.sweep(now);
+			}
+		];
+		for (op in ops) {
+			for (_ in 0...20000) {
+				op();
+			}
+			var reading = crossbyte.test.AllocationMeter.measure(op, 2000, 3);
+			Assert.equals(0.0, reading.perOperation, "an operation allocated " + reading);
+		}
+		Assert.equals(0, sum);
+		Assert.equals(1, alive.length);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	static var __time:Float = 0;
 }
