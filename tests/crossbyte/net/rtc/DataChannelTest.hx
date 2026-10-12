@@ -711,7 +711,10 @@ class DataChannelTest extends utest.Test {
 	**/
 	public function testRefusedChannelsAreCountedPastTwoToTheThirtyOne():Void {
 		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : DataChannelSet).refusedChannels));
+		// A page has no PeerConnection: its DTLS needs mbedTLS.
+		#if !(js && !nodejs)
 		Assert.equals("Float", crossbyte.ds.TypeCheck.typeOf((null : PeerConnection).refusedChannels));
+		#end
 		if (unsupported()) return;
 
 		var pair = Pair.open();
