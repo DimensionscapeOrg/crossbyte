@@ -390,6 +390,13 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 	**/
 	public var ackDelay(default, set):Float = ReliableDatagramSocket.DEFAULT_ACK_DELAY;
 
+	@:noCompletion private function set_ackDelay(value:Float):Float {
+		if (!(value >= 0) || value > ReliableDatagramSocket.MAX_ACK_DELAY) {
+			throw new RangeError('An acknowledgement delay is 0 to ${ReliableDatagramSocket.MAX_ACK_DELAY} seconds.');
+		}
+		return ackDelay = value;
+	}
+
 	/**
 		`ReliableDatagramSocket.connectTimeout` for each session this server
 		dials (`connect`, `connectRelayed`), in seconds: how long its handshake
@@ -416,13 +423,6 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		since nothing else ends a question over UDP that nobody answers.
 	**/
 	public var stunTimeout:Float = StunClient.DEFAULT_TIMEOUT;
-
-	@:noCompletion private function set_ackDelay(value:Float):Float {
-		if (!(value >= 0) || value > ReliableDatagramSocket.MAX_ACK_DELAY) {
-			throw new RangeError('An acknowledgement delay is 0 to ${ReliableDatagramSocket.MAX_ACK_DELAY} seconds.');
-		}
-		return ackDelay = value;
-	}
 
 	@:noCompletion private var __closed:Bool = false;
 

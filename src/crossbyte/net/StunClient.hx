@@ -93,9 +93,9 @@ class StunClient {
 
 	/**
 		How long each question here is asked for before giving up, in
-		seconds: `DEFAULT_TIMEOUT`, 3, unless changed, and read as each is
-		asked (for each of the questions `classifyMapping` and
-		`classifyFiltering` ask). UDP has no failure to report (a request that
+		seconds: `DEFAULT_TIMEOUT`, 3, unless changed. Read as each call
+		starts; `classifyMapping` and `classifyFiltering` hold each of their
+		questions to it. UDP has no failure to report (a request that
 		reaches nothing looks exactly like one still in flight), so only a
 		deadline ends a question nobody answers. 0 or less sets none, as it
 		does for a connection's `connectTimeout`: the question is asked until
