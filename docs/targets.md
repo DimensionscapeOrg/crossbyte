@@ -26,6 +26,10 @@ A TCP, UDP or reliable UDP message allocates nothing on a runtime's side, under 
 thing in the JDK: its selector boxes the descriptor of each socket it finds ready once the number is past 127, as a
 busy server's all are, 16 bytes each time. HotSpot's `-XX:AutoBoxCacheMax=65536` keeps those boxes made once.
 
+On Windows, from Java 16, a connect to a loopback address that Windows refuses fails at once: nothing listening, or
+a listener whose queue is full. Natively and on Java 8, Windows tries such a connect again for two seconds, so one to
+a local server too busy to accept usually gets in once it catches up; from Java 16 it gets an `ioError` instead.
+
 ## Node.js
 
 Needs `hxnodejs`. Every runtime shares Node's one thread, so a server spread over runtimes is refused: run several

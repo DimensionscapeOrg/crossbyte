@@ -24,6 +24,10 @@ class JvmSocketTest extends utest.Test {
 	public function testAConnectToABusyListenerLeavesTheRuntimeRunning():Void {
 		var runtime = crossbyte.core.CrossByte.current();
 		var busy = __busyListener();
+		if (busy == null) {
+			Assert.warn(NO_BUSY_LISTENER);
+			return;
+		}
 
 		var socket = new crossbyte.net.Socket();
 		var connected = false;
@@ -32,7 +36,7 @@ class JvmSocketTest extends utest.Test {
 		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
 
 		var started = haxe.Timer.stamp();
-		socket.connect("127.0.0.1", busy.port);
+		socket.connect(busy.address, busy.port);
 		var took = haxe.Timer.stamp() - started;
 
 		// Now make room, and let the tick see the connect through.
@@ -60,15 +64,19 @@ class JvmSocketTest extends utest.Test {
 	**/
 	public function testABlockingConnectGivesUpAtItsTimeout():Void {
 		var busy = __busyListener();
+		if (busy == null) {
+			Assert.warn(NO_BUSY_LISTENER);
+			return;
+		}
 
 		var socket = new sys.net.Socket();
 		socket.setTimeout(0.2);
-		var failure:String = null;
+		var failure:Dynamic = null;
 		var started = haxe.Timer.stamp();
 		try {
-			socket.connect(new sys.net.Host("127.0.0.1"), busy.port);
+			socket.connect(new sys.net.Host(busy.address), busy.port);
 		} catch (e:Dynamic) {
-			failure = Std.string(e);
+			failure = e;
 		}
 		var took = haxe.Timer.stamp() - started;
 
@@ -78,6 +86,7 @@ class JvmSocketTest extends utest.Test {
 		busy.close();
 
 		Assert.notNull(failure, "a connect to a full listen queue succeeded within its 0.2 s timeout");
+		Assert.isTrue(Std.isOfType(failure, java.net.SocketTimeoutException), "the connect ended other than at its timeout: " + failure);
 		Assert.isTrue(took < 1.0, 'a connect with a 0.2 s timeout gave up after ${Math.round(took * 1000)} ms');
 	}
 
@@ -274,11 +283,6 @@ class JvmSocketTest extends utest.Test {
 	}
 
 	/**
-		A listener whose queue is full, so the next connection's SYN goes
-		unanswered until there is room: the shape of a server too busy to
-		accept, made without depending on a host that does not answer.
-	**/
-	/**
 		A refused connect that a select other than the client's own settled
 		first, as the runtime's poll does as often as not. NIO closes a
 		channel whose connect failed, so a select after the one that found it
@@ -363,9 +367,50 @@ class JvmSocketTest extends utest.Test {
 		return done();
 	}
 
-	private static function __busyListener():{port:Int, drain:Void->Void, close:Void->Void} {
+	static inline var NO_BUSY_LISTENER = "no address here leaves a connect to a full listen queue waiting (Windows refuses one on loopback at once from Java 16, and this machine has no other address); not run";
+
+	/**
+		A listener whose queue is full, on an address where the next connect
+		to it waits until there is room rather than being refused: the shape of
+		a server too busy to accept, made without depending on a host that does
+		not answer. Null if no address here does that.
+
+		Linux and macOS drop a SYN that finds the queue full, and the client
+		sends it again. Windows answers it with a reset, and the client tries
+		again itself for two seconds, except that from Java 16 the JDK turns
+		those retries off for a connect to loopback (all of 127/8), so there a
+		full loopback queue refuses at once. Loopback is tried first, then this
+		machine's own other IPv4 addresses, each kept only if a connect to it
+		is seen still waiting.
+	**/
+	private static function __busyListener():Null<{address:String, port:Int, drain:Void->Void, close:Void->Void}> {
+		var candidates:Array<java.net.InetAddress> = [java.net.InetAddress.getByName("127.0.0.1")];
+		var interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+		while (interfaces.hasMoreElements()) {
+			var face:java.net.NetworkInterface = interfaces.nextElement();
+			if (!face.isUp() || face.isLoopback()) {
+				continue;
+			}
+			var addresses = face.getInetAddresses();
+			while (addresses.hasMoreElements()) {
+				var address:java.net.InetAddress = addresses.nextElement();
+				if (Std.isOfType(address, java.net.Inet4Address) && !address.isLinkLocalAddress()) {
+					candidates.push(address);
+				}
+			}
+		}
+		for (address in candidates) {
+			var busy = try __fullQueueOn(address) catch (_:Dynamic) null;
+			if (busy != null) {
+				return busy;
+			}
+		}
+		return null;
+	}
+
+	private static function __fullQueueOn(address:java.net.InetAddress):Null<{address:String, port:Int, drain:Void->Void, close:Void->Void}> {
 		var listener = ServerSocketChannel.open();
-		listener.bind(new InetSocketAddress("127.0.0.1", 0), 1);
+		listener.bind(new InetSocketAddress(address, 0), 1);
 		listener.configureBlocking(false);
 		var port:Int = (cast listener.getLocalAddress() : InetSocketAddress).getPort();
 
@@ -373,12 +418,55 @@ class JvmSocketTest extends utest.Test {
 		for (i in 0...8) {
 			var filler = SocketChannel.open();
 			filler.configureBlocking(false);
-			filler.connect(new InetSocketAddress("127.0.0.1", port));
+			try {
+				filler.connect(new InetSocketAddress(address, port));
+			} catch (_:Dynamic) {}
 			channels.push(filler);
 		}
 		crossbyte.sys.System.sleep(0.2);
 
+		var close = function() {
+			for (channel in channels) {
+				try {
+					channel.close();
+				} catch (_:Dynamic) {}
+			}
+			try {
+				listener.close();
+			} catch (_:Dynamic) {}
+		};
+
+		// A connect that is still waiting after a while shows the queue holds
+		// it; one refused (finishConnect throws) shows this address will not.
+		var probe = SocketChannel.open();
+		probe.configureBlocking(false);
+		var waiting = true;
+		try {
+			if (probe.connect(new InetSocketAddress(address, port))) {
+				waiting = false;
+			} else {
+				var until:Float = haxe.Timer.stamp() + 0.15;
+				while (waiting && haxe.Timer.stamp() < until) {
+					if (probe.finishConnect()) {
+						waiting = false;
+					} else {
+						crossbyte.sys.System.sleep(0.01);
+					}
+				}
+			}
+		} catch (_:Dynamic) {
+			waiting = false;
+		}
+		try {
+			probe.close();
+		} catch (_:Dynamic) {}
+		if (!waiting) {
+			close();
+			return null;
+		}
+
 		return {
+			address: address.getHostAddress(),
 			port: port,
 			drain: function() {
 				var next:SocketChannel = listener.accept();
@@ -387,16 +475,7 @@ class JvmSocketTest extends utest.Test {
 					next = listener.accept();
 				}
 			},
-			close: function() {
-				for (channel in channels) {
-					try {
-						channel.close();
-					} catch (_:Dynamic) {}
-				}
-				try {
-					listener.close();
-				} catch (_:Dynamic) {}
-			}
+			close: close
 		};
 	}
 }
