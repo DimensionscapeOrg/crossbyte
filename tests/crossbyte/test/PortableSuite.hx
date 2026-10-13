@@ -86,6 +86,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketBroadcastTest());
 		// And a plain Socket over Node's TLS, checked the same way.
 		runner.addCase(new crossbyte.net.SocketTLSClientTest());
+		// And presenting a certificate of its own, to Node's TLS server.
+		runner.addCase(new crossbyte.net.SocketClientCertificateTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// A message's call, every way to send it back, and what a listener keeps.

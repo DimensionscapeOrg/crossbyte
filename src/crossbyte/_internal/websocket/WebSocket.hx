@@ -369,6 +369,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// so a secure client does not accept any certificate for any host.
 	private var __verifyCert:Bool = true;
 	private var __certAuthority:crossbyte.net.Certificate;
+	// What a wss:// client presents to a server that asks; null for nothing.
+	private var __clientCertificate:Null<crossbyte.net.Certificate> = null;
+	private var __clientKey:Null<crossbyte.net.Key> = null;
 
 	// A connect that failed before the first tick. Reported from that tick
 	// rather than where it happened, because that is inside the constructor,
@@ -486,7 +489,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	 * @param certAuthority For `wss://`: the authority to trust in place of
 	 *        the system's store, or `null` for the system's.
 	 */
-	public function new(url:String, ?protocols:Array<String>, ?origin:String, verifyCert:Bool = true, ?certAuthority:crossbyte.net.Certificate) {
+	public function new(url:String, ?protocols:Array<String>, ?origin:String, verifyCert:Bool = true, ?certAuthority:crossbyte.net.Certificate,
+			?certificate:crossbyte.net.Certificate, ?key:crossbyte.net.Key) {
 		if (__isClient == null) {
 			__isClient = true;
 			#if !nodejs
@@ -502,6 +506,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 			__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 			__verifyCert = verifyCert;
 			__certAuthority = certAuthority;
+			__clientCertificate = certificate;
+			__clientKey = key;
 			this.url = url;
 			// benchmark the two for the fastest regular expression
 			// var regex:EReg = ~/^(\w+):\/\/([^\/:]+)(?::(\d+))?([^#]*)(?:#.*)?$/;
@@ -610,6 +616,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				if (__certAuthority != null) {
 					__socket.setCA(__certAuthority.__native);
 				}
+				if (__clientCertificate != null && __clientKey != null) {
+					__socket.setCertificate(__clientCertificate.__native, __clientKey.__native);
+				}
 				__socket.setHostname(__host);
 			}
 			// No byte order is set on the output: frames go out as raw bytes,
@@ -673,6 +682,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 			if (__certAuthority != null) {
 				options.ca = [__certAuthority.__pem];
+			}
+
+			if (__clientCertificate != null && __clientKey != null) {
+				options.cert = __clientCertificate.__pem;
+				options.key = __clientKey.__pem;
+				if (__clientKey.__passphrase != null) {
+					options.passphrase = __clientKey.__passphrase;
+				}
 			}
 
 			var tls = Tls.connect(options, connected);

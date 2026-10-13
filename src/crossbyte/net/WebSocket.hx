@@ -126,6 +126,16 @@ class WebSocket extends Socket {
 	}
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
+
+	#if !macro
+	/** The session's connection's peer: a `wss://` server's, or a client's that a secure server asked for one. **/
+	@:noCompletion override private function get_peerCertificate():Null<Certificate> {
+		if (__webSocket == null || !@:privateAccess __webSocket.__tls) {
+			return null;
+		}
+		return Socket.__peerCertificateOf(@:privateAccess __webSocket.__socket);
+	}
+	#end
 	// The server that accepted this session, until it opens or ends.
 	private var __server:ServerWebSocket;
 	// Whether the server's `upgrade` hook turned this session down, which
@@ -667,7 +677,7 @@ class WebSocket extends Socket {
 		__cbInstance = CrossByte.current();
 
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
-			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
+			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority, __certificate, __key);
 		// `connectTimeout` bounds the connection and the upgrade after it, as
 		// one deadline from here; see connect's doc.
 		__webSocket.connectTimeout = connectTimeout;

@@ -94,8 +94,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		access on whatever happened to be there.
 
 		```haxe
-		connection.userData = new Session(player);
-		var session:Session = cast connection.userData;
+		// Given connection:crossbyte.net.Socket.
+		connection.userData = new Map<String, Int>();
+		var scores:Map<String, Int> = cast connection.userData;
 		```
 	**/
 	public var userData:Any = null;
@@ -250,6 +251,98 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Read when `connect()` is called.
 	**/
 	public var certAuthority:Certificate = null;
+
+	// The certificate this client presents, and its key; see setCertificate.
+	@:noCompletion private var __certificate:Null<Certificate> = null;
+	@:noCompletion private var __key:Null<Key> = null;
+
+	/**
+		The certificate this client presents to a server that asks for one,
+		and its private key: mutual TLS, to a server that requires a client
+		certificate (`ServerSocket.requireClientCertificate`). Both, or
+		neither: `null` for both presents nothing again. For a `Socket` with
+		`secure` set, and for a `wss://` `WebSocket`; read when `connect()` is
+		called. Natively, on the jvm and on Node.
+
+		```haxe
+		// Given hostCertificate:crossbyte.net.Certificate, hostKey:crossbyte.net.Key, clusterAuthority:crossbyte.net.Certificate.
+		var socket = new crossbyte.net.Socket();
+		socket.secure = true;
+		socket.certAuthority = clusterAuthority;
+		socket.setCertificate(hostCertificate, hostKey);
+		socket.connect("hub.internal", 7000);
+		```
+
+		@throws crossbyte.errors.ArgumentError When one is given without the
+			other.
+	**/
+	public function setCertificate(certificate:Null<Certificate>, key:Null<Key>):Void {
+		if ((certificate == null) != (key == null)) {
+			throw new ArgumentError("A client certificate needs its key, and a key its certificate.");
+		}
+		__certificate = certificate;
+		__key = key;
+	}
+
+	/**
+		The certificate the peer presented in the TLS handshake: on a client,
+		the server's; on a socket a secure `ServerSocket` accepted, the
+		client's, which it presents only when the server asked for one
+		(`requireClientCertificate`). `null` on a plain connection, before the
+		handshake has finished, for a peer that presented none, and on
+		targets whose TLS gives no access to it (HashLink, Neko, the
+		interpreter); natively, on the jvm and on Node it is read from the
+		connection. Its `commonName` and `der` say who the peer is:
+
+		```haxe
+		// Given socket:crossbyte.net.Socket.
+		var peer = socket.peerCertificate;
+		var host:Null<String> = peer == null ? null : peer.commonName;
+		```
+	**/
+	public var peerCertificate(get, never):Null<Certificate>;
+
+	@:noCompletion private function get_peerCertificate():Null<Certificate> {
+		return secure ? __peerCertificateOf(__socket) : null;
+	}
+
+	/** The certificate the peer of `socket`, a TLS socket of this target's, presented, or null. **/
+	@:noCompletion private static function __peerCertificateOf(socket:Dynamic):Null<Certificate> {
+		if (socket == null) {
+			return null;
+		}
+		try {
+			#if cpp
+			if (!Std.isOfType(socket, sys.ssl.Socket)) {
+				return null;
+			}
+			var context:Dynamic = @:privateAccess (cast socket : sys.ssl.Socket).ssl;
+			var der:Null<Array<cpp.UInt8>> = crossbyte._internal.http.NativeTlsPeer.der(context);
+			return der == null ? null : @:privateAccess Certificate.__fromDer(Bytes.ofData(der));
+			#elseif (java || jvm)
+			if (!Std.isOfType(socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket)) {
+				return null;
+			}
+			var certificate = (cast socket : crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket).peerCertificate();
+			return certificate == null ? null : @:privateAccess Certificate.__fromDer(Bytes.ofData(certificate.native.getEncoded()));
+			#elseif nodejs
+			if (socket.getPeerCertificate == null) {
+				return null;
+			}
+			var peer:Dynamic = socket.getPeerCertificate(false);
+			var raw:Dynamic = peer == null ? null : peer.raw;
+			if (raw == null) {
+				return null;
+			}
+			var buffer:js.node.Buffer = raw;
+			return @:privateAccess Certificate.__fromDer(Bytes.ofData(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)));
+			#else
+			return null;
+			#end
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
 	#end
 	#end
 
@@ -1286,6 +1379,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (certAuthority != null) {
 			tls.setCA(certAuthority.__native);
 		}
+		if (__certificate != null && __key != null) {
+			tls.setCertificate(__certificate.__native, __key.__native);
+		}
 		tls.setHostname(host);
 		return tls;
 	}
@@ -1346,6 +1442,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		if (certAuthority != null) {
 			options.ca = [certAuthority.__pem];
+		}
+		if (__certificate != null && __key != null) {
+			options.cert = __certificate.__pem;
+			options.key = __key.__pem;
+			if (__key.__passphrase != null) {
+				options.passphrase = __key.__passphrase;
+			}
 		}
 		return cast js.node.Tls.connect(options, opened);
 	}

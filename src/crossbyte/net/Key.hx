@@ -31,14 +31,17 @@ final class Key {
 	#if nodejs
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
+	@:allow(crossbyte._internal.websocket)
 	@:noCompletion private var __pem:String;
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
+	@:allow(crossbyte._internal.websocket)
 	@:noCompletion private var __passphrase:String;
 	#else
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
 	@:allow(crossbyte._internal.socket)
+	@:allow(crossbyte._internal.websocket)
 	@:noCompletion private var __native:NativeKey;
 	#end
 

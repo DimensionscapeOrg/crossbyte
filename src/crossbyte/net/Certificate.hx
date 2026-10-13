@@ -48,8 +48,47 @@ final class Certificate {
 	@:noCompletion private var __native:NativeCertificate;
 	#end
 
+	// What it was made from: a file's bytes or PEM text, or the DER a peer
+	// presented; and the DER of its first certificate, read from it once.
+	@:noCompletion private var __source:Null<haxe.io.Bytes> = null;
+	@:noCompletion private var __der:Null<haxe.io.Bytes> = null;
+
 	private function new() {}
 
+	/**
+		The DER encoding of the certificate (the first, for a chain), the
+		bytes its fingerprint is taken over:
+		`haxe.crypto.Sha256.make(certificate.der).toHex()` is the SHA-256
+		fingerprint `openssl x509 -fingerprint -sha256` prints, without the
+		colons. Null for material that is not a certificate CrossByte can
+		read.
+	**/
+	public var der(get, never):Null<haxe.io.Bytes>;
+
+	@:noCompletion private function get_der():Null<haxe.io.Bytes> {
+		if (__der == null && __source != null) {
+			__der = crossbyte._internal.net.CertificateDer.firstOf(__source);
+		}
+		return __der;
+	}
+
+	/**
+		The common name (CN) in the certificate's subject, or null if it has
+		none: what names a client presenting it, for a server that asked for
+		client certificates. For a chain, the first certificate's.
+	**/
+	public var commonName(get, never):Null<String>;
+
+	@:noCompletion private function get_commonName():Null<String> {
+		return crossbyte._internal.net.CertificateDer.commonNameOf(der);
+	}
+
+	/** The certificate a peer presented, from its DER. **/
+	@:noCompletion private static function __fromDer(der:haxe.io.Bytes):Certificate {
+		var certificate:Certificate = fromPem(crossbyte._internal.net.CertificateDer.pemOf(der));
+		certificate.__der = der;
+		return certificate;
+	}
 
 	/**
 	 * Reads a PEM certificate from disk.
@@ -66,8 +105,12 @@ final class Certificate {
 
 		#if nodejs
 		certificate.__pem = File.getContent(path);
+		certificate.__source = haxe.io.Bytes.ofString(certificate.__pem);
 		#else
 		certificate.__native = NativeCertificate.loadFile(path);
+		try {
+			certificate.__source = sys.io.File.getBytes(path);
+		} catch (_:Dynamic) {}
 		#end
 
 		return certificate;
@@ -93,6 +136,7 @@ final class Certificate {
 		#else
 		certificate.__native = NativeCertificate.fromString(pem);
 		#end
+		certificate.__source = haxe.io.Bytes.ofString(pem);
 
 		return certificate;
 	}

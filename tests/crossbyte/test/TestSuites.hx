@@ -372,6 +372,10 @@ class TestSuites {
 		// How many connections one address may hold, on each kind of server.
 		// Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.ServerSocketAddressLimitTest());
+		// A client presenting a certificate, and each end reading the other's;
+		// on the interpreter, what a certificate says of itself. Also in
+		// PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.SocketClientCertificateTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded

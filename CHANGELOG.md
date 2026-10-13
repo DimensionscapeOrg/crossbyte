@@ -27,6 +27,13 @@ All notable changes to CrossByte will be documented in this file.
   them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
   its sessions against it and an `HTTPServer` its connections, natively,
   on the jvm and on Node.
+- **Client certificates.** `Socket.setCertificate(certificate, key)` (and so
+  a `wss://` `WebSocket`'s) presents a certificate to a server that asks
+  for one, to go with `ServerSocket.requireClientCertificate`, natively, on
+  the jvm and on Node. `Socket.peerCertificate` is the certificate the
+  other end presented: a server's to its client, and a client's to the
+  server that asked. `Certificate.commonName` and `Certificate.der` say what
+  a certificate is, read the same way on every target.
 - **What a `NetConnection` holds for a slow peer.** `bytesPending` says how
   many bytes sent have not gone yet, over TCP, WebSocket, reliable UDP and
   local IPC. `outputHighWater` and `outputLowWater` call `onOutputHigh` once

@@ -78,6 +78,7 @@ const STANDALONE = [
   'src/crossbyte/net/PreparedMessage.hx',
   'src/crossbyte/net/ReliableDatagramServerSocket.hx',
   'src/crossbyte/net/ServerWebSocket.hx',
+  'src/crossbyte/net/Socket.hx',
   'src/crossbyte/net/StunClient.hx',
   'src/crossbyte/net/TurnClient.hx',
   'src/crossbyte/net/ice/IceAgent.hx',
