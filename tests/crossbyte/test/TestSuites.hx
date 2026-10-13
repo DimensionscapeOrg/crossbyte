@@ -271,6 +271,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTcpTest());
 		// Also in PortableSuite: one end, told once, over TCP and WebSocket.
 		runner.addCase(new crossbyte.net.NetConnectionLifecycleTest());
+		// Also in PortableSuite: what waits unsent, its water marks, and an
+		// overflow told as one.
+		runner.addCase(new crossbyte.net.NetConnectionOutputTest());
 		runner.addCase(new crossbyte.net.NetConnectionSchemeTest());
 		// Also in PortableSuite: on Node a child runtime's clock is not the
 		// application's.

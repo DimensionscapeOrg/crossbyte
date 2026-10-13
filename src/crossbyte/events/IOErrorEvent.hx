@@ -20,9 +20,18 @@ class IOErrorEvent extends ErrorEvent {
 		it),
 		so a listener can tell the two apart without reading `text`.
 		`NetConnection` reports one as `Reason.Timeout`. A socket's other
-		`ioError`s carry 0.
+		`ioError`s carry 0, but for `OVERFLOW_ERROR_ID`.
 	**/
 	public static inline var TIMEOUT_ERROR_ID:Int = 1;
+
+	/**
+		The `errorId` of an `ioError` that reports this side's output passing
+		its limit: a `Socket`'s or a `WebSocket`'s `maxOutputBufferSize`, or a
+		`ReliableDatagramSocket`'s, with a peer that is not reading or a path
+		that cannot carry it, under the `CLOSE` policy. The connection closes
+		after it. `NetConnection` reports one as `Reason.Overflow`.
+	**/
+	public static inline var OVERFLOW_ERROR_ID:Int = 2;
 
 	public function new(type:EventType<IOErrorEvent>, text:String = "", id:Int = 0) {
 		super(type, text, id);

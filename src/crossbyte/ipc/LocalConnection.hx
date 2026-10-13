@@ -134,8 +134,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		it, so two processes that fill each other's channels never wait on
 		each other for good. A
 		peer that has left more than this unread is taken to be stuck: the
-		connection is closed, with an error saying so, and what was queued is
-		dropped. A sender with more than this to send at once paces itself on
+		connection is closed, `onError` and `onClose` told `Reason.Overflow`,
+		and what was queued is dropped. A sender with more than this to send at once paces itself on
 		`bytesPending`.
 
 		What arrives is read only while less than this waits to be delivered,
@@ -409,9 +409,9 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 			failure = Error(Reason.Closed);
 		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __passesQueueLimit(__outQueued, length, maxQueuedBytes)) {
 			// Only with something already waiting: a frame larger than the
-			// limit still goes to a peer that has kept up.
-			stuck = Reason.Error("Local transport peer is not reading: " + __outQueued + " bytes wait for it, and "
-				+ (length + 4) + " more would pass the " + maxQueuedBytes + "-byte limit.");
+			// limit still goes to a peer that has kept up. Told apart from
+			// any other end without reading a message, as a socket's is.
+			stuck = Reason.Overflow;
 		} else {
 			__frameOutput(data, length);
 			// On the runtime's own thread the pass's sends go together when

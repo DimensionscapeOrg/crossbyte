@@ -27,6 +27,19 @@ All notable changes to CrossByte will be documented in this file.
   them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
   its sessions against it and an `HTTPServer` its connections, natively,
   on the jvm and on Node.
+- **What a `NetConnection` holds for a slow peer.** `bytesPending` says how
+  many bytes sent have not gone yet, over TCP, WebSocket, reliable UDP and
+  local IPC. `outputHighWater` and `outputLowWater` call `onOutputHigh` once
+  a backlog reaches the first and `onOutputDrained` once it falls to the
+  second (Netty's water marks, Node's `highWaterMark` and `drain`), so a
+  server can skip updates for a client that has fallen behind and resync it.
+  With no marks set a send costs nothing more and allocates nothing.
+- **`Reason.Overflow`**, for a connection its transport closed because what
+  waited for its peer passed the limit (`maxOutputBufferSize`, a reliable
+  UDP session's queue, a local connection's `maxQueuedBytes`), told apart
+  without reading a message. Such an `ioError` carries
+  `IOErrorEvent.OVERFLOW_ERROR_ID`. A `LocalConnection` closed this way was
+  told `Reason.Error` with a message before.
 
 ### Fixed
 

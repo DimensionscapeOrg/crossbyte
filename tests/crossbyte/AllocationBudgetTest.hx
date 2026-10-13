@@ -122,6 +122,11 @@ class AllocationBudgetTest extends utest.Test {
 	// buffers the server's sessions share, made once.
 	private static final RELIABLE_ENCRYPTED = new Budget("a 200-byte encrypted reliable UDP message delivered and acknowledged", "message", [0, 0, 48], [8, 8, 128]);
 	private static final TCP = new Budget("a 100-byte message echoed over TCP", "message", [0, 0, 32], [8, 8, 104]);
+	// The same through a NetConnection whose water marks are set and not
+	// reached: watching its output costs a send nothing. Measured on
+	// 2026-10-13 natively on Windows and on the jvm; Linux taken as Windows.
+	private static final TCP_MARKS = new Budget("a 100-byte message sent over a TCP NetConnection with its water marks set", "message", [0, 0, 32],
+		[8, 8, 104]);
 	private static final DATAGRAM = new Budget("a 100-byte datagram sent and received", "datagram", [0, 0, 16], [8, 8, 88]);
 	// Over LinkedConnection, the in-memory pair, which copies each message
 	// into a buffer it keeps, as a socket's read does. A call's figure is its
@@ -714,6 +719,55 @@ class AllocationBudgetTest extends utest.Test {
 		}
 		try client.close() catch (_:Dynamic) {}
 		try server.close() catch (_:Dynamic) {}
+		__finish();
+	}
+
+	/**
+		A send through a TCP `NetConnection` with `outputHighWater` and
+		`outputLowWater` set, read by a `NetHost` on the same runtime: the
+		marks are a comparison a send, and allocate nothing.
+	**/
+	public function testATcpNetConnectionSendWithItsWaterMarksSet():Void {
+		var runtime = __start();
+		var read:Int = 0;
+		var host:NetHost = null;
+		var client:NetConnection = null;
+		var ready:Bool = false;
+		var expected:Int = 0;
+		var arrived:Void->Bool = () -> read == expected;
+		try {
+			host = new NetHost("tcp://127.0.0.1:0", function(peer:INetConnection):Void {
+				peer.onData = function(input:crossbyte.io.ByteArrayInput):Void {
+					read += input.bytesAvailable;
+					input.position = input.length;
+				};
+				peer.readEnabled = true;
+			}, null, null, true);
+			client = new NetConnection("tcp://127.0.0.1:" + host.localPort, null, () -> ready = true);
+			client.outputHighWater = 1 << 20;
+			client.outputLowWater = 64 * 1024;
+			client.onOutputHigh = () -> {};
+			client.onOutputDrained = () -> {};
+			__pumpUntil(() -> ready);
+			var message = new ByteArray();
+			for (i in 0...100) {
+				message.writeByte(i);
+			}
+			var op = () -> {
+				expected += 100;
+				client.send(message);
+				__pumpUntil(arrived);
+			};
+			__warm(op, WARM);
+			__within(TCP_MARKS, AllocationMeter.measure(op, 2000));
+		} catch (error:Dynamic) {
+			try client.close() catch (_:Dynamic) {}
+			try host.close() catch (_:Dynamic) {}
+			__finish();
+			throw error;
+		}
+		try client.close() catch (_:Dynamic) {}
+		try host.close() catch (_:Dynamic) {}
 		__finish();
 	}
 

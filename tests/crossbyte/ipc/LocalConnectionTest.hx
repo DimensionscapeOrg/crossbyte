@@ -401,13 +401,13 @@ class LocalConnectionTest extends utest.Test {
 		var name = uniqueName("stuck");
 		var peer = LocalConnection.__createInboundPipe(name);
 		var client = new LocalConnection();
-		var errors:Array<String> = [];
+		var errors:Array<crossbyte.net.Reason> = [];
 		var closed = false;
-		var closedWith:String = null;
-		client.onError = reason -> errors.push(Std.string(reason));
+		var closedWith:crossbyte.net.Reason = null;
+		client.onError = reason -> errors.push(reason);
 		client.onClose = reason -> {
 			closed = true;
-			closedWith = Std.string(reason);
+			closedWith = reason;
 		};
 		var slowest = 0.0;
 		var sends = 0;
@@ -446,8 +446,9 @@ class LocalConnectionTest extends utest.Test {
 		Assert.isTrue(slowest < 1.0, 'a send waited ${slowest}s for a peer that was not reading');
 		Assert.isFalse(client.connected, 'still connected after $sends sends of 1 MB that nobody read');
 		Assert.isTrue(closed, "the connection was not closed");
-		Assert.isTrue(closedWith != null && closedWith.indexOf("not reading") >= 0, 'it was closed with $closedWith');
-		Assert.isTrue(errors.filter(error -> error.indexOf("not reading") >= 0).length > 0, 'no error said the peer was not reading: $errors');
+		// An overflow, told apart from any other end without reading a message.
+		Assert.isTrue(closedWith != null && closedWith.match(Overflow), 'it was closed with $closedWith');
+		Assert.isTrue(errors.filter(error -> error.match(Overflow)).length > 0, 'no error said the peer was not reading: $errors');
 		#else
 		Assert.pass();
 		#end

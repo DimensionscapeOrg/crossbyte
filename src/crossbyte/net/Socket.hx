@@ -1580,7 +1580,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		switch (outputOverflowPolicy) {
 			case CLOSE:
 				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message, IOErrorEvent.OVERFLOW_ERROR_ID));
 				}
 				// Dropped, not flushed: the point is to reclaim the memory a
 				// peer that is not reading is holding. Ending a Node socket

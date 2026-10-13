@@ -15,4 +15,14 @@ enum Reason {
 	Code(code:Int, ?message:String);
 	/** The transport reported an error message. */
 	Error(msg:String);
+	/**
+		This side's output passed its limit: what waited unsent for a peer
+		that was not reading (a socket's or a WebSocket's
+		`maxOutputBufferSize`, a reliable UDP session's queue for its window,
+		a local connection's `maxQueuedBytes`), and the connection was closed
+		for it. The transport's own `ioError` says how many bytes were
+		waiting; `NetConnection.outputHighWater` is the way to hear of a
+		backlog before it gets here.
+	**/
+	Overflow;
 }

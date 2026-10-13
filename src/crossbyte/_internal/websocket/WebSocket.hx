@@ -1644,7 +1644,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		__pendingOutput.clear();
 		__pendingSent = 0;
 		__discardOnClose = true;
-		__onError('WebSocket output buffer reached $waiting bytes, exceeding the $maxOutputBufferSize byte limit; the peer is not reading.');
+		__onError('WebSocket output buffer reached $waiting bytes, exceeding the $maxOutputBufferSize byte limit; the peer is not reading.',
+			crossbyte.events.IOErrorEvent.OVERFLOW_ERROR_ID);
 		__close(1011, "output buffer limit exceeded");
 		return true;
 	}

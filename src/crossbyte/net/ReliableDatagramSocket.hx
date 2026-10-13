@@ -4073,6 +4073,27 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__onRoom = null;
 			room();
 		}
+		if (__onDrained != null && __queuedBytes <= __drainedTo) {
+			final drained = __onDrained;
+			__onDrained = null;
+			drained();
+		}
+	}
+
+	// A NetConnection waiting for its backlog to fall to its outputLowWater,
+	// told once; apart from __onRoom, which a paced sender may be waiting on
+	// at the same time.
+	@:noCompletion private var __drainedTo:Int = 0;
+	@:noCompletion private var __onDrained:Null<Void->Void> = null;
+
+	/**
+		Has `drained` called once `bufferedAmount` is `atMost` or less, from
+		the pass that let it out, as `__whenQueueUnder` does; null stops
+		waiting.
+	**/
+	@:noCompletion private function __whenDrainedTo(atMost:Int, drained:Null<Void->Void>):Void {
+		__drainedTo = atMost;
+		__onDrained = drained;
 	}
 
 	// A sender pacing itself by `bufferedAmount` (an RPC session sending a
@@ -4446,7 +4467,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		switch (outputOverflowPolicy) {
 			case CLOSE:
 				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message, IOErrorEvent.OVERFLOW_ERROR_ID));
 				}
 
 				// At once: a graceful close would wait for the very queue

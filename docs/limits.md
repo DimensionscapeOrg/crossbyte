@@ -100,6 +100,37 @@ server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
 });
 ```
 
+### What waits for a peer that does not read
+
+What is written and that the kernel will not take yet waits in the socket's output buffer, and `bytesPending` says
+how much. Past `maxOutputBufferSize` the connection is closed (`outputOverflowPolicy = CLOSE`) with an `ioError` whose
+`errorId` is `IOErrorEvent.OVERFLOW_ERROR_ID`, which a `NetConnection` reports as `Reason.Overflow`; a WebSocket
+session's limit, a reliable UDP session's queue for its window and a local connection's `maxQueuedBytes` end the same
+way.
+
+A `NetConnection` says so earlier: `outputHighWater` and `outputLowWater`, with `onOutputHigh` and `onOutputDrained`,
+as Netty's write buffer water marks and Node's `highWaterMark` and `drain` do. A server sending each client a stream of
+updates can skip them for a client that has fallen behind and send it the whole state once it has caught up:
+
+```haxe
+// Given connection:crossbyte.net.NetConnection, sendDelta:Void->Void, sendSnapshot:Void->Void.
+var behind = false;
+connection.outputHighWater = 256 * 1024;
+connection.outputLowWater = 32 * 1024;
+connection.onOutputHigh = () -> behind = true;
+connection.onOutputDrained = () -> {
+	behind = false;
+	sendSnapshot();
+};
+// Each tick:
+if (!behind) {
+	sendDelta();
+}
+```
+
+Over TCP the marks are checked once a pass's sends have gone to the system, so a burst the system takes whole is not a
+backlog; over WebSocket, reliable UDP and local IPC as each send returns. With no marks set a send costs nothing more.
+
 ### What a connection holds
 
 An idle connection a `ServerSocket` accepted, with a listener for what arrives, holds about 1.3 KB of heap natively

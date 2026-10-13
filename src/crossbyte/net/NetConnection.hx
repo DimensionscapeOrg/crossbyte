@@ -48,7 +48,10 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
  *
  * A deadline that passed is `Reason.Timeout`, to both: a connect not made
  * within its socket's `connectTimeout`, and anything else its transport
- * reports as an `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`.
+ * reports as an `ioError` with `IOErrorEvent.TIMEOUT_ERROR_ID`. Output past
+ * its transport's limit, for a peer that does not read, is
+ * `Reason.Overflow`; `bytesPending`, `outputHighWater` and
+ * `outputLowWater` say of a backlog before it gets that far.
  */
 abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
 	/** Remote peer address. */
@@ -77,6 +80,36 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	public var onError(get, set):Reason->Void;
 	/** Called once the connection becomes ready for I/O. */
 	public var onReady(get, set):Void->Void;
+	/**
+		The bytes sent that have not gone yet; see
+		`NetConnectionBase.bytesPending`.
+	**/
+	public var bytesPending(get, never):Int;
+	/**
+		How many bytes may wait unsent before `onOutputHigh` is called, `0`
+		for none; see `NetConnectionBase.outputHighWater`. A server sending
+		each client a stream of updates skips them for a client that is high,
+		and sends it the whole state once it has drained:
+
+		```haxe
+		// Given connection:NetConnection.
+		var behind = false;
+		connection.outputHighWater = 256 * 1024;
+		connection.outputLowWater = 32 * 1024;
+		connection.onOutputHigh = () -> behind = true;
+		connection.onOutputDrained = () -> behind = false;
+		```
+	**/
+	public var outputHighWater(get, set):Int;
+	/**
+		Where what waits has to fall to for `onOutputDrained`; see
+		`NetConnectionBase.outputLowWater`.
+	**/
+	public var outputLowWater(get, set):Int;
+	/** Called once what waits unsent reaches `outputHighWater`. */
+	public var onOutputHigh(get, set):Null<Void->Void>;
+	/** Called once, after `onOutputHigh`, when what waits has fallen to `outputLowWater`. */
+	public var onOutputDrained(get, set):Null<Void->Void>;
 
 	/**
 	 * Connects to a transport URI and wraps the resulting connection.
@@ -336,6 +369,42 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return (cast this : INetConnection).onReady = value;
 	}
 
+	@:noCompletion private inline function get_bytesPending():Int {
+		return this.bytesPending;
+	}
+
+	@:noCompletion private inline function get_outputHighWater():Int {
+		return this.outputHighWater;
+	}
+
+	@:noCompletion private inline function set_outputHighWater(value:Int):Int {
+		return this.outputHighWater = value;
+	}
+
+	@:noCompletion private inline function get_outputLowWater():Int {
+		return this.outputLowWater;
+	}
+
+	@:noCompletion private inline function set_outputLowWater(value:Int):Int {
+		return this.outputLowWater = value;
+	}
+
+	@:noCompletion private inline function get_onOutputHigh():Null<Void->Void> {
+		return this.onOutputHigh;
+	}
+
+	@:noCompletion private inline function set_onOutputHigh(value:Null<Void->Void>):Null<Void->Void> {
+		return this.onOutputHigh = value;
+	}
+
+	@:noCompletion private inline function get_onOutputDrained():Null<Void->Void> {
+		return this.onOutputDrained;
+	}
+
+	@:noCompletion private inline function set_onOutputDrained(value:Null<Void->Void>):Null<Void->Void> {
+		return this.onOutputDrained = value;
+	}
+
 	/** Returns the wrapped TCP socket when this connection uses `Protocol.TCP`. */
 	public static inline function toSocket(connection:NetConnection):Socket {
 		var socket:Socket = null;
@@ -544,6 +613,16 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		outTimestamp = connection.outTimestamp;
 	}
 
+	/** What a local IPC connection holds for its peer; nothing anything else can say. **/
+	override public function __bytesQueued():Int {
+		#if !js
+		if (Std.isOfType(__connection, LocalConnection)) {
+			return (cast __connection : LocalConnection).bytesPending;
+		}
+		#end
+		return 0;
+	}
+
 	/** A local IPC connection's message: 8 MiB, past which its send goes nowhere. **/
 	override public function __largestSend():Int {
 		#if !js
@@ -688,6 +767,7 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		// With no runtime on this thread there is no clock but its own.
 		final now:Float = @:privateAccess crossbyte.Timer.tryGetTime();
 		outTimestamp = now >= 0.0 ? now : __connection.outTimestamp;
+		__noteOutput();
 	}
 
 	public inline function close():Void {
@@ -836,6 +916,31 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		__sendWritten();
 	}
 
+	/**
+		Told by the socket's OUTPUT_PROGRESS, at the end of each pass that moved bytes.
+		On Node, whose writes report going only when asked as they are made,
+		it is asked at each tick instead.
+	**/
+	override public function __watchOutput(watching:Bool):Void {
+		#if nodejs
+		super.__watchOutput(watching);
+		#else
+		final marks = __outputMarks();
+		if (marks.progress == null) {
+			marks.progress = socket_onOutputMoved;
+		}
+		if (watching) {
+			__socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, marks.progress);
+		} else {
+			__socket.removeEventListener(OutputProgressEvent.OUTPUT_PROGRESS, marks.progress);
+		}
+		#end
+	}
+
+	@:noCompletion private function socket_onOutputMoved(_:OutputProgressEvent):Void {
+		__outputMoved();
+	}
+
 	override public function __queueLimit():Int {
 		return __socket.maxOutputBufferSize;
 	}
@@ -882,6 +987,8 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 			return;
 		}
 		this.flush();
+		// What the system would not take: the backlog the marks watch.
+		__noteOutput();
 	}
 
 	// Whether this connection's sends are to be flushed when the pass ends.
@@ -898,6 +1005,9 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		try {
 			__socket.flush();
 		} catch (_:Dynamic) {}
+		// What the system would not take of the pass's sends: the backlog the
+		// marks watch, asked once a pass rather than at every send.
+		__noteOutput();
 	}
 
 	public inline function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
@@ -1059,7 +1169,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 @:allow(crossbyte.net.NetConnection)
 #if !(js && !nodejs)
-private class RUDPConnection extends NetConnectionBase implements INetConnection {
+private class RUDPConnection extends NetConnectionBase implements INetConnection implements crossbyte.core._internal.PassFlush {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
@@ -1185,6 +1295,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
+		__noteOutput();
 	}
 
 	/** Part of `data` in place, as one message in `DATAGRAM` mode, as `send` sends the whole. **/
@@ -1197,6 +1308,50 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 				__socket.flush();
 		}
 		outTimestamp = __uptime();
+		__noteOutput();
+	}
+
+	/**
+		Told by the congestion window, once what it holds back is down to
+		`outputLowWater`: from inside its own accounting, so the drain is
+		told when the pass ends, where it may send.
+	**/
+	override public function __watchOutput(watching:Bool):Void {
+		if (!watching) {
+			@:privateAccess __socket.__whenDrainedTo(0, null);
+			return;
+		}
+		final marks = __outputMarks();
+		if (marks.drained == null) {
+			marks.drained = __windowDrained;
+		}
+		@:privateAccess __socket.__whenDrainedTo(marks.low, marks.drained);
+	}
+
+	@:noCompletion private function __windowDrained():Void {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__transportRuntime();
+		if (runtime == null) {
+			runtime = CrossByte.__currentOrNull();
+		}
+		if (runtime == null) {
+			__outputMoved();
+			return;
+		}
+		final marks = __outputMarks();
+		if (!marks.drainQueued) {
+			marks.drainQueued = true;
+			@:privateAccess runtime.__queuePassFlush(this);
+		}
+	}
+
+	/** The pass has ended: the drain the window reported is told. **/
+	@:noCompletion public function __flushPass():Void {
+		__outputMarks().drainQueued = false;
+		__outputMoved();
+		if (__marks.isHigh && !__ended) {
+			// Back above it meanwhile: the window is asked again.
+			__watchOutput(true);
+		}
 	}
 
 	/** What the congestion window holds back. **/
@@ -1523,6 +1678,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		__socket.__writeBytes(data, 0, 0);
 		__socket.flush();
 		outTimestamp = __uptime();
+		__noteOutput();
 	}
 
 	/** Part of `data` in place, as one message, as `send` sends the whole. **/
@@ -1530,6 +1686,32 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		__socket.__writeBytes(data, offset, length);
 		__socket.flush();
 		outTimestamp = __uptime();
+		__noteOutput();
+	}
+
+	/**
+		Told by the session's OUTPUT_PROGRESS, as a TCP connection's is.
+		On Node, whose writes report going only when asked as they are made,
+		it is asked at each tick instead.
+	**/
+	override public function __watchOutput(watching:Bool):Void {
+		#if nodejs
+		super.__watchOutput(watching);
+		#else
+		final marks = __outputMarks();
+		if (marks.progress == null) {
+			marks.progress = socket_onOutputMoved;
+		}
+		if (watching) {
+			__socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, marks.progress);
+		} else {
+			__socket.removeEventListener(OutputProgressEvent.OUTPUT_PROGRESS, marks.progress);
+		}
+		#end
+	}
+
+	@:noCompletion private function socket_onOutputMoved(_:OutputProgressEvent):Void {
+		__outputMoved();
 	}
 
 	/**
