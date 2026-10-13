@@ -52,4 +52,19 @@ CI covers:
 - the extensions' own suites (`crossbyte-libuv`, `crossbyte-brotli`, `crossbyte-lz4`);
 - the generated API documentation, published as the run's `crossbyte-api-docs` artifact.
 
+On `main`, on a tag and on a manual run, CI runs all of it. On another branch or a pull request, the interpreter,
+jvm, Node and native suites run only the test classes the change can reach, and a suite it cannot reach is skipped.
+`ci/affected.js` works that out from the compiler's own dependency graph: it names the changed files, follows what
+depends on each, and keeps the test cases it arrives at. A change to native code, `std/`, a macro, the test harness
+or CI itself runs everything, as does one that reaches more than 60% of the suite, which any change to the runtime's
+core does. Run it locally to test what a change reaches:
+
+```sh
+node ci/affected.js
+```
+
+It prints the classes for each graph as a `CB_ONLY` value: build the suite with `-D gc_bisect` and set `CB_ONLY` to
+run just those. A selection is a fast check, not a proof: what a dependency cannot show (timing, reflection, a test
+reading a file) is only caught by the full run on `main`.
+
 `RELEASING.md` covers how CI installs its libraries, and how a release is made.

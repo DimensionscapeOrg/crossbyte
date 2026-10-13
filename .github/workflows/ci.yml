@@ -36,8 +36,61 @@ env:
   HXCPP_REF: "production"
 
 jobs:
+  # Which test classes this change can reach (ci/affected.js, from the
+  # compiler's dependency graph). Main, tags and manual runs always run
+  # everything; another branch or a pull request runs what its changes reach,
+  # and a suite they cannot reach is skipped. The suite jobs below read
+  # cpp_* (every sys target) and js_* (Node).
+  select:
+    name: Select tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      cpp_mode: ${{ steps.full.outputs.cpp_mode || steps.affected.outputs.cpp_mode }}
+      cpp_only: ${{ steps.affected.outputs.cpp_only }}
+      cpp_flags: ${{ steps.affected.outputs.cpp_flags }}
+      js_mode: ${{ steps.full.outputs.js_mode || steps.affected.outputs.js_mode }}
+      js_only: ${{ steps.affected.outputs.js_only }}
+      js_flags: ${{ steps.affected.outputs.js_flags }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Run everything on main, tags and manual runs
+        id: full
+        if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+        run: |
+          echo "cpp_mode=full" >> "$GITHUB_OUTPUT"
+          echo "js_mode=full" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: ${{ steps.full.outcome == 'skipped' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Haxe
+        if: ${{ steps.full.outcome == 'skipped' }}
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe libraries
+        if: ${{ steps.full.outcome == 'skipped' }}
+        uses: ./.github/actions/haxelibs
+
+      - name: Select what the change reaches
+        id: affected
+        if: ${{ steps.full.outcome == 'skipped' }}
+        run: node ci/affected.js origin/main --github
+
   core-tests:
     name: Core | Haxe Tests
+    needs: select
+    if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+    env:
+      CB_ONLY: ${{ needs.select.outputs.cpp_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -62,7 +115,7 @@ jobs:
       # Each task in Aedifex.hx is one hxml, so this is the same command without
       # the tool in between.
       - name: Run interpreter test suite
-        run: haxe ci/interp-tests.hxml
+        run: haxe ci/interp-tests.hxml ${{ needs.select.outputs.cpp_flags }}
 
       # `-D final` (Lime's -final defines it) inlines the loop's and the socket
       # registry's hot functions, and no test build defines it, so a return
@@ -114,6 +167,10 @@ jobs:
   # the other families take theirs in their own jobs below.
   core-tests-checked:
     name: Core | Haxe Tests (arrivals checked)
+    needs: select
+    if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+    env:
+      CB_ONLY: ${{ needs.select.outputs.cpp_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -133,7 +190,7 @@ jobs:
         uses: ./.github/actions/haxelibs
 
       - name: Run interpreter test suite with arrivals checked
-        run: haxe ci/interp-tests.hxml -D crossbyte_check_events
+        run: haxe ci/interp-tests.hxml -D crossbyte_check_events ${{ needs.select.outputs.cpp_flags }}
 
   # The suite classes that claim PHP (SQLite, BCrypt, SecureRandom,
   # HMAC-SHA256), on PHP 8.3 from Ubuntu 24.04's own packages. The rest of
@@ -189,6 +246,10 @@ jobs:
   # arrivals checked is on Java 8 alone.
   jvm-tests:
     name: Core | JVM Tests (Java ${{ matrix.java }})
+    needs: select
+    if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+    env:
+      CB_ONLY: ${{ needs.select.outputs.cpp_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -222,7 +283,7 @@ jobs:
         run: haxe ci/jvm-smoke.hxml
 
       - name: Build jvm test suite
-        run: haxe ci/jvm-tests.hxml
+        run: haxe ci/jvm-tests.hxml ${{ needs.select.outputs.cpp_flags }}
 
       # The smoke jar covers the non-networking core; the full jar adds
       # auth, db, http, net, ipc and system. Both run, because the smoke
@@ -239,7 +300,7 @@ jobs:
       # its output.
       - name: Build jvm test suite with arrivals checked
         if: matrix.java == '8'
-        run: haxe ci/jvm-tests.hxml -D crossbyte_check_events
+        run: haxe ci/jvm-tests.hxml -D crossbyte_check_events ${{ needs.select.outputs.cpp_flags }}
 
       - name: Run jvm test suite with arrivals checked
         if: matrix.java == '8'
@@ -449,6 +510,10 @@ jobs:
 
   posix-native:
     name: Core | Native Suite (${{ matrix.label }})
+    needs: select
+    if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+    env:
+      CB_ONLY: ${{ needs.select.outputs.cpp_only }}
     runs-on: ${{ matrix.os }}
     # The whole native suite, which Native Smoke runs on Windows only. Every
     # networking class in it (sockets, TLS, HTTP/1.1 and HTTP/2, WebSocket,
@@ -539,7 +604,7 @@ jobs:
         # says where, rather than printing nothing after its last server's log
         # line. Not stripped, so a stack taken below names its functions:
         # stripped, every frame reads ___lldb_unnamed_symbol.
-        run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip ${{ matrix.defines }}
+        run: haxe ci/posix-native-tests.hxml -D test_trace -D nostrip ${{ matrix.defines }} ${{ needs.select.outputs.cpp_flags }}
 
       # The relay tests bind 127.0.0.2 and 127.0.0.3, so that what a peer
       # sends itself and what the relay forwards do not share a source. Linux
@@ -669,6 +734,8 @@ jobs:
 
   native-smoke:
     name: Core | Native Smoke
+    needs: select
+    if: ${{ needs.select.outputs.cpp_mode != 'none' || needs.select.outputs.js_mode != 'none' }}
     runs-on: windows-latest
     # A run takes about 21 minutes, the samples aside, and the browser and
     # TURN interop steps move with the network. 35 leaves room for a slow
@@ -729,9 +796,13 @@ jobs:
         run: haxe ci/node-build.hxml
 
       - name: Build portable suite for Node
-        run: haxe ci/js-tests.hxml
+        if: ${{ needs.select.outputs.js_mode != 'none' }}
+        run: haxe ci/js-tests.hxml ${{ needs.select.outputs.js_flags }}
 
       - name: Run portable suite on Node
+        if: ${{ needs.select.outputs.js_mode != 'none' }}
+        env:
+          CB_ONLY: ${{ needs.select.outputs.js_only }}
         run: |
           node export/js-tests/tests.js
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-tests/tests.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
@@ -739,9 +810,13 @@ jobs:
       # Again with every arrival's payload killed once its call returns (see
       # core-tests-checked), over the same output.
       - name: Build portable suite for Node with arrivals checked
-        run: haxe ci/js-tests.hxml -D crossbyte_check_events
+        if: ${{ needs.select.outputs.js_mode != 'none' }}
+        run: haxe ci/js-tests.hxml -D crossbyte_check_events ${{ needs.select.outputs.js_flags }}
 
       - name: Run portable suite on Node with arrivals checked
+        if: ${{ needs.select.outputs.js_mode != 'none' }}
+        env:
+          CB_ONLY: ${{ needs.select.outputs.js_only }}
         run: |
           node export/js-tests/tests.js
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::node export/js-tests/tests.js exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
@@ -868,9 +943,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host ("::error::BenchMain.exe exited with code {0} (0x{0:X8})" -f $LASTEXITCODE); exit 1 }
 
       - name: Build native smoke harness
-        run: haxe ci/native-tests.hxml
+        if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+        run: haxe ci/native-tests.hxml ${{ needs.select.outputs.cpp_flags }}
 
       - name: Run native smoke suite
+        if: ${{ needs.select.outputs.cpp_mode != 'none' }}
+        env:
+          CB_ONLY: ${{ needs.select.outputs.cpp_only }}
         working-directory: export/ci-native-tests
         run: |
           .\NativeSmokeMain.exe

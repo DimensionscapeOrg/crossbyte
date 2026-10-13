@@ -28,3 +28,6 @@ hs_err_pid*.log
 # demand and never committed.
 node_modules/
 package-lock.json
+
+# The compiler's dependency dump, which ci/affected.js reads.
+dump/
