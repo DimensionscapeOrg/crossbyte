@@ -95,6 +95,11 @@ All notable changes to CrossByte will be documented in this file.
   static, which a PHP process serving one request rarely still has, so
   there the sign-in it protects pays for a hash as well as the verify. Its
   docs say so and show a fixed hash to verify against on PHP instead.
+- **Two RPC benchmark cases timed a refusal.** "dispatch a one-way call"
+  and "dispatch one-way, hooks overridden" in `tests/bench` fed the handler
+  a frame built by hand with the op of the method's name, not of its
+  signature, so no method answered it. They now feed it the frame the stub
+  sends, and say so if the handler is never reached.
 
 ## 1.0.0 - 2026-10-13
 

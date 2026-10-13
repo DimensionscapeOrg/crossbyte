@@ -1,6 +1,5 @@
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
-import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.INetConnection;
 import crossbyte.net.Protocol;
 import crossbyte.net.Reason;
@@ -9,8 +8,6 @@ import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCResponse;
 import crossbyte.rpc.RPCSession;
-import crossbyte.utils.Hash;
-import haxe.io.Bytes;
 
 /**
 	What an RPC call costs: decoding and dispatching one on the handler's
@@ -31,14 +28,15 @@ class BenchRpc {
 		var client = new RPCSession<BenchCommands>(link.client, commands);
 		var server = new RPCSession(link.server, null, handler);
 
-		// A one-way `move(7, 1.5, -2.5)`, framed as the stub frames it, fed to
-		// the handler's side directly: decode, dispatch, call.
+		// A one-way `move(7, 1.5, -2.5)`, the frame the stub sends, fed to the
+		// handler's side directly: decode, dispatch, call.
 		var frame = moveFrame();
 		var serverRead = link.server.onData;
 		Bench.run("dispatch a one-way call (3 args)", function():Void {
 			frame.position = 0;
 			serverRead(frame);
 		});
+		var dispatched:Bool = handler.moves > 0;
 
 		// The same, to a handler that overrides beforeCall and afterCall and
 		// does nothing in them: what the hooks themselves cost a call.
@@ -50,6 +48,10 @@ class BenchRpc {
 			frame.position = 0;
 			hookedRead(frame);
 		});
+		var hookedDispatched:Bool = hooked.moves > 0;
+		if (!dispatched || !hookedDispatched) {
+			Sys.println("  (the two dispatch cases above never reached the handler: they timed a refusal)");
+		}
 
 		Bench.run("one-way call, stub to handler", function():Void {
 			commands.move(7, 1.5, -2.5);
@@ -99,16 +101,24 @@ class BenchRpc {
 		}
 	}
 
+	/**
+		The frame `commands.move(7, 1.5, -2.5)` sends, as it sends it: its op is
+		the hash of the method's signature, which a frame put together by hand
+		has to get right, and two of these cases once timed a refusal for an op
+		no method had.
+	**/
 	static function moveFrame():ByteArray {
-		var payload = new ByteArrayOutput(64);
-		payload.writeByte(0);
-		payload.writeInt(Hash.fnv1a32(Bytes.ofString("move")));
-		payload.writeInt(7);
-		payload.writeDouble(1.5);
-		payload.writeDouble(-2.5);
-		var frame = new ByteArray();
-		frame.writeInt(payload.bytesWritten);
-		frame.writeBytes(payload, 0, payload.bytesWritten);
+		var link = BenchLink.pair();
+		var commands = new BenchCommands();
+		var session = new RPCSession<BenchCommands>(link.client, commands);
+		// After the session's hello, which it sends as it is made.
+		link.client.capture = new ByteArray();
+		commands.move(7, 1.5, -2.5);
+		var frame = link.client.capture;
+		link.client.capture = null;
+		if (session == null || frame.length == 0) {
+			throw "the stub sent nothing";
+		}
 		frame.position = 0;
 		return frame;
 	}
@@ -185,6 +195,9 @@ private class BenchLink implements INetConnection {
 
 	public var peer:BenchLink;
 
+	/** While set, what this side sends is copied here, and goes nowhere. **/
+	public var capture:Null<ByteArray> = null;
+
 	var __readEnabled:Bool = false;
 	var __onData:ByteArrayInput->Void = input -> {};
 	var __onClose:Reason->Void = reason -> {};
@@ -206,6 +219,10 @@ private class BenchLink implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
+		if (capture != null) {
+			capture.writeBytes(data, 0, data.length);
+			return;
+		}
 		if (peer != null && peer.__readEnabled) {
 			data.position = 0;
 			peer.__onData(data);
