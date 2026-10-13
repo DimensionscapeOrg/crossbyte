@@ -339,14 +339,21 @@ class ReliableDatagramJoinTest extends utest.Test {
 			Assert.same([], unanswered, "CONNECTs nothing answered");
 
 			// From before 1.0: seven bytes, and nothing comes back while joins
-			// are validated.
+			// are validated. A server of its own: the one above has admitted
+			// the peers before, and a new peer can be given a port one of
+			// them had, which that server already knows as a session.
+			var fresh = new ReliableDatagramServerSocket();
+			fresh.bind(0, "127.0.0.1");
+			fresh.joinValidation = ALWAYS;
+			fresh.listen();
 			var older = new RawPeer();
 			older.open();
-			older.send(ReliableDatagramProtocol.encode(CONNECT, 0), validating.localPort);
+			older.send(ReliableDatagramProtocol.encode(CONNECT, 0), fresh.localPort);
 			pumpUntil(() -> false, 0.3);
 			Assert.equals(0, older.sizes.length, "a CONNECT from before 1.0 drew an answer while joins were validated");
-			Assert.isNull(validating.__sessionAt("127.0.0.1", older.port), "a CONNECT from before 1.0 opened a session while joins were validated");
+			Assert.isNull(fresh.__sessionAt("127.0.0.1", older.port), "a CONNECT from before 1.0 opened a session while joins were validated");
 			older.close();
+			closeServerQuietly(fresh);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}

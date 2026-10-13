@@ -166,7 +166,10 @@ class JWTClaimsTest extends utest.Test {
 				if (without == null) {
 					without = reading.perOperation;
 				} else {
-					Assert.equals(without, reading.perOperation, 'verify given ${form.name} allocated ${reading} where it allocated $without bytes without a time');
+					// A boxed time is 16 bytes or more; the readings are averages,
+					// which in a full suite can differ by a fraction of a byte.
+					Assert.isTrue(Math.abs(reading.perOperation - without) < 8,
+						'verify given ${form.name} allocated ${reading} where it allocated $without bytes without a time');
 				}
 			}
 		}
