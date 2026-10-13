@@ -191,35 +191,68 @@ class SignatureKeyTest extends utest.Test {
 		key.sign(message);
 		var signMs:Float = (haxe.Timer.stamp() - s0) * 1000;
 
-		var idle:Array<Float> = [for (i in 0...5) timedCollection()];
-
+		// The baseline runs beside a worker as busy as the signing one, in a
+		// zone the collector need not wait for: on a runner with few cores a
+		// busy worker slows a collection by the core it takes, held up or not.
+		var spin:Int = spinFor(signMs);
+		var idle:Array<Float> = collectionsBeside(() -> spinInFreeZone(spin));
 		// A worker signs back to back, so a collection lands mid-signature.
+		var busy:Array<Float> = collectionsBeside(() -> key.sign(message));
+
+		// Held up, a collection waits out the rest of the signature it lands
+		// in, and the next sample falls that much later in the one after:
+		// with these intervals the median rises by about a third of a
+		// signature (a worker spinning outside the zone measured 0.35).
+		var idleMs:Float = median(idle);
+		var busyMs:Float = median(busy);
+		Assert.isTrue(busyMs < idleMs + signMs / 4, 'median collection ${busyMs} ms (${idleMs} ms beside a spinning worker) while ${signMs} ms signatures ran');
+	}
+
+	/** 15 full collections, timed, while a worker repeats `work`. **/
+	static function collectionsBeside(work:Void->Void):Array<Float> {
 		var stop:Deque<Bool> = new Deque<Bool>();
 		var stopped:Lock = new Lock();
 		Thread.create(() -> {
 			while (stop.pop(false) == null) {
-				key.sign(message);
+				work();
 			}
 			stopped.release();
 		});
 
 		crossbyte.sys.System.sleep(0.05);
-		var busy:Array<Float> = [];
+		var samples:Array<Float> = [];
 		for (i in 0...15) {
-			// Out of step with the signatures, so the samples fall at different
-			// points in one.
+			// Out of step with the work, so the samples fall at different points
+			// in one round of it.
 			crossbyte.sys.System.sleep(0.011 + (i % 5) * 0.003);
-			busy.push(timedCollection());
+			samples.push(timedCollection());
 		}
 		stop.add(true);
 		Assert.isTrue(stopped.wait(30.0));
+		return samples;
+	}
 
-		// Held up, a collection waits out the rest of the signature it lands
-		// in: half of one on the median, and under a quarter for 15 samples'
-		// median less than 2% of the time.
-		var idleMs:Float = median(idle);
-		var busyMs:Float = median(busy);
-		Assert.isTrue(busyMs < idleMs + signMs / 4, 'median collection ${busyMs} ms (${idleMs} ms idle) while ${signMs} ms signatures ran');
+	static var spun:Int = 0;
+
+	/** Rounds of `spinInFreeZone` that take about `ms` of a core. **/
+	static function spinFor(ms:Float):Int {
+		var t0:Float = haxe.Timer.stamp();
+		spinInFreeZone(1000000);
+		var perRound:Float = (haxe.Timer.stamp() - t0) * 1000 / 1000000;
+		return Std.int(Math.max(1000, Math.min(1e9, ms / Math.max(perRound, 1e-7))));
+	}
+
+	/** Arithmetic only, so nothing it does needs the collector to wait for it. **/
+	static function spinInFreeZone(rounds:Int):Void {
+		var x:Int = spun | 1;
+		cpp.vm.Gc.enterGCFreeZone();
+		for (_ in 0...rounds) {
+			x ^= x << 13;
+			x ^= x >>> 17;
+			x ^= x << 5;
+		}
+		cpp.vm.Gc.exitGCFreeZone();
+		spun = x;
 	}
 
 	static function timedCollection():Float {
