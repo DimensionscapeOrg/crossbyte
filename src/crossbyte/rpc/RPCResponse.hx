@@ -40,7 +40,8 @@ class RPCResponse<T> extends Future<T> {
 		Why the call failed, typed as a receiver is told it: `TimedOut`,
 		`Cancelled`, `Stopped`, `Disconnected(reason)`, `Unsent` or
 		`Unreadable`; and for a call the other side refused, what refused it:
-		`Refused(message)` for its handler's own `RPCError`, `UnknownMethod`,
+		`Refused(message, code)` for its handler's own `RPCError` (`code` its
+		id, or `null`), `UnknownMethod`,
 		`UnreadableArguments`, `Busy`, `NoHandler`, `HandlerTimedOut` or
 		`HandlerFailed`. `null` while it waits and once it has succeeded.
 

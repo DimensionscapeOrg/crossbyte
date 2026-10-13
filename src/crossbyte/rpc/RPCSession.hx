@@ -1357,7 +1357,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 					__currentCall = null;
 				} else {
 					if (requestId != 0) {
-						__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE, RPCWire.REFUSED_NO_HANDLER);
+						__sendCompiledError(op, requestId, RPCError.NO_HANDLER_MESSAGE, RPCWire.REFUSED_NO_HANDLER, 0);
 					}
 					__passedOver(op, requestId, "nothing answers calls on this connection");
 				}
@@ -1451,9 +1451,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final why:String = __tooLargeWhy(payloadLen);
 		if (call && requestId != 0) {
 			if (runtime) {
-				__sendRuntimeError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE);
+				__sendRuntimeError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE, 0);
 			} else {
-				__sendCompiledError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE);
+				__sendCompiledError(op, requestId, why, RPCWire.REFUSED_TOO_LARGE, 0);
 			}
 		} else if (answer && requestId != 0) {
 			final response:Null<RPCResponse<Dynamic>> = runtime ? __takeRuntimeResponse(requestId) : (__commands != null ? __commands.__takeResponse(requestId) : null);
@@ -1567,7 +1567,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __unknownCall(op:Int, requestId:Int):Void {
 		if (requestId != 0) {
-			__sendCompiledError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD);
+			__sendCompiledError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD, 0);
 		}
 		if (__hearsUnreadable()) {
 			__passedOver(op, requestId, "no method answers op 0x" + StringTools.hex(op, 8));
@@ -1581,9 +1581,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __unreadableCall(op:Int, requestId:Int, runtime:Bool, error:Dynamic):Void {
 		if (requestId != 0) {
 			if (runtime) {
-				__sendRuntimeError(op, requestId, RPCError.UNREADABLE_MESSAGE, RPCWire.REFUSED_UNREADABLE);
+				__sendRuntimeError(op, requestId, RPCError.UNREADABLE_MESSAGE, RPCWire.REFUSED_UNREADABLE, 0);
 			} else {
-				__sendCompiledError(op, requestId, RPCError.UNREADABLE_MESSAGE, RPCWire.REFUSED_UNREADABLE);
+				__sendCompiledError(op, requestId, RPCError.UNREADABLE_MESSAGE, RPCWire.REFUSED_UNREADABLE, 0);
 			}
 		}
 		if (__hearsUnreadable()) {
@@ -1672,9 +1672,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final failed:Bool = runtimeFlags != RPCWire.FLAG_RESPONSE;
 		var value:Dynamic = null;
 		var code:Int = RPCWire.REFUSED_BY_HANDLER;
+		var id:Int = 0;
 		try {
 			if (failed) {
 				code = RPCWire.refusalCode(input, frameEnd);
+				if (code == RPCWire.REFUSED_BY_HANDLER) {
+					id = RPCWire.refusalId(input, frameEnd);
+				}
 				value = RPCWire.refusalText(input, code);
 			} else {
 				value = RPCRuntimeCodec.readValue(input, frameEnd);
@@ -1685,7 +1689,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 		if (failed) {
-			__rejectRuntimeResponse(op, requestId, value, code);
+			__rejectRuntimeResponse(op, requestId, value, code, id);
 		} else {
 			__resolveRuntimeResponse(op, requestId, value);
 		}
@@ -1742,7 +1746,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__atCallLimit()) {
 			args.__done();
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY);
+				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY, 0);
 			}
 			return;
 		}
@@ -1773,7 +1777,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final handler = (__runtimeHandlers != null) ? __runtimeHandlers.get(op) : null;
 		if (handler == null) {
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD);
+				__sendRuntimeError(op, requestId, RPCError.UNKNOWN_METHOD_MESSAGE, RPCWire.REFUSED_UNKNOWN_METHOD, 0);
 			}
 			if (__hearsUnreadable()) {
 				__passedOver(op, requestId, "no runtime handler is registered for op " + op);
@@ -1782,7 +1786,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		if (__atCallLimit()) {
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY);
+				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE, RPCWire.REFUSED_BUSY, 0);
 			}
 			return;
 		}
@@ -1850,7 +1854,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __answerRuntimeFailure(op:Int, requestId:Int, error:haxe.Exception, epoch:Int):Void {
 		final answer:Null<String> = __answerFor(error);
 		if (requestId != 0 && __isCurrent(epoch)) {
-			__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE, __refusalOf(error, answer));
+			__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE, __refusalOf(error, answer), RPCWire.idOf(error));
 		}
 		if (__reported(answer, requestId, error)) {
 			__reportHandlerError(op, null, error);
@@ -1882,7 +1886,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __callFailed(op:Int, method:String, requestId:Int, error:haxe.Exception, answerable:Bool):Void {
 		final answer:Null<String> = __answerFor(error);
 		if (requestId != 0 && answerable) {
-			__sendCompiledError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE, __refusalOf(error, answer));
+			__sendCompiledError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE, __refusalOf(error, answer), RPCWire.idOf(error));
 		}
 		if (__reported(answer, requestId, error)) {
 			__reportHandlerError(op, method, error);
@@ -2199,14 +2203,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/**
 		Answers a compiled request with an error, `message` and the `code` of
-		what refused it (`RPCWire.REFUSED_*`); nothing, once the connection
-		has ended.
+		what refused it (`RPCWire.REFUSED_*`), and for a handler's refusal the
+		`id` of its `RPCError` (0 for none); nothing, once the connection has
+		ended.
 	**/
-	@:noCompletion private function __sendCompiledError(op:Int, requestId:Int, message:String, code:Int):Void {
+	@:noCompletion private function __sendCompiledError(op:Int, requestId:Int, message:String, code:Int, id:Int):Void {
 		if (__ended) {
 			return;
 		}
-		__sendError(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message, code);
+		__sendError(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message, code, id);
 	}
 
 	/**
@@ -2230,17 +2235,17 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		`RPCError`'s) is not the caller's to see in part, and is answered
 		`RPCError.INTERNAL_MESSAGE` instead.
 	**/
-	@:noCompletion private function __sendError(flags:Int, op:Int, requestId:Int, message:String, code:Int):Void {
-		var framed:RPCFrame = __errorFrame(flags, op, requestId, message, code);
+	@:noCompletion private function __sendError(flags:Int, op:Int, requestId:Int, message:String, code:Int, id:Int):Void {
+		var framed:RPCFrame = __errorFrame(flags, op, requestId, message, code, id);
 		if (__oversized(framed)) {
 			__sent(framed);
-			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE, RPCWire.REFUSED_HANDLER_FAILED);
+			framed = __errorFrame(flags, op, requestId, RPCError.INTERNAL_MESSAGE, RPCWire.REFUSED_HANDLER_FAILED, 0);
 		}
 		__sendFrame(framed);
 	}
 
-	@:noCompletion private function __errorFrame(flags:Int, op:Int, requestId:Int, message:String, code:Int):RPCFrame {
-		final framed:RPCFrame = __takeFrame(4 + RPCWire.MIN_PAYLOAD_LEN + 5 + 5 + message.length * 3 + 5, flags, op, requestId);
+	@:noCompletion private function __errorFrame(flags:Int, op:Int, requestId:Int, message:String, code:Int, id:Int):RPCFrame {
+		final framed:RPCFrame = __takeFrame(4 + RPCWire.MIN_PAYLOAD_LEN + 5 + 5 + message.length * 3 + 5 + 5, flags, op, requestId);
 		// Its id even when it is 0, which no answer has: an error answer is
 		// always framed so.
 		if (requestId == 0) {
@@ -2248,9 +2253,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		framed.putString(message);
 		// After the message, where a reader that knows no code passes over
-		// it; a handler's own refusal is framed without one.
+		// it; a handler's own refusal is framed without one, unless its
+		// RPCError has an id, which follows a code of 0 written out.
 		if (code != RPCWire.REFUSED_BY_HANDLER) {
 			framed.putVarUInt(code);
+		} else if (id != 0) {
+			framed.putVarUInt(RPCWire.REFUSED_BY_HANDLER);
+			framed.putVarUInt(id);
 		}
 		return framed.finish();
 	}
@@ -2383,7 +2392,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			refusal = beforeRuntimeCall(op, requestId, payloadSize);
 		} catch (error:haxe.Exception) {
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, RPCError.INTERNAL_MESSAGE, RPCWire.REFUSED_HANDLER_FAILED);
+				__sendRuntimeError(op, requestId, RPCError.INTERNAL_MESSAGE, RPCWire.REFUSED_HANDLER_FAILED, 0);
 			}
 			__reportHandlerError(op, null, error);
 			return false;
@@ -2392,7 +2401,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return true;
 		}
 		if (requestId != 0) {
-			__sendRuntimeError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE, __refusalOf(refusal, refusal.message));
+			__sendRuntimeError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE, __refusalOf(refusal, refusal.message),
+				RPCWire.idOf(refusal));
 		}
 		return false;
 	}
@@ -2453,11 +2463,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __sendRuntimeError(op:Int, requestId:Int, message:String, code:Int):Void {
+	@:noCompletion private function __sendRuntimeError(op:Int, requestId:Int, message:String, code:Int, id:Int):Void {
 		if (__ended) {
 			return;
 		}
-		__sendError(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message, code);
+		__sendError(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, op, requestId, message, code, id);
 	}
 
 	@:noCompletion private function __trackRuntimeResponse(requestId:Int, response:RPCResponse<Dynamic>):Void {
@@ -2490,7 +2500,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		(cast response : RPCResponse<T>).__resolve(value);
 	}
 
-	@:noCompletion private function __rejectRuntimeResponse(op:Int, requestId:Int, message:String, code:Int):Void {
+	@:noCompletion private function __rejectRuntimeResponse(op:Int, requestId:Int, message:String, code:Int, id:Int):Void {
 		final response = __takeRuntimeResponse(requestId);
 		if (response == null) {
 			return;
@@ -2502,16 +2512,16 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// The other side meant its caller to see this, so it fails with an
 		// RPCError, carrying what refused it: a handler here answering with
 		// this response passes the refusal on, as it would one it threw.
-		response.__fail(message, __refusalError(message, code));
+		response.__fail(message, __refusalError(message, code, id));
 	}
 
 	/**
 		The `RPCError` a call the other side refused fails with: `message`,
 		and, when its session refused it rather than its handler, the `code`
-		of what did.
+		of what did; a handler's refusal has the `id` its `RPCError` had.
 	**/
-	@:noCompletion private static function __refusalError(message:String, code:Int):RPCError {
-		return code != RPCWire.REFUSED_BY_HANDLER ? new RPCRefusal(message, code) : new RPCError(message);
+	@:noCompletion private static function __refusalError(message:String, code:Int, id:Int):RPCError {
+		return code != RPCWire.REFUSED_BY_HANDLER ? new RPCRefusal(message, code) : new RPCError(message, id);
 	}
 
 	/**

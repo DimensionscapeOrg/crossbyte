@@ -348,7 +348,7 @@ side refused the call, the failure says what refused it:
 
 | failure | the other side | its message |
 |---|---|---|
-| `Refused(message)` | its handler, with an `RPCError` | the error's, word for word |
+| `Refused(message, code)` | its handler, with an `RPCError` | the error's, word for word; `code` its id, `null` for none |
 | `UnknownMethod` | has no method for the call | `RPCError.UNKNOWN_METHOD_MESSAGE` |
 | `UnreadableArguments` | could not read the call's arguments | `RPCError.UNREADABLE_MESSAGE` |
 | `Busy` | had `maxCallsWaiting` calls waiting | `RPCError.BUSY_MESSAGE` |
@@ -686,7 +686,24 @@ class RoomHandler extends RPCHandler {
 ```
 
 The caller's `RPCResponse` then fails with `"A room needs a name."`, and its
-`failure` is `Refused("A room needs a name.")`. Anything
+`failure` is `Refused("A room needs a name.")`. An `RPCError` given an id
+carries it across as a code, so a caller can switch on it rather than on the
+words: `throw new RPCError("No such room.", 3)` arrives as
+`Refused("No such room.", 3)`, and the `RPCError` the caller's future fails
+with has 3 as its `errorId`. An id of 0, the default, is no code, and a peer
+of 1.0 reads the message alone.
+
+```haxe
+// Given commands:ChatCommands.
+final entering = commands.join("attic");
+entering.catchError(_ -> switch (entering.failure) {
+	case Refused(_, 3): trace("there is no such room");
+	case Refused(message, _): trace('refused: $message');
+	case other: trace('failed: $other');
+});
+```
+
+Anything
 else a handler throws (a database error, a bug) is the handler failing, and the
 caller is told only `RPCError.INTERNAL_MESSAGE` (its `failure` is
 `HandlerFailed`), so a
@@ -1418,7 +1435,11 @@ failing (`HandlerFailed`), `2` no such method (`UnknownMethod`), `3`
 arguments that did not read (`UnreadableArguments`), `4` too many calls
 waiting (`Busy`), `5` nothing to answer calls (`NoHandler`), `6` its handler
 out of time (`HandlerTimedOut`), `7` larger than its reader takes (`TooLarge`). A code a reader does not know is the
-handler's refusal, with its message.
+handler's refusal, with its message. A handler's refusal whose `RPCError` has
+an id (since 1.1) writes its code `0` out and then the id, a varuint of its
+32 bits: a reader of 1.0 takes the `0` for the handler's refusal and passes
+over the rest with the frame, and one of 1.1 reads the id as
+`Refused(message, code)`. With no id, nothing follows the message.
 
 A ping is a one-way call to op `0x165DF089` with no arguments, answered with
 a pong: an answer under request id 0. The hello is an answer under request id

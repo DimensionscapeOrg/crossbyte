@@ -74,8 +74,12 @@ class RPCError extends Error {
 
 	/**
 		@param message What the caller is told.
-		@param id A number for the error, kept on this side; only the message
-		crosses the wire.
+		@param id A number for the error, an application's own code: it
+		crosses with the message, so the caller's failure is
+		`RPCFailure.Refused(message, id)` and the `RPCError` its future fails
+		with has it as its `errorId`. 0, unless given, is no code, and nothing
+		more crosses than before. A peer of 1.0 reads the message and passes
+		over the code.
 	**/
 	public function new(message:String = "", id:Int = 0) {
 		super(message, id);
@@ -101,13 +105,13 @@ class RPCError extends Error {
 		@param message What a future's `error` says; the case's own
 		message (`BUSY_MESSAGE` for `Busy`) when left out.
 		@throws ArgumentError For a failure that is not a refusal (`TimedOut`,
-		`Cancelled`, and the rest that only this side can find). `Refused(m)`
-		is an `RPCError` of `m`.
+		`Cancelled`, and the rest that only this side can find). `Refused(m, code)`
+		is an `RPCError` of `m`, with `code` as its id.
 	**/
 	public static function refusal(failure:RPCFailure, ?message:String):RPCError {
 		final code:Int = switch (failure) {
-			case Refused(words):
-				return new RPCError(message != null ? message : words);
+			case Refused(words, id):
+				return new RPCError(message != null ? message : words, id != null ? id : 0);
 			case HandlerFailed: crossbyte.rpc._internal.RPCWire.REFUSED_HANDLER_FAILED;
 			case UnknownMethod: crossbyte.rpc._internal.RPCWire.REFUSED_UNKNOWN_METHOD;
 			case UnreadableArguments: crossbyte.rpc._internal.RPCWire.REFUSED_UNREADABLE;

@@ -56,6 +56,16 @@ All notable changes to CrossByte will be documented in this file.
   `IOErrorEvent.OVERFLOW_ERROR_ID`. A `LocalConnection` closed this way was
   told `Reason.Error` with a message before.
 
+- **RPC error codes cross the wire.** An `RPCError` thrown, returned from
+  `beforeCall` or failing a future with an id (`new RPCError("No such
+  room.", 3)`) reaches its caller as `RPCFailure.Refused(message, code)`,
+  and the `RPCError` its future fails with has the id as its `errorId`, on
+  both lanes and passed on by a handler that answers with a refused call.
+  `Refused` gains an optional `code`, so `case Refused(message):` still
+  matches. On the wire the id follows the refusal code 0 after the message,
+  where a 1.0 peer reads the handler's refusal and passes over it; an id of
+  0 sends nothing more than before (`docs/rpc.md`, "On the wire").
+
 ### Fixed
 
 - **SQLite on PHP ran every statement that returns no rows twice.** PHP's

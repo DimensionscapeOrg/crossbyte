@@ -420,25 +420,30 @@ abstract class RPCCommands {
 	@:noCompletion private function __rejectFrom(op:Int, requestId:Int, input:ByteArrayInput):Void {
 		var message:String = null;
 		var code:Int = RPCWire.REFUSED_BY_HANDLER;
+		var id:Int = 0;
 		try {
 			code = RPCWire.refusalCode(input, __frameEnd);
+			if (code == RPCWire.REFUSED_BY_HANDLER) {
+				id = RPCWire.refusalId(input, __frameEnd);
+			}
 			message = RPCWire.refusalText(input, code);
 			RPCWire.requireWithin(input, __frameEnd);
 		} catch (error:Dynamic) {
 			__rejectUnreadableResponse(op, requestId, error);
 			return;
 		}
-		__rejectResponse(op, requestId, message, code);
+		__rejectResponse(op, requestId, message, code, id);
 	}
 
 	/**
 		Fails a waiting call with the error the other side answered it with,
-		`message`, refused as `code` says (`RPCWire.REFUSED_*`). The other
+		`message`, refused as `code` says (`RPCWire.REFUSED_*`), with the `id`
+		of the handler's `RPCError` (0 for none). The other
 		side meant this caller to see it, so the failure's cause is an
 		`RPCError`: a handler here answering with this response (forwarding
 		it) passes the refusal on, as it would one it threw.
 	**/
-	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String, code:Int):Void {
+	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String, code:Int, id:Int):Void {
 		final response = __takeAnswered(op, requestId);
 		if (response == null) {
 			return;
@@ -447,11 +452,11 @@ abstract class RPCCommands {
 			// Told with the failure, and no RPCError made to carry it: a
 			// refusal the session made is a single value.
 			final call:RPCReceiverCall = cast response;
-			final id:Int = call.requestId;
-			RPCReceiverCall.tell(call.finish(), id, RPCReceiverCall.refusal(code, message));
+			final callId:Int = call.requestId;
+			RPCReceiverCall.tell(call.finish(), callId, RPCReceiverCall.refusal(code, message, id));
 			return;
 		}
-		response.__fail(message, RPCSession.__refusalError(message, code));
+		response.__fail(message, RPCSession.__refusalError(message, code, id));
 	}
 
 	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {

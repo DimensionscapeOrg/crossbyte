@@ -259,6 +259,113 @@ class RPCRefusalTest extends utest.Test {
 		pair.stillAnswers();
 	}
 
+	public function testAHandlersErrorIdCrossesAsItsCode():Void {
+		final pair = new Pair();
+		for (code in [7, -2, 0x7FFFFFFF]) {
+			final response = pair.commands.coded(code);
+			pair.commands.codedThen(code, pair.told);
+			Assert.isTrue(Type.enumEq(Refused("No room.", code), response.failure), 'id $code failed its caller as ' + response.failure);
+			Assert.equals("No room.", response.error);
+			Assert.equals(code, (cast response.cause : RPCError).errorId, "the future's RPCError had another id");
+			Assert.isTrue(Type.enumEq(Refused("No room.", code), pair.told.failures.pop()), 'a receiver of id $code was told otherwise');
+		}
+		// An id of 0 is no code.
+		switch (pair.commands.coded(0).failure) {
+			case Refused(message, code):
+				Assert.equals("No room.", message);
+				Assert.isNull(code, "an error with no id arrived with a code");
+			case other:
+				Assert.fail("an error with no id failed as " + other);
+		}
+		// From beforeCall, and from a future that fails.
+		pair.handler.refusing = new RPCError("Later.", 4);
+		Assert.isTrue(Type.enumEq(Refused("Later.", 4), pair.commands.quick(1).failure), "beforeCall's id did not cross");
+		pair.handler.refusing = null;
+		Assert.isTrue(Type.enumEq(Refused("Gone.", 5), pair.commands.codedLater(5).failure), "a failed future's id did not cross");
+		// On the runtime lane, thrown and from beforeRuntimeCall.
+		pair.server.register(906, args -> throw new RPCError("Nope.", 6));
+		final runtime:RPCResponse<Dynamic> = pair.client.request(906, []);
+		Assert.isTrue(Type.enumEq(Refused("Nope.", 6), runtime.failure), "a runtime handler's id did not cross: " + runtime.failure);
+		pair.server.beforeRuntimeCall = (op, requestId, size) -> op == 907 ? new RPCError("Shut.", 8) : null;
+		final shut:RPCResponse<Dynamic> = pair.client.request(907, []);
+		Assert.isTrue(Type.enumEq(Refused("Shut.", 8), shut.failure), "beforeRuntimeCall's id did not cross: " + shut.failure);
+		// A refusal made from a failure keeps its code.
+		Assert.equals(9, RPCError.refusal(Refused("Plain.", 9)).errorId);
+		Assert.equals(0, pair.reported.length, "a refusal with an id was reported as the handler failing");
+		pair.stillAnswers();
+	}
+
+	public function testAHubPassesOnTheCodeItWasRefusedWith():Void {
+		final backendLink = LinkedConnection.pair();
+		final backendSession = new RPCSession(backendLink.server, null, new RefusalHandler());
+		final toBackend = new RefusalCommands();
+		final backendClient = new RPCSession<RefusalCommands>(backendLink.client, toBackend);
+		final hub = new RefusalHandler();
+		hub.forwardTo = toBackend;
+		final link = LinkedConnection.pair();
+		final commands = new RefusalCommands();
+		final client = new RPCSession<RefusalCommands>(link.client, commands);
+		final server = new RPCSession(link.server, null, hub);
+		Assert.notNull(backendSession);
+		Assert.notNull(backendClient);
+		Assert.notNull(server);
+		Assert.notNull(client);
+		Assert.isTrue(Type.enumEq(Refused("No room.", 12), commands.relay(12).failure), "the hub's caller was not told the backend's code");
+	}
+
+	public function testACodedRefusalIsFramedSoA10PeerReadsIt():Void {
+		// After the message: a code of 0 written out, which a 1.0 reader takes
+		// for the handler's own refusal, then the id. With no id, nothing
+		// follows the message, as before.
+		final link = LinkedConnection.pair();
+		final server = new RPCSession(link.server, null, new RefusalHandler());
+		Assert.notNull(server);
+		// Every error answer the server sends, each frame after its length.
+		final heard:Array<ByteArray> = [];
+		link.client.readEnabled = true;
+		link.client.onData = input -> {
+			while (input.bytesAvailable >= 4) {
+				final length:Int = input.readInt();
+				final frame = new ByteArray();
+				frame.writeInt(length);
+				frame.writeBytes(cast input, input.position, length);
+				input.position += length;
+				frame.position = 0;
+				if ((cast frame : crossbyte.io.ByteArray.ByteArrayData).get(4) == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+					heard.push(frame);
+				}
+			}
+		};
+		final op:Int = RPCOps.opOf("coded(i32):i32");
+		for (id in [7, 0]) {
+			final call = new ByteArrayOutput(32);
+			call.writeByte(RPCWire.FLAG_REQUEST);
+			call.writeInt(op);
+			call.writeVarUInt(1);
+			call.writeInt(id);
+			link.client.send(frameOf(call));
+		}
+		Assert.equals(2, heard.length, "not two error answers");
+		for (i in 0...heard.length) {
+			final answer:ByteArray = heard[i];
+			final input:crossbyte.io.ByteArrayInput = answer;
+			final end:Int = 4 + input.readInt();
+			Assert.equals(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR, input.readByte());
+			Assert.equals(op, input.readInt());
+			Assert.equals(1, input.readVarUInt());
+			// As 1.0 reads it: the handler's refusal, with its words.
+			Assert.equals(RPCWire.REFUSED_BY_HANDLER, RPCWire.refusalCode(input, end));
+			Assert.equals("No room.", RPCWire.refusalText(input, RPCWire.REFUSED_BY_HANDLER));
+			if (i == 0) {
+				Assert.equals(2, end - input.position, "an id of 7 is a 0 and a 7 after the message");
+				Assert.equals(0, input.readVarUInt());
+				Assert.equals(7, input.readVarUInt());
+			} else {
+				Assert.equals(end, input.position, "an error with no id was framed with more than its message");
+			}
+		}
+	}
+
 	private static function frameOf(payload:ByteArrayOutput):ByteArray {
 		final frame = new ByteArray();
 		frame.writeInt(payload.bytesWritten);
@@ -313,6 +420,12 @@ private class RefusalCommands extends RPCCommands {
 	@:rpc public function forward(key:String):RPCResponse<String> {}
 
 	@:rpc public function statused(value:Int):RPCResponse<Int> {}
+
+	@:rpc public function coded(code:Int):RPCResponse<Int> {}
+
+	@:rpc public function codedLater(code:Int):RPCResponse<Int> {}
+
+	@:rpc public function relay(code:Int):RPCResponse<Int> {}
 }
 
 private class RefusalHandler extends RPCHandler {
@@ -352,6 +465,20 @@ private class RefusalHandler extends RPCHandler {
 
 	@:rpc public function forward(key:String):Future<String> {
 		return forwardTo.slow(key);
+	}
+
+	@:rpc public function coded(code:Int):Int {
+		throw new RPCError("No room.", code);
+	}
+
+	@:rpc public function codedLater(code:Int):Future<Int> {
+		final completer = new Completer<Int>();
+		completer.fail(new RPCError("Gone.", code));
+		return completer.future;
+	}
+
+	@:rpc public function relay(code:Int):Future<Int> {
+		return forwardTo.coded(code);
 	}
 }
 

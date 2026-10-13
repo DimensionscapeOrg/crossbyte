@@ -73,10 +73,14 @@ class RPCWire {
 	// out for REFUSED_BY_HANDLER, so a handler's refusal is framed as before.
 	// A reader takes an answer with none, as one from before 1.0 has, and one
 	// it does not know, as a later version's could be, as the handler's own.
+	// A handler's refusal whose RPCError has an id (1.1) is REFUSED_BY_HANDLER
+	// written out, then the id: a 1.0 reader reads the 0, which is the
+	// handler's refusal, and passes over the rest with the frame.
 	//
 	//   varuint request id
 	//   varuint length, UTF-8   the message
-	//   varuint code            absent for REFUSED_BY_HANDLER
+	//   varuint code            absent for REFUSED_BY_HANDLER with no id
+	//   varuint id              after a code of 0: the RPCError's id, its 32 bits
 
 	/** An `RPCError` the handler meant its caller to see: `RPCFailure.Refused`. **/
 	public static inline final REFUSED_BY_HANDLER:Int = 0;
@@ -167,6 +171,39 @@ class RPCWire {
 		}
 		input.position = start;
 		return code > REFUSED_BY_HANDLER && code <= REFUSED_TOO_LARGE ? code : REFUSED_BY_HANDLER;
+	}
+
+	/**
+		The id a handler's refusal carries, `input` at its message, in a frame
+		ending at `end`: the varuint after an explicit code of 0, or 0 when
+		there is none (a refusal with no id, or one from a 1.0 peer). `input`
+		is left at the message. Asked only of a refusal `refusalCode` found
+		the handler's.
+	**/
+	public static function refusalId(input:ByteArrayInput, end:Int):Int {
+		final start:Int = input.position;
+		final length:Int = input.readVarUInt();
+		requireRoom(input, end, length);
+		input.position += length;
+		var id:Int = 0;
+		if (input.position < end && input.readVarUInt() == REFUSED_BY_HANDLER && input.position < end) {
+			id = input.readVarUInt();
+		}
+		input.position = start;
+		return id;
+	}
+
+	/**
+		The id an error answer for `error` carries: an `RPCError`'s `errorId`
+		when the handler refused with it (not a refusal of the protocol's own,
+		`RPCError.refusal`, nor one out of time), and 0 for anything else.
+	**/
+	public static function idOf(error:Null<haxe.Exception>):Int {
+		final refusal:Null<crossbyte.rpc.RPCError> = Std.downcast(error, crossbyte.rpc.RPCError);
+		if (refusal == null || Std.isOfType(refusal, RPCRefusal) || Std.isOfType(refusal, crossbyte.rpc.RPCTimeoutError)) {
+			return 0;
+		}
+		return refusal.errorId;
 	}
 
 	/**

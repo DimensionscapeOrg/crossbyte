@@ -41,8 +41,23 @@ enum RPCFailure {
 		The other side's handler refused the call with an `RPCError`, whose
 		message this is, word for word: one it threw, one its `beforeCall`
 		returned, or one its future failed with.
+
+		`code` is that error's id (`new RPCError(message, id)`, its
+		`errorId`), for the caller to switch on rather than the words:
+		`null` when the error had none (an id of 0), and from a peer of 1.0,
+		which sends none. A pattern that leaves it out, `Refused(message)`,
+		matches either.
+
+		```haxe
+		// Given failure:RPCFailure.
+		switch (failure) {
+			case Refused(_, 3): trace("no such player");
+			case Refused(message, _): trace('refused: $message');
+			case _:
+		}
+		```
 	**/
-	Refused(message:String);
+	Refused(message:String, ?code:Int);
 
 	/**
 		The other side has no method for the call: none of its name, or none

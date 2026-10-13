@@ -135,8 +135,12 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		Logger.error("An RPC receiver threw and was contained: " + Std.string(error));
 	}
 
-	/** The failure of a call the other side refused with `message`, as `code` (`RPCWire.REFUSED_*`) says. **/
-	public static function refusal(code:Int, message:String):RPCFailure {
+	/**
+		The failure of a call the other side refused with `message`, as `code`
+		(`RPCWire.REFUSED_*`) says; a handler's refusal with the `id` of its
+		`RPCError`, which is no code when it is 0.
+	**/
+	public static function refusal(code:Int, message:String, id:Int):RPCFailure {
 		return switch (code) {
 			case RPCWire.REFUSED_HANDLER_FAILED: HandlerFailed;
 			case RPCWire.REFUSED_UNKNOWN_METHOD: UnknownMethod;
@@ -145,7 +149,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 			case RPCWire.REFUSED_NO_HANDLER: NoHandler;
 			case RPCWire.REFUSED_HANDLER_TIMEOUT: HandlerTimedOut;
 			case RPCWire.REFUSED_TOO_LARGE: TooLarge;
-			case _: Refused(message);
+			case _: id != 0 ? Refused(message, id) : Refused(message);
 		}
 	}
 
@@ -171,7 +175,11 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		}
 		if (Std.isOfType(cause, RPCError)) {
 			final passed:Null<RPCRefusal> = Std.downcast(cause, RPCRefusal);
-			return passed != null ? refusal(passed.code, message) : Refused(message);
+			if (passed != null) {
+				return refusal(passed.code, message, 0);
+			}
+			final id:Int = (cast cause : RPCError).errorId;
+			return id != 0 ? Refused(message, id) : Refused(message);
 		}
 		if (Std.isOfType(cause, ArgumentError) || Std.isOfType(cause, IllegalOperationError)
 			|| StringTools.startsWith(message, RPCSession.UNSENT_PREFIX)) {
