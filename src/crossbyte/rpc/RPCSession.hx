@@ -379,6 +379,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				commands.__session = cast this;
 			}
 			__syncOnDataBinding();
+			__helloAgain();
 		}
 
 		return __commands;
@@ -393,6 +394,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__requireKind(handler, __commands);
 		__handler = handler;
 		__syncOnDataBinding();
+		__helloAgain();
 
 		return handler;
 	}
@@ -521,8 +523,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var peerAnswersFingerprint(default, null):Int = 0;
 
 	/**
-		Called when the peer's hello arrives, once a connection, with
-		`peerVersion`, `peerCapabilities` and the peer's fingerprints set.
+		Called when the peer's hello arrives, with `peerVersion`,
+		`peerCapabilities` and the peer's fingerprints set: once a
+		connection, and again when the peer is given a handler or commands
+		that change what it calls or answers (a session says hello again
+		then, so one given its handler after it was made does not leave its
+		peer with fingerprints of 0).
 
 		The fingerprints are for a log line: two that differ say the sides
 		were built from different methods (one has a method more, or a
@@ -558,16 +564,42 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		throws here is the connection's to report, not the start's.
 	**/
 	@:noCompletion private function __sendHello():Void {
+		final calls:Int = callsFingerprint;
+		final answers:Int = answersFingerprint;
+		__helloSaid = true;
+		__saidCalls = calls;
+		__saidAnswers = answers;
 		final framed:RPCFrame = __takeFrame(HELLO_ROOM, RPCWire.FLAG_RESPONSE, RPCWire.HELLO_OP, 0);
 		framed.putVarUInt(0);
 		framed.putVarUInt(RPCWire.VERSION);
 		framed.putVarUInt(RPCWire.CAPABILITIES);
-		framed.putInt(callsFingerprint);
-		framed.putInt(answersFingerprint);
+		framed.putInt(calls);
+		framed.putInt(answers);
 		try {
 			__connection.send(framed.finish());
 		} catch (_:Dynamic) {}
 		__sent(framed);
+	}
+
+	// Whether this connection has had this side's hello, and the fingerprints
+	// it said: a handler or commands given afterwards that change them are
+	// said again (see __helloAgain).
+	@:noCompletion private var __helloSaid:Bool = false;
+	@:noCompletion private var __saidCalls:Int = 0;
+	@:noCompletion private var __saidAnswers:Int = 0;
+
+	/**
+		Says hello again when the handler or the commands have changed what
+		this side calls or answers since its hello on this connection: a
+		session made with neither, and given them later (a registry that
+		attaches a handler as it takes each session), would otherwise have
+		told its peer fingerprints of 0. A connection not yet up hears the
+		hello as it becomes ready, with whatever the session has then.
+	**/
+	@:noCompletion private function __helloAgain():Void {
+		if (__helloSaid && __isUp && !__ended && (callsFingerprint != __saidCalls || answersFingerprint != __saidAnswers)) {
+			__sendHello();
+		}
 	}
 
 	/** A hello's frame at its longest: its length, flags and op, an id, the version and capabilities, two fingerprints. **/
@@ -749,6 +781,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final wasUp:Bool = __isUp && !__ended;
 		final heardHello:Bool = __heardHello;
 		__heardHello = false;
+		// The next connection, or the next peer, hears its own.
+		__helloSaid = false;
 		__isUp = false;
 		__ended = true;
 		__endReason = reason;

@@ -150,6 +150,50 @@ class RPCHelloTest extends utest.Test {
 		Assert.equals(1, server.peerVersion, "the next peer was not heard to say hello");
 	}
 
+	public function testASessionGivenItsHandlerLaterSaysHelloAgain():Void {
+		// As a registry attaches a handler to a session it was handed: the
+		// peer hears the handler's fingerprint, not the 0 the session had.
+		var link = LinkedConnection.pair();
+		var server:RPCSession<Dynamic, Dynamic> = new RPCSession(link.server);
+		var client = new RPCSession<HelloCommands>(link.client, new HelloCommands());
+		var heard = 0;
+		client.onHello = () -> heard++;
+		Assert.equals(0, client.peerAnswersFingerprint, "a session with no handler answers nothing");
+
+		final handler = new HelloHandler();
+		server.handler = handler;
+		Assert.notEquals(0, server.answersFingerprint);
+		Assert.equals(server.answersFingerprint, client.peerAnswersFingerprint, "the peer did not hear the handler it was given");
+		Assert.equals(client.callsFingerprint, client.peerAnswersFingerprint);
+		Assert.equals(1, heard, "not one hello more");
+
+		// Given the same again, or anything that answers the same, nothing.
+		final sent:Int = link.server.sent;
+		server.handler = handler;
+		server.handler = new HelloHandler();
+		Assert.equals(sent, link.server.sent, "a hello said again that said nothing new");
+
+		// And commands given later, the same way.
+		final otherLink = LinkedConnection.pair();
+		final answering = new RPCSession(otherLink.server, null, new HelloHandler());
+		final calling = new RPCSession<HelloCommands>(otherLink.client);
+		Assert.equals(0, answering.peerCallsFingerprint);
+		calling.commands = new HelloCommands();
+		Assert.equals(calling.callsFingerprint, answering.peerCallsFingerprint, "the peer did not hear the commands it was given");
+
+		// A session not yet up says nothing until it is, then what it has.
+		final idle = LinkedConnection.pair();
+		idle.server.isConnected = false;
+		idle.client.isConnected = false;
+		final waitingServer:RPCSession<Dynamic, Dynamic> = new RPCSession(idle.server);
+		final waitingClient = new RPCSession<HelloCommands>(idle.client, new HelloCommands());
+		waitingServer.handler = new HelloHandler();
+		Assert.equals(0, idle.server.sent, "a hello was said on a connection that was not up");
+		idle.server.becomeReady();
+		idle.client.becomeReady();
+		Assert.equals(waitingServer.answersFingerprint, waitingClient.peerAnswersFingerprint);
+	}
+
 	// ------------------------------------------------------------------
 
 	private static function pairOf<C:RPCCommands>(commands:C, handler:RPCHandler):{client:RPCSession<C, Dynamic>, server:RPCSession<Dynamic, Dynamic>} {

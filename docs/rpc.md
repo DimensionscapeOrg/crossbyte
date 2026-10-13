@@ -1240,7 +1240,11 @@ protocol version it speaks (`RPCSession.PROTOCOL_VERSION`, 1), the
 capabilities it has (in 1.0, reading a call's deadline and a cancel, see
 "The handler's side of a deadline", and reading answers in pieces, see
 "Large answers"), and a fingerprint of the
-methods its commands call and one of those its handler answers. The hello goes
+methods its commands call and one of those its handler answers. A session
+given its handler or commands after it was made (a server that attaches a
+handler to each session as it registers it) says hello again as it is given
+them, once its connection is up, so its peer hears what it really has; given
+the same again, it says nothing more. The hello goes
 out ahead of the session's calls and nothing waits for it, so it costs no
 round trip. The peer's sets `peerVersion`, `peerCapabilities`,
 `peerCallsFingerprint` and `peerAnswersFingerprint`, and `onHello` is called;

@@ -105,6 +105,12 @@ All notable changes to CrossByte will be documented in this file.
   static, which a PHP process serving one request rarely still has, so
   there the sign-in it protects pays for a hash as well as the verify. Its
   docs say so and show a fixed hash to verify against on PHP instead.
+- **An `RPCSession` given its handler or commands after it was made told its
+  peer fingerprints of 0.** It said hello in its constructor, with what it
+  had then. It now says hello again when a handler or commands given later
+  change its fingerprints, so `peerCallsFingerprint` and
+  `peerAnswersFingerprint` on the other side are what it really has, and
+  `onHello` is called again there.
 - **Two RPC benchmark cases timed a refusal.** "dispatch a one-way call"
   and "dispatch one-way, hooks overridden" in `tests/bench` fed the handler
   a frame built by hand with the op of the method's name, not of its
