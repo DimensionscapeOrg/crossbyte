@@ -12,6 +12,13 @@ All notable changes to CrossByte will be documented in this file.
 - **`ByteArrayInput.require(count)`** throws the `EOFError` a short read
   throws unless `count` bytes remain, so a record of several fields can be
   checked whole before any of it is read.
+- **Length-prefixed bytes.** `ByteArrayOutput.writeVarBytes(value, offset,
+  length)` writes a varuint length and then the bytes, and
+  `ByteArrayInput.readVarBytes(maxLength)` reads them back as a copy. The
+  length is checked against `maxLength` (1 MiB unless given) and against
+  the bytes remaining before anything is allocated, so five bytes claiming
+  2 GB are refused, and a failed read leaves `position` where it was, as
+  `readVarUtf` does. `ByteArray` has neither, as it has no `readVarUtf`.
 
 ### Fixed
 

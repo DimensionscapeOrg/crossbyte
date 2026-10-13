@@ -1,5 +1,6 @@
 package crossbyte.io;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.EOFError;
 import crossbyte.errors.RangeError;
 import haxe.io.Bytes;
@@ -366,5 +367,46 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 			throw new EOFError("ByteArrayInput underflow");
 		}
 		return readUtfBytes(len);
+	}
+
+	/**
+	 * Reads bytes with a varuint length before them, as `ByteArrayOutput.writeVarBytes`
+	 * writes them: the length, then that many bytes, copied out.
+	 *
+	 * Layout: `[varuint length][length bytes]`
+	 *
+	 * The length is what whoever wrote the bytes chose, so it is checked against
+	 * `maxLength` and against the bytes remaining before anything is allocated: five
+	 * bytes claiming 2 GB are refused, not made room for. `position` does not move
+	 * when the read fails.
+	 *
+	 * @param maxLength The longest length taken (default 1 MiB).
+	 * @return A copy of the bytes.
+	 * @throws RangeError If the length is more than `maxLength` (a length from 2^31
+	 *                up always is), or the varuint does not fit in 32 bits.
+	 * @throws EOFError If fewer bytes remain than the length, or the buffer ends inside
+	 *                the varuint, so the read can be tried again once the rest has
+	 *                arrived.
+	 * @throws ArgumentError If `maxLength` is negative.
+	 */
+	public inline function readVarBytes(maxLength:Int = 1 << 20):Bytes {
+		if (maxLength < 0) {
+			throw new ArgumentError("ByteArrayInput.readVarBytes: maxLength must not be negative");
+		}
+		var at:Int = this.position;
+		var len:Int = readVarUInt();
+		// Negative is a length from 2^31 up, more than any maxLength.
+		if (len < 0 || len > maxLength) {
+			this.position = at;
+			throw new RangeError('ByteArrayInput.readVarBytes: a length of ${(len : UInt)} is more than maxLength ($maxLength)');
+		}
+		if (len > this.length - this.position) {
+			this.position = at;
+			throw new EOFError("ByteArrayInput underflow");
+		}
+		var out:Bytes = Bytes.alloc(len);
+		out.blit(0, this, this.position, len);
+		this.position += len;
+		return out;
 	}
 }

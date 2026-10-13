@@ -487,6 +487,32 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		writeBytes(b);
 	}
 
+	/**
+	 * Writes bytes with a varuint length before them, as `ByteArrayInput.readVarBytes`
+	 * reads them back.
+	 *
+	 * Layout: `[varuint length][length bytes]`
+	 *
+	 * @param value  The bytes to write from.
+	 * @param offset Where in `value` to start (default `0`).
+	 * @param length How many bytes to write (default `-1`, the rest of `value` from
+	 *               `offset`).
+	 * @throws RangeError If the range is not inside `value`. Nothing is written.
+	 */
+	public inline function writeVarBytes(value:Bytes, offset:Int = 0, length:Int = -1):Void {
+		if (length < 0) {
+			length = value.length - offset;
+		}
+		// Before the length goes out, so a bad range writes nothing at all.
+		if (offset < 0 || length < 0 || offset > value.length || length > value.length - offset) {
+			throw new RangeError('ByteArrayOutput.writeVarBytes: $length bytes from $offset is outside the source');
+		}
+
+		reserve(varUIntSize(length) + length);
+		writeVarUInt(length, true);
+		writeBytes(value, offset, length);
+	}
+
 	#if js
 	/**
 		`value` in UTF-8 written straight into the output (see

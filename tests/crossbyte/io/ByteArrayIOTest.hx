@@ -29,6 +29,104 @@ class ByteArrayIOTest extends utest.Test {
 		Assert.isTrue(input.eof());
 	}
 
+	public function testVarBytesRoundTripWithTheirLength():Void {
+		var source = Bytes.ofString("abcdefgh");
+		var output = new ByteArrayOutput();
+		output.writeVarBytes(source);
+		output.writeVarBytes(source, 2, 3);
+		output.writeVarBytes(source, 8);
+		output.writeVarBytes(Bytes.alloc(300), 0, 200);
+
+		var bytes:Bytes = output;
+		// A length of 8, 3 and 0 is one byte each; 200 is two.
+		Assert.equals(1 + 8 + 1 + 3 + 1 + 2 + 200, bytes.length);
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.equals("abcdefgh", input.readVarBytes().toString());
+		Assert.equals("cde", input.readVarBytes().toString());
+		Assert.equals(0, input.readVarBytes().length);
+		Assert.equals(200, input.readVarBytes().length);
+		Assert.isTrue(input.eof());
+	}
+
+	public function testWriteVarBytesRefusesARangeOutsideItsSourceAndWritesNothing():Void {
+		var source = Bytes.alloc(4);
+		var output = new ByteArrayOutput();
+		Assert.raises(() -> output.writeVarBytes(source, 3, 2), crossbyte.errors.RangeError);
+		Assert.raises(() -> output.writeVarBytes(source, -1), crossbyte.errors.RangeError);
+		Assert.raises(() -> output.writeVarBytes(source, 5), crossbyte.errors.RangeError);
+		// An offset and a length whose sum wraps negative.
+		Assert.raises(() -> output.writeVarBytes(source, 2, 0x7FFFFFFF), crossbyte.errors.RangeError);
+		Assert.equals(0, output.bytesWritten);
+	}
+
+	public function testReadVarBytesRefusesALengthOverItsLimitAndLeavesThePosition():Void {
+		var output = new ByteArrayOutput();
+		output.writeByte(0x58);
+		output.writeVarBytes(Bytes.alloc(100));
+		var input:ByteArrayInput = ByteArray.fromBytes(output);
+		input.readByte();
+
+		Assert.raises(() -> input.readVarBytes(99), crossbyte.errors.RangeError);
+		Assert.equals(1, input.position);
+		Assert.raises(() -> input.readVarBytes(-1), crossbyte.errors.ArgumentError);
+		Assert.equals(1, input.position);
+		Assert.equals(100, input.readVarBytes(100).length);
+	}
+
+	public function testReadVarBytesWaitsForTheRestOfAShortPayload():Void {
+		var output = new ByteArrayOutput();
+		output.writeVarBytes(Bytes.alloc(10));
+		var whole:Bytes = output;
+		var input:ByteArrayInput = ByteArray.fromBytes(whole.sub(0, 6));
+
+		Assert.raises(() -> input.readVarBytes(), crossbyte.errors.EOFError);
+		Assert.equals(0, input.position, "a short payload moved the position");
+
+		// Cut inside the varint itself.
+		var long = new ByteArrayOutput();
+		long.writeVarBytes(Bytes.alloc(200));
+		var cut:ByteArrayInput = ByteArray.fromBytes((long : Bytes).sub(0, 1));
+		Assert.raises(() -> cut.readVarBytes(), crossbyte.errors.EOFError);
+		Assert.equals(0, cut.position);
+	}
+
+	/**
+		Five bytes claiming 2 GB, or just under, are refused before anything
+		is allocated for them: the length is checked against `maxLength` and
+		then against what is there.
+	**/
+	public function testFiveBytesClaimingGigabytesAllocateNothing():Void {
+		// 0x80000000, which an Int holds as negative, and 0x7FFFFFFF.
+		var twoGigabytes = Bytes.ofHex("8080808008");
+		var justUnder = Bytes.ofHex("ffffffff07");
+
+		var input:ByteArrayInput = ByteArray.fromBytes(twoGigabytes);
+		Assert.raises(() -> input.readVarBytes(0x7FFFFFFF), crossbyte.errors.RangeError);
+		Assert.equals(0, input.position);
+
+		var under:ByteArrayInput = ByteArray.fromBytes(justUnder);
+		Assert.raises(() -> under.readVarBytes(), crossbyte.errors.RangeError);
+		// Allowed by its limit, the length is still more than is there.
+		Assert.raises(() -> under.readVarBytes(0x7FFFFFFF), crossbyte.errors.EOFError);
+		Assert.equals(0, under.position);
+
+		#if (cpp || jvm)
+		var claims:Array<ByteArrayInput> = [ByteArray.fromBytes(twoGigabytes), ByteArray.fromBytes(justUnder)];
+		for (claim in claims) {
+			var refuse = () -> {
+				try {
+					claim.readVarBytes(0x7FFFFFFF);
+				} catch (_:Dynamic) {}
+			};
+			for (_ in 0...200) {
+				refuse();
+			}
+			var reading = crossbyte.test.AllocationMeter.measureLarge(refuse, 200);
+			Assert.isTrue(reading.perOperation < 65536, "refusing a claim allocated " + reading);
+		}
+		#end
+	}
+
 	public function testVarIntRoundTripPreservesSignedValues():Void {
 		var output = new ByteArrayOutput();
 		var values = [-1, 0, 1, 127, 128, 16384, -1234567];
