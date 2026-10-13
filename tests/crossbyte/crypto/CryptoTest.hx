@@ -35,7 +35,9 @@ class CryptoTest extends utest.Test {
 			{name: "SecureMemory", supported: SecureMemory.isSupported, reason: SecureMemory.unsupportedReason},
 			{name: "SecureRandom", supported: SecureRandom.isSupported, reason: SecureRandom.unsupportedReason},
 			{name: "X25519", supported: X25519.isSupported, reason: X25519.unsupportedReason},
-			{name: "Argon2id", supported: crossbyte.crypto.password.Argon2id.isSupported, reason: crossbyte.crypto.password.Argon2id.unsupportedReason}
+			{name: "Argon2id", supported: crossbyte.crypto.password.Argon2id.isSupported, reason: crossbyte.crypto.password.Argon2id.unsupportedReason},
+			{name: "BCrypt", supported: BCrypt.isSupported, reason: BCrypt.unsupportedReason},
+			{name: "SignatureKey", supported: SignatureKey.isSupported, reason: SignatureKey.unsupportedReason}
 		];
 		for (entry in classes) {
 			if (entry.supported) {
@@ -158,6 +160,35 @@ class CryptoTest extends utest.Test {
 	}
 
 	/** Whether `fn` throws an IllegalOperationError naming where it is running. **/
+	/**
+		The two classes that stand on another say what their members say when
+		they refuse: BCrypt on SecureRandom, SignatureKey on PublicKeySignature.
+	**/
+	public function testDependentClassesRefuseWithTheirReason():Void {
+		Assert.equals(SecureRandom.isSupported, BCrypt.isSupported);
+		Assert.equals(PublicKeySignature.isSupported, SignatureKey.isSupported);
+		if (BCrypt.isSupported) {
+			Assert.isTrue(BCrypt.verify("pw", BCrypt.hash("pw", 4)));
+		} else {
+			Assert.equals(BCrypt.unsupportedReason, refusal(() -> BCrypt.hash("pw", 4)));
+			Assert.equals(BCrypt.unsupportedReason, refusal(() -> BCrypt.dummyHash(4)));
+		}
+		if (!SignatureKey.isSupported) {
+			Assert.equals(SignatureKey.unsupportedReason, refusal(() -> SignatureKey.fromPublicPem("-----BEGIN PUBLIC KEY-----")));
+			Assert.equals(SignatureKey.unsupportedReason, refusal(() -> SignatureKey.fromPrivatePem("-----BEGIN PRIVATE KEY-----")));
+		}
+	}
+
+	/** The message of the IllegalOperationError `fn` throws, or null when it throws none. **/
+	private static function refusal(fn:Void->Void):Null<String> {
+		try {
+			fn();
+		} catch (e:crossbyte.errors.IllegalOperationError) {
+			return e.message;
+		}
+		return null;
+	}
+
 	private static function throwsIllegalOperation(fn:Void->Void):Bool {
 		try {
 			fn();

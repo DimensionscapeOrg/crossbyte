@@ -499,6 +499,8 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   claims of your own (`claim`, `hasClaim`, `setClaim`).
 - `BCrypt.hashAsync` and `verifyAsync`, the same on `Argon2id`, and
   `dummyHash` on both. Argon2id also runs on Node 24.7 and later.
+- `BCrypt.isSupported` and `unsupportedReason`, for `hash`, whose salt comes
+  from `SecureRandom`; `verify` works everywhere.
 - `SecureRandom.isSupported`, and `SecureRandom` on Node and in a browser.
 - `SecureRandom.fill(bytes, offset, length)` fills part of a `ByteArray`
   you keep, allocating nothing natively and on Node; a WebSocket client

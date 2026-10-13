@@ -38,11 +38,32 @@ import crossbyte.crypto._internal.NativeOnly;
  * key's operations take turns, since mbedTLS keeps state inside the key; give
  * threads that sign heavily a key each.
  *
- * Available on native `cpp` targets; elsewhere `fromPrivatePem` and
- * `fromPublicPem` throw an `IllegalOperationError` naming the target, so no
- * key exists there to call the rest on.
+ * Available on native `cpp` targets, as `isSupported` says; elsewhere
+ * `fromPrivatePem` and `fromPublicPem` throw an `IllegalOperationError`
+ * naming the target, so no key exists there to call the rest on.
  */
 class SignatureKey {
+	/**
+	 * Whether keys can be parsed here: `PublicKeySignature.isSupported`, since
+	 * both stand on mbedTLS's key support.
+	 */
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
+		return PublicKeySignature.isSupported;
+	}
+
+	/**
+	 * Why keys cannot be parsed here: what `fromPrivatePem` and
+	 * `fromPublicPem` say when they refuse, as `isSupported` is false. `null`
+	 * where `isSupported` is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		return PublicKeySignature.unsupportedReason;
+	}
+
 	/** The kind of key: `RSA` or `EC`, or `UNKNOWN` once disposed of. */
 	public var type(default, null):PublicKeyType;
 
@@ -180,7 +201,7 @@ class SignatureKey {
 
 		if (!NativePk.isAvailable()) {
 			if (throws) {
-				throw new crossbyte.errors.IllegalOperationError(PublicKeySignature.UNAVAILABLE);
+				throw new crossbyte.errors.IllegalOperationError(PublicKeySignature.unsupportedReason);
 			}
 			return null;
 		}

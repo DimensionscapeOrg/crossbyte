@@ -57,9 +57,6 @@ enum abstract SignatureFormat(Int) from Int to Int {
  * the target.
  */
 class PublicKeySignature {
-	@:noCompletion @:allow(crossbyte.crypto.SignatureKey)
-	private static inline final UNAVAILABLE:String = "Public-key signing is only available on supported native cpp targets.";
-
 	/**
 	 * Whether the native backend is available.
 	 */

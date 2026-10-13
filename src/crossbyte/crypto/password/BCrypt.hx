@@ -173,6 +173,28 @@ class BCrypt {
 	}
 
 	/**
+	 * Whether `hash`, `hashAsync` and `dummyHash` can run here: each draws a
+	 * salt from `SecureRandom`, so this is `SecureRandom.isSupported`.
+	 * `verify`, `verifyAsync` and `needsRehash` work on every target.
+	 */
+	public static var isSupported(get, never):Bool;
+
+	@:noCompletion private static function get_isSupported():Bool {
+		return SecureRandom.isSupported;
+	}
+
+	/**
+	 * Why `hash` cannot run here: what it, `hashAsync` and `dummyHash` say
+	 * when they refuse, as `isSupported` is false. `null` where `isSupported`
+	 * is true.
+	 */
+	public static var unsupportedReason(get, never):Null<String>;
+
+	@:noCompletion private static function get_unsupportedReason():Null<String> {
+		return SecureRandom.unsupportedReason;
+	}
+
+	/**
 	 * Checks whether the given bcrypt hash should be regenerated.
 	 *
 	 * True when the hash cannot be parsed, uses a cost other than `cost`, or uses a
