@@ -1401,6 +1401,13 @@ its handler answers. A reader takes what it knows of a hello and passes over
 the rest, and a frame of a kind it does not know is passed over too: every
 frame says where the next begins.
 
+A call of one small `Int` and its answer are 15 bytes each way over TCP (16
+once request ids pass 2^21), and over WebSocket 21 out and 17 back, with its
+frame header and a client's mask. gRPC's unary call of the same, over HTTP/2,
+is 48 bytes out and 42 back: HEADERS and DATA each way, and the answer's
+trailers. A call of 4 KB each way is 14 bytes past its payload each way over
+TCP, where gRPC's is 51 out and 44 back.
+
 A piece of an answer:
 
 ```
