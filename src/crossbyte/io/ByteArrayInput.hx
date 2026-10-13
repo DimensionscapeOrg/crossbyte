@@ -6,8 +6,8 @@ import haxe.io.Bytes;
 import crossbyte.io.ByteArray;
 
 /**
- * A fast, bounds-checked (except in `#if final`) read-only view over an underlying
- * `ByteArrayData`/`ByteArray` buffer.
+ * A fast, bounds-checked read-only view over an underlying `ByteArrayData`/`ByteArray`
+ * buffer.
  *
  * `ByteArrayInput` exposes a forward-only cursor (`position`) and convenience
  * readers for common primitive types, UTF strings, and variable-length integers.
@@ -19,10 +19,11 @@ import crossbyte.io.ByteArray;
  *   signed. It reads what `ByteArrayOutput` writes.
  * - **Zero-copy reads**: uses direct getters on the backing buffer where possible.
  * - **Explicit cursoring**: all reads advance `position` by the number of bytes consumed.
- * - **Safety outside `final`**: out-of-range accesses throw helpful errors in normal builds.
- * - **Always checked**: the varint decoders, the string readers and `readBytes`
- *   are the exception. They read a value or a length a remote peer chose, or
- *   write into a buffer, so they are bounded in every build, `final` included.
+ * - **Checked in every build**, `final` included: a read past `length` throws an
+ *   `EOFError` and moves nothing, and `position` refuses a value outside
+ *   `[0, length]`. A payload a peer sent can be shorter than it should be, and
+ *   natively a read past the buffer would read whatever memory follows it.
+ *   `require` checks a whole record's bytes at once.
  * - **Interop**: can be implicitly created from `ByteArrayData` or `ByteArray`.
  *
  * ### Typical usage
@@ -42,7 +43,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * The current read cursor measured in **bytes** from the start of the buffer.
 	 *
 	 * Setting `position` allows random access reads within `[0, length]`.
-	 * Outside `final`, assigning a value outside this range throws a `RangeError`.
+	 * Assigning a value outside this range throws a `RangeError`, in every build.
 	 *
 	 * Each successful read advances `position` by the size of the type read.
 	 */
@@ -59,8 +60,8 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	/**
 	 * The number of bytes remaining from the current `position` to `length`.
 	 *
-	 * Equivalent to `length - position`. When `bytesAvailable == 0`, subsequent reads will
-	 * throw outside `final` or produce undefined behavior in `final` builds if forced.
+	 * Equivalent to `length - position`. When `bytesAvailable == 0`, the next read throws
+	 * an `EOFError`.
 	 */
 	public var bytesAvailable(get, never):Int;
 
@@ -77,22 +78,37 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	}
 
 	@:noCompletion private inline function set_position(v:Int):Int {
-		#if !final
 		if (v < 0 || v > this.length)
 			throw new RangeError("position out of range");
-		#end
 		return this.position = v;
 	}
 
-	@:noCompletion private inline function __need(n:Int):Void {
-		#if !final
-		// Against the bytes remaining rather than `position + n`: that sum
-		// overflows for a large n and wraps negative, so the comparison would
-		// succeed and the read go ahead, and readVarUtf can hand this a
+	/**
+	 * Throws unless `count` bytes remain to be read, and reads nothing.
+	 *
+	 * Every read checks its own bytes, so this is for a record of several fields read
+	 * together: one check up front says the whole record is there before any of it is
+	 * taken, and `position` has not moved when it is not.
+	 *
+	 * ```haxe
+	 * input.require(12);
+	 * final id = input.readInt();
+	 * final x = input.readFloat();
+	 * final y = input.readFloat();
+	 * ```
+	 *
+	 * @param count The number of bytes the next reads need.
+	 * @throws EOFError If fewer than `count` bytes remain, or `count` is negative, in
+	 *                every build, `final` included. The same error a read past the end
+	 *                throws.
+	 */
+	public inline function require(count:Int):Void {
+		// Against the bytes remaining rather than `position + count`: that sum
+		// overflows for a large count and wraps negative, so the comparison
+		// would succeed and the read go ahead, and readVarUtf can hand this a
 		// length the peer chose, up to 2^31-1.
-		if (n < 0 || n > this.length - this.position)
+		if (count < 0 || count > this.length - this.position)
 			throw new EOFError("ByteArrayInput underflow");
-		#end
 	}
 
 	/**
@@ -108,10 +124,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Reads a single unsigned byte (0–255) and advances `position` by 1.
 	 *
 	 * @return The next byte as an `Int` in the range `[0, 255]`.
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readByte():Int {
-		__need(1);
+		require(1);
 		return this.get(this.position++);
 	}
 
@@ -121,7 +137,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Convention: `0 == false`, any non-zero value == `true`.
 	 *
 	 * @return The decoded boolean value.
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readBoolean():Bool {
 		return readByte() != 0;
@@ -133,10 +149,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Endianness follows the backing implementation of `getUInt16`.
 	 *
 	 * @return The decoded 16-bit value as `Int` (0–65535).
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readShort():Int {
-		__need(2);
+		require(2);
 		var v:Int = this.getUInt16(this.position);
 		this.position += 2;
 		return v;
@@ -148,10 +164,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Endianness follows the backing implementation of `getInt32`.
 	 *
 	 * @return The decoded 32-bit signed integer.
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readInt():Int {
-		__need(4);
+		require(4);
 		var v:Int = this.getInt32(this.position);
 		this.position += 4;
 		return v;
@@ -163,10 +179,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Endianness follows the backing implementation of `getFloat`.
 	 *
 	 * @return The decoded `Float`.
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readFloat():Float {
-		__need(4);
+		require(4);
 		var v:Float = this.getFloat(this.position);
 		this.position += 4;
 		return v;
@@ -178,10 +194,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Endianness follows the backing implementation of `getDouble`.
 	 *
 	 * @return The decoded `Float` (double precision).
-	 * @throws EOFError In debug builds if reading would exceed `length`.
+	 * @throws EOFError If reading would exceed `length`.
 	 */
 	public inline function readDouble():Float {
-		__need(8);
+		require(8);
 		var v:Float = this.getDouble(this.position);
 		this.position += 8;
 		return v;
@@ -196,8 +212,8 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * @param dst       Destination `Bytes` to write into.
 	 * @param dstOffset Start offset in `dst` (default `0`).
 	 * @param len       Number of bytes to copy (default `-1` = fill to end of `dst`).
-	 * @throws EOFError If the bytes are not there to read (outside `final`), or the
-	 *                range does not fit in `dst` (in every build).
+	 * @throws EOFError If the bytes are not there to read, and `RangeError` if the
+	 *                range does not fit in `dst`.
 	 */
 	public inline function readBytes(dst:Bytes, dstOffset:Int = 0, len:Int = -1):Void {
 		if (len < 0) {
@@ -209,7 +225,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 		if (dstOffset < 0 || len < 0 || dstOffset > dst.length || len > dst.length - dstOffset) {
 			throw new RangeError("ByteArrayInput.readBytes: the range does not fit the destination");
 		}
-		__need(len);
+		require(len);
 		dst.blit(dstOffset, this, this.position, len);
 		this.position += len;
 	}
@@ -331,13 +347,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	}
 
 	/**
-	 * Reads a length-prefixed UTF string where the length is stored as a ZigZag-encoded
-	 * variable-length **signed** integer, then consumes that many bytes of UTF data.
+	 * Reads a length-prefixed UTF string, as `ByteArrayOutput.writeVarUtf` writes one:
+	 * its length in bytes as a varuint (see `readVarUInt`), then that many bytes of UTF-8.
 	 *
-	 * Layout: `[varint length][length bytes of UTF data]`
-	 *
-	 * This is compact for short strings and supports negative sentinel semantics upstream
-	 * (though this implementation expects a non-negative decoded length).
+	 * Layout: `[varuint length][length bytes of UTF data]`
 	 *
 	 * @return The decoded string.
 	 * @throws EOFError If the decoded length exceeds the bytes remaining. Checked in

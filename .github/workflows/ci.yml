@@ -524,6 +524,16 @@ jobs:
       - name: Type-check a final build
         run: haxe ci/posix-native-tests.hxml -D final --no-output
 
+      # The byte readers' bounds as a release build has them: under -D final
+      # they were once compiled out, and a short payload was read past the
+      # end of its buffer.
+      - name: Run the byte readers in a final build
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+          haxe ci/final-tests.hxml
+          ./export/ci-final-tests/FinalBuildMain
+
       - name: Build native suite
         # Traced: each case names itself as it starts, so a run that hangs
         # says where, rather than printing nothing after its last server's log

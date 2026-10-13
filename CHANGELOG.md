@@ -9,6 +9,9 @@ All notable changes to CrossByte will be documented in this file.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.
+- **`ByteArrayInput.require(count)`** throws the `EOFError` a short read
+  throws unless `count` bytes remain, so a record of several fields can be
+  checked whole before any of it is read.
 
 ### Fixed
 
@@ -29,6 +32,15 @@ All notable changes to CrossByte will be documented in this file.
 - **The first `RPCSession.sessionId` was 0 natively and on the jvm**, and 1
   elsewhere: the counter there answered its value from before the add. Ids
   start at 1 on every target, so 0 is never a session.
+- **`ByteArrayInput`'s fixed-size reads went past the buffer in `-D final`
+  builds** (Lime's release builds define it): their bounds check was
+  compiled out, so natively a payload shorter than its fields was read past
+  its end. `readByte`, `readShort`, `readInt`, `readFloat`, `readDouble`,
+  `readBytes` and the `position` setter are checked in every build now, and
+  `ci/final-tests.hxml` runs the readers' tests built that way. The check
+  costs a native read loop about 0.2 ns a read (a 19-byte record of five
+  fields read in 3.8 ns rather than 2.9 ns), and the jvm's about 0.04 ns;
+  an RPC call measured no different on either.
 
 ## 1.0.0 - 2026-10-13
 

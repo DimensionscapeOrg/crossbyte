@@ -1,0 +1,13 @@
+# The byte readers' bounds in a release build: tests/FinalBuildMain, natively,
+# with -D final, which Lime's release builds define. Run it with
+#   export/ci-final-tests/FinalBuildMain
+-cp src
+-cp tests
+-lib utest
+-D final
+-D HXCPP_M64
+-main FinalBuildMain
+--cpp export/ci-final-tests
+# Names the OS, as extraParams.hxml does for `-lib crossbyte`.
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte.test.SuiteCoverage.check()

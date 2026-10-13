@@ -6,11 +6,6 @@ import utest.Assert;
 
 class ByteArrayInputTest extends utest.Test {
 	public function testPositionSetterRejectsOutOfRangeValues():Void {
-		#if final
-		Assert.pass();
-		return;
-		#end
-
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("abc"));
 
 		Assert.raises(() -> input.position = -1, crossbyte.errors.RangeError);
@@ -57,17 +52,53 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadByteThrowsWhenPastEnd():Void {
-		#if final
-		Assert.pass();
-		return;
-		#end
-
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("a"));
 
 		Assert.equals("a".code, input.readByte());
 		Assert.raises(() -> input.readByte(), crossbyte.errors.EOFError);
 		Assert.equals(1, input.position);
 		Assert.isTrue(input.eof());
+	}
+
+	/**
+		Each fixed-size read of a payload one byte short throws the EOFError
+		and moves nothing, in every build: under `-D final` the check was
+		compiled out, and natively the read went on past the buffer.
+		`ci.yml` runs this class built with `-D final` too.
+	**/
+	public function testFixedSizeReadsOfAShortPayloadThrowInEveryBuild():Void {
+		var reads:Array<{size:Int, read:ByteArrayInput->Void}> = [
+			{size: 1, read: input -> input.readByte()},
+			{size: 1, read: input -> input.readBoolean()},
+			{size: 2, read: input -> input.readShort()},
+			{size: 4, read: input -> input.readInt()},
+			{size: 4, read: input -> input.readFloat()},
+			{size: 8, read: input -> input.readDouble()},
+			{size: 3, read: input -> input.readBytes(Bytes.alloc(3))},
+			{size: 2, read: input -> input.readUtf()}
+		];
+
+		for (entry in reads) {
+			var bytes = Bytes.alloc(entry.size + 1);
+			bytes.fill(0, bytes.length, 0);
+			var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+			input.position = 2;
+			Assert.raises(() -> entry.read(input), crossbyte.errors.EOFError, "a read of " + entry.size + " bytes from " + (entry.size - 1));
+			Assert.equals(2, input.position);
+		}
+	}
+
+	public function testRequireSaysWhetherTheBytesAreThere():Void {
+		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.alloc(12));
+		input.require(12);
+		input.readInt();
+		input.require(8);
+		Assert.raises(() -> input.require(9), crossbyte.errors.EOFError);
+		Assert.raises(() -> input.require(-1), crossbyte.errors.EOFError);
+		// A count whose sum with the position wraps negative.
+		Assert.raises(() -> input.require(0x7FFFFFFF), crossbyte.errors.EOFError);
+		Assert.equals(4, input.position, "require moved the position");
+		input.require(0);
 	}
 
 	public function testReadUTFBytesAndReadUTFAdvanceExpectedLengths():Void {
