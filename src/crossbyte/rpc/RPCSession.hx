@@ -445,7 +445,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** The shortest wait before a session made by `dial` dials again, in seconds. **/
 	public static inline final MIN_REDIAL:Float = 0.25;
 
-	/** The longest, in seconds: the wait doubles from `MIN_REDIAL` each time a dial fails. **/
+	/**
+		The longest, in seconds: the wait doubles from `MIN_REDIAL` each time a
+		dial fails, a connection whose peer closed it before saying hello
+		counting as one that failed.
+	**/
 	public static inline final MAX_REDIAL:Float = 30.0;
 
 	/**
@@ -594,6 +598,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		peerCapabilities = capabilities;
 		peerCallsFingerprint = calls;
 		peerAnswersFingerprint = answers;
+		// Really up: a dialled session waits its shortest again from here.
+		__heardHello = true;
+		__redialDelay = MIN_REDIAL;
 		try {
 			onHello();
 		} catch (error:Dynamic) {
@@ -614,13 +621,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __redialDelay:Float = MIN_REDIAL;
 	@:noCompletion private var __redialTimer:Int = TimerHandle.INVALID;
 	@:noCompletion private var __closed:Bool = false;
+	// Whether the peer has said hello on this connection: what a dialled
+	// session counts as really up, to go back to its shortest wait.
+	@:noCompletion private var __heardHello:Bool = false;
 
 	/**
 		A client session that dials `uri` (as `NetConnection` does, `tcp://`,
 		`ws://`, `wss://`, `rudp://` or `local://`) and dials it again whenever
-		its connection ends, until `close()`: at once after an end, then waiting
-		from `MIN_REDIAL` up to `MAX_REDIAL` seconds, doubling, between attempts
-		that fail.
+		its connection ends, until `close()`: at once after the end of a
+		connection whose peer said hello, then waiting from `MIN_REDIAL` up to
+		`MAX_REDIAL` seconds, doubling, between attempts that fail. A connection
+		whose peer closes it before its hello counts as an attempt that failed,
+		so a peer that accepts and then hangs up is not dialled in a loop.
 
 		While it is down (before its first connection is up, and between one
 		connection and the next), a call through it fails as it is made, with a
@@ -735,6 +747,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
 	@:noCompletion private function __connectionEnded(reason:Reason):Void {
 		final wasUp:Bool = __isUp && !__ended;
+		final heardHello:Bool = __heardHello;
+		__heardHello = false;
 		__isUp = false;
 		__ended = true;
 		__endReason = reason;
@@ -765,10 +779,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 		}
 		if (__dialUri != null && !__closed) {
-			// At once after a connection that was up; later after an attempt
-			// that never got that far.
-			if (wasUp) {
-				__redialDelay = MIN_REDIAL;
+			// At once after a connection whose peer said hello; later, and
+			// longer each time, after an attempt that never got that far: a
+			// connect refused, or a peer that accepted and closed.
+			if (wasUp && heardHello) {
 				__dial();
 			} else {
 				__redialLater();
@@ -2681,9 +2695,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			__ended = false;
 			__endReason = null;
 		}
-		// Ahead of anything onUp sends.
+		// Ahead of anything onUp sends. The redial wait goes back to its
+		// shortest once the peer's hello has come, not here: a peer that
+		// accepts and closes at once connects every time.
 		__sendHello();
-		__redialDelay = MIN_REDIAL;
 		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();
 		}

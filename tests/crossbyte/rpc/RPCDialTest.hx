@@ -93,6 +93,43 @@ class RPCDialTest extends utest.Test {
 		closeQuietly(session, host);
 	}
 
+	/**
+		A peer that accepts and closes before saying hello is dialled again
+		after a wait that doubles each time, as a refused connect is: the wait
+		went back to its shortest whenever a connect succeeded, and a
+		connection that ended after being up was dialled again at once, so
+		such a peer was redialled in a loop, hundreds of times a second.
+	**/
+	public function testAPeerThatClosesBeforeItsHelloIsDialledWithTheBackOff():Void {
+		var server = new ServerSocket();
+		var host:NetHost = null;
+		var accepted:Int = 0;
+		var waits:Array<Float> = [];
+		var session:RPCSession<DialCommands> = null;
+		try {
+			server.bind(0, "127.0.0.1");
+			host = NetHost.fromServerSocket(server, connection -> {
+				accepted++;
+				// The wait the session will take after this attempt fails.
+				waits.push(@:privateAccess session.__redialDelay);
+				connection.close();
+			});
+			host.listen();
+
+			session = RPCSession.dial('tcp://127.0.0.1:${server.localPort}', new DialCommands());
+			// The runtime's clock runs ahead of this loop's, so five attempts,
+			// 0.25 + 0.5 + 1 + 2 s apart, come within a few seconds here.
+			pumpUntil(() -> accepted >= 5, 20.0);
+
+			Assert.isTrue(accepted >= 5, 'the session stopped dialling: $accepted attempts');
+			Assert.same([0.25, 0.5, 1.0, 2.0, 4.0], waits.slice(0, 5), "the wait did not double between attempts");
+		} catch (e:Dynamic) {
+			closeQuietly(session, host);
+			throw e;
+		}
+		closeQuietly(session, host);
+	}
+
 	public function testACallInFlightWhenTheConnectionGoesCarriesItsReason():Void {
 		var server = new ServerSocket();
 		var host:NetHost = null;

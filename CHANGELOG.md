@@ -48,6 +48,13 @@ All notable changes to CrossByte will be documented in this file.
   costs a native read loop about 0.2 ns a read (a 19-byte record of five
   fields read in 3.8 ns rather than 2.9 ns), and the jvm's about 0.04 ns;
   an RPC call measured no different on either.
+- **A session made by `RPCSession.dial` redialled a peer that accepts and
+  closes in a loop**, hundreds of times a second: its wait went back to the
+  shortest whenever a connect succeeded, and a connection that ended after
+  connecting was dialled again at once. The wait now goes back to the
+  shortest only once the peer's hello has come, and a connection closed
+  before it counts as a failed attempt, so the wait doubles as it does for a
+  refused connect.
 
 ## 1.0.0 - 2026-10-13
 
