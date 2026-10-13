@@ -176,6 +176,50 @@ class RPCEdgesTest extends utest.Test {
 		Assert.isNull(edge.commands.slow("i").failure, "a call still waiting has a failure");
 	}
 
+	public function testTheFirstSessionIsNumberedOne():Void {
+		// Natively and on the jvm the counter answered its value from before
+		// the add, so the first session was 0, and 1 elsewhere. 0 is never a
+		// session, on any target. The counter is wound back for this and put
+		// back after, so ids made before and after stay unique.
+		final kept:Int = sessionsSoFar();
+		setSessionsSoFar(0);
+		var first:Int = -1;
+		var second:Int = -1;
+
+		try {
+			final link = LinkedConnection.pair();
+			first = new RPCSession(link.client, null).sessionId;
+			second = new RPCSession(link.server, null).sessionId;
+		} catch (e:Dynamic) {
+			setSessionsSoFar(kept + 2);
+			throw e;
+		}
+
+		setSessionsSoFar(kept + 2);
+		Assert.equals(1, first);
+		Assert.equals(2, second);
+	}
+
+	private static function sessionsSoFar():Int {
+		#if (neko || (hl && hl_ver < version("1.13.0")))
+		return RPCSession.__sidCounter;
+		#elseif (cpp || hl || java || cs)
+		return RPCSession.__sidCounter.load();
+		#else
+		return RPCSession.__sidCounter;
+		#end
+	}
+
+	private static function setSessionsSoFar(count:Int):Void {
+		#if (neko || (hl && hl_ver < version("1.13.0")))
+		RPCSession.__sidCounter = count;
+		#elseif (cpp || hl || java || cs)
+		RPCSession.__sidCounter.store(count);
+		#else
+		RPCSession.__sidCounter = count;
+		#end
+	}
+
 	private static function frameOf(payload:ByteArrayOutput):ByteArray {
 		final frame = new ByteArray();
 		frame.writeInt(payload.bytesWritten);

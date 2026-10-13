@@ -26,6 +26,9 @@ All notable changes to CrossByte will be documented in this file.
   Haxe implementation's arithmetic overflowed PHP's integers. New hashes on
   PHP are written `$2b$` (the same algorithm), `needsRehash` is the same
   everywhere, earlier versions' hashes verify, and the vectors pass.
+- **The first `RPCSession.sessionId` was 0 natively and on the jvm**, and 1
+  elsewhere: the counter there answered its value from before the add. Ids
+  start at 1 on every target, so 0 is never a session.
 
 ## 1.0.0 - 2026-10-13
 

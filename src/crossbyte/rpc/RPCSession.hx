@@ -63,7 +63,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public static inline final DEFAULT_MAX_CALLS_WAITING:Int = 256;
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
 
-	/** Process-local session identifier. */
+	/**
+		Process-local session identifier: 1 for the first session made in the
+		process, and one more for each after, so 0 is never a session.
+	**/
 	public final sessionId:Int = __getSessionId();
 	/** Underlying transport connection used by this session. */
 	public var connection(get, never):NetConnection;
@@ -327,7 +330,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__sidLock.release();
 		return id;
 		#elseif (cpp || hl || java || cs)
-		return __sidCounter.add(1);
+		// add answers the value from before it, and ids start at 1 everywhere.
+		return __sidCounter.add(1) + 1;
 		#else
 		return ++__sidCounter;
 		#end
