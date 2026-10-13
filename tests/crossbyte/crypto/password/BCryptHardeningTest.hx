@@ -8,8 +8,8 @@ import utest.Assert;
  * empty-password rejection.
  *
  * Real `BCrypt.hash` calls require a CSPRNG salt from `SecureRandom`, which only
- * works on native targets, so the round-trip and default-cost-parsing assertions
- * are gated behind `#if cpp`. The pure string-parsing paths (`needsRehash`) and
+ * works on native targets and PHP, so the round-trip and default-cost-parsing
+ * assertions are gated behind `#if (cpp || php)`. The pure string-parsing paths (`needsRehash`) and
  * the empty-password guards run on every target, including eval/interp.
  */
 class BCryptHardeningTest extends utest.Test {
@@ -44,7 +44,7 @@ class BCryptHardeningTest extends utest.Test {
 	}
 
 	public function testDefaultCostIsTwelveAndRoundTrips():Void {
-		#if cpp
+		#if (cpp || php)
 		// No explicit cost: the default must be 12. Parse the cost out of the
 		// $2b$NN$ prefix rather than trusting the constant.
 		var defaultHash:String = BCrypt.hash("hunter2");

@@ -13,6 +13,13 @@ All notable changes to CrossByte will be documented in this file.
   within a transaction". Such a result is now answered from SQLite's
   `changes()` and never read. `SQLiteConnection.isSupported` is true on PHP,
   and `docs/data.md` says what SQLite does there.
+- **`BCrypt` on PHP answered differently from every other target.** It wrote
+  new hashes as `$2y$`, which `needsRehash` on any other target flags, and
+  asked PHP whether a hash needed rehashing, so it never flagged `$2y$`;
+  hashes stored by earlier versions natively did not verify there; and the
+  Haxe implementation's arithmetic overflowed PHP's integers. New hashes on
+  PHP are written `$2b$` (the same algorithm), `needsRehash` is the same
+  everywhere, earlier versions' hashes verify, and the vectors pass.
 
 ## 1.0.0 - 2026-10-13
 

@@ -34,6 +34,10 @@ import crossbyte.crypto.password._internal.PHPGlobalExt;
  * (`$2y$`), OpenBSD, Node, Python and Java (`$2a$`, `$2b$`) verify here, and hashes
  * made here verify there.
  *
+ * On PHP, `hash` and `verify` are PHP's own `password_hash` and `password_verify`,
+ * which are compiled C there, and answer what every other target answers: a new
+ * hash is written `$2b$`, and hashes stored by earlier versions still verify.
+ *
  * ## Hashes stored by earlier CrossByte versions
  *
  * Earlier versions left the key's terminating NUL out for `$2y$`, which was their
@@ -208,17 +212,11 @@ class BCrypt {
 	 * @return `true` if the hash should be regenerated, `false` otherwise.
 	 */
 	public static function needsRehash(hash:String, cost:Int = 12):Bool {
-		#if php
-		var phpOptions:NativeAssocArray<Dynamic> = new NativeAssocArray();
-		phpOptions["cost"] = cost;
-		return PHPGlobalExt.password_needs_rehash(hash, PHPGlobalExt.PASSWORD_BCRYPT, phpOptions);
-		#else
 		if (__minorOf(hash) <= 0 || hash.length != HASH_LENGTH || hash.charCodeAt(6) != "$".code) {
 			return true;
 		}
 
 		return IntParse.decimal(hash.substr(4, 2), 31) != cost || hash.substr(1, 2) != (DEFAULT_REVISION : String);
-		#end
 	}
 
 	/**
@@ -240,10 +238,18 @@ class BCrypt {
 			throw new ArgumentError("Password must not be empty");
 		}
 		#if php
+		if (cost < 4 || cost > 31) {
+			throw new ArgumentError("Salt rounds should be between 4 and 31");
+		}
+
 		var phpOptions:NativeAssocArray<Dynamic> = new NativeAssocArray();
 		phpOptions["cost"] = cost;
-
-		return PHPGlobalExt.password_hash(password, PHPGlobalExt.PASSWORD_BCRYPT, phpOptions);
+		// PHP's own bcrypt, which writes $2y$: crypt_blowfish's name for the
+		// correct algorithm, the one $2b$ names everywhere else. Written as
+		// $2b$, so a hash made here is the one made on every other target,
+		// and needsRehash does not flag it there.
+		var made:String = PHPGlobalExt.password_hash(password, PHPGlobalExt.PASSWORD_BCRYPT, phpOptions);
+		return "$" + (DEFAULT_REVISION : String) + made.substr(3);
 		#else
 		var key:Bytes = Bytes.ofString(password);
 		var hashed:Null<String> = __crypt(key, __generateSalt(cost), false);
@@ -272,7 +278,14 @@ class BCrypt {
 			return false;
 		}
 		#if php
-		return PHPGlobalExt.password_verify(password, hash);
+		if (PHPGlobalExt.password_verify(password, hash)) {
+			return true;
+		}
+
+		// The form earlier versions stored for $2y$, with no NUL after the key,
+		// is the key repeated to bcrypt's 72 bytes: PHP's bcrypt, given those
+		// 72 bytes, reads the same key.
+		return __minorOf(hash) == "y".code && PHPGlobalExt.password_verify(php.Syntax.code("substr(str_repeat({0}, intdiv(72, strlen({0})) + 1), 0, 72)", password), hash);
 		#else
 		var minor:Int = __minorOf(hash);
 		if (minor <= 0 || hash.length != HASH_LENGTH) {
@@ -742,7 +755,14 @@ class BCrypt {
 		result = (result ^ s[i2]) | 0;
 		result = (result + s[i3]) | 0;
 
+		#if php
+		// PHP's integers are 64-bit, and an addition past that turns into a
+		// float: brought back to 32 bits each time, or the words grow a bit
+		// a round until they do.
+		return php.Syntax.code("((({0}) & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000", result);
+		#else
 		return result;
+		#end
 	}
 
 	@:noCompletion private static inline function encode_base64(bytes:Bytes):String {
