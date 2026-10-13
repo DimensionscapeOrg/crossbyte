@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package bench;
+
+option go_package = "rpcbench/benchpb";
+
+// The two calls measured: a small one (an int each way) and one of 4 KB
+// each way, as RpcCallBench measures its num and blob calls.
+service Bench {
+  rpc Num (NumMessage) returns (NumMessage);
+  rpc Blob (BlobMessage) returns (BlobMessage);
+}
+
+message NumMessage {
+  int32 v = 1;
+}
+
+message BlobMessage {
+  bytes data = 1;
+}

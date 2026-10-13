@@ -1,0 +1,18 @@
+# RpcCallBench, natively and on Node, for the comparison with gRPC that
+# run.js makes (docs/performance.md says how to run it). From the repository
+# root, with CrossByte registered as a development haxelib:
+#   haxe tests/perf/rpc/rpc-bench.hxml
+# Natively: export/rpc-bench/native/RpcCallBench.exe; Node: export/rpc-bench/node/bench.js.
+-cp src
+-cp tests
+-cp tests/load
+-cp tests/perf/rpc
+-main RpcCallBench
+--each
+-D HXCPP_M64
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()
+--cpp export/rpc-bench/native
+--next
+-lib hxnodejs
+--js export/rpc-bench/node/bench.js
