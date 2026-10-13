@@ -11,15 +11,39 @@ compression, IPC and database clients share one event loop and one set of conven
 It builds natively through hxcpp, and for the JVM, Node.js, HashLink, Neko and the Haxe interpreter. Where a target
 lacks a feature, the member says so, usually through `isSupported`.
 
-## What it is good at
+## Why CrossByte
 
-- Servers that hold many connections. Every limit on what one peer can make a server hold is on by default, and
-  a server can spread its connections over several threads.
-- Game servers: reliable UDP with delivery modes, opt-in encryption and one-copy fan-out, plus fixed-step
-  simulation, spatial indexes and delta encoding.
-- HTTP/1.1 and HTTP/2, clients and servers, WebSocket, and typed RPC over any connection.
-- Peer-to-peer through NAT, including WebRTC data channels to and from browsers.
-- Headless tools and backend services that want a runtime without an engine around it.
+- **One codebase on every target.** One API and one test suite, natively on Windows, Linux and macOS, and on the
+  JVM, Node.js, HashLink, Neko and the interpreter.
+- **Next to no garbage.** Natively, a message over TCP, UDP, reliable UDP or WebSocket allocates nothing once its
+  connection is under way (but for the string a WebSocket listener asks for), and nor does an RPC call answered
+  through a receiver. A test holds every common operation to its figure.
+- **Servers that hold many connections.** Every limit on what one peer can make a server hold is on by default, an
+  idle connection costs the server a few kilobytes, and one server can spread its connections over several threads.
+- **Game servers.** Reliable UDP with reliable, unreliable and sequenced delivery, RACK loss recovery, join cookies,
+  sessions that follow a player to a new address, opt-in encryption and one copy of a message for many sessions;
+  plus fixed-step simulation, spatial indexes and delta encoding.
+- **Typed RPC over any connection,** encoded and dispatched by code a macro writes: no reflection, and no field
+  names on the wire.
+- HTTP/1.1 and HTTP/2, clients and servers, WebSocket, and TLS 1.3 natively; peer-to-peer through NAT, with WebRTC
+  data channels that interoperate with Chrome's; and headless tools and services that want a runtime without an
+  engine around it.
+
+Measured natively on one machine (Ryzen 9 9950X, Windows 10), both ends over loopback, and against grpc-go and
+grpc-js on the same machine:
+
+| | Measured | In short |
+| --- | --- | --- |
+| A small RPC call, one at a time | 47 us round trip (p50); grpc-go 106 us, grpc-js 225 us | under half grpc-go's wait |
+| Small RPC calls, 8 connections with 32 in flight on each | 2.2 million a second on one thread; grpc-go 242,000 on all 32 logical processors, grpc-js 25,000 | nine times grpc-go's rate, on one thread against 32 |
+| The server's processor time a call, at that load | 0.32 us; grpc-go 6.3 us on one thread, 33 us on 32; grpc-js 28 us | about 5% of grpc-go's |
+| A small RPC call and its answer on the wire | 31 to 32 bytes over TCP; grpc-go 76 to 166, grpc-js 90 to 92 | under half of gRPC's |
+| A TCP, UDP or reliable UDP message, or an RPC call through a receiver | 0 bytes allocated | nothing for the collector |
+| An `HTTPServer` on four runtimes | 488,000 small HTTP/1.1 requests a second, 152,000 on one | 3.2 times one runtime |
+| What a server holds for an idle connection | TCP 1.3 KB, reliable UDP 2.9 KB, WebSocket 4.1 KB | 1,000 idle peers in under 5 MB |
+
+[docs/performance.md](docs/performance.md) has the method, every table, what was not measured, and how to measure
+each again.
 
 ## Install
 
@@ -383,6 +407,7 @@ game server with bots that checks itself.
 - [RPC](docs/rpc.md)
 - [Databases](docs/data.md)
 - [Targets](docs/targets.md)
+- [Performance: what CrossByte costs, measured](docs/performance.md)
 - [Testing, benchmarks and load tests](docs/testing.md)
 - [Contributing](CONTRIBUTING.md) and [releasing](RELEASING.md)
 - [Changelog](CHANGELOG.md)
