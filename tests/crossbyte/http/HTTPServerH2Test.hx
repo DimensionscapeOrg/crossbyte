@@ -2609,6 +2609,140 @@ class HTTPServerH2Test extends utest.Test {
 		Assert.equals("1,3", answered.join(","), "the responses written");
 		connection.close();
 	}
+
+	/**
+		A stream's handler, once its response has ended, is kept by its
+		connection and given a later stream, as an HTTP/1.1 connection keeps
+		its one handler from request to request: and it carries nothing of the
+		request it answered into the next, neither the request's fields nor a
+		listener added while answering it.
+	**/
+	public function testAHandlerGivenALaterStreamKeepsNothingOfItsLastRequest():Void {
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		var seen:Array<{handler:HTTPRequestHandler, first:Null<String>, path:String, query:String, listening:Bool}> = [];
+		var heard:Array<Int> = [];
+		config.middleware.push((handler, next) -> {
+			seen.push({
+				handler: handler,
+				first: handler.getHeader("x-first"),
+				path: handler.requestPath,
+				query: handler.queryString,
+				listening: handler.hasEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS)
+			});
+			if (seen.length == 1) {
+				handler.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS,
+					(e:crossbyte.events.HTTPStatusEvent) -> heard.push(e.status));
+			}
+			handler.respond(seen.length == 1 ? 201 : 200, "text/plain", "ok");
+		});
+		var socket = new FlushCountingSocket();
+		var connection = new crossbyte._internal.http.H2ConnectionHandler(socket, config);
+		var encoder = new HpackEncoder(4096);
+
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, encoder.encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/first?q=1"),
+			new HpackHeader("x-first", "yes")
+		]));
+		socket.arrive(out.getBytes());
+
+		out = new BytesBuffer();
+		writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 3, encoder.encode([
+			new HpackHeader(":method", "GET"),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", "/second")
+		]));
+		socket.arrive(out.getBytes());
+
+		Assert.equals(2, seen.length, "both requests reached the middleware");
+		if (seen.length == 2) {
+			Assert.isTrue(seen[1].handler == seen[0].handler, "the first stream's handler was not given the second");
+			Assert.equals("yes", seen[0].first);
+			Assert.isNull(seen[1].first, "the second request read the first's field");
+			Assert.equals("/second", seen[1].path);
+			Assert.equals("", seen[1].query, "the second request read the first's query");
+			Assert.isFalse(seen[1].listening, "a listener added for the first stream was still there for the second");
+		}
+		Assert.equals("201", heard.join(","), "the first stream's listener heard another stream's response");
+		connection.close();
+	}
+
+	/**
+		A handler whose response is still being written is not given another
+		stream: two streams answered at once each keep their own.
+	**/
+	public function testAHandlerStillAnsweringIsNotGivenAnotherStream():Void {
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		var handlers:Array<HTTPRequestHandler> = [];
+		var open:Null<HTTPResponseStream> = null;
+		config.middleware.push((handler, next) -> {
+			handlers.push(handler);
+			if (handler.requestPath == "/held") {
+				open = handler.beginResponse(200, "text/plain");
+				open.writeText("held ");
+				return;
+			}
+			handler.respond(200, "text/plain", "quick");
+		});
+		var socket = new FlushCountingSocket();
+		var connection = new crossbyte._internal.http.H2ConnectionHandler(socket, config);
+		var encoder = new HpackEncoder(4096);
+
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+		for (request in [{stream: 1, path: "/held"}, {stream: 3, path: "/quick"}, {stream: 5, path: "/quick"}]) {
+			writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, request.stream, encoder.encode([
+				new HpackHeader(":method", "GET"),
+				new HpackHeader(":scheme", "http"),
+				new HpackHeader(":authority", "127.0.0.1"),
+				new HpackHeader(":path", request.path)
+			]));
+		}
+		socket.arrive(out.getBytes());
+		Assert.notNull(open, "the first stream's response was not begun");
+		if (open != null) {
+			open.writeText("still");
+			open.end();
+		}
+
+		Assert.equals(3, handlers.length);
+		if (handlers.length == 3) {
+			Assert.isTrue(handlers[1] != handlers[0], "the handler still answering was given another stream");
+			Assert.isTrue(handlers[2] == handlers[1], "a finished handler was not given the next stream");
+		}
+
+		// Each stream's DATA, joined: what went out on it, and nothing of another's.
+		var written = socket.writtenSoFar();
+		var bodies:Map<Int, String> = new Map();
+		var ended:Array<Int> = [];
+		var position = 0;
+		while (position + H2Frame.HEADER_SIZE <= written.length) {
+			var frame = H2Frame.read(written, position);
+			position += H2Frame.HEADER_SIZE + H2Frame.lengthOf(written, position);
+			if (frame.type == H2FrameType.DATA) {
+				var text = bodies.exists(frame.streamId) ? bodies.get(frame.streamId) : "";
+				bodies.set(frame.streamId, text + frame.payload.toString());
+				if (frame.has(H2Flags.END_STREAM)) {
+					ended.push(frame.streamId);
+				}
+			}
+		}
+		Assert.equals("held still", bodies.get(1));
+		Assert.equals("quick", bodies.get(3));
+		Assert.equals("quick", bodies.get(5));
+		ended.sort((a, b) -> a - b);
+		Assert.equals("1,3,5", ended.join(","), "the streams ended");
+		connection.close();
+	}
 }
 
 /**

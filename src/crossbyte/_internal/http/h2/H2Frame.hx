@@ -19,16 +19,38 @@ class H2Frame {
 	/** The largest, which is also the widest a 24-bit length can express. */
 	public static inline var MAX_MAX_FRAME_SIZE:Int = 16777215;
 
-	public final type:H2FrameType;
-	public final flags:Int;
-	public final streamId:Int;
-	public final payload:Bytes;
+	public var type(default, null):H2FrameType;
+	public var flags(default, null):Int;
+	public var streamId(default, null):Int;
+
+	/**
+		The bytes the payload lies in, from `offset`, `length` of them: all of
+		`payload` for a frame made with `new` or `read`, and a stretch of an
+		`H2FrameDecoder`'s buffer for one it hands out, which is good until its
+		next frame.
+	**/
+	public var payload(default, null):Bytes;
+
+	public var offset(default, null):Int = 0;
+	public var length(default, null):Int = 0;
 
 	public function new(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes) {
 		this.type = type;
 		this.flags = flags;
 		this.streamId = streamId;
 		this.payload = payload;
+		this.length = payload == null ? 0 : payload.length;
+	}
+
+	/** Points this frame at another, read from `source` where it lies: see `H2FrameDecoder.next`. **/
+	@:allow(crossbyte._internal.http.h2.H2FrameDecoder)
+	private function __over(source:Bytes, at:Int):Void {
+		length = lengthOf(source, at);
+		type = source.get(at + 3);
+		flags = source.get(at + 4);
+		streamId = ((source.get(at + 5) & 0x7f) << 24) | (source.get(at + 6) << 16) | (source.get(at + 7) << 8) | source.get(at + 8);
+		payload = source;
+		offset = at + HEADER_SIZE;
 	}
 
 	public inline function has(flag:Int):Bool {
@@ -91,10 +113,9 @@ class H2Frame {
 	}
 
 	public function write(out:BytesBuffer):Void {
-		var length:Int = payload == null ? 0 : payload.length;
 		writeHeader(out, length, type, flags, streamId);
 		if (length > 0) {
-			out.addBytes(payload, 0, length);
+			out.addBytes(payload, offset, length);
 		}
 	}
 
@@ -155,7 +176,6 @@ class H2Frame {
 	}
 
 	public function toString():String {
-		var length:Int = payload == null ? 0 : payload.length;
 		return '$type(stream=$streamId, flags=0x${StringTools.hex(flags, 2)}, length=$length)';
 	}
 }

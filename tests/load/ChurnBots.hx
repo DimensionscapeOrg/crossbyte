@@ -620,12 +620,12 @@ class H2cSession extends ChurnSession {
 				}
 			case H2FrameType.PING:
 				if (!frame.has(H2Flags.ACK)) {
-					write(H2Frame.encode(H2FrameType.PING, H2Flags.ACK, 0, frame.payload));
+					write(H2Frame.encode(H2FrameType.PING, H2Flags.ACK, 0, frame.payload, frame.offset, frame.length));
 					socket.flush();
 				}
 			case H2FrameType.HEADERS:
 				// Every block is decoded, ours or not, to keep the table in step.
-				for (header in hpack.decode(frame.payload)) {
+				for (header in hpack.decode(frame.payload, frame.offset, frame.length)) {
 					if (header.name == ":status") {
 						status = Std.parseInt(header.value);
 					}
@@ -635,15 +635,15 @@ class H2cSession extends ChurnSession {
 				}
 			case H2FrameType.DATA:
 				if (frame.streamId == stream) {
-					received += frame.payload.length;
+					received += frame.length;
 					// The connection's window, given back as it is read; the
 					// stream's is new with each request.
-					if (frame.payload.length > 0) {
+					if (frame.length > 0) {
 						var increment = Bytes.alloc(4);
-						increment.set(0, (frame.payload.length >> 24) & 0x7F);
-						increment.set(1, (frame.payload.length >> 16) & 0xFF);
-						increment.set(2, (frame.payload.length >> 8) & 0xFF);
-						increment.set(3, frame.payload.length & 0xFF);
+						increment.set(0, (frame.length >> 24) & 0x7F);
+						increment.set(1, (frame.length >> 16) & 0xFF);
+						increment.set(2, (frame.length >> 8) & 0xFF);
+						increment.set(3, frame.length & 0xFF);
 						write(H2Frame.encode(H2FrameType.WINDOW_UPDATE, 0, 0, increment));
 						socket.flush();
 					}

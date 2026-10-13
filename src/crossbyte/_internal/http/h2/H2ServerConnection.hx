@@ -326,8 +326,19 @@ class H2ServerConnection {
 	private final __encoder:HpackEncoder;
 	private final __frames:H2FrameDecoder;
 	private final __streams:Map<Int, H2Stream>;
-	private final __writable:Map<Int, Void->Void>;
 	private final __abandoned:Map<Int, Void->Void>;
+
+	// The open streams, in the order they opened, beside the map: what a
+	// drain walks (notifyWritable). The map's iterators made two arrays and
+	// two iterators at every drain, 240 B natively. `__walk` is the copy a
+	// walk goes over, kept, so streams ended along the way change nothing it
+	// is reading; one walk inside another makes a copy of its own.
+	private final __open:Array<H2Stream> = [];
+	private final __walk:Array<H2Stream> = [];
+	private var __walking:Bool = false;
+
+	// What an empty DATA frame carries: nothing, shared.
+	private static final NO_PAYLOAD:Bytes = Bytes.alloc(0);
 
 	private var __prefaceRemaining:Int;
 	private var __settingsSent:Bool = false;
@@ -432,7 +443,6 @@ class H2ServerConnection {
 		__encoder = new HpackEncoder(remoteSettings.headerTableSize);
 		__frames = new H2FrameDecoder(localSettings.maxFrameSize);
 		__streams = new Map();
-		__writable = new Map();
 		__abandoned = new Map();
 
 		__prefaceRemaining = H2Connection.PREFACE.length;
@@ -554,23 +564,52 @@ class H2ServerConnection {
 	 * needs: it writes a head, then pumps a file in bounded slices.
 	 */
 	public function sendHeaders(streamId:Int, status:Int, headers:Array<HpackHeader>, endStream:Bool):Void {
-		if (closed) {
+		if (!beginHead(streamId, status)) {
 			return;
 		}
+		for (header in headers) {
+			__encoder.add(header);
+		}
+		endHead(streamId, status, endStream);
+	}
 
+	/**
+		Starts the response header block of `streamId`, `:status` first
+		(8.3.2: it leads, and is the only pseudo-header on a response), for
+		`headField` to add to and `endHead` to send: a writer with fields of
+		its own makes no list of them. False, with nothing begun, when the
+		stream is not there to answer.
+	**/
+	public function beginHead(streamId:Int, status:Int):Bool {
+		if (closed) {
+			return false;
+		}
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target == null || target.isClosed()) {
+			return false;
+		}
+		__encoder.begin();
+		__encoder.add(HpackStaticTable.statusField(status));
+		return true;
+	}
+
+	/** Adds a field to the block `beginHead` began. **/
+	public inline function headField(name:String, value:String, sensitive:Bool):Void {
+		__encoder.field(name, value, sensitive);
+	}
+
+	/** Sends the block `beginHead` began, as `sendHeaders` does. **/
+	public function endHead(streamId:Int, status:Int, endStream:Bool):Void {
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target == null || target.isClosed()) {
 			return;
 		}
 
-		// §8.3.2: :status comes first and is the only pseudo-header on a
-		// response.
-		var statusField:HpackHeader = HpackStaticTable.statusField(status);
-
 		if (status >= 200) {
 			target.answered = true;
 		}
-		__writeHeaderBlock(streamId, __encoder.encode(headers, statusField), endStream);
+		// Written into frames now, from where it lies in the encoder.
+		__writeHeaderBlock(streamId, __encoder.block, __encoder.blockLength, endStream);
 
 		if (endStream) {
 			// Through __finishStream, which releases the stream's concurrency
@@ -617,6 +656,83 @@ class H2ServerConnection {
 		if (target.queued > 0) {
 			__nowHolding(target);
 		}
+	}
+
+	/**
+		Offers `length` bytes of `source` from `offset`, which stay the
+		caller's, as `sendData` offers bytes handed over: what the windows and
+		the transport take now goes into frames from where the bytes lie, and
+		only the rest is copied, to wait. A body written as it is made, or text
+		encoded into a buffer reused for the next, costs no copy of its own
+		while the client keeps its windows open.
+	**/
+	public function sendDataFrom(streamId:Int, source:Bytes, offset:Int, length:Int, endStream:Bool):Void {
+		if (closed) {
+			return;
+		}
+
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target == null || target.isClosed()) {
+			return;
+		}
+
+		if (length > 0 && target.queued == 0 && __writeFrameTo != null) {
+			var sent:Int = __writeFrom(target, source, offset, length);
+			offset += sent;
+			length -= sent;
+		}
+		if (length > 0) {
+			var waiting:Bytes = Bytes.alloc(length);
+			waiting.blit(0, source, offset, length);
+			target.queue(waiting);
+			__queuedTotal += length;
+		}
+		if (endStream) {
+			target.pendingEndStream = true;
+		}
+
+		__flushStream(target);
+
+		if (target.queued > 0) {
+			__nowHolding(target);
+		}
+	}
+
+	/**
+		DATA frames of `target`'s from `source`, as many bytes of `length` as
+		both windows, the peer's frame size and the transport allow, written
+		through the sink: the bytes sent. `target` has nothing queued, so these
+		are next in line. None carries END_STREAM, which `__flushStream` adds.
+	**/
+	private function __writeFrom(target:H2Stream, source:Bytes, offset:Int, length:Int):Int {
+		var limit:Int = remoteSettings.maxFrameSize;
+		var room:Int = __writeFrameTo.outputRoom();
+		var sent:Int = 0;
+		while (sent < length) {
+			var allowed:Int = target.sendWindow < __connectionSendWindow ? target.sendWindow : __connectionSendWindow;
+			var fits:Int = room - H2Frame.HEADER_SIZE;
+			if (allowed <= 0 || fits <= 0) {
+				break;
+			}
+			var chunk:Int = length - sent;
+			if (chunk > limit) {
+				chunk = limit;
+			}
+			if (chunk > allowed) {
+				chunk = allowed;
+			}
+			if (chunk > fits) {
+				chunk = fits;
+			}
+			__writeFrameTo.writeFrame(H2FrameType.DATA, 0, target.id, source, offset + sent, chunk);
+			target.sendWindow -= chunk;
+			__connectionSendWindow -= chunk;
+			target.dataOut += chunk;
+			__dataOut += chunk;
+			room = fits - chunk;
+			sent += chunk;
+		}
+		return sent;
 	}
 
 	/**
@@ -725,13 +841,14 @@ class H2ServerConnection {
 	 *
 	 * A writer feeding a large body needs to know when to resume, and neither
 	 * the socket draining nor a timer answers that: the gate is a
-	 * WINDOW_UPDATE from the peer. Passing `null` clears it.
+	 * WINDOW_UPDATE from the peer. Passing `null` clears it. Kept on the
+	 * stream, so a stream that has ended or been reset has none: nothing
+	 * more can be written to it.
 	 */
 	public function setWritableCallback(streamId:Int, callback:Null<Void->Void>):Void {
-		if (callback == null) {
-			__writable.remove(streamId);
-		} else {
-			__writable.set(streamId, callback);
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target != null) {
+			target.writable = callback;
 		}
 	}
 
@@ -763,18 +880,35 @@ class H2ServerConnection {
 	 * only one of them stalls on the other.
 	 */
 	public function notifyWritable():Void {
-		for (target in __streams) {
-			if (target.queued > 0 || target.pendingEndStream) {
-				__flushStream(target);
-			}
+		var nested:Bool = __walking;
+		var walk:Array<H2Stream> = nested ? [] : __walk;
+		__walking = true;
+		for (target in __open) {
+			walk.push(target);
 		}
 
-		for (streamId in __writable.keys()) {
-			var callback:Null<Void->Void> = __writable.get(streamId);
-			if (callback != null) {
-				callback();
+		try {
+			for (target in walk) {
+				if (target.queued > 0 || target.pendingEndStream) {
+					__flushStream(target);
+				}
 			}
+
+			// Each stream's callback as it is now: one ended or reset by the
+			// flushes above, or by a callback before it, has none.
+			for (target in walk) {
+				var callback:Null<Void->Void> = target.writable;
+				if (callback != null && __streams.get(target.id) == target) {
+					callback();
+				}
+			}
+		} catch (error:Dynamic) {
+			walk.resize(0);
+			__walking = nested;
+			throw error;
 		}
+		walk.resize(0);
+		__walking = nested;
 	}
 
 	/**
@@ -791,8 +925,9 @@ class H2ServerConnection {
 		}
 
 		var limit:Int = remoteSettings.maxFrameSize;
-		// Asked once, not per frame.
-		var room:Int = outputRoom == null ? 0x7FFFFFFF : outputRoom();
+		// Asked once, not per frame. Of the sink when there is one: through
+		// a function value, natively the Int came back boxed.
+		var room:Int = __writeFrameTo != null ? __writeFrameTo.outputRoom() : (outputRoom == null ? 0x7FFFFFFF : outputRoom());
 
 		while (target.queued > 0) {
 			var allowed:Int = target.sendWindow < __connectionSendWindow ? target.sendWindow : __connectionSendWindow;
@@ -845,7 +980,7 @@ class H2ServerConnection {
 		if (target.pendingEndStream) {
 			// Nothing left to send but the stream still has to end. An empty
 			// DATA costs no flow control, so this can never be blocked.
-			__writeFrame(H2FrameType.DATA, H2Flags.END_STREAM, target.id, Bytes.alloc(0));
+			__writeFrame(H2FrameType.DATA, H2Flags.END_STREAM, target.id, NO_PAYLOAD);
 			__finishStream(target);
 		}
 	}
@@ -853,7 +988,7 @@ class H2ServerConnection {
 	private function __finishStream(target:H2Stream):Void {
 		target.close();
 		__forget(target.id);
-		__writable.remove(target.id);
+		target.writable = null;
 
 		if (target.stopBodyAtEnd) {
 			// A refusal, now all gone: see __stopBody.
@@ -872,6 +1007,7 @@ class H2ServerConnection {
 	private function __forget(streamId:Int):Void {
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target != null && __streams.remove(streamId)) {
+			__open.remove(target);
 			// What a stream reset with its body still arriving held goes back
 			// to the budget.
 			__release(target);
@@ -997,7 +1133,7 @@ class H2ServerConnection {
 			target.wasReset = true;
 			target.close();
 			__forget(streamId);
-			__writable.remove(streamId);
+			target.writable = null;
 
 			if (abandoned != null) {
 				abandoned();
@@ -1235,15 +1371,21 @@ class H2ServerConnection {
 			__highestStreamId = frame.streamId;
 		}
 
+		// The block where it lies in the frame's payload.
 		var payload:Bytes = frame.payload;
+		var start:Int = frame.offset;
+		var length:Int = frame.length;
 		if (frame.has(H2Flags.PADDED)) {
-			payload = H2Frame.stripPadding(payload, frame.streamId);
+			var content:Int = __unpaddedLength(frame);
+			start++;
+			length = content;
 		}
 		if (frame.has(H2Flags.PRIORITY)) {
-			if (payload.length < 5) {
+			if (length < 5) {
 				throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, "HEADERS with PRIORITY is too short for the priority fields");
 			}
-			payload = payload.sub(5, payload.length - 5);
+			start += 5;
+			length -= 5;
 		}
 
 		// A refused stream is never opened, but its header block is still
@@ -1269,7 +1411,7 @@ class H2ServerConnection {
 				// and every one of them costs a handler and a buffer.
 				refusal = H2ErrorCode.REFUSED_STREAM;
 			} else {
-				var opened:H2Stream = new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize);
+				var opened:H2Stream = new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize, false);
 				opened.openedAt = haxe.Timer.stamp();
 				// Until the client has acknowledged the SETTINGS that made it
 				// smaller, it may be using the protocol's first window (6.9.2).
@@ -1282,6 +1424,7 @@ class H2ServerConnection {
 				__budgeted++;
 				__promised += opened.recvWindow;
 				__streams.set(frame.streamId, opened);
+				__open.push(opened);
 				__openStreams++;
 				__streamsTaken++;
 
@@ -1295,7 +1438,7 @@ class H2ServerConnection {
 		}
 
 		if (frame.has(H2Flags.END_HEADERS)) {
-			__completeHeaders(frame.streamId, payload, frame.has(H2Flags.END_STREAM));
+			__completeHeaders(frame.streamId, payload, start, length, frame.has(H2Flags.END_STREAM));
 			if (refusal != null) {
 				resetStream(frame.streamId, refusal);
 			}
@@ -1307,7 +1450,25 @@ class H2ServerConnection {
 		__continuationRefusal = refusal;
 		__continuationBuffer = new BytesBuffer();
 		__continuationLength = 0;
-		__appendHeaderFragment(payload);
+		__appendHeaderFragment(payload, start, length);
+	}
+
+	/**
+		What a PADDED frame carries less its padding (6.1, 6.2): its first
+		octet is the pad length, which may not reach past the payload. A
+		connection error otherwise, not an empty frame, or the arithmetic
+		would underflow into a huge length.
+	**/
+	private static function __unpaddedLength(frame:H2Frame):Int {
+		if (frame.length < 1) {
+			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "Padded frame has no pad length octet");
+		}
+		var padLength:Int = frame.payload.get(frame.offset);
+		var content:Int = frame.length - 1 - padLength;
+		if (content < 0) {
+			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, 'Pad length $padLength exceeds the payload of stream ${frame.streamId}');
+		}
+		return content;
 	}
 
 	/**
@@ -1320,20 +1481,20 @@ class H2ServerConnection {
 	 * carry on. Resetting the stream would leave the rest of the run to be
 	 * read as though it were new frames.
 	 */
-	private function __appendHeaderFragment(payload:Bytes):Void {
+	private function __appendHeaderFragment(payload:Bytes, offset:Int, length:Int):Void {
 		// Against what is left of the limit: added, a limit near the largest
 		// Int let the sum wrap negative and the block grow past it.
-		if (maxHeaderBlockSize >= 0 && payload.length > maxHeaderBlockSize - __continuationLength) {
+		if (maxHeaderBlockSize >= 0 && length > maxHeaderBlockSize - __continuationLength) {
 			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM,
 				'Header block exceeded $maxHeaderBlockSize bytes across its CONTINUATION frames');
 		}
 
-		__continuationBuffer.addBytes(payload, 0, payload.length);
-		__continuationLength += payload.length;
+		__continuationBuffer.addBytes(payload, offset, length);
+		__continuationLength += length;
 	}
 
 	private function __continueHeaders(frame:H2Frame):Void {
-		__appendHeaderFragment(frame.payload);
+		__appendHeaderFragment(frame.payload, frame.offset, frame.length);
 
 		if (!frame.has(H2Flags.END_HEADERS)) {
 			return;
@@ -1350,7 +1511,7 @@ class H2ServerConnection {
 		__continuationLength = 0;
 
 		try {
-			__completeHeaders(streamId, block, endsStream);
+			__completeHeaders(streamId, block, 0, block.length, endsStream);
 		} catch (e:H2StreamError) {
 			resetStream(e.streamId, e.code);
 		}
@@ -1360,11 +1521,11 @@ class H2ServerConnection {
 		}
 	}
 
-	private function __completeHeaders(streamId:Int, block:Bytes, endStream:Bool):Void {
+	private function __completeHeaders(streamId:Int, block:Bytes, offset:Int, length:Int, endStream:Bool):Void {
 		// Decoded before any validation, and outside the stream-error path on
 		// purpose: the table must advance even for a message we are about to
 		// reject, or the peer's encoder and our decoder diverge from here on.
-		var decoded:Array<HpackHeader> = __decoder.decode(block);
+		var decoded:Array<HpackHeader> = __decoder.decode(block, offset, length);
 		var tooLarge:Bool = __decoder.truncated;
 
 		var target:Null<H2Stream> = __streams.get(streamId);
@@ -1500,7 +1661,7 @@ class H2ServerConnection {
 		// Counted whole, padding included, and counted even for a stream we no
 		// longer have (§6.9.1). Skipping it on an unknown stream would drift the
 		// connection window down until everything stalled.
-		var counted:Int = frame.payload.length;
+		var counted:Int = frame.length;
 		// An empty DATA may be sent into no window at all (6.9.1): it is how a
 		// stream whose window the SETTINGS shrank below nothing still ends.
 		if (counted > 0 && counted > __recvWindow) {
@@ -1525,7 +1686,13 @@ class H2ServerConnection {
 			}
 		}
 
-		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
+		// What it carries, where it lies in the frame's payload.
+		var contentStart:Int = frame.offset;
+		var contentLength:Int = frame.length;
+		if (frame.has(H2Flags.PADDED)) {
+			contentLength = __unpaddedLength(frame);
+			contentStart++;
+		}
 
 		if (target != null && target.endOfStream) {
 			// 5.1: the peer ended this stream, so it is half-closed on its
@@ -1537,12 +1704,12 @@ class H2ServerConnection {
 		if (target != null && !target.overflowed) {
 			// What is left of the limit, not the sum, which wraps where the
 			// limit is within a frame of the largest Int.
-			if (content.length > __bodyLimit - target.bodyLength) {
+			if (contentLength > __bodyLimit - target.bodyLength) {
 				__refuseOversized(target);
 			} else {
-				target.appendBody(content);
+				target.appendBody(frame.payload, contentStart, contentLength);
 				if (target.budgeted) {
-					__bodyHeld += content.length;
+					__bodyHeld += contentLength;
 					__budgetMoves++;
 				}
 
@@ -1653,8 +1820,8 @@ class H2ServerConnection {
 	}
 
 	private function __onRstStream(frame:H2Frame):Void {
-		if (frame.payload.length != 4) {
-			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'RST_STREAM payload is ${frame.payload.length} bytes, not 4');
+		if (frame.length != 4) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'RST_STREAM payload is ${frame.length} bytes, not 4');
 		}
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
@@ -1670,7 +1837,7 @@ class H2ServerConnection {
 		target.wasReset = true;
 		target.close();
 		__forget(frame.streamId);
-		__writable.remove(frame.streamId);
+		target.writable = null;
 
 		if (abandoned != null) {
 			abandoned();
@@ -1775,7 +1942,7 @@ class H2ServerConnection {
 
 	private function __onSettings(frame:H2Frame):Void {
 		if (frame.has(H2Flags.ACK)) {
-			if (frame.payload.length != 0) {
+			if (frame.length != 0) {
 				throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, "SETTINGS ACK must have an empty payload");
 			}
 			if (!__settingsAcked) {
@@ -1784,7 +1951,8 @@ class H2ServerConnection {
 			return;
 		}
 
-		var previousWindow:Int = remoteSettings.applyPayload(frame.payload);
+		// A copy of its own: SETTINGS come once or twice a connection.
+		var previousWindow:Int = remoteSettings.applyPayload(frame.payload.sub(frame.offset, frame.length));
 
 		// §6.9.2: retune every open stream by the delta rather than resetting
 		// it, and leave the connection window alone.
@@ -1837,11 +2005,11 @@ class H2ServerConnection {
 		if (frame.streamId != 0) {
 			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, 'GOAWAY on stream ${frame.streamId}');
 		}
-		if (frame.payload.length < 8) {
-			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'GOAWAY payload is ${frame.payload.length} bytes, under 8');
+		if (frame.length < 8) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'GOAWAY payload is ${frame.length} bytes, under 8');
 		}
 
-		var code:H2ErrorCode = __readUInt32(frame.payload, 4);
+		var code:H2ErrorCode = __readUInt32(frame.payload, frame.offset + 4);
 		if (code != H2ErrorCode.NO_ERROR) {
 			// Answered with a GOAWAY of this side's own, which has no error to
 			// report, and the connection ends.
@@ -1866,27 +2034,27 @@ class H2ServerConnection {
 	}
 
 	private function __onPing(frame:H2Frame):Void {
-		if (frame.payload.length != 8) {
-			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'PING payload is ${frame.payload.length} bytes, not 8');
+		if (frame.length != 8) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'PING payload is ${frame.length} bytes, not 8');
 		}
 		if (frame.has(H2Flags.ACK)) {
 			// The client has read the first GOAWAY of goAwayGracefully, and
 			// every stream it sent before that has arrived.
-			if (__retiring && frame.payload.compare(RETIRE_PING) == 0) {
+			if (__retiring && frame.payload.sub(frame.offset, 8).compare(RETIRE_PING) == 0) {
 				__finishRetiring();
 			}
 			return;
 		}
 		__noteControlReply();
-		__writeFrame(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
+		__writeFrameOf(H2FrameType.PING, H2Flags.ACK, 0, frame.payload, frame.offset, 8);
 	}
 
 	private function __onWindowUpdate(frame:H2Frame):Void {
-		if (frame.payload.length != 4) {
-			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'WINDOW_UPDATE payload is ${frame.payload.length} bytes, not 4');
+		if (frame.length != 4) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'WINDOW_UPDATE payload is ${frame.length} bytes, not 4');
 		}
 
-		var increment:Int = __readUInt32(frame.payload, 0) & 0x7fffffff;
+		var increment:Int = __readUInt32(frame.payload, frame.offset) & 0x7fffffff;
 		if (increment == 0) {
 			if (frame.streamId == 0) {
 				throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "WINDOW_UPDATE increment of 0 on the connection");
@@ -1918,8 +2086,8 @@ class H2ServerConnection {
 		target.sendWindow += increment;
 
 		__flushStream(target);
-		var callback:Null<Void->Void> = __writable.get(frame.streamId);
-		if (callback != null) {
+		var callback:Null<Void->Void> = target.writable;
+		if (callback != null && __streams.get(frame.streamId) == target) {
 			callback();
 		}
 	}
@@ -2302,18 +2470,19 @@ class H2ServerConnection {
 
 	// ---------------------------------------------------------------- write
 
-	private function __writeHeaderBlock(streamId:Int, block:Bytes, endStream:Bool):Void {
+	/** The first `length` bytes of `block` as HEADERS and any CONTINUATION frames. **/
+	private function __writeHeaderBlock(streamId:Int, block:Bytes, length:Int, endStream:Bool):Void {
 		var limit:Int = remoteSettings.maxFrameSize;
 		var offset:Int = 0;
 		var first:Bool = true;
 
 		while (true) {
-			var chunk:Int = block.length - offset;
+			var chunk:Int = length - offset;
 			if (chunk > limit) {
 				chunk = limit;
 			}
 
-			var last:Bool = (offset + chunk) >= block.length;
+			var last:Bool = (offset + chunk) >= length;
 			var flags:Int = last ? H2Flags.END_HEADERS : 0;
 			if (first && endStream) {
 				flags |= H2Flags.END_STREAM;
@@ -2393,4 +2562,7 @@ interface H2FrameSink {
 		`offset` in `payload` (null when `length` is 0).
 	**/
 	function writeFrame(type:Int, flags:Int, streamId:Int, payload:Null<Bytes>, offset:Int, length:Int):Void;
+
+	/** What the transport may still be given, as `H2ServerConnection.outputRoom` says. **/
+	function outputRoom():Int;
 }

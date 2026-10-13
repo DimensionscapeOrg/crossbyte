@@ -27,6 +27,9 @@ class H2ServerRequest {
 	/** Request body, empty when there was none. */
 	public var body:Bytes;
 
+	// The body of a request that has none: shared, since a body is only read.
+	private static final NO_BODY:Bytes = Bytes.alloc(0);
+
 	/**
 	 * Set when the body grew past `H2ServerConnection.maxRequestBodySize`
 	 * before it ended. The request is delivered then, with no body, so it can
@@ -82,7 +85,7 @@ class H2ServerRequest {
 		if (__declaredLength >= 0 && __declaredLength != length) {
 			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length $__declaredLength does not match the $length bytes of DATA received');
 		}
-		body = received == null ? Bytes.alloc(0) : received;
+		body = received == null ? NO_BODY : received;
 	}
 
 	/**
@@ -110,7 +113,7 @@ class H2ServerRequest {
 			}
 		}
 
-		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority, path, [], Bytes.alloc(0));
+		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority, path, [], NO_BODY);
 		request.headersTooLarge = true;
 		return request;
 	}
@@ -138,6 +141,9 @@ class H2ServerRequest {
 	 * Builds a request from a decoded header block, or throws `H2StreamError`
 	 * when the message is malformed.
 	 *
+	 * The regular fields become the request's `headers` in `decoded` itself:
+	 * the pseudo-header fields, which all come first, are taken out of it.
+	 *
 	 * @param partial The body stopped short of its end, so `content-length`
 	 *        cannot be held to it.
 	 */
@@ -146,11 +152,14 @@ class H2ServerRequest {
 		var scheme:String = null;
 		var authority:String = null;
 		var path:String = null;
-		var regular:Array<HpackHeader> = [];
+		// Where the next regular field goes in `decoded`, moved down past the
+		// pseudo-header fields ahead of it.
+		var regular:Int = 0;
 		var seenRegular:Bool = false;
 		var declaredLength:Int = -1;
 
-		for (field in decoded) {
+		for (index in 0...decoded.length) {
+			var field:HpackHeader = decoded[index];
 			var name:String = field.name;
 
 			if (name.length == 0) {
@@ -231,7 +240,10 @@ class H2ServerRequest {
 				case _:
 			}
 
-			regular.push(field);
+			decoded[regular++] = field;
+		}
+		if (regular < decoded.length) {
+			decoded.resize(regular);
 		}
 
 		if (method == null) {
@@ -252,8 +264,8 @@ class H2ServerRequest {
 			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, "Request is missing a non-empty :path");
 		}
 
-		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, regular,
-			body == null ? Bytes.alloc(0) : body);
+		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, decoded,
+			body == null ? NO_BODY : body);
 		request.__declaredLength = declaredLength;
 		return request;
 	}

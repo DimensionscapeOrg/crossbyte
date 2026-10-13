@@ -53,6 +53,10 @@ import crossbyte._internal.http.TextBody;
  * `HTTPStatusEvent.HTTP_RESPONSE_STATUS` whenever it sends a response.
  *
  * One handler serves a connection's whole life, not a single request.
+ * Under HTTP/2, which carries many requests on a connection at once, a
+ * handler serves one stream at a time, and may be given a later stream once
+ * its response has ended. Either way, keep nothing of a request in its
+ * handler past its response: what it says then is the next request's.
  * The phases are encoded by fields rather than an enum: receiving
  * (request bytes arriving, `__awaitingBody` the body sub-state, deadline
  * armed with `requestTimeout`), dispatching (request fully consumed,
@@ -157,6 +161,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// made and dispatched an event for every response whether or not anyone
 	// else listened, and under HTTP/2 a listener and its closure per stream.
 	@:noCompletion private var __onResponded:Null<(HTTPRequestHandler, Int) -> Void> = null;
+	// Under HTTP/2, the connection's call once this handler's response has
+	// ended and it is ready for another request: the connection keeps it for
+	// a later stream (see __reopenForStream). Set while it is so kept.
+	@:noCompletion private var __onSettled:Null<HTTPRequestHandler->Void> = null;
+	@:noCompletion private var __kept:Bool = false;
 	// What the resolver found at a request's own path; see RewriteEngine.decide.
 	@:noCompletion private final __seen:FileSeen = new FileSeen();
 	// The Accept-Encoding the connection last sent, as read; see __acceptedCodings.
@@ -2702,12 +2711,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// for a String body too. The encoded text is the body, rather than
 		// copied into a new ByteArray.
 		var hasText:Bool = content != null && content.length > 0;
-		if (!headOnly && hasText && !__writer.ownsConnection) {
-			// Under HTTP/1.x the socket copies the body in as it is written,
-			// so the text is encoded into a buffer the thread keeps (see
-			// TextBody) rather than into bytes of its own and a ByteArray
-			// around them, and passed as the caller's: a body too large to
-			// write at once is copied before it is streamed.
+		if (!headOnly && hasText) {
+			// The writer copies the body in as it is written (under HTTP/2,
+			// only what flow control holds back), so the text is encoded into
+			// a buffer the thread keeps (see TextBody) rather than into bytes
+			// of its own and a ByteArray around them, and passed as the
+			// caller's: a body too large to write at once is copied before it
+			// is streamed.
 			var text:ByteArray = TextBody.take();
 			text.writeUTFBytes(content);
 			try {
@@ -2719,10 +2729,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			TextBody.give(text);
 			return;
 		}
-		var bodyBytes:ByteArray = (!headOnly && hasText) ? ByteArray.fromBytes(crossbyte._internal.Utf8.bytesOf(content)) : new ByteArray();
-
-		// A HEAD says what the GET would: its length, not the empty body it
-		// sends.
+		// A HEAD, or no text: no body. A HEAD says what the GET would: its
+		// length, not the empty body it sends.
+		var bodyBytes:ByteArray = new ByteArray();
 		var headLength:Null<Int> = (headOnly && hasText) ? crossbyte._internal.Utf8.bytesOf(content).length : null;
 		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly, headLength);
 	}
@@ -2908,6 +2917,37 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__requestStartedAt = haxe.Timer.stamp();
 			__processBuffer();
 		}
+
+		// An HTTP/2 stream's handler is done with its stream here, as an
+		// HTTP/1.1 one is with its request.
+		if (__onSettled != null) {
+			__onSettled(this);
+		}
+	}
+
+	/**
+		Whether this handler, its response settled, holds nothing of it: no
+		body still being streamed or pumped, no client being watched, and its
+		client not gone. What the HTTP/2 connection checks before keeping it
+		for another stream.
+	**/
+	@:noCompletion private function __recyclable():Bool {
+		return !__kept && __openStream == null && !__streamPending && __streamSource == null && __streamBytes == null && !__watchingClient
+			&& !__clientLeft && !__heldWatch;
+	}
+
+	/**
+		Readies a handler kept by its HTTP/2 connection to answer a new
+		stream: what `__resetForNextRequest` leaves for the HTTP/1.1 driver
+		loop to clear is cleared here, as a new handler has it.
+	**/
+	@:noCompletion private function __reopenForStream():Void {
+		__kept = false;
+		__responded = false;
+		__idle = false;
+		__receiveDeadline = 0;
+		__requestStartedAt = 0;
+		__middlewareAt = -1;
 	}
 
 	/**

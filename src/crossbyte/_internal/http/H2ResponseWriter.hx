@@ -34,12 +34,35 @@ class H2ResponseWriter implements HTTPResponseWriter {
 
 	private final __connection:H2ServerConnection;
 	private final __socket:Socket;
-	private final __streamId:Int;
+	// The stream answered: this writer's for its life, and another's once
+	// its connection gives the writer, with its handler, to a later stream
+	// (see `reuse`).
+	private var __streamId:Int;
 
 	private var __headSent:Bool = false;
 	private var __onDrain:Null<Void->Void> = null;
 	private var __onAbandoned:Null<Void->Void> = null;
 	private var __ended:Bool = false;
+	// Set while the server's sweep holds this writer (sweepWith).
+	private var __swept:Bool = false;
+
+	/**
+		Whether this writer has finished with its stream and holds nothing
+		for it: the response ended, and no drain, abandonment or sweep is
+		waiting on it. What a writer must be before `reuse`.
+	**/
+	public var idle(get, never):Bool;
+
+	private inline function get_idle():Bool {
+		return __ended && __onDrain == null && __onAbandoned == null && !__swept;
+	}
+
+	/** Takes this writer, `idle`, to answer `streamId` from its start. **/
+	public function reuse(streamId:Int):Void {
+		__streamId = streamId;
+		__headSent = false;
+		__ended = false;
+	}
 
 	// The connection's flush, which waits for the end of a read the
 	// response is being written in the middle of; see H2ConnectionHandler.
@@ -62,6 +85,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 			return false;
 		}
 		__sweepWith(this, check);
+		__swept = check != null;
 		return true;
 	}
 
@@ -137,35 +161,64 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		}
 		__headSent = true;
 
-		var fields:Array<HpackHeader> = [];
-		for (header in head.headers) {
-			var name:String = HttpSyntax.fieldNameForH2(HttpSyntax.sanitizeHeaderName(header.name));
-			if (name.length == 0) {
-				continue;
-			}
-
-			switch (name) {
-				case "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade":
-					continue;
-				case _:
-			}
-
-			fields.push(new HpackHeader(name, HttpSyntax.sanitizeHeaderValue(header.value), __isCredential(name)));
+		// Each field straight into the block, with no list of fields made
+		// first, nor an HpackHeader for one already in a table.
+		if (!__connection.beginHead(__streamId, head.statusCode)) {
+			return;
 		}
-
-		// content-length is legal on a response and worth sending when known,
-		// but it is not what frames the body: END_STREAM is.
 		var chunked:Bool = head.chunked == true;
-		if (head.contentLength != null && !chunked) {
-			fields.push(new HpackHeader("content-length", Std.string(head.contentLength)));
+		try {
+			for (header in head.headers) {
+				if (header == null) {
+					continue;
+				}
+				var name:String = HttpSyntax.fieldNameForH2(HttpSyntax.sanitizeHeaderName(header.name));
+				if (name.length == 0) {
+					continue;
+				}
+
+				switch (name) {
+					case "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade":
+						continue;
+					case _:
+				}
+
+				__connection.headField(name, HttpSyntax.sanitizeHeaderValue(header.value), __isCredential(name));
+			}
+
+			// content-length is legal on a response and worth sending when known,
+			// but it is not what frames the body: END_STREAM is.
+			if (head.contentLength != null && !chunked) {
+				__connection.headField("content-length", __lengthText(head.contentLength), false);
+			}
+		} catch (error:Dynamic) {
+			// Fields went into the encoder's table that the client's decoder
+			// will never see, so no later block on this connection would decode
+			// as it was meant: the connection ends.
+			__connection.goAway(H2ErrorCode.INTERNAL_ERROR, "a response head could not be encoded");
+			throw error;
 		}
 
 		// A head with no body ends the stream now. Anything else waits for
 		// endResponse, because the body may arrive in slices: a chunked one
 		// of a length nobody knows yet.
 		var empty:Bool = !chunked && (head.contentLength == null || head.contentLength == 0);
-		__connection.sendHeaders(__streamId, head.statusCode, fields, empty);
+		__connection.endHead(__streamId, head.statusCode, empty);
 		__ended = empty;
+	}
+
+	// The last content-length this writer wrote as text, and its number: a
+	// connection's writers are kept for its next streams, and a server
+	// answering one route sends the same length again and again.
+	private var __lastLength:Int = -1;
+	private var __lastLengthText:String = "";
+
+	private function __lengthText(length:Int):String {
+		if (length != __lastLength) {
+			__lastLengthText = Std.string(length);
+			__lastLength = length;
+		}
+		return __lastLengthText;
 	}
 
 	/**
@@ -190,11 +243,9 @@ class H2ResponseWriter implements HTTPResponseWriter {
 			return;
 		}
 
-		// Copied, since the connection keeps what it is given until flow
-		// control lets it go, and the caller may write into `data` again.
-		var chunk:Bytes = Bytes.alloc(length);
-		chunk.blit(0, data, offset, length);
-		__connection.sendData(__streamId, chunk, false);
+		// What flow control lets go now goes from `data` as it lies; only what
+		// must wait is copied, since the caller may write into `data` again.
+		__connection.sendDataFrom(__streamId, data, offset, length, false);
 	}
 
 	/**

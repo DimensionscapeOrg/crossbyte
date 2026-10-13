@@ -1,7 +1,6 @@
 package crossbyte._internal.http.h2.hpack;
 
 import haxe.io.Bytes;
-import haxe.io.BytesBuffer;
 
 /**
  * HPACK encoder (RFC 7541 §6).
@@ -13,6 +12,11 @@ import haxe.io.BytesBuffer;
  * indexed for next time. Sensitive fields are never indexed at all, so a
  * credential cannot be recovered from the compressed size of a later request
  * that reuses it.
+ *
+ * A block is built in a buffer the encoder keeps (`begin`, `add` or `field`
+ * for each field, then `block` and `blockLength`), good until the next
+ * `begin`: a writer that copies it into its frames straight away makes
+ * nothing per block. `encode` builds one and returns a copy of its own.
  */
 class HpackEncoder {
 	/** Capacity of our dynamic table, mirrored by the peer's decoder. */
@@ -20,6 +24,10 @@ class HpackEncoder {
 
 	private var __table:HpackDynamicTable;
 	private var __pendingCapacity:Int = -1;
+
+	// The block being built, and how much of it there is.
+	private var __out:Bytes = Bytes.alloc(256);
+	private var __outLength:Int = 0;
 
 	public function new(capacity:Int = 4096) {
 		__table = new HpackDynamicTable(capacity);
@@ -33,6 +41,19 @@ class HpackEncoder {
 
 	private inline function get_tableSize():Int {
 		return __table.size;
+	}
+
+	/** The block built since `begin`, from its first byte: `blockLength` of it. **/
+	public var block(get, never):Bytes;
+
+	private inline function get_block():Bytes {
+		return __out;
+	}
+
+	public var blockLength(get, never):Int;
+
+	private inline function get_blockLength():Int {
+		return __outLength;
 	}
 
 	/**
@@ -59,82 +80,111 @@ class HpackEncoder {
 		caller need not build a list with it at the front.
 	**/
 	public function encode(headers:Array<HpackHeader>, ?first:HpackHeader):Bytes {
-		var out:BytesBuffer = new BytesBuffer();
-
-		if (__pendingCapacity >= 0) {
-			// 001xxxxx, 5-bit prefix.
-			__writeInteger(out, __pendingCapacity, 5, 0x20);
-			__pendingCapacity = -1;
-		}
+		begin();
 
 		if (first != null) {
-			__encodeOne(out, first);
+			add(first);
 		}
 
 		for (header in headers) {
-			__encodeOne(out, header);
+			add(header);
 		}
 
-		return out.getBytes();
+		return __out.sub(0, __outLength);
 	}
 
-	private function __encodeOne(out:BytesBuffer, header:HpackHeader):Void {
+	/** Starts a block, with the table size update owed to the peer, if one is. **/
+	public function begin():Void {
+		__outLength = 0;
+		if (__pendingCapacity >= 0) {
+			// 001xxxxx, 5-bit prefix.
+			__writeInteger(__pendingCapacity, 5, 0x20);
+			__pendingCapacity = -1;
+		}
+	}
+
+	/** Adds `header` to the block. **/
+	public function add(header:HpackHeader):Void {
 		if (header.sensitive) {
-			// §6.2.3 never-indexed, 0001xxxx. Not merely "without indexing":
-			// this also forbids an intermediary from indexing it downstream.
-			__writeLiteral(out, header, 4, 0x10, false);
+			__writeLiteral(header.name, header.value, 4, 0x10);
 			return;
 		}
-
-		var staticPair:Int = HpackStaticTable.findPair(header.name, header.value);
-		if (staticPair > 0) {
-			__writeInteger(out, staticPair, 7, 0x80);
+		if (__indexed(header.name, header.value)) {
 			return;
 		}
-
-		var dynamicPair:Int = __table.findPair(header.name, header.value);
-		if (dynamicPair >= 0) {
-			__writeInteger(out, dynamicPair + HpackStaticTable.LENGTH + 1, 7, 0x80);
-			return;
-		}
-
 		// §6.2.1 literal with incremental indexing, 01xxxxxx.
-		__writeLiteral(out, header, 6, 0x40, true);
+		__writeLiteral(header.name, header.value, 6, 0x40);
 		__table.add(header);
 	}
 
-	private function __writeLiteral(out:BytesBuffer, header:HpackHeader, prefixBits:Int, pattern:Int, indexed:Bool):Void {
-		var nameIndex:Int = HpackStaticTable.findName(header.name);
+	/**
+		Adds the field `name: value` to the block, as `add` does, with no
+		`HpackHeader` made for it unless it goes into the dynamic table: a
+		field already in a table, as a response's are after the first, costs
+		nothing.
+	**/
+	public function field(name:String, value:String, sensitive:Bool):Void {
+		if (sensitive) {
+			// §6.2.3 never-indexed, 0001xxxx. Not merely "without indexing":
+			// this also forbids an intermediary from indexing it downstream.
+			__writeLiteral(name, value, 4, 0x10);
+			return;
+		}
+		if (__indexed(name, value)) {
+			return;
+		}
+		__writeLiteral(name, value, 6, 0x40);
+		__table.add(new HpackHeader(name, value));
+	}
+
+	/** Writes the pair as one index when a table has it, and says whether it did. **/
+	private function __indexed(name:String, value:String):Bool {
+		var staticPair:Int = HpackStaticTable.findPair(name, value);
+		if (staticPair > 0) {
+			__writeInteger(staticPair, 7, 0x80);
+			return true;
+		}
+
+		var dynamicPair:Int = __table.findPair(name, value);
+		if (dynamicPair >= 0) {
+			__writeInteger(dynamicPair + HpackStaticTable.LENGTH + 1, 7, 0x80);
+			return true;
+		}
+		return false;
+	}
+
+	private function __writeLiteral(name:String, value:String, prefixBits:Int, pattern:Int):Void {
+		var nameIndex:Int = HpackStaticTable.findName(name);
 		if (nameIndex < 0) {
-			var dynamicName:Int = __table.findName(header.name);
+			var dynamicName:Int = __table.findName(name);
 			if (dynamicName >= 0) {
 				nameIndex = dynamicName + HpackStaticTable.LENGTH + 1;
 			}
 		}
 
 		if (nameIndex > 0) {
-			__writeInteger(out, nameIndex, prefixBits, pattern);
+			__writeInteger(nameIndex, prefixBits, pattern);
 		} else {
 			// Index 0 means "the name follows as a literal".
-			__writeInteger(out, 0, prefixBits, pattern);
-			__writeString(out, header.name);
+			__writeInteger(0, prefixBits, pattern);
+			__writeString(name);
 		}
 
-		__writeString(out, header.value);
+		__writeString(value);
 	}
 
-	private function __writeString(out:BytesBuffer, value:String):Void {
+	private function __writeString(value:String):Void {
 		var raw:Bytes = Bytes.ofString(value);
 
 		// Huffman only when it actually helps. Sending a longer encoding would
 		// still be legal, just worse.
 		if (HpackHuffman.encodedLength(raw) < raw.length) {
 			var coded:Bytes = HpackHuffman.encode(raw);
-			__writeInteger(out, coded.length, 7, 0x80);
-			out.addBytes(coded, 0, coded.length);
+			__writeInteger(coded.length, 7, 0x80);
+			__writeBytes(coded);
 		} else {
-			__writeInteger(out, raw.length, 7, 0x00);
-			out.addBytes(raw, 0, raw.length);
+			__writeInteger(raw.length, 7, 0x00);
+			__writeBytes(raw);
 		}
 	}
 
@@ -142,21 +192,46 @@ class HpackEncoder {
 	 * §5.1 prefix-coded integer. `pattern` supplies the flag bits above the
 	 * prefix and must not overlap it.
 	 */
-	private function __writeInteger(out:BytesBuffer, value:Int, prefixBits:Int, pattern:Int):Void {
+	private function __writeInteger(value:Int, prefixBits:Int, pattern:Int):Void {
 		var mask:Int = (1 << prefixBits) - 1;
 
 		if (value < mask) {
-			out.addByte(pattern | value);
+			__writeByte(pattern | value);
 			return;
 		}
 
-		out.addByte(pattern | mask);
+		__writeByte(pattern | mask);
 
 		var remainder:Int = value - mask;
 		while (remainder >= 0x80) {
-			out.addByte((remainder & 0x7f) | 0x80);
+			__writeByte((remainder & 0x7f) | 0x80);
 			remainder >>>= 7;
 		}
-		out.addByte(remainder);
+		__writeByte(remainder);
+	}
+
+	private inline function __writeByte(value:Int):Void {
+		if (__outLength >= __out.length) {
+			__grow(1);
+		}
+		__out.set(__outLength++, value);
+	}
+
+	private function __writeBytes(bytes:Bytes):Void {
+		if (__outLength + bytes.length > __out.length) {
+			__grow(bytes.length);
+		}
+		__out.blit(__outLength, bytes, 0, bytes.length);
+		__outLength += bytes.length;
+	}
+
+	private function __grow(more:Int):Void {
+		var size:Int = __out.length * 2;
+		while (size < __outLength + more) {
+			size *= 2;
+		}
+		var grown:Bytes = Bytes.alloc(size);
+		grown.blit(0, __out, 0, __outLength);
+		__out = grown;
 	}
 }

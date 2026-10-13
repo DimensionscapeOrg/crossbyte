@@ -980,6 +980,14 @@ says how.
   header lines are read where they lie.
   `HTTPResponseStream.writeText` allocates nothing for ASCII text
   natively, where a line of server-sent events took 584 B.
+- An HTTP/2 GET allocates 592 B natively where it allocated 3,400, 424 B on
+  the jvm where it took 2,016, and 5.8 KB on Node where it took 10.5 KB,
+  and is answered a fifth faster on Node. A stream's handler is kept by its
+  connection and given a later stream once its response has ended, as an
+  HTTP/1.1 connection keeps its one handler; the response head is encoded a
+  field at a time into a buffer the connection keeps; frames are read where
+  they lie; and a text body goes out from the thread's buffer, with only
+  what flow control holds back copied.
 - Large responses: static files over 256 KB stream in 64 KB slices, a
   response larger than the output buffer goes out in bursts as the client
   reads, and a client that stops reading for 30 seconds is let go.

@@ -48,6 +48,7 @@ class HpackDecoder {
 	public var maxTableCapacity(default, null):Int;
 
 	private var __table:HpackDynamicTable;
+	private final __cursor:Cursor = new Cursor();
 
 	public function new(maxTableCapacity:Int = 4096, maxHeaderListSize:Int = 8 * 1024 * 1024) {
 		this.maxTableCapacity = maxTableCapacity;
@@ -91,9 +92,15 @@ class HpackDecoder {
 		}
 	}
 
-	public function decode(block:Bytes):Array<HpackHeader> {
+	/**
+		The header block in `block`, `length` bytes from `offset` (to its end
+		when `length` is negative): a frame's payload where it lies.
+	**/
+	public function decode(block:Bytes, offset:Int = 0, length:Int = -1):Array<HpackHeader> {
 		var out:Array<HpackHeader> = [];
-		var cursor:Cursor = new Cursor(block);
+		// One cursor a decoder: a block is read to its end before the next.
+		var cursor:Cursor = __cursor;
+		cursor.reset(block, offset, length < 0 ? block.length : offset + length);
 		var listSize:Int = 0;
 		// §4.2: a size update is only legal at the very start of a block.
 		var updatesStillAllowed:Bool = true;
@@ -144,6 +151,7 @@ class HpackDecoder {
 		}
 
 		this.listSize = listSize;
+		cursor.reset(null, 0, 0);
 		return out;
 	}
 
@@ -260,20 +268,26 @@ class HpackDecoder {
  * have to remember it.
  */
 private class Cursor {
-	public final bytes:Bytes;
-	public var position(default, null):Int;
+	public var bytes(default, null):Bytes;
+	public var position(default, null):Int = 0;
 
-	public function new(bytes:Bytes) {
+	// Where the block ends in `bytes`.
+	private var __end:Int = 0;
+
+	public function new() {}
+
+	public function reset(bytes:Bytes, start:Int, end:Int):Void {
 		this.bytes = bytes;
-		this.position = 0;
+		this.position = start;
+		__end = end;
 	}
 
 	public inline function atEnd():Bool {
-		return position >= bytes.length;
+		return position >= __end;
 	}
 
 	public inline function remaining():Int {
-		return bytes.length - position;
+		return __end - position;
 	}
 
 	public function peek():Int {

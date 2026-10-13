@@ -94,7 +94,18 @@ class AllocationBudgetTest extends utest.Test {
 	private static final HTTP_GET = new Budget("an HTTP/1.1 GET on a kept-alive connection", "request", [152, 152, 240], [256, 256, 368]);
 	private static final HTTP_POST = new Budget("an HTTP/1.1 POST of 4 KB on a kept-alive connection", "request", [4608, 4608, 4648], [5824, 5824, 5880]);
 	private static final STREAM_TEXT = new Budget("a line of text written to a streamed response", "line", [0, 0, 16], [8, 8, 88]);
-	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [3400, 3384, 2048], [4320, 4296, 2624]);
+	// The stream's own state (an H2Stream, 184 B natively), the request as
+	// decoded (an H2ServerRequest and its list of fields, 216 B), the
+	// middleware's next (40 B) and the header map's table, made again as its
+	// first field is set (16 B).
+	// 3,400 B natively (2,016 on the jvm) until a stream's handler and writer
+	// were kept for the connection's next stream, the response head encoded
+	// a field at a time into the connection's buffer, frames read where they
+	// lie, a text body written from the thread's buffer, and the streams
+	// walked without a map's iterators. Measured on 2026-10-13; the jvm's is
+	// Temurin 17 on Windows, the largest (Oracle 8 424, Temurin 8 on Linux
+	// 424, Temurin 17 on Linux 457).
+	private static final H2_GET = new Budget("an HTTP/2 GET over cleartext", "request", [592, 592, 496], [808, 808, 688]);
 	private static final TLS_GET = new Budget("an HTTP/1.1 GET over TLS on a kept-alive connection", "request", [152, 152, 6968], [256, 256, 8776]);
 	// The jvm's figure measured later than MEASURED_ON: the full suite on
 	// Windows (alone 248, Temurin 8 on Linux 253). Nearly all of it is the

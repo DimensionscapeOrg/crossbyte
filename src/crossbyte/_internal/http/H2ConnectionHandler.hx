@@ -109,7 +109,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		__connection.onRequestHead = __admit;
 		__connection.onDrained = __onDrained;
 		__connection.onConnectionError = __onConnectionError;
-		__connection.outputRoom = __outputRoom;
+		// Its room is asked of this, the frame sink (outputRoom below).
 		__connection.onHolding = __hold;
 		// A stream waiting for window is held to the same sweep, whatever the
 		// timeouts are: see __checkHeld. So is a connection between the two
@@ -182,14 +182,30 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	// Set while __receive hands a read to the frame layer.
 	private var __receiving:Bool = false;
 
+	// What a read is taken into, kept from one to the next while it stays
+	// small: the frame layer copies what it needs before it hands anything
+	// on, so nothing outlives the read that filled it.
+	private var __inbound:Null<ByteArray> = null;
+
+	// Storage past which the read's buffer is let go once the read is done,
+	// as a socket lets go of a large input once drained.
+	private static inline var INBOUND_KEPT:Int = 64 * 1024;
+
 	private function __onData(_:ProgressEvent):Void {
-		var inbound:ByteArray = new ByteArray();
-		__socket.readBytes(inbound, 0);
+		var inbound:Null<ByteArray> = __inbound;
+		if (inbound == null) {
+			inbound = __inbound = new ByteArray();
+		}
+		(inbound : ByteArrayData).clear();
+		__socket.__readBytes(inbound, 0, 0);
 		if (inbound.length == 0) {
 			return;
 		}
 
 		__receive(inbound);
+		if (@:privateAccess (inbound : ByteArrayData).__length > INBOUND_KEPT && __inbound == inbound) {
+			__inbound = null;
+		}
 	}
 
 	/** Hands `inbound` to the frame layer, and sends what it answered with in one write. **/
@@ -245,7 +261,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	 * queue, not the socket, holding what the network has not taken, and the
 	 * socket under its output cap.
 	 */
-	private function __outputRoom():Int {
+	public function outputRoom():Int {
 		return __watermark - __socket.outputBufferLength;
 	}
 
@@ -536,7 +552,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		var admitted:Bool = false;
 		try {
 			admitted = handler.__admitDecodedRequest(request.method, mark >= 0 ? request.path.substr(0, mark) : request.path,
-				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request), request.startedAt, true, request.declaredLength);
+				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request, handler), request.startedAt, true, request.declaredLength);
 		} catch (error:Dynamic) {
 			// As the HTTP/1.1 parser answers what serving a request threw.
 			Logger.error("HTTP/2 request handling failed: " + error);
@@ -629,7 +645,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 
 		var handler:HTTPRequestHandler = __handlerFor(request);
 		try {
-			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request), body, request.tooLarge, request.headersTooLarge,
+			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request, handler), body, request.tooLarge, request.headersTooLarge,
 				request.timedOut, request.startedAt);
 		} catch (error:Dynamic) {
 			__serveFailed(handler, request.streamId, error);
@@ -657,18 +673,61 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		}
 	}
 
+	// Handlers whose streams' responses have ended, with their writers, kept
+	// for this connection's next streams (__recycle), as an HTTP/1.1
+	// connection keeps its one handler from request to request. A handler
+	// and what it keeps were most of what a stream cost, 1 KB natively.
+	// Most requests are answered as they are read, so even a page's dozens
+	// at once go through one or two; a few more cover those answered later.
+	private final __spares:Array<HTTPRequestHandler> = [];
+	private static inline var SPARE_HANDLERS:Int = 8;
+
+	// __flushUnlessReceiving and __recycle as values, made once.
+	private var __flushHook:Null<Void->Void> = null;
+	private var __settledHook:Null<HTTPRequestHandler->Void> = null;
+
 	/** A handler answering on `request`'s stream, hooked to the server's per-response hook. */
 	private function __handlerFor(request:H2ServerRequest):HTTPRequestHandler {
-		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushUnlessReceiving, __sweepWith);
+		var spare:Null<HTTPRequestHandler> = __spares.pop();
+		if (spare != null) {
+			(cast spare.__writer : H2ResponseWriter).reuse(request.streamId);
+			spare.__reopenForStream();
+			return spare;
+		}
+
+		if (__flushHook == null) {
+			__flushHook = __flushUnlessReceiving;
+			__settledHook = __recycle;
+		}
+		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushHook, __sweepWith);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
 		// The server's hook as the handler's own, rather than a listener and
 		// a closure made for every stream.
 		handler.__onResponded = __onResponse;
+		handler.__onSettled = __settledHook;
 		return handler;
 	}
 
-	/** `request`'s fields by name, as the pipeline reads them. */
-	private function __fieldsOf(request:H2ServerRequest):Map<String, String> {
+	/**
+		A handler's response has ended: it is kept for a later stream if it
+		and its writer hold nothing of this one, and listeners added to it
+		for this stream are let go, so none hears a later one.
+	**/
+	private function __recycle(handler:HTTPRequestHandler):Void {
+		if (__spares.length >= SPARE_HANDLERS || !__socket.connected) {
+			return;
+		}
+		var writer:H2ResponseWriter = cast handler.__writer;
+		if (!writer.idle || !handler.__recyclable()) {
+			return;
+		}
+		handler.removeAllListeners();
+		handler.__kept = true;
+		__spares.push(handler);
+	}
+
+	/** `request`'s fields by name, as the pipeline reads them, into `handler`'s map when it has one. */
+	private function __fieldsOf(request:H2ServerRequest, handler:HTTPRequestHandler):Map<String, String> {
 		// Folded the way the HTTP/1.1 parser folds repeats, so a middleware
 		// sees one shape regardless of protocol, and cookie with "; ", which
 		// is how §8.2.3 says its split crumbs join (with a comma,
@@ -677,7 +736,15 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		//
 		// Collected, then joined once per name: appending each repeat to the
 		// whole value so far is quadratic in the repeats.
-		var headers:Map<String, String> = new Map();
+		//
+		// A kept handler's map, emptied when its last response ended, is
+		// filled again rather than another made.
+		var headers:Map<String, String> = handler.__headers;
+		if (headers == null) {
+			headers = new Map();
+		} else {
+			headers.clear();
+		}
 		var repeats:Null<Map<String, Array<String>>> = null;
 		for (field in request.headers) {
 			var first:Null<String> = headers.get(field.name);

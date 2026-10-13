@@ -16,8 +16,11 @@ class H2Stream {
 
 	public var state:H2StreamState = IDLE;
 
-	/** Response header fields, populated when the header block completes. */
-	public var headers:Array<HpackHeader> = [];
+	/**
+		Response header fields, populated when the header block completes. On
+		the server, the request's decoded block, null until it has arrived.
+	**/
+	public var headers:Null<Array<HpackHeader>>;
 
 	/** `:status` as an Int, or `-1` until the header block arrives. */
 	public var status:Int = -1;
@@ -136,6 +139,12 @@ class H2Stream {
 	public var wasReset:Bool = false;
 
 	/**
+		On the server, what to call when this stream can take more bytes
+		(`H2ServerConnection.setWritableCallback`); null for nothing.
+	**/
+	public var writable:Null<Void->Void> = null;
+
+	/**
 		On the server, set for a stream whose request was refused while the
 		refusal was still going out, held by flow control: once that has
 		ended, the stream is reset NO_ERROR to stop the rest of the body.
@@ -162,10 +171,16 @@ class H2Stream {
 	private var __queueOffset:Int = 0;
 	private var __queueLength:Int = 0;
 
-	public function new(id:Int, sendWindow:Int, recvWindow:Int) {
+	/**
+		@param collects Whether the stream gathers header fields into a list of
+		       its own as they arrive, as a client's does; a server's is given
+		       the decoded block whole, and makes none.
+	**/
+	public function new(id:Int, sendWindow:Int, recvWindow:Int, collects:Bool = true) {
 		this.id = id;
 		this.sendWindow = sendWindow;
 		this.recvWindow = recvWindow;
+		this.headers = collects ? [] : null;
 	}
 
 	public var bodyLength(get, never):Int;
@@ -174,15 +189,17 @@ class H2Stream {
 		return __bodyLength;
 	}
 
-	public function appendBody(chunk:Bytes):Void {
-		if (chunk.length == 0) {
+	/** Adds `length` bytes of `chunk` from `offset` (all of it when `length` is negative), copied. **/
+	public function appendBody(chunk:Bytes, offset:Int = 0, length:Int = -1):Void {
+		var count:Int = length < 0 ? chunk.length - offset : length;
+		if (count <= 0) {
 			return;
 		}
 		if (__body == null) {
 			__body = new BytesBuffer();
 		}
-		__body.addBytes(chunk, 0, chunk.length);
-		__bodyLength += chunk.length;
+		__body.addBytes(chunk, offset, count);
+		__bodyLength += count;
 	}
 
 	/**

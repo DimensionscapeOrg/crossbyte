@@ -53,6 +53,12 @@ class H2FrameDecoder {
 	 * Call until it returns `null`: one `feed` may complete several frames,
 	 * and a decoder that yielded only the first would stall behind whatever
 	 * arrived in the same read.
+	 *
+	 * The same frame object each time, its payload where it lies in this
+	 * decoder's buffer (`H2Frame.offset`, `length`): good until the next call
+	 * or `feed`, so whatever a frame's handler keeps it copies, as it did a
+	 * payload cut out for it. A frame of its own and a copy of its payload
+	 * were two allocations every frame, a request's HEADERS among them.
 	 */
 	public function next():Null<H2Frame> {
 		if (buffered < H2Frame.HEADER_SIZE) {
@@ -71,10 +77,13 @@ class H2FrameDecoder {
 			return null;
 		}
 
-		var frame:H2Frame = H2Frame.read(__buffer, __position);
+		var frame:H2Frame = __frame;
+		@:privateAccess frame.__over(__buffer, __position);
 		__position += H2Frame.HEADER_SIZE + length;
 		return frame;
 	}
+
+	private final __frame:H2Frame = new H2Frame(DATA, 0, 0, null);
 
 	/** Drops consumed bytes so the buffer does not grow without bound. */
 	private function __compact():Void {
