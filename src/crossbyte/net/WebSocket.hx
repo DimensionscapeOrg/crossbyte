@@ -1159,6 +1159,16 @@ class WebSocket extends Socket {
 
 		__webSocket = null;
 		__connected = false;
+		__releaseAddressHold();
+	}
+
+	/** Its place under its server's `maxConnectionsPerAddress`, given back once. **/
+	@:noCompletion private inline function __releaseAddressHold():Void {
+		if (__addressHold != null) {
+			var hold:crossbyte._internal.websocket.AddressHold = __addressHold;
+			__addressHold = null;
+			hold.release();
+		}
 	}
 
 	@:noCompletion override private function socket_onClose(event):Void {
@@ -1176,6 +1186,7 @@ class WebSocket extends Socket {
 	@:noCompletion private function __framingClosed(code:Int, reason:Null<String>):Void {
 		__connected = false;
 		__webSocket = null;
+		__releaseAddressHold();
 
 		// Its place among the server's sessions, for the next.
 		if (__countedBy != null) {

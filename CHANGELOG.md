@@ -19,6 +19,14 @@ All notable changes to CrossByte will be documented in this file.
   the bytes remaining before anything is allocated, so five bytes claiming
   2 GB are refused, and a failed read leaves `position` where it was, as
   `readVarUtf` does. `ByteArray` has neither, as it has no `readVarUtf`.
+- **`ServerSocket.maxConnectionsPerAddress`**, the most connections one
+  address may hold open at once (nginx's `limit_conn`), off unless set. One
+  past it is closed as it is accepted, before any TLS work, and counted in
+  `refusedConnections`; its place comes back as it closes, or as its
+  handshake fails. Addresses are keyed as `RateLimiter.addressKey` keys
+  them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
+  its sessions against it and an `HTTPServer` its connections, natively,
+  on the jvm and on Node.
 
 ### Fixed
 

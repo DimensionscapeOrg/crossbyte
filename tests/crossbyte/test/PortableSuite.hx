@@ -127,6 +127,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketInputLimitTest());
 		// A raw server's connection limit, on Node's listener.
 		runner.addCase(new crossbyte.net.ServerSocketLimitsTest());
+		// And how many one address may hold, its TLS server's on the raw connection.
+		runner.addCase(new crossbyte.net.ServerSocketAddressLimitTest());
 		// A connection replaced, whose socket still reports on Node.
 		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());

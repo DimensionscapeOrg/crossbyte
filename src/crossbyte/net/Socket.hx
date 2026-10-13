@@ -359,6 +359,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// The server that counted this connection against its maxConnections,
 	// told once as it closes; null for one no server counts.
 	@:noCompletion private var __openCounter:crossbyte._internal.socket.OpenCounter = null;
+	// The count of its address's connections a server holds this one in,
+	// for its maxConnectionsPerAddress, let go of as it closes; null for one
+	// no such limit counts.
+	@:noCompletion private var __addressHold:crossbyte._internal.websocket.AddressHold = null;
 	// Whether the registry asks this socket, every few seconds, whether it
 	// has been quiet; and whether it has read or written since it was last
 	// asked. See __releaseIfQuiet.
@@ -834,6 +838,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var counter:crossbyte._internal.socket.OpenCounter = __openCounter;
 			__openCounter = null;
 			counter.__releaseOpen();
+		}
+		if (__addressHold != null) {
+			var hold:crossbyte._internal.websocket.AddressHold = __addressHold;
+			__addressHold = null;
+			hold.release();
 		}
 	}
 	// The socket's connect, close, ioError and socketData events, one of each,

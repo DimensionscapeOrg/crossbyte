@@ -240,6 +240,37 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public static inline var DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS:Int = 16;
 
 	/**
+		The most connections one address may hold open at once, its TLS
+		handshakes included. `0` or less, the default, sets no limit.
+
+		A connection past it is closed as soon as it is accepted (after
+		`admit`, before any TLS handshake, before a `Socket` is made for it)
+		and counted in `refusedConnections`, as `maxConnections` refuses
+		one. Its place is given back as it closes, whichever end closes it,
+		or as its handshake fails.
+
+		Addresses are counted as `RateLimiter.addressKey` keys them: an IPv4
+		address as itself, and an IPv6 address by its /64, which is what one
+		subscriber is usually given, so a client cannot step round the limit
+		by taking another address from its own block. An IPv4 address mapped
+		into IPv6 is counted as the IPv4 address.
+
+		This is nginx's `limit_conn` and HAProxy's `src_conn_cur`: a limit at
+		all times, where `maxPendingHandshakesPerAddress` holds only while
+		the handshakes are crowded. Many real clients can share an address (a
+		carrier's NAT, an office, a proxy in front of this server), so set it
+		to what the busiest legitimate address needs, and leave it at 0
+		behind a proxy, where every connection has the proxy's address.
+
+		Set it before `listen()`: a connection accepted while it was 0 is not
+		counted, and so never refuses another. On a server spread over
+		`runtimes`, every runtime's connections are counted together. A
+		`ServerWebSocket` counts its sessions, from accept to close, and an
+		`HTTPServer` its connections.
+	**/
+	public var maxConnectionsPerAddress:Int = 0;
+
+	/**
 		Connections this server closed for its own limits: past
 		`maxPendingHandshakesPerAddress` as they were accepted, and past
 		`maxConnections`: as they were accepted, as a TLS handshake
@@ -300,6 +331,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	// Connections still in their handshake, by address; shared with every
 	// replica of a spread server. See maxPendingHandshakesPerAddress.
 	@:noCompletion private var __addressCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
+
+	// Connections open, by RateLimiter.addressKey; shared with every replica
+	// of a spread server. See maxConnectionsPerAddress.
+	@:noCompletion private var __connectionCounts:crossbyte._internal.websocket.AddressCounts = new crossbyte._internal.websocket.AddressCounts();
 
 	// Connections open, where this server counts them itself (see
 	// __countsOpen): all of them on one runtime, this runtime's share on a
@@ -1121,7 +1156,22 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 				connection.destroy();
 				return;
 			}
+			// Its address holding as many as it may: a TLS server counted it
+			// on the raw connection, below, and the place is carried here.
+			var hold:Null<crossbyte._internal.websocket.AddressHold> = null;
+			if (secure) {
+				hold = __nodeHoldOf(connection);
+			} else {
+				if (__overNodeAddress(connection)) {
+					__refusedConnections++;
+					connection.destroy();
+					return;
+				}
+				hold = __takeHeldAddress();
+			}
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			// Let go of as it closes, however it closes.
+			socket.__addressHold = hold;
 			if (__countsOpen()) {
 				__claimOpen(socket);
 			}
@@ -1211,6 +1261,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			__serverSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
 					raw.destroy();
+					return;
+				}
+				if (!__holdNodeRaw(raw)) {
+					__refusedConnections++;
+					raw.destroy();
 				}
 			});
 
@@ -1267,7 +1322,76 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			return false;
 		}
 	}
+
+	/**
+		Whether the address of a connection Node has just accepted holds
+		`maxConnectionsPerAddress` already, which refuses it; otherwise its
+		place is counted and left for `__takeHeldAddress`, as natively.
+	**/
+	@:noCompletion private function __overNodeAddress(connection:NodeSocket):Bool {
+		return __overAddressLimit(connection.remoteAddress == null ? null : crossbyte._internal.net.IPv6.compress(connection.remoteAddress));
+	}
+
+	/**
+		A TLS server's raw connection, before its handshake: whether its
+		address had room. Its place is kept on it for the TLS connection
+		Node makes over it (`__nodeHoldOf`), and let go of when it closes,
+		which it does once its handshake has failed or the TLS connection
+		over it has ended.
+	**/
+	@:noCompletion private function __holdNodeRaw(raw:NodeSocket):Bool {
+		if (__overNodeAddress(raw)) {
+			return false;
+		}
+		var hold:Null<crossbyte._internal.websocket.AddressHold> = __takeHeldAddress();
+		if (hold != null) {
+			Reflect.setField(raw, NODE_HOLD, hold);
+			raw.once("close", function(_:Dynamic):Void hold.release());
+		}
+		return true;
+	}
+
+	/** The place a TLS connection's raw connection was counted in, or null. **/
+	@:noCompletion private static function __nodeHoldOf(connection:NodeSocket):Null<crossbyte._internal.websocket.AddressHold> {
+		var raw:Dynamic = (cast connection : Dynamic)._parent;
+		return raw == null ? null : Reflect.field(raw, NODE_HOLD);
+	}
+
+	@:noCompletion private static inline var NODE_HOLD:String = "__crossbyteAddressHold";
 	#end
+
+	// The hold __overAddressLimit made for the connection it last let in;
+	// null when there is no limit to hold it to.
+	@:noCompletion private var __heldAddress:Null<crossbyte._internal.websocket.AddressHold> = null;
+
+	/**
+		Whether `address` has `maxConnectionsPerAddress` open already, which
+		refuses the connection just accepted from it. Otherwise it is counted
+		under its address, and the hold the connection is to carry until it
+		ends is left for `__takeHeldAddress` (none with no limit). The
+		front's limit and count, on a server spread over runtimes.
+	**/
+	@:noCompletion private function __overAddressLimit(address:Null<String>):Bool {
+		__heldAddress = null;
+		var front:ServerSocket = __front != null ? __front : this;
+		var limit:Int = front.maxConnectionsPerAddress;
+		if (limit <= 0 || address == null) {
+			return false;
+		}
+		var key:String = RateLimiter.addressKey(address);
+		if (!__connectionCounts.claim(key, limit)) {
+			return true;
+		}
+		__heldAddress = new crossbyte._internal.websocket.AddressHold(__connectionCounts, key);
+		return false;
+	}
+
+	/** The hold `__overAddressLimit` made, taken; null for none. **/
+	@:noCompletion private inline function __takeHeldAddress():Null<crossbyte._internal.websocket.AddressHold> {
+		var hold = __heldAddress;
+		__heldAddress = null;
+		return hold;
+	}
 
 	/**
 		Closes the socket and stops listening for connections. A connection
@@ -1731,8 +1855,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		replica.maxAcceptsPerTick = maxAcceptsPerTick;
 		// The limit is the front's, over every runtime together.
 		replica.maxPendingHandshakes = -1;
-		// One count of each address's handshakes, for every runtime.
+		// One count of each address's handshakes, and of its connections, for
+		// every runtime.
 		replica.__addressCounts = __addressCounts;
+		replica.__connectionCounts = __connectionCounts;
 		// Asked by a replica only when it accepts for itself, with reusePort:
 		// the front's hook, as it stands when each connection arrives.
 		var front:ServerSocket = this;
@@ -1784,13 +1910,19 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		begins, as the front's would have; a plain connection is announced.
 	**/
 	@:noCompletion private function __adoptConnection(socket:Socket, peer:{host:Host, port:Int}):Void {
+		// What the front counted it under, taken before its custom is this
+		// runtime's.
+		var claim:Null<AddressClaim> = __takeAddressClaim(socket);
 		if (secure) {
 			socket.setBlocking(false);
 			var pending:PendingHandshake = new PendingHandshake(this, socket,
 				handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, peer);
 			// The front counted it under its address; let go of as the
 			// handshake ends, here.
-			pending.address = __takeAddressClaim(socket);
+			if (claim != null) {
+				pending.address = claim.address;
+				pending.hold = claim.hold;
+			}
 			__pendingHandshakes.push(pending);
 			socket.custom = pending;
 			pending.runtime = __cbInstance;
@@ -1806,10 +1938,16 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		var cbSocket:Null<CBSocket> = __fromSocket(socket, peer);
 		if (cbSocket == null) {
+			if (claim != null && claim.hold != null) {
+				claim.hold.release();
+			}
 			try {
 				socket.close();
 			} catch (_:Dynamic) {}
 			return;
+		}
+		if (claim != null) {
+			cbSocket.__addressHold = claim.hold;
 		}
 		if (!__countOpen(cbSocket)) {
 			return;
@@ -1992,21 +2130,43 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		} catch (_:Dynamic) {}
 	}
 
-	/** The address a hand-off was counted under by the front, taken off it; null for none. **/
-	@:noCompletion private static function __takeAddressClaim(socket:Socket):Null<String> {
+	/** What a hand-off was counted under by the front, taken off it; null for nothing. **/
+	@:noCompletion private static function __takeAddressClaim(socket:Socket):Null<AddressClaim> {
 		if (!Std.isOfType(socket.custom, AddressClaim)) {
 			return null;
 		}
 		var claim:AddressClaim = cast socket.custom;
 		socket.custom = null;
-		return claim.address;
+		return claim;
 	}
 
-	/** A hand-off that will not be taken up lets go of its address's count. **/
+	/**
+		For the servers built on this one: `hold` goes with a hand-off to
+		another runtime, as the front's own claims do.
+	**/
+	@:noCompletion private static function __carryHold(socket:Socket, hold:Null<crossbyte._internal.websocket.AddressHold>):Void {
+		if (hold != null) {
+			socket.custom = new AddressClaim(null, hold);
+		}
+	}
+
+	/** The hold a hand-off carries, taken off it; null for none. **/
+	@:noCompletion private static function __takeCarriedHold(socket:Socket):Null<crossbyte._internal.websocket.AddressHold> {
+		var claim:Null<AddressClaim> = __takeAddressClaim(socket);
+		return claim == null ? null : claim.hold;
+	}
+
+	/** A hand-off that will not be taken up lets go of its address's counts. **/
 	@:noCompletion private function __releaseAddressClaim(socket:Socket):Void {
-		var address:Null<String> = __takeAddressClaim(socket);
-		if (address != null) {
-			__addressCounts.release(address);
+		var claim:Null<AddressClaim> = __takeAddressClaim(socket);
+		if (claim == null) {
+			return;
+		}
+		if (claim.address != null) {
+			__addressCounts.release(claim.address);
+		}
+		if (claim.hold != null) {
+			claim.hold.release();
 		}
 	}
 	#end
@@ -2395,15 +2555,25 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			}
 
 			// The server's own limits, before any work is done for it: as many
-			// open as it keeps, or its address crowding the handshakes.
+			// open as it keeps, its address holding as many as it may, or its
+			// address crowding the handshakes.
 			if (__atOpenLimit()) {
 				__refuseAccepted(sysSocket);
 				return true;
 			}
+			var peerAddress:Null<String> = __admittedPeer == null ? null : crossbyte._internal.net.IPv6.compress(__admittedPeer.host.toString());
+			if (__overAddressLimit(peerAddress)) {
+				__refuseAccepted(sysSocket);
+				return true;
+			}
+			var hold:Null<crossbyte._internal.websocket.AddressHold> = __takeHeldAddress();
 			var address:Null<String> = null;
-			if (__tracksHandshakes() && __admittedPeer != null) {
-				address = crossbyte._internal.net.IPv6.compress(__admittedPeer.host.toString());
+			if (__tracksHandshakes() && peerAddress != null) {
+				address = peerAddress;
 				if (!__claimPendingAddress(address)) {
+					if (hold != null) {
+						hold.release();
+					}
 					__refuseAccepted(sysSocket);
 					return true;
 				}
@@ -2412,11 +2582,12 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			#if (target.threaded && !js)
 			if (__spread != null) {
 				// Another runtime's from here, TLS handshake and all; it lets
-				// go of the address's count once the handshake ends.
+				// go of the address's counts once the handshake ends, and once
+				// the connection does.
 				var peer = __admittedPeer;
 				__admittedPeer = null;
-				if (address != null) {
-					sysSocket.custom = new AddressClaim(address);
+				if (address != null || hold != null) {
+					sysSocket.custom = new AddressClaim(address, hold);
 				}
 				__handOff(sysSocket, peer);
 				return true;
@@ -2430,6 +2601,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 				var pending:PendingHandshake = new PendingHandshake(this, sysSocket,
 					handshakeTimeout > 0 ? haxe.Timer.stamp() + handshakeTimeout : Math.POSITIVE_INFINITY, sysSocket.peer());
 				pending.address = address;
+				pending.hold = hold;
 				__pendingHandshakes.push(pending);
 
 				// In the poll set, so each flight the peer sends steps the
@@ -2448,11 +2620,16 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			var socket:Null<CBSocket> = __fromSocket(sysSocket);
 			if (socket == null) {
 				// Gone already; the next one may not be.
+				if (hold != null) {
+					hold.release();
+				}
 				try {
 					sysSocket.close();
 				} catch (_:Dynamic) {}
 				return true;
 			}
+			// Let go of as it closes, however it closes.
+			socket.__addressHold = hold;
 			if (!__countOpen(socket)) {
 				return true;
 			}
@@ -3009,6 +3186,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 				__closeHandshake(pending);
 				return;
 			}
+			// Its address's count goes with the connection from here.
+			cbSocket.__addressHold = pending.hold;
+			pending.hold = null;
 			if (!__countOpen(cbSocket)) {
 				return;
 			}
@@ -3036,6 +3216,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/** Out of the poll set, and then closed. **/
 	@:noCompletion private function __closeHandshake(pending:PendingHandshake):Void {
+		if (pending.hold != null) {
+			pending.hold.release();
+			pending.hold = null;
+		}
 		if (pending.runtime != null) {
 			@:privateAccess
 			pending.runtime.deregisterSocket(pending.socket);
@@ -3092,6 +3276,10 @@ final class PendingHandshake implements IPollableSocket {
 	// until the handshake ends; null for none.
 	public var address:Null<String> = null;
 
+	// Its place under maxConnectionsPerAddress, which the connection takes
+	// over if the handshake completes; null for none.
+	public var hold:Null<crossbyte._internal.websocket.AddressHold> = null;
+
 	public var registryClosed(get, never):Bool;
 
 	@:noCompletion private var __server:ServerSocket;
@@ -3125,10 +3313,14 @@ final class PendingHandshake implements IPollableSocket {
 **/
 @:noCompletion
 private final class AddressClaim {
-	public final address:String;
+	// Under maxPendingHandshakesPerAddress, null for none.
+	public final address:Null<String>;
+	// Under maxConnectionsPerAddress, null for none.
+	public final hold:Null<crossbyte._internal.websocket.AddressHold>;
 
-	public function new(address:String) {
+	public function new(address:Null<String>, ?hold:crossbyte._internal.websocket.AddressHold) {
 		this.address = address;
+		this.hold = hold;
 	}
 }
 

@@ -55,12 +55,15 @@ import sys.net.Host;
  *
  * ## What one peer can cost, and the limits on it
  *
- * Each is on by default, and each says at its member what it bounds:
+ * Each is on by default but `maxConnectionsPerAddress`, and each says at its
+ * member what it bounds:
  *
  * - before a session opens: `maxPendingHandshakes` (256) places for
  *   connections still upgrading, `maxPendingHandshakesPerAddress` (16) of
  *   them for one address once half are taken, `handshakeTimeout` (10 s) to
  *   finish, and `maxHeaderSize` (16 KiB) for the upgrade request;
+ * - at all times, if set: `maxConnectionsPerAddress` sessions from one
+ *   address, counted from accept to close;
  * - once open: `maxConnections` (10,000) sessions, `maxMessageSize` (1 MiB)
  *   for a message arriving, `maxOutputBufferSize` (8 MiB) waiting for a
  *   peer that does not read, `idleTimeout` (60 s) of silence; and a peer's
@@ -88,7 +91,8 @@ import sys.net.Host;
  * `RateLimiter.addressKey` keys an IPv6 client by its /64, which is what one
  * subscriber is given. Behind a proxy that forwards connections before their
  * client has spoken, every connection has the proxy's address: there the
- * proxy bounds each client, and `maxPendingHandshakesPerAddress` is set to 0.
+ * proxy bounds each client, `maxPendingHandshakesPerAddress` is set to 0,
+ * and `maxConnectionsPerAddress` is left at 0.
  *
  * @author Christopher Speciale
  */
@@ -1465,10 +1469,22 @@ class ServerWebSocket extends ServerSocket {
 				continue;
 			}
 
-			// One address past its share of the places for upgrades, while
-			// they are crowded: closed before any work is done for it.
+			// One address holding as many sessions as it may, or past its
+			// share of the places for upgrades while they are crowded: closed
+			// before any work is done for it.
 			var address:String = __admittedAddress;
+			if (__overAddressLimit(address)) {
+				__refusedConnections++;
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+				continue;
+			}
+			var hold:Null<crossbyte._internal.websocket.AddressHold> = __takeHeldAddress();
 			if (!__claimAddress(address)) {
+				if (hold != null) {
+					hold.release();
+				}
 				__refusedConnections++;
 				try {
 					socket.close();
@@ -1479,9 +1495,11 @@ class ServerWebSocket extends ServerSocket {
 			#if (target.threaded && !js)
 			if (__spread != null) {
 				// Another runtime's from here: its TLS, its upgrade, its life.
-				// It lets go of the address's count once its upgrade ends.
+				// It lets go of the address's count once its upgrade ends, and
+				// of its place under maxConnectionsPerAddress once it closes.
 				var peer = __admittedPeer;
 				__admittedPeer = null;
+				ServerSocket.__carryHold(socket, hold);
 				__handOff(socket, peer);
 				continue;
 			}
@@ -1490,8 +1508,12 @@ class ServerWebSocket extends ServerSocket {
 			var accepted = __fromSockettoWebsocket(socket);
 
 			if (accepted != null) {
+				@:privateAccess accepted.__addressHold = hold;
 				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp()), address: address});
 			} else {
+				if (hold != null) {
+					hold.release();
+				}
 				__addressCounts.release(address);
 			}
 		}
@@ -1644,6 +1666,7 @@ class ServerWebSocket extends ServerSocket {
 		maxPendingHandshakesPerAddress = front.maxPendingHandshakesPerAddress;
 		// One count of each address's connections, for every runtime.
 		__addressCounts = front.__addressCounts;
+		__connectionCounts = front.__connectionCounts;
 		handshakeTimeout = front.handshakeTimeout;
 		__metrics = front.__metrics;
 		__acceptedTotal = front.__acceptedTotal;
@@ -1673,12 +1696,17 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion override private function __adoptConnection(socket:sys.net.Socket, peer:{host:Host, port:Int}):Void {
 		__adopted = true;
 		__takeSettings(cast __front);
+		var hold:Null<crossbyte._internal.websocket.AddressHold> = ServerSocket.__takeCarriedHold(socket);
 		var accepted:WebSocket = __fromSockettoWebsocket(socket);
 		// Counted by the front as it accepted it, under this address.
 		var address:String = peer == null ? null : crossbyte._internal.net.IPv6.compress(peer.host.toString());
 		if (accepted != null) {
+			@:privateAccess accepted.__addressHold = hold;
 			__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp()), address: address});
 		} else {
+			if (hold != null) {
+				hold.release();
+			}
 			__addressCounts.release(address);
 		}
 		// Counted in flight as it was handed over; counted here now.
@@ -1875,9 +1903,26 @@ class ServerWebSocket extends ServerSocket {
 				return;
 			}
 
-			// One address past its share of the places, while they are crowded.
+			// One address holding as many sessions as it may (a TLS server
+			// counted it on the raw connection, below, and the place is
+			// carried here), or past its share of the places while they are
+			// crowded.
+			var hold:Null<crossbyte._internal.websocket.AddressHold> = null;
+			if (secure) {
+				hold = ServerSocket.__nodeHoldOf(connection);
+			} else {
+				if (__overNodeAddress(connection)) {
+					__refusedConnections++;
+					connection.destroy();
+					return;
+				}
+				hold = __takeHeldAddress();
+			}
 			var address:String = connection.remoteAddress == null ? null : crossbyte._internal.net.IPv6.compress(connection.remoteAddress);
 			if (!__claimAddress(address)) {
+				if (hold != null) {
+					hold.release();
+				}
 				__refusedConnections++;
 				connection.destroy();
 				return;
@@ -1890,8 +1935,12 @@ class ServerWebSocket extends ServerSocket {
 			// send no upgrade request, and hold the descriptor for as long as
 			// it liked.
 			if (accepted != null) {
+				@:privateAccess accepted.__addressHold = hold;
 				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection)), address: address});
 			} else {
+				if (hold != null) {
+					hold.release();
+				}
 				__addressCounts.release(address);
 			}
 		};
@@ -1969,6 +2018,11 @@ class ServerWebSocket extends ServerSocket {
 			// together, as natively.
 			__webServerSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
+					raw.destroy();
+					return;
+				}
+				if (!__holdNodeRaw(raw)) {
+					__refusedConnections++;
 					raw.destroy();
 					return;
 				}

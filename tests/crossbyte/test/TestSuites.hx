@@ -366,6 +366,9 @@ class TestSuites {
 		// A raw server's connection limit and a TLS server's handshakes per
 		// address, and a NetHost's. Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.ServerSocketLimitsTest());
+		// How many connections one address may hold, on each kind of server.
+		// Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ServerSocketAddressLimitTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded

@@ -32,6 +32,7 @@ these by default:
 | `maxConnections` | 10,000 | connections open at once; one more is closed as it is accepted, and counted in `refusedConnections` |
 | `maxPendingHandshakes` | 256 | TLS handshakes under way; more wait in the kernel's queue |
 | `maxPendingHandshakesPerAddress` | 16 | one address's share of those, once half are taken; past it a connection is closed as it is accepted |
+| `maxConnectionsPerAddress` | none | connections one address holds open at once, at all times; past it a connection is closed as it is accepted |
 | `handshakeTimeout` | 10 s | each TLS handshake, from accept |
 | `maxAcceptsPerTick` | 64 | connections taken from the queue in one wake |
 | `receiveBufferSize`, `sendBufferSize` | the system's | the kernel's buffers for each connection |
@@ -45,8 +46,24 @@ scale of sessions, so a client left queued in the kernel would wait without a wo
 upgrade with 503 instead, and an `HTTPServer` (its limit from `HTTPServerConfig.maxConnections`) answers the request.
 A `NetHost`'s `maxConnections` is its server's, and a reliable UDP host counts its sessions itself.
 
+`maxConnectionsPerAddress` is nginx's `limit_conn` and HAProxy's `src_conn_cur`: one address may hold that many
+connections open, and one more is closed as it is accepted, before any TLS work, and counted in `refusedConnections`.
+An address is counted as `RateLimiter.addressKey` keys it, so an IPv6 client is counted by its /64. Many real clients
+can share an address (a carrier's NAT, an office), so it is off unless set; set it before `listen()`. A
+`ServerWebSocket` counts its sessions against it and an `HTTPServer` its connections.
+
+```haxe
+// Given port:Int.
+var server = new crossbyte.net.ServerSocket();
+// A player's client holds one connection; a household behind one address a few.
+server.maxConnectionsPerAddress = 8;
+server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, e -> {});
+server.bind(port, "0.0.0.0");
+server.listen();
+```
+
 Behind a proxy that forwards connections before their client has spoken, every connection has the proxy's address:
-set `maxPendingHandshakesPerAddress` to 0 there, and bound each client at the proxy.
+set `maxPendingHandshakesPerAddress` and `maxConnectionsPerAddress` to 0 there, and bound each client at the proxy.
 
 ### Out of descriptors
 
@@ -137,6 +154,7 @@ A `ServerWebSocket` holds the TCP limits above, and these:
 | `handshakeTimeout` | 10 s | each upgrade, from accept |
 | `maxHeaderSize` | 16 KiB | the upgrade request's head, answered `431` past it |
 | `maxConnections` | 10,000 | sessions open at once, answered `503` past it |
+| `maxConnectionsPerAddress` | none | sessions one address holds, from accept to close; past it a connection is closed as it is accepted |
 | `maxMessageSize` | 1 MiB | one message arriving, its frames together, refused on a frame's header with 1009 |
 | `maxOutputBufferSize` | 8 MiB | what waits for a peer that is not reading, closed with 1011 past it |
 | `idleTimeout` | 60 s | silence from the peer, with a ping sent every `pingInterval` (30 s) meanwhile |
@@ -144,7 +162,7 @@ A `ServerWebSocket` holds the TCP limits above, and these:
 
 A peer's pings are answered one at a time, the newest only (RFC 6455 lets a pong answer only the latest ping), so a
 peer that pings and reads nothing is owed one pong however many it sends. `refusedConnections` counts the
-connections the two connection limits closed, and `handshakeFailures` the upgrades that never finished.
+connections the connection limits closed, and `handshakeFailures` the upgrades that never finished.
 
 **What a session holds.** An idle session a server accepted holds about 4 KB of heap natively and 3 KB on the jvm,
 plus the kernel's socket buffers; a client about the same. Its upgrade request is kept as the head it arrived as,
