@@ -1401,14 +1401,17 @@ its handler answers. A reader takes what it knows of a hello and passes over
 the rest, and a frame of a kind it does not know is passed over too: every
 frame says where the next begins.
 
-A call of one small `Int` and its answer are 15 bytes each way over TCP (16
-once request ids pass 2^21), and over WebSocket 21 out and 17 back, with its
-frame header and a client's mask. gRPC's unary call of the same, over HTTP/2,
-is HEADERS and DATA each way and the answer's trailers: with grpc-js 48 bytes
-out and 42 back; with grpc-go 35 and 41 when many calls share a connection,
-and 80 and 86 one call at a time. A call of 4 KB each way is 14 bytes past
-its payload each way over TCP, where gRPC's is 51 out and 44 back with
-grpc-js, and with grpc-go the same as its small call: 35 and 41, or 80 and 86.
+A call of one `Int` and its answer are 15 bytes each way over TCP, and over
+WebSocket 21 out and 17 back, with its frame header and a client's mask. Those
+are with a request id of two bytes: the id is a varuint, one byte for a
+session's first 127 calls, two to its 16,383rd and three from there to 2^21,
+so a long-lived session's calls are a byte larger each way. gRPC's unary call
+of the same, over HTTP/2, is HEADERS and DATA each way and the answer's
+trailers: with grpc-js 48 bytes out and 42 back; with grpc-go 35 and 41 when
+many calls share a connection, and 80 and 86 one call at a time. A call of
+4 KB each way is 13 bytes past its payload each way over TCP, at the same id
+size, where gRPC's is 51 out and 44 back with grpc-js, and with grpc-go the
+same as its small call: 35 and 41, or 80 and 86.
 [performance.md](performance.md#rpc-beside-grpc) has how these were counted,
 and what each call costs in time.
 

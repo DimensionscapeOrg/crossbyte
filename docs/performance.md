@@ -155,7 +155,8 @@ Reading it:
   against grpc-go's 176,000 at 46 us (52,000 at 17 us on one thread) and grpc-js's 20,000 at 45 us. There grpc-go's
   two processes used about 18 of the machine's 32 logical processors between them, beside the other work on it, so
   its rate is bounded by what was left; processor time a call is the figure to compare.
-- **On the wire** a small call and its answer are 31 to 32 bytes over TCP and 39 to 40 over WebSocket; gRPC's are
+- **On the wire** a small call and its answer are 31 to 32 bytes over TCP and 39 to 40 over WebSocket (the byte
+  between them is the request id, a varuint, which takes a third byte from a session's 16,384th call); gRPC's are
   76 with grpc-go when many calls share a connection, 166 one call at a time, and 90 to 92 with grpc-js.
 
 ## RPC over local IPC
