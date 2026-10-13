@@ -4,6 +4,18 @@ All notable changes to CrossByte will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **SQLite on PHP ran every statement that returns no rows twice.** PHP's
+  `SQLite3Result`, read for a statement with no result columns, runs it
+  again, and a statement read its result to count the rows it changed: an
+  INSERT inserted twice and a BEGIN failed with "cannot start a transaction
+  within a transaction". Such a result is now answered from SQLite's
+  `changes()` and never read. `SQLiteConnection.isSupported` is true on PHP,
+  and `docs/data.md` says what SQLite does there.
+
+## 1.0.0 - 2026-10-13
+
 ### Highlights
 
 Everything since 1.0.0-rc.1. If you are upgrading from it, read

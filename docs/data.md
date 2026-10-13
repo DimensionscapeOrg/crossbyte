@@ -6,10 +6,20 @@ JavaScript.
 
 | Database | Where | How |
 | --- | --- | --- |
-| SQLite | natively | statements prepared once and their parameters bound |
+| SQLite | natively; php | natively with statements prepared once and their parameters bound; on php through PHP's `sqlite3` extension |
 | MySQL, MariaDB | natively; the jvm | natively through hxcpp's bundled client; on the jvm through Connector/J on the class path, without the TLS or limit settings |
 | PostgreSQL | natively; php | natively through libpq, loaded at run time, with bound parameters, statement and connect timeouts and `cancel()`; on php through PDO |
 | MongoDB | hxcpp, the jvm, the interpreter, hl, neko | its wire protocol: OP_MSG, SCRAM, TLS, cursors, transactions |
+
+## SQLite
+
+Natively, SQLite is compiled in: each statement is prepared once and kept, its parameters are bound, rows can be
+read by column with `executeEach`, `openAsync()` runs the connection on a worker, and `cancel()` interrupts a
+statement that is running.
+
+On PHP, `SQLiteConnection` uses PHP's `sqlite3` extension, which has to be enabled in `php.ini`. Connections open
+with `open()`, and a statement's parameters are written into its text as quoted literals. `openAsync()`,
+`executeEach` and interrupting a running statement are native only.
 
 ## MySQL and MariaDB
 

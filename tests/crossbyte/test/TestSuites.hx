@@ -215,7 +215,9 @@ class TestSuites {
 		// Answers no MySQL server sends: counts and lengths a hostile one, or
 		// whoever answers in its place, can put in a packet.
 		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
-		// SQLite opens only natively.
+		// SQLite opens natively and on PHP, where PhpTestMain runs this too.
+		runner.addCase(new crossbyte.db.SQLiteStatementTest());
+		// What only the native driver has: the worker, cancel(), bound values.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		// Red team: a datagram stored as a blob from its listener.
 		runner.addCase(new crossbyte.db.SQLiteArrivalTest());

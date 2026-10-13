@@ -52,7 +52,13 @@ import haxe.Int64;
  */
 @:access(crossbyte.db.sql.sqlite.SQLiteStatement)
 class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
-	public static inline var isSupported:Bool = #if cpp true; #else false; #end
+	/**
+		Whether a database can be opened here: natively, and on PHP through
+		its `sqlite3` extension, which `open()` needs enabled. On PHP only
+		`open()` is there: `openAsync()`, `executeEach` and interrupting a
+		running statement are native.
+	**/
+	public static inline var isSupported:Bool = #if (cpp || php) true; #else false; #end
 
 	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:Int = 2000;
 	// What the worker decides of a job a cancel() may have overtaken.
@@ -1950,6 +1956,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			// synchronous one's own record of its requests.
 			__native = NativeSQLiteConnection.open(path, __async ? __sqlRuns : null);
 			__connection = __native;
+			#elseif php
+			// PHP's runs a statement with no result columns again when its
+			// result is read; see PhpSQLiteConnection.
+			__connection = new crossbyte.db.sql.sqlite._internal.PhpSQLiteConnection(Sqlite.open(path));
 			#else
 			__connection = Sqlite.open(path);
 			#end
