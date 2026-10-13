@@ -142,6 +142,13 @@ class AllocationBudgetTest extends utest.Test {
 	// (the JDK's Windows selector boxing what it finds ready).
 	private static final RPC_TCP_RECEIVER = new Budget("an RPC call over TCP answered through an RPCIntReceiver", "call", [0, 0, 32], [8, 8, 104]);
 	private static final RPC_TCP_CALL = new Budget("an RPC call over TCP and its answer", "call", [152, 152, 128], [256, 256, 224]);
+	// The same over WebSocket with TLS (wss://). Natively 64 B a call until
+	// the WebSocket's read stopped after a TLS read shorter than a record, as
+	// Socket's does: it read on until the TLS layer said it would block, a
+	// string boxed for the exception at every arrival (on the jvm 10,752 B,
+	// an unwrap more each time). What the jvm has left is JSSE's own per
+	// record, as on the TLS GET line. Measured on 2026-10-13.
+	private static final RPC_WSS_RECEIVER = new Budget("an RPC call over WebSocket with TLS answered through an RPCIntReceiver", "call", [0, 0, 6208], [8, 8, 7824]);
 	// The same over reliable UDP. A message arriving was copied for the
 	// connection's application, 336 B a call natively, until a session
 	// reading its frames borrowed it instead. Measured on 2026-10-09 on
@@ -1060,6 +1067,54 @@ class AllocationBudgetTest extends utest.Test {
 			};
 			__warm(byFuture, WARM);
 			__within(RPC_TCP_CALL, AllocationMeter.measure(byFuture, 2000));
+			Assert.isTrue(receiver.int > 0);
+		} catch (error:Dynamic) {
+			try session.close() catch (_:Dynamic) {}
+			try host.close() catch (_:Dynamic) {}
+			__finish();
+			throw error;
+		}
+		try session.close() catch (_:Dynamic) {}
+		try host.close() catch (_:Dynamic) {}
+		__finish();
+	}
+
+	public function testAnRpcCallOverWebSocketWithTls():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			// No openssl to make a certificate with.
+			Assert.pass();
+			return;
+		}
+		var runtime = __start();
+		var handler = new BudgetHandler();
+		var accepted:Array<RPCSession<Dynamic, Dynamic>> = [];
+		var host:NetHost = null;
+		var session:RPCSession<BudgetCommands> = null;
+		try {
+			host = new NetHost("wss://127.0.0.1:0", (connection:INetConnection) -> {
+				accepted.push(new RPCSession(connection, null, handler));
+			}, null, null, false, {certificate: fixture.certificate, key: fixture.key});
+			host.listen();
+			__pumpUntil(() -> host.localPort != 0);
+			var commands = new BudgetCommands();
+			var socket = new WebSocket();
+			socket.secure = true;
+			socket.certAuthority = fixture.certificate;
+			var connection = NetConnection.fromWebSocket(socket);
+			socket.connect("127.0.0.1", host.localPort);
+			session = new RPCSession<BudgetCommands>(connection, commands);
+			__pumpUntil(() -> session.up && accepted.length > 0);
+			var receiver = new BudgetReceiver();
+			var told:Int = 0;
+			var answered:Void->Bool = () -> receiver.told == told;
+			var byReceiver = function():Void {
+				told = receiver.told + 1;
+				commands.addThen(receiver.int, 1, receiver);
+				__pumpUntil(answered);
+			};
+			__warm(byReceiver, WARM);
+			__within(RPC_WSS_RECEIVER, AllocationMeter.measure(byReceiver, 2000));
 			Assert.isTrue(receiver.int > 0);
 		} catch (error:Dynamic) {
 			try session.close() catch (_:Dynamic) {}

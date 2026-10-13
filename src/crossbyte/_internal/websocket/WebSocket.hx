@@ -999,8 +999,16 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 
 		while (__connected && __socket != null) {
 			try {
-				var nBytes:Int = __socket.input.readBytes(scratch, 0, scratch.length);
-				if (nBytes <= 0) {
+				// Nothing waiting is -1 rather than an exception, as in
+				// Socket's read: natively a TLS read that finds nothing throws
+				// a boxed string, and through `input` a second exception.
+				var nBytes:Int = @:privateAccess (__socket : sys.net.Socket).__tryRead(scratch, 0, scratch.length);
+				if (nBytes < 0) {
+					break;
+				}
+				if (nBytes == 0) {
+					// A clean TCP FIN, as the Eof below.
+					doClose = true;
 					break;
 				}
 				totalBytes += nBytes;
@@ -1040,9 +1048,14 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				// socket says it would block: a system call that reads nothing
 				// on every arrival, answered with an exception hxcpp throws and
 				// this catches, would be a third of an echoing server's time.
-				// TLS reads on: mbedTLS holds plaintext select cannot see (see
-				// below).
-				if (!__tls && nBytes < scratch.length) {
+				// A TLS read returns one record at most, so it reads on after
+				// a whole record, as Socket's does. One shorter than a record
+				// ended what had arrived: mbedTLS takes a record at a time
+				// from the kernel and none was left half read, so whatever
+				// came after it is still the kernel's, where the poll sees it;
+				// the jvm's engine, which reads ahead, is asked about before
+				// every select (registryHasBufferedInput).
+				if (nBytes < scratch.length && (!__tls || nBytes < @:privateAccess crossbyte.net.Socket.TLS_RECORD)) {
 					break;
 				}
 				#end

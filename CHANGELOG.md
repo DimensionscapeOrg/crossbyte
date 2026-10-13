@@ -928,6 +928,10 @@ says how.
 - Natively a message allocates nothing to send or receive but the `text` a
   listener asks for, and an idle session holds less (an accepted one 3.8 KB
   where it held 6.6), letting go of its buffers after a quiet heartbeat.
+- Over TLS a session no longer reads past what arrived, a read that failed
+  every time: an RPC call over `wss://` allocates nothing natively where it
+  took 64 B, and 6.2 KB on the jvm where it took 10.8, and takes 28% less
+  time natively and 53% less on the jvm.
 - On the jvm, framing and masking a message boxes nothing: a 100-byte
   echo allocates 396 B where it took 428.
 - A `wss://` client checks the server's certificate. (Upgrading)
