@@ -89,7 +89,7 @@ interface IDataOutput {
 
 		@param	value	The string value to be written.
 		@param	charSet	Accepted for source compatibility and **ignored**. The
-		string is encoded as UTF-8, exactly as `writeUTFBytes` would. Transcode
+		string is encoded as UTF-8, exactly as `writeUtfBytes` would. Transcode
 		the bytes yourself if you need another encoding.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void;
@@ -123,12 +123,12 @@ interface IDataOutput {
 		@param	value	The string value to be written.
 		@throws	RangeError	If the `length` is larger than 65535.
 	**/
-	public function writeUTF(value:String):Void;
+	public function writeUtf(value:String):Void;
 
 	/**
-		Writes a UTF-8 string. Similar to `writeUTF()`, but does not prefix the string with
+		Writes a UTF-8 string. Similar to `writeUtf()`, but does not prefix the string with
 		a 16-bit `length` word.
 		@param	value	The string value to be written.
 	**/
-	public function writeUTFBytes(value:String):Void;
+	public function writeUtfBytes(value:String):Void;
 }

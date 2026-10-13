@@ -91,7 +91,7 @@ class RUDPSample extends HostApplication {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

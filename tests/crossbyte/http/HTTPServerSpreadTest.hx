@@ -509,7 +509,7 @@ class HTTPServerSpreadTest extends utest.Test {
 
 		var root = crossbyte.io.File.createTempDirectory();
 		var script = new crossbyte.io.ByteArray();
-		script.writeUTFBytes("<?php echo 1; ?>");
+		script.writeUtfBytes("<?php echo 1; ?>");
 		root.resolvePath("index.php").save(script);
 
 		var server:HTTPServer = SpreadSupport.on(acceptor, () -> {

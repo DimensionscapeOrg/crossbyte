@@ -386,7 +386,7 @@ class HTTP2Backend implements HTTPBackend {
 		if (secure) {
 			// Only h2 is offered. Accepting http/1.1 here would hand back a
 			// connection this backend cannot speak.
-			socket.setALPN(["h2"]);
+			socket.setAlpn(["h2"]);
 			if (tls != null) {
 				tls.configure(socket);
 			}
@@ -440,7 +440,7 @@ class HTTP2Backend implements HTTPBackend {
 			}
 		}
 
-		if (secure && socket.getALPN() != "h2") {
+		if (secure && socket.getAlpn() != "h2") {
 			__closeQuietly(socket);
 			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "Server did not negotiate h2 over ALPN");
 		}

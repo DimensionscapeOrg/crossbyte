@@ -418,7 +418,7 @@ class WorkerTest extends utest.Test {
 			#if target.threaded
 			crossbyte.sys.System.sleep(0.1);
 			#end
-			worker.sendComplete(message.position + ":" + message.readUTFBytes(message.bytesAvailable));
+			worker.sendComplete(message.position + ":" + message.readUtfBytes(message.bytesAvailable));
 		};
 		plain.doWork = message -> {
 			#if target.threaded
@@ -430,12 +430,12 @@ class WorkerTest extends utest.Test {
 		plain.onComplete(text -> readPlain = text);
 
 		var buffer = new crossbyte.io.ByteArray();
-		buffer.writeUTFBytes("xxwhat it was at the call");
+		buffer.writeUtfBytes("xxwhat it was at the call");
 		buffer.position = 2;
 		worker.run(buffer);
 		// Reused at once, as the socket reuses its payload for the next arrival.
 		buffer.position = 0;
-		buffer.writeUTFBytes("CHANGED, and longer than it was");
+		buffer.writeUtfBytes("CHANGED, and longer than it was");
 		var bytes = haxe.io.Bytes.ofString("plain bytes as given");
 		plain.run(bytes);
 		bytes.fill(0, bytes.length, "!".code);

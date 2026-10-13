@@ -409,7 +409,7 @@ class HTTPStaticPathTest extends utest.Test {
 
 	private static function __write(root:File, relative:String, text:String, overwrite:Bool = false):Void {
 		var data:ByteArray = new ByteArray();
-		data.writeUTFBytes(text);
+		data.writeUtfBytes(text);
 		root.resolvePath(relative).save(data, overwrite);
 	}
 }

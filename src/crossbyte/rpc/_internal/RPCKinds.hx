@@ -302,7 +302,7 @@ class RPCKinds {
 		zero: macro null,
 		compound: false,
 		write: (frame, value) -> macro $frame.putString($value),
-		read: (input, end) -> macro $input.readVarUTF()
+		read: (input, end) -> macro $input.readVarUtf()
 	};
 
 	static final BYTES:RPCKind = {

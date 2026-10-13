@@ -79,7 +79,7 @@ class JvmTlsTest extends utest.Test {
 		var presented:Int = -1;
 		var outcome = __serve(function(server) {
 			server.setCertificate(chain.direct, chain.directKey);
-			server.addSNICertificate(function(name) return name == "chain.test", chain.fullChain, chain.leafKey);
+			server.addSniCertificate(function(name) return name == "chain.test", chain.fullChain, chain.leafKey);
 		}, function(port) {
 			var peer = JdkTlsPeer.connect(port, {trust: [__path(chain, "root.pem")], serverName: "chain.test"});
 			presented = peer.getSession().getPeerCertificates().length;

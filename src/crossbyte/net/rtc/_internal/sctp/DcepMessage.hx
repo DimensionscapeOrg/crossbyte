@@ -157,10 +157,10 @@ class DcepMessage {
 		out.writeInt(reliability);
 
 		var labelBytes = new ByteArray();
-		labelBytes.writeUTFBytes(label);
+		labelBytes.writeUtfBytes(label);
 
 		var protocolBytes = new ByteArray();
-		protocolBytes.writeUTFBytes(protocol);
+		protocolBytes.writeUtfBytes(protocol);
 
 		// Lengths in bytes rather than characters, because the label is UTF-8
 		// and a peer counting characters would truncate every label containing
@@ -211,8 +211,8 @@ class DcepMessage {
 			return null;
 		}
 
-		var label:String = labelLength > 0 ? bytes.readUTFBytes(labelLength) : "";
-		var protocol:String = protocolLength > 0 ? bytes.readUTFBytes(protocolLength) : "";
+		var label:String = labelLength > 0 ? bytes.readUtfBytes(labelLength) : "";
+		var protocol:String = protocolLength > 0 ? bytes.readUtfBytes(protocolLength) : "";
 
 		var message = new DcepMessage(OPEN, channelType, priority, reliability, label, protocol);
 		message.nameSize = labelLength > protocolLength ? labelLength : protocolLength;

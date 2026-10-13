@@ -113,7 +113,7 @@ class HTTPServerMetricsTest extends utest.Test {
 		var registry = new CountingMetrics();
 		var root = File.createTempDirectory();
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello metrics");
+		fixture.writeUtfBytes("Hello metrics");
 		root.resolvePath("index.html").save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -143,7 +143,7 @@ class HTTPServerMetricsTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello metrics");
+		fixture.writeUtfBytes("Hello metrics");
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -162,12 +162,12 @@ class HTTPServerMetricsTest extends utest.Test {
 		var closed = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(requestText);
+			client.writeUtfBytes(requestText);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			}
 		});
 		client.addEventListener(Event.CLOSE, _ -> closed = true);

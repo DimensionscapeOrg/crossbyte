@@ -72,15 +72,15 @@ class ByteArrayInputTest extends utest.Test {
 
 	public function testReadUTFBytesAndReadUTFAdvanceExpectedLengths():Void {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes("hey");
-		bytes.writeUTF("ok");
+		bytes.writeUtfBytes("hey");
+		bytes.writeUtf("ok");
 		bytes.position = 0;
 
 		var input:ByteArrayInput = bytes;
 
-		Assert.equals("hey", input.readUTFBytes(3));
+		Assert.equals("hey", input.readUtfBytes(3));
 		Assert.equals(3, input.position);
-		Assert.equals("ok", input.readUTF());
+		Assert.equals("ok", input.readUtf());
 		Assert.isTrue(input.eof());
 	}
 
@@ -92,12 +92,12 @@ class ByteArrayInputTest extends utest.Test {
 	public function testReadUTFThrowsWhenPayloadIsTruncated():Void {
 		var bytes = new ByteArray();
 		bytes.writeShort(3);
-		bytes.writeUTFBytes("hi");
+		bytes.writeUtfBytes("hi");
 		bytes.position = 0;
 
 		var input:ByteArrayInput = bytes;
 
-		Assert.raises(() -> input.readUTF(), crossbyte.errors.EOFError);
+		Assert.raises(() -> input.readUtf(), crossbyte.errors.EOFError);
 		Assert.equals(0, input.position);
 		Assert.equals(4, input.bytesAvailable);
 	}
@@ -160,7 +160,7 @@ class ByteArrayInputTest extends utest.Test {
 
 	public function testReadVarUTFRejectsALengthPast31Bits():Void {
 		// 0xFFFFFFFF as a length, which is -1 once it is an Int. Measured as
-		// an Int it is shorter than any buffer, and readUTFBytes checks its
+		// an Int it is shorter than any buffer, and readUtfBytes checks its
 		// length only outside `final`.
 		var bytes = Bytes.alloc(6);
 		bytes.set(0, 0xFF);
@@ -171,7 +171,7 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(5, 0x41);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUTF(), crossbyte.errors.EOFError);
+		Assert.raises(() -> input.readVarUtf(), crossbyte.errors.EOFError);
 	}
 
 	public function testReadVarUIntRejectsAVarintTheBufferEndsInside():Void {
@@ -188,7 +188,7 @@ class ByteArrayInputTest extends utest.Test {
 	public function testReadVarUTFRejectsALengthTheBufferCannotHold():Void {
 		// The length is a varint, so a peer can name up to 2^31-1. A guard
 		// testing `position + n > length` would overflow at this size and wrap
-		// negative, so it would pass and readUTFBytes would read off the end,
+		// negative, so it would pass and readUtfBytes would read off the end,
 		// in ordinary builds too, not just `final`.
 		var bytes = Bytes.alloc(6);
 		bytes.set(0, 0xFF);
@@ -199,7 +199,7 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.set(5, 0x41);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
-		Assert.raises(() -> input.readVarUTF(), crossbyte.errors.EOFError);
+		Assert.raises(() -> input.readVarUtf(), crossbyte.errors.EOFError);
 	}
 
 	/**
@@ -242,8 +242,8 @@ class ByteArrayInputTest extends utest.Test {
 		bytes.position = 0;
 		var input:ByteArrayInput = bytes;
 		// Built, not a literal: HashLink compiles "a\u0000b" as a, NUL, NUL.
-		Assert.equals("a" + String.fromCharCode(0) + "b", input.readUTFBytes(3));
-		var cut:String = input.readUTFBytes(3);
+		Assert.equals("a" + String.fromCharCode(0) + "b", input.readUtfBytes(3));
+		var cut:String = input.readUtfBytes(3);
 		#if !(cpp || neko)
 		Assert.equals("A\uFFFD", cut);
 		#end
@@ -253,25 +253,25 @@ class ByteArrayInputTest extends utest.Test {
 
 	/**
 		A string cut short leaves the position where it was, so a reader can
-		try again once the rest has arrived: `readUTF` moved it past the
-		length, and `readVarUTF` past the varint.
+		try again once the rest has arrived: `readUtf` moved it past the
+		length, and `readVarUtf` past the varint.
 	**/
 	public function testAStringCutShortLeavesThePositionAlone():Void {
 		var fixed = new crossbyte.io.ByteArray();
 		fixed.writeByte(5);
 		fixed.writeByte(0);
-		fixed.writeUTFBytes("abc");
+		fixed.writeUtfBytes("abc");
 		fixed.position = 0;
 		var input:ByteArrayInput = fixed;
-		Assert.raises(() -> input.readUTF());
+		Assert.raises(() -> input.readUtf());
 		Assert.equals(0, input.position);
 
 		var varied = new crossbyte.io.ByteArray();
 		varied.writeByte(5);
-		varied.writeUTFBytes("abc");
+		varied.writeUtfBytes("abc");
 		varied.position = 0;
 		var input2:ByteArrayInput = varied;
-		Assert.raises(() -> input2.readVarUTF());
+		Assert.raises(() -> input2.readVarUtf());
 		Assert.equals(0, input2.position);
 	}
 }

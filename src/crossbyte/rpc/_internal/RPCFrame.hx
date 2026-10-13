@@ -243,7 +243,7 @@ class RPCFrame extends ByteArrayData {
 
 	/**
 		`value` as its UTF-8 bytes after their count, as a varint: what
-		`ByteArrayOutput.writeVarUTF` writes, with no `Bytes` made of the
+		`ByteArrayOutput.writeVarUtf` writes, with no `Bytes` made of the
 		string first. Natively a string held a byte a character is copied as
 		it stands (those bytes are its UTF-8) and one held as UTF-16 is
 		encoded in place; on the jvm a short ASCII one is copied in at once;

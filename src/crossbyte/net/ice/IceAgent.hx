@@ -411,7 +411,7 @@ class IceAgent {
 		// finds no literal and looks it up as a name, the same block on this
 		// loop as above, per check; and a relay would be asked to permit
 		// whatever the octets wrapped to.
-		if (!candidate.isIPv6() && StunMessage.ipv4Octets(candidate.address) == null) {
+		if (!candidate.isIpv6() && StunMessage.ipv4Octets(candidate.address) == null) {
 			return false;
 		}
 
@@ -763,7 +763,7 @@ class IceAgent {
 		}
 
 		usernameBytes.position = 0;
-		var username = usernameBytes.readUTFBytes(usernameBytes.length);
+		var username = usernameBytes.readUtfBytes(usernameBytes.length);
 
 		// Addressed to this peer, and signed with this peer's password, which
 		// is what makes it a check for this session rather than a stray

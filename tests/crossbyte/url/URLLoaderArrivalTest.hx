@@ -103,7 +103,7 @@ class URLLoaderArrivalTest extends utest.Test {
 
 	private static function bytesOf(text:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return bytes;
 	}
@@ -146,7 +146,7 @@ private class BodyServer {
 					content.writeBytes(received, end + 4, length);
 				}
 				body = content.toString();
-				peer.writeUTFBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+				peer.writeUtfBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
 				peer.flush();
 			});
 		});

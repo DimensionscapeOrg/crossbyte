@@ -9,23 +9,23 @@ import utest.Assert;
 class ByteArrayIOTest extends utest.Test {
 	public function testWriteUTFDoesNotRequireManualReserve():Void {
 		var output = new ByteArrayOutput();
-		output.writeUTF("héllo");
+		output.writeUtf("héllo");
 
 		var bytes:Bytes = output;
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
 
-		Assert.equals("héllo", input.readUTF());
+		Assert.equals("héllo", input.readUtf());
 		Assert.isTrue(input.eof());
 	}
 
 	public function testWriteVarUTFDoesNotRequireManualReserve():Void {
 		var output = new ByteArrayOutput();
-		output.writeVarUTF("héllo");
+		output.writeVarUtf("héllo");
 
 		var bytes:Bytes = output;
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
 
-		Assert.equals("héllo", input.readVarUTF());
+		Assert.equals("héllo", input.readVarUtf());
 		Assert.isTrue(input.eof());
 	}
 
@@ -164,7 +164,7 @@ class ByteArrayIOTest extends utest.Test {
 
 	/**
 		An object of any size, in either endian. HXSF and JSON text framed as
-		writeUTF frames a string, behind a 16-bit length, would make writeObject
+		writeUtf frames a string, behind a 16-bit length, would make writeObject
 		throw a RangeError for anything past 65,535 bytes of it (a list of a few
 		thousand records).
 	**/
@@ -202,7 +202,7 @@ class ByteArrayIOTest extends utest.Test {
 			Assert.equals(8, out.length);
 			out.position = 0;
 			Assert.equals(4, out.readUnsignedInt(), 'length in $endian');
-			Assert.equals('"ab"', out.readUTFBytes(4));
+			Assert.equals('"ab"', out.readUtfBytes(4));
 		}
 	}
 
@@ -453,7 +453,7 @@ class ByteArrayIOTest extends utest.Test {
 	private static function __framed(text:String):ByteArray {
 		var out = new ByteArray();
 		out.writeUnsignedInt(text.length);
-		out.writeUTFBytes(text);
+		out.writeUtfBytes(text);
 		out.position = 0;
 		return out;
 	}
@@ -480,7 +480,7 @@ class ByteArrayIOTest extends utest.Test {
 		// Something readable is present, so the throw is about the encoding and
 		// not about running out of bytes.
 		var input = new ByteArray();
-		input.writeUTF("not an object");
+		input.writeUtf("not an object");
 		input.position = 0;
 		input.objectEncoding = encoding;
 		Assert.raises(() -> input.readObject());

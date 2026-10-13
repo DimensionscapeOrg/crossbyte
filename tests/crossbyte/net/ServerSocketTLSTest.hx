@@ -25,9 +25,9 @@ class ServerSocketTLSTest extends utest.Test {
 		// TLS configuration is meaningless on a plain listener and must not
 		// silently no-op.
 		Assert.raises(() -> server.setCertificate(null, null), CBError);
-		Assert.raises(() -> server.addSNICertificate((_) -> true, null, null), CBError);
+		Assert.raises(() -> server.addSniCertificate((_) -> true, null, null), CBError);
 		Assert.raises(() -> server.requireClientCertificate(null), CBError);
-		Assert.raises(() -> server.setALPN(["h2"]), CBError);
+		Assert.raises(() -> server.setAlpn(["h2"]), CBError);
 
 		server.close();
 	}
@@ -92,7 +92,7 @@ class ServerSocketTLSTest extends utest.Test {
 		// silently not apply and must be rejected instead.
 		Assert.raises(() -> server.setCertificate(fixture.certificate, fixture.key), CBError);
 		Assert.raises(() -> server.requireClientCertificate(fixture.certificate), CBError);
-		Assert.raises(() -> server.setALPN(["h2"]), CBError);
+		Assert.raises(() -> server.setAlpn(["h2"]), CBError);
 
 		server.close();
 		Assert.isFalse(server.listening);
@@ -112,9 +112,9 @@ class ServerSocketTLSTest extends utest.Test {
 		// Accepted on every target. Where ALPN cannot reach the handshake the
 		// call is a no-op rather than an error, so a server can offer h2
 		// unconditionally and keep serving HTTP/1.1 where it is not available.
-		server.setALPN(["h2", "http/1.1"]);
-		server.setALPN(null);
-		server.setALPN(["h2"]);
+		server.setAlpn(["h2", "http/1.1"]);
+		server.setAlpn(null);
+		server.setAlpn(["h2"]);
 
 		server.bind(0, "127.0.0.1");
 		server.listen();
@@ -242,7 +242,7 @@ class ServerSocketTLSTest extends utest.Test {
 		__againstTheJdk(null, null, function(server, outcome) {
 			Assert.isNull(outcome.error, "the handshake for the claimed name failed: " + outcome.error);
 			Assert.equals(alternateHex, JvmTlsPeer.presented, "the server did not present the certificate for the name asked for");
-		}, function(server) server.addSNICertificate(function(name) return name == "alt.example",
+		}, function(server) server.addSniCertificate(function(name) return name == "alt.example",
 			alternate.certificate, alternate.key), false, alternate.certificate, "alt.example");
 
 		// A name no entry claims falls back to the one installed with
@@ -250,7 +250,7 @@ class ServerSocketTLSTest extends utest.Test {
 		__againstTheJdk(null, null, function(server, outcome) {
 			Assert.isNull(outcome.error, "the handshake for the unclaimed name failed: " + outcome.error);
 			Assert.equals(fallbackHex, JvmTlsPeer.presented, "an unclaimed name did not fall back to the default certificate");
-		}, function(server) server.addSNICertificate(function(name) return name == "alt.example",
+		}, function(server) server.addSniCertificate(function(name) return name == "alt.example",
 			alternate.certificate, alternate.key), false, fallback.certificate, "other.example");
 	}
 
@@ -364,7 +364,7 @@ class ServerSocketTLSTest extends utest.Test {
 		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(e:crossbyte.events.ServerSocketConnectEvent) {
 			accepted = e.socket;
 			if (greeting != null) {
-				accepted.writeUTFBytes(greeting);
+				accepted.writeUtfBytes(greeting);
 				accepted.flush();
 			}
 		});
@@ -456,8 +456,8 @@ class ServerSocketTLSTest extends utest.Test {
 				accepted = peer;
 
 				peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
-					received = peer.readUTFBytes(peer.bytesAvailable);
-					peer.writeUTFBytes("pong");
+					received = peer.readUtfBytes(peer.bytesAvailable);
+					peer.writeUtfBytes("pong");
 					peer.flush();
 				});
 			});
@@ -694,7 +694,7 @@ class ServerSocketTLSTest extends utest.Test {
 		server.setCertificate(fixture.certificate, fixture.key);
 
 		if (serverAlpn != null) {
-			server.setALPN(serverAlpn);
+			server.setAlpn(serverAlpn);
 		}
 
 		if (configure != null) {
@@ -835,7 +835,7 @@ class ServerSocketTLSTest extends utest.Test {
 		var server = new AlpnSocket();
 		server.verifyCert = false;
 		server.setCertificate(fixture.certificate.__native, fixture.key.__native);
-		server.setALPN(["h2", "http/1.1"]);
+		server.setAlpn(["h2", "http/1.1"]);
 
 		// Port 0 and read back what was assigned, the way every other
 		// listener in these tests does it. A fixed port fails outright when
@@ -853,7 +853,7 @@ class ServerSocketTLSTest extends utest.Test {
 				// Deliberately the reverse order: mbedTLS resolves ALPN by
 				// server preference, so agreement on h2 cannot be an echo of
 				// what the client asked for first.
-				c.setALPN(["http/1.1", "h2"]);
+				c.setAlpn(["http/1.1", "h2"]);
 				c.connect(new sys.net.Host("127.0.0.1"), port);
 				sys.thread.Thread.readMessage(true);
 				c.close();
@@ -893,8 +893,8 @@ class ServerSocketTLSTest extends utest.Test {
 			var peer = e.socket;
 			accepted.push(peer);
 			peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
-				peer.readUTFBytes(peer.bytesAvailable);
-				peer.writeUTFBytes("pong");
+				peer.readUtfBytes(peer.bytesAvailable);
+				peer.writeUtfBytes("pong");
 				peer.flush();
 			});
 		});
@@ -981,12 +981,12 @@ class ServerSocketTLSTest extends utest.Test {
 		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(e:crossbyte.events.ServerSocketConnectEvent) {
 			peer = e.socket;
 			peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
-				var text:String = peer.readUTFBytes(peer.bytesAvailable);
+				var text:String = peer.readUtfBytes(peer.bytesAvailable);
 				heard += text;
-				peer.writeUTFBytes(text.toUpperCase());
+				peer.writeUtfBytes(text.toUpperCase());
 				peer.flush();
 			});
-			peer.writeUTFBytes("a");
+			peer.writeUtfBytes("a");
 			peer.flush();
 		});
 		server.setCertificate(fixture.certificate, fixture.key);

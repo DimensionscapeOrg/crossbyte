@@ -227,7 +227,7 @@ class RPCRefusalTest extends utest.Test {
 			answer.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
 			answer.writeInt(RPCOps.opOf("quick(i32):i32"));
 			answer.writeVarUInt(requestId);
-			answer.writeVarUTF(RPCError.BUSY_MESSAGE);
+			answer.writeVarUtf(RPCError.BUSY_MESSAGE);
 			if (code >= 0) {
 				answer.writeVarUInt(code);
 			}

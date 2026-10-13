@@ -412,7 +412,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@param length  The number of bytes to read.
 		@param charSet Accepted for source compatibility and **ignored**. No
 		               character set conversion happens: the bytes are decoded
-		               as UTF-8, exactly as `readUTFBytes` would. Passing
+		               as UTF-8, exactly as `readUtfBytes` would. Passing
 		               `"shift-jis"` does not decode Shift-JIS. Transcode the
 		               bytes yourself if you need another encoding.
 		@return UTF-8 encoded string.
@@ -467,8 +467,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@return UTF-8 encoded string.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUTF():String {
-		return this.readUTF();
+	public inline function readUtf():String {
+		return this.readUtf();
 	}
 
 	/**
@@ -478,8 +478,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@return A string composed of the UTF-8 bytes of the specified length.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUTFBytes(length:UInt):String {
-		return this.readUTFBytes(length);
+	public inline function readUtfBytes(length:UInt):String {
+		return this.readUtfBytes(length);
 	}
 
 	/**
@@ -675,7 +675,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		@param value   The string value to be written.
 		@param charSet Accepted for source compatibility and **ignored**. The
-		               string is encoded as UTF-8, exactly as `writeUTFBytes`
+		               string is encoded as UTF-8, exactly as `writeUtfBytes`
 		               would. Transcode the bytes yourself if you need another
 		               encoding.
 	**/
@@ -690,7 +690,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		An `HXSF` or `JSON` object is framed as the length in bytes of its
 		text, an unsigned 32-bit integer in this byte array's `endian`, then
 		the text as UTF-8, so it can be as large as a ByteArray. (1.0.0-rc.1
-		framed it as `writeUTF` frames a string, behind a 16-bit length, and
+		framed it as `writeUtf` frames a string, behind a 16-bit length, and
 		refused one past 65,535 bytes; the two framings do not read each
 		other.) `AMF0` and `AMF3` are their own framing.
 
@@ -717,18 +717,18 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@param value The string value to be written.
 		@throws RangeError If the length is larger than 65535.
 	**/
-	public inline function writeUTF(value:String):Void {
-		this.writeUTF(value);
+	public inline function writeUtf(value:String):Void {
+		this.writeUtf(value);
 	}
 
 	/**
 		Writes a UTF-8 string to the byte stream. Similar to the
-		`writeUTF()` method, but `writeUTFBytes()` does not
+		`writeUtf()` method, but `writeUtfBytes()` does not
 		prefix the string with a 16-bit length word.
 		@param value The string value to be written.
 	**/
-	public inline function writeUTFBytes(value:String):Void {
-		this.writeUTFBytes(value);
+	public inline function writeUtfBytes(value:String):Void {
+		this.writeUtfBytes(value);
 	}
 
 	/**
@@ -1149,7 +1149,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readMultiByte(length:Int, charSet:String):String {
-		return readUTFBytes(length);
+		return readUtfBytes(length);
 	}
 
 	public function readObject():Dynamic {
@@ -1199,7 +1199,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		The text an HXSF or JSON object was written as: its length in bytes as
 		an unsigned 32-bit integer in this stream's `endian`, then that many
-		bytes of UTF-8. Not framed as `writeUTF` frames a string, behind
+		bytes of UTF-8. Not framed as `writeUtf` frames a string, behind
 		sixteen bits, so an object can pass 65,535 bytes of text.
 
 		An object only part of which is here is an EOFError that leaves
@@ -1218,7 +1218,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = at;
 			throw new EOFError();
 		}
-		return readUTFBytes(count);
+		return readUtfBytes(count);
 	}
 
 	@:noCompletion private function __writeObjectText(text:String):Void {
@@ -1352,7 +1352,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		#end
 	}
 
-	public function readUTF():String {
+	public function readUtf():String {
 		// The text checked before anything moves, so a string cut short
 		// leaves the position at its length, for a reader to try again.
 		var at = position;
@@ -1361,10 +1361,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = at;
 			throw new EOFError();
 		}
-		return readUTFBytes(bytesCount);
+		return readUtfBytes(bytesCount);
 	}
 
-	public function readUTFBytes(length:Int):String {
+	public function readUtfBytes(length:Int):String {
 		// Difference, not sum: see readBytes. `length` is a caller's number
 		// and can be large enough to wrap the addition.
 		if (length < 0 || length > (#if lime_bytes_length_getter l #else this.length #end) - position) {
@@ -1723,7 +1723,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeMultiByte(value:String, charSet:String):Void {
-		writeUTFBytes(value);
+		writeUtfBytes(value);
 	}
 
 	public function writeObject(object:Dynamic):Void {
@@ -1773,9 +1773,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		writeInt(value);
 	}
 
-	public function writeUTF(value:String):Void {
+	public function writeUtf(value:String):Void {
 		// ASCII is its own UTF-8, a byte a character: the length is known and
-		// the text written as writeUTFBytes writes it, with no Bytes made of
+		// the text written as writeUtfBytes writes it, with no Bytes made of
 		// it to count. Each way refuses a string that would end past the
 		// largest ByteArray before its length goes in (see __refusePast).
 		#if cpp
@@ -1785,14 +1785,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (!(untyped __cpp__("{0}.isUTF16Encoded()", value)) && value.length <= 0xFFFF) {
 			__refusePast(2 + value.length);
 			writeShort(value.length);
-			writeUTFBytes(value);
+			writeUtfBytes(value);
 			return;
 		}
 		if (untyped __cpp__("{0}.isUTF16Encoded()", value)) {
 			// Sized, refused or prefixed, then encoded in place: see Utf8.encodeNative.
 			var size:Int = crossbyte._internal.Utf8.sizeOf(value);
 			if (size > 0xFFFF) {
-				throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${size}. Use writeUTFBytes with a length of your own.');
+				throw new RangeError('writeUtf takes at most 65535 bytes, and this string is ${size}. Use writeUtfBytes with a length of your own.');
 			}
 			__refusePast(2 + size);
 			writeShort(size);
@@ -1805,7 +1805,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 		#elseif js
 		// Up to 21,845 units, which cannot pass the prefix's 65535 bytes, as
-		// writeUTFBytes writes them, the length patched in after.
+		// writeUtfBytes writes them, the length patched in after.
 		if (value.length <= 0xFFFF / crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
 			var start:Int = position;
 			// Sized only near the end, where the most it could take does not fit.
@@ -1820,7 +1820,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 		#elseif hl
 		// As on JavaScript: up to 21,845 units, which cannot pass the
-		// prefix's 65535 bytes, written as writeUTFBytes writes them, the
+		// prefix's 65535 bytes, written as writeUtfBytes writes them, the
 		// length put in after. More are sized first, and refused or prefixed.
 		var units:hl.Bytes = @:privateAccess value.bytes;
 		if (value.length <= 0xFFFF / crossbyte._internal.Utf8.MAX_BYTES_PER_UNIT) {
@@ -1835,7 +1835,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		}
 		var size:Int = crossbyte._internal.Utf8.sizeOfUnits(units, value.length, 0);
 		if (size > 0xFFFF) {
-			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${size}. Use writeUTFBytes with a length of your own.');
+			throw new RangeError('writeUtf takes at most 65535 bytes, and this string is ${size}. Use writeUtfBytes with a length of your own.');
 		}
 		__refusePast(2 + size);
 		writeShort(size);
@@ -1848,7 +1848,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// the string would go out behind a length that describes some other
 		// number of bytes, landing every read after it in the wrong place.
 		if (bytes.length > 0xFFFF) {
-			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
+			throw new RangeError('writeUtf takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUtfBytes with a length of your own.');
 		}
 
 		__refusePast(2 + bytes.length);
@@ -1873,7 +1873,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		throw new RangeError("A ByteArray holds at most 2^31 - 1 bytes.");
 	}
 
-	public function writeUTFBytes(value:String):Void {
+	public function writeUtfBytes(value:String):Void {
 		#if cpp
 		// Natively a string of a byte a character is ASCII, which is its own
 		// UTF-8: copied straight in, with no Bytes made of it first.

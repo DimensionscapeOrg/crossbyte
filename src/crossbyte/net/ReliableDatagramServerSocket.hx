@@ -105,7 +105,7 @@ import sys.net.Host;
 
 	// A lookup, and nothing more: this is asked for every CONNECT.
 	server.admit = function(address:String, port:Int, payload:ByteArray):Bool {
-		var said:String = payload.readUTFBytes(payload.length);
+		var said:String = payload.readUtfBytes(payload.length);
 		if (!StringTools.startsWith(said, "resume:")) {
 			return true;
 		}
@@ -115,7 +115,7 @@ import sys.net.Host;
 
 	server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
 		var session:ReliableDatagramSocket = e.socket;
-		var said:String = session.connectPayload.readUTFBytes(session.connectPayload.length);
+		var said:String = session.connectPayload.readUtfBytes(session.connectPayload.length);
 		var player:Player = null;
 		if (StringTools.startsWith(said, "resume:")) {
 			// Spent: a token resumes once.
@@ -138,7 +138,7 @@ import sys.net.Host;
 		player.token = raw.toHex();
 		here.set(player.token, player);
 		var message = new ByteArray();
-		message.writeUTFBytes("token:" + player.token);
+		message.writeUtfBytes("token:" + player.token);
 		session.send(message);
 
 		session.addEventListener(Event.CLOSE, function(_:Event):Void {
@@ -167,7 +167,7 @@ import sys.net.Host;
 	function join():Void {
 		var socket = new ReliableDatagramSocket();
 		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
-			var text:String = e.data.readUTFBytes(e.data.length);
+			var text:String = e.data.readUtfBytes(e.data.length);
 			if (StringTools.startsWith(text, "token:")) {
 				token = text.substr(6);
 			}
@@ -179,7 +179,7 @@ import sys.net.Host;
 			}
 		});
 		var hello = new ByteArray();
-		hello.writeUTFBytes(token != null ? "resume:" + token : "player one");
+		hello.writeUtfBytes(token != null ? "resume:" + token : "player one");
 		socket.connect(host, port, hello);
 	}
 

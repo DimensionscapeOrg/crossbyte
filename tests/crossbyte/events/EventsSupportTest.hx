@@ -27,12 +27,12 @@ class EventsSupportTest extends utest.Test {
 
 	public function testSpecializedEventsCloneRichMetadata():Void {
 		var httpEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, 206, true);
-		httpEvent.responseURL = "https://example.test/final";
+		httpEvent.responseUrl = "https://example.test/final";
 		httpEvent.responseHeaders = [new URLRequestHeader("Content-Type", "text/plain")];
 		var httpClone:HTTPStatusEvent = httpEvent.clone();
 		Assert.equals(206, httpClone.status);
 		Assert.equals(true, httpClone.redirected);
-		Assert.equals("https://example.test/final", httpClone.responseURL);
+		Assert.equals("https://example.test/final", httpClone.responseUrl);
 		Assert.equals(1, httpClone.responseHeaders.length);
 
 		var payload:ByteArray = haxe.io.Bytes.ofString("ping");

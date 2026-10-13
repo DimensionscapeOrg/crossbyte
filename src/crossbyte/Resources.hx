@@ -93,7 +93,7 @@ final class Resources {
 	 *
 	 * @throws SecurityError If the path would leave `resourcesDir`.
 	 */
-	public static function getJSON<T>(relativePath:String):TypedObject<T> {
+	public static function getJson<T>(relativePath:String):TypedObject<T> {
 		var jsonString:String = File.getFileText(__resourcesDir + __require(relativePath));
 		return Json.parse(jsonString);
 	}

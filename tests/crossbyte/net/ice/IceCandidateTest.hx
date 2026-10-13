@@ -344,7 +344,7 @@ class IceCandidateTest extends utest.Test {
 		Assert.equals(2, pairs.length);
 
 		for (pair in pairs) {
-			Assert.equals(pair.local.isIPv6(), pair.remote.isIPv6());
+			Assert.equals(pair.local.isIpv6(), pair.remote.isIpv6());
 		}
 	}
 

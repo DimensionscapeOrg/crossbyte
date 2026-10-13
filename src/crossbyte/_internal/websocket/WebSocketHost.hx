@@ -32,7 +32,7 @@ class WebSocketHost {
 				return null;
 			}
 			var literal:String = rest.substring(1, close);
-			if (!isIPv6(literal)) {
+			if (!isIpv6(literal)) {
 				return null;
 			}
 			// The port is given apart from the host, so nothing but a path
@@ -46,7 +46,7 @@ class WebSocketHost {
 
 		var slash:Int = rest.indexOf("/");
 		var head:String = slash < 0 ? rest : rest.substr(0, slash);
-		if (isIPv6(head)) {
+		if (isIpv6(head)) {
 			return {host: head, path: slash < 0 ? "" : rest.substr(slash + 1)};
 		}
 
@@ -72,7 +72,7 @@ class WebSocketHost {
 		`IPv6.isNumericAddress` is: a malformed literal is the system's to
 		refuse, and it will.
 	**/
-	public static function isIPv6(text:String):Bool {
+	public static function isIpv6(text:String):Bool {
 		if (text == null || text == "") {
 			return false;
 		}

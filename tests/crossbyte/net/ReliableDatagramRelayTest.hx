@@ -629,14 +629,14 @@ class ReliableDatagramRelayTest extends utest.Test {
 
 		var at:Int = bytes.position;
 		bytes.position = 0;
-		var text:String = bytes.readUTFBytes(bytes.length);
+		var text:String = bytes.readUtfBytes(bytes.length);
 		bytes.position = at;
 		return text;
 	}
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

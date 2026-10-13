@@ -813,7 +813,7 @@ class WebSocket extends Socket {
 		@param length  The number of bytes from the byte stream to read.
 		@param charSet Accepted for source compatibility and **ignored**. No
 					   character set conversion happens: the bytes are decoded
-					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   as UTF-8, exactly as `readUtfBytes` would. Passing
 					   "shift-jis" does not decode Shift-JIS. Transcode the
 					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
@@ -915,12 +915,12 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUTF():String {
+	override public function readUtf():String {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		return __input.readUTF();
+		return __input.readUtf();
 	}
 
 	/**
@@ -932,12 +932,12 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUTFBytes(length:Int):String {
+	override public function readUtfBytes(length:Int):String {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		return __input.readUTFBytes(length);
+		return __input.readUtfBytes(length);
 	}
 
 	/**
@@ -1051,7 +1051,7 @@ class WebSocket extends Socket {
 		Writes a string as UTF-8.
 		@param value   The string value to be written.
 		@param charSet Accepted for source compatibility and **ignored**. The
-					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   string is encoded as UTF-8, exactly as `writeUtfBytes`
 					   would. Transcode the bytes yourself if you need another
 					   encoding.
 	**/
@@ -1060,7 +1060,7 @@ class WebSocket extends Socket {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__output.writeUTFBytes(value);
+		__output.writeUtfBytes(value);
 	}
 
 	/**
@@ -1127,12 +1127,12 @@ class WebSocket extends Socket {
 						   is not open.
 		@throws RangeError The length is larger than 65535.
 	**/
-	override public function writeUTF(value:String):Void {
+	override public function writeUtf(value:String):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__output.writeUTF(value);
+		__output.writeUtf(value);
 	}
 
 	/**
@@ -1141,12 +1141,12 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeUTFBytes(value:String):Void {
+	override public function writeUtfBytes(value:String):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__output.writeUTFBytes(value);
+		__output.writeUtfBytes(value);
 	}
 
 	@:noCompletion override private function __cleanSocket():Void {

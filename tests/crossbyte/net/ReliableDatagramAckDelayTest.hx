@@ -449,7 +449,7 @@ class ReliableDatagramAckDelayTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

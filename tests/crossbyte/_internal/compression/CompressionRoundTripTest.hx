@@ -41,7 +41,7 @@ class CompressionRoundTripTest extends utest.Test {
 		var sample = new ByteArray();
 
 		for (i in 0...500) {
-			sample.writeUTFBytes("compress me ");
+			sample.writeUtfBytes("compress me ");
 		}
 
 		var original:Int = sample.length;
@@ -108,7 +108,7 @@ class CompressionRoundTripTest extends utest.Test {
 	public function testLargePayloadRoundTripsAndCompresses():Void {
 		var text = new ByteArray();
 		while (text.length < 70000) {
-			text.writeUTFBytes("CrossByte serves this body over HTTP. ");
+			text.writeUtfBytes("CrossByte serves this body over HTTP. ");
 		}
 
 		var original:Int = text.length;
@@ -162,7 +162,7 @@ class CompressionRoundTripTest extends utest.Test {
 		var data = new ByteArray();
 
 		for (i in 0...Std.int(count / 12)) {
-			data.writeUTFBytes("compress me ");
+			data.writeUtfBytes("compress me ");
 		}
 
 		data.compress(algorithm);

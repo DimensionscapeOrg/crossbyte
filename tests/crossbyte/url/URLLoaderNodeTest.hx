@@ -205,9 +205,9 @@ class URLLoaderNodeTest extends utest.Test {
 	**/
 	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
 		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
-		body.writeUTFBytes("a secret, written first and then cleared away");
+		body.writeUtfBytes("a secret, written first and then cleared away");
 		body.clear();
-		body.writeUTFBytes("hello");
+		body.writeUtfBytes("hello");
 		serveWith((request, received, response) -> {
 			response.writeHead(200, {"Content-Type": "text/plain"});
 			response.end(Std.string(Reflect.field(request.headers, "content-length")) + " " + received.toString("hex"));

@@ -846,7 +846,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * (specified by the bytesAvailable property).
 	 */
 	public function readMultiByte(length:Int, charSet:String):String {
-		return readUTFBytes(length);
+		return readUtfBytes(length);
 	}
 
 	/**
@@ -953,7 +953,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 					throw new EOFError("The object runs past what has been read.");
 				}
 
-				return __parseObject(buffer.readUTFBytes(length));
+				return __parseObject(buffer.readUtfBytes(length));
 
 			default:
 				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
@@ -1113,14 +1113,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		* @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 		* (specified by the bytesAvailable property).
 	 */
-	public function readUTF():String {
+	public function readUtf():String {
 		__checkIfReadable();
 
 		if (__isAsync) {
 			var buffer:ByteArray = __lockReadBuffer();
 			var start:Int = buffer.position;
 			try {
-				var value:String = buffer.readUTF();
+				var value:String = buffer.readUtf();
 				__async.mutex.release();
 				return value;
 			} catch (e:Dynamic) {
@@ -1154,14 +1154,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readUTFBytes(length:Int):String {
+	public function readUtfBytes(length:Int):String {
 		__checkIfReadable();
 
 		if (__isAsync) {
 			var buffer:ByteArray = __lockReadBuffer();
 			var start:Int = buffer.position;
 			try {
-				var value:String = buffer.readUTFBytes(length);
+				var value:String = buffer.readUtfBytes(length);
 				__async.mutex.release();
 				return value;
 			} catch (e:Dynamic) {
@@ -1427,7 +1427,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
 	public function writeMultiByte(value:String, charSet:String):Void {
-		writeUTFBytes(value);
+		writeUtfBytes(value);
 	}
 
 	/**
@@ -1560,13 +1560,13 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeUTF(value:String):Void {
+	public function writeUtf(value:String):Void {
 		__checkIfWritable();
 
 		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(value);
 
 		if (bytes.length > 0xFFFF) {
-			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
+			throw new RangeError('writeUtf takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUtfBytes with a length of your own.');
 		}
 
 		if (__isAsync) {
@@ -1586,7 +1586,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	/**
-	 * Writes a UTF-8 string. Similar to writeUTF(), but does not prefix the string with a 16-bit length
+	 * Writes a UTF-8 string. Similar to writeUtf(), but does not prefix the string with a 16-bit length
 	 * integer.
 	 *
 	 * @param		value The string value to be written.
@@ -1597,7 +1597,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeUTFBytes(value:String):Void {
+	public function writeUtfBytes(value:String):Void {
 		__checkIfWritable();
 
 		var bytes:Bytes = crossbyte._internal.Utf8.bytesOf(value);

@@ -152,7 +152,7 @@ class WebSocketArrivalTest extends utest.Test {
 				client.sendBinary(bytesOf("three"));
 
 				NetPump.until(() -> session.bytesAvailable >= 13, 5.0, function(_) {
-					Assert.equals("one two three", session.readUTFBytes(session.bytesAvailable), "the stream lost what arrived");
+					Assert.equals("one two three", session.readUtfBytes(session.bytesAvailable), "the stream lost what arrived");
 					var total:Int = 0;
 					for (count in loaded) {
 						total += count;
@@ -204,7 +204,7 @@ class WebSocketArrivalTest extends utest.Test {
 
 				NetPump.until(() -> calls >= 2 || (kept != null && kept.bytesAvailable >= 19), 5.0, function(_) {
 					Require.notNull(kept, "onData was never called");
-					Assert.equals("kept and read later", kept.readUTFBytes(19), "the input kept past its call lost what arrived");
+					Assert.equals("kept and read later", kept.readUtfBytes(19), "the input kept past its call lost what arrived");
 					connection.readEnabled = false;
 					finish([client]);
 				});
@@ -394,11 +394,11 @@ class WebSocketArrivalTest extends utest.Test {
 						crossbyte.sys.System.sleep(0.001);
 					}
 					m.data.position = 0;
-					outerAfter = m.data.readUTFBytes(m.data.length);
+					outerAfter = m.data.readUtfBytes(m.data.length);
 				} else {
 					nestedEvent = m;
 					nestedData = m.data;
-					nested = m.data.readUTFBytes(m.data.length);
+					nested = m.data.readUtfBytes(m.data.length);
 				}
 				depth--;
 			});
@@ -455,7 +455,7 @@ class WebSocketArrivalTest extends utest.Test {
 				message.position = 3;
 				throw "a listener's own failure";
 			}
-			after.push(message.readUTFBytes(message.length));
+			after.push(message.readUtfBytes(message.length));
 		};
 		append(parser, frame(0x02, "first, which the listener throws on"));
 		var thrown:Dynamic = null;
@@ -571,7 +571,7 @@ class WebSocketArrivalTest extends utest.Test {
 
 	private static function bytesOf(text:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return bytes;
 	}

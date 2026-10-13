@@ -243,27 +243,27 @@ class UncaughtErrorTest extends utest.Test {
 				var peer = event.socket;
 				peers.push(peer);
 				peer.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-					var text = peer.readUTFBytes(peer.bytesAvailable);
+					var text = peer.readUtfBytes(peer.bytesAvailable);
 					if (text == "boom") {
 						throw "handler bug";
 					}
-					peer.writeUTFBytes("echo:" + text);
+					peer.writeUtfBytes("echo:" + text);
 					peer.flush();
 				});
 			});
 			server.listen();
 
 			bad.addEventListener(Event.CLOSE, _ -> badClosed = true);
-			good.addEventListener(ProgressEvent.SOCKET_DATA, _ -> goodReply += good.readUTFBytes(good.bytesAvailable));
+			good.addEventListener(ProgressEvent.SOCKET_DATA, _ -> goodReply += good.readUtfBytes(good.bytesAvailable));
 			bad.connect("127.0.0.1", server.localPort);
 			good.connect("127.0.0.1", server.localPort);
 			Assert.isTrue(__pumpUntil(() -> bad.connected && good.connected && peers.length == 2, 5), "the two clients never connected");
 
-			bad.writeUTFBytes("boom");
+			bad.writeUtfBytes("boom");
 			bad.flush();
 			Assert.isTrue(__pumpUntil(() -> badClosed, 5), "the connection whose handler threw was left open");
 
-			good.writeUTFBytes("hello");
+			good.writeUtfBytes("hello");
 			good.flush();
 			Assert.isTrue(__pumpUntil(() -> goodReply == "echo:hello", 5), "the other connection stopped being served: '" + goodReply + "'");
 

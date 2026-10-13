@@ -488,7 +488,7 @@ class WebSocketDeflateTest extends utest.Test {
 			stream.writeByte(octet);
 		}
 		stream.uncompress(crossbyte.utils.CompressionAlgorithm.DEFLATE);
-		return stream.readUTFBytes(stream.length);
+		return stream.readUtfBytes(stream.length);
 	}
 
 	private static function __hex(text:String):Bytes {

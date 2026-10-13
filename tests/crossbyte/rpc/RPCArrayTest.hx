@@ -258,7 +258,7 @@ class RPCArrayTest extends utest.Test {
 				input.readInt();
 				if ((flags & RPCWire.FLAG_ERROR) != 0) {
 					final id:Int = input.readVarUInt();
-					answers.push(id + ": " + input.readVarUTF());
+					answers.push(id + ": " + input.readVarUtf());
 				}
 				input.position = end;
 			}

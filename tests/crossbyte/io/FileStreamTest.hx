@@ -29,7 +29,7 @@ class FileStreamTest extends utest.Test {
 
 			Assert.equals(4, target.length);
 			target.position = 0;
-			Assert.equals("cdef", target.readUTFBytes(target.length));
+			Assert.equals("cdef", target.readUtfBytes(target.length));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -54,7 +54,7 @@ class FileStreamTest extends utest.Test {
 			output.close();
 
 			input.open(file, FileMode.READ);
-			Assert.equals("bcd", input.readUTFBytes(3));
+			Assert.equals("bcd", input.readUtfBytes(3));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -75,7 +75,7 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("abcdef");
+			output.writeUtfBytes("abcdef");
 			output.close();
 
 			input.open(file, FileMode.READ);
@@ -83,7 +83,7 @@ class FileStreamTest extends utest.Test {
 
 			Assert.equals(6, target.length);
 			target.position = 0;
-			Assert.equals("__abc!", target.readUTFBytes(target.length));
+			Assert.equals("__abc!", target.readUtfBytes(target.length));
 			Assert.equals(3, input.position);
 			Assert.equals(3, input.bytesAvailable);
 		} catch (e:Dynamic) {
@@ -104,7 +104,7 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("abcdef");
+			output.writeUtfBytes("abcdef");
 			output.position = 4;
 			output.truncate();
 			output.close();
@@ -112,7 +112,7 @@ class FileStreamTest extends utest.Test {
 			Assert.equals(4, file.size);
 
 			input.open(file, FileMode.READ);
-			Assert.equals("abcd", input.readUTFBytes(4));
+			Assert.equals("abcd", input.readUtfBytes(4));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -132,11 +132,11 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("abcdef");
+			output.writeUtfBytes("abcdef");
 			output.close();
 
 			update.open(file, FileMode.UPDATE);
-			Assert.equals("abc", update.readUTFBytes(3));
+			Assert.equals("abc", update.readUtfBytes(3));
 			Assert.equals(3, update.position);
 			Assert.equals(3, update.bytesAvailable);
 		} catch (e:Dynamic) {
@@ -158,18 +158,18 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("abcdef");
+			output.writeUtfBytes("abcdef");
 			output.close();
 
 			update.open(file, FileMode.UPDATE);
 			update.position = 2;
-			update.writeUTFBytes("XY");
+			update.writeUtfBytes("XY");
 			update.position = 0;
-			Assert.equals("abXYef", update.readUTFBytes(6));
+			Assert.equals("abXYef", update.readUtfBytes(6));
 			update.close();
 
 			input.open(file, FileMode.READ);
-			Assert.equals("abXYef", input.readUTFBytes(6));
+			Assert.equals("abXYef", input.readUtfBytes(6));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -191,17 +191,17 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("abc");
+			output.writeUtfBytes("abc");
 			output.close();
 
 			append.open(file, FileMode.APPEND);
 			Assert.equals(3, append.position);
 			append.position = 0;
-			append.writeUTFBytes("XY");
+			append.writeUtfBytes("XY");
 			append.close();
 
 			input.open(file, FileMode.READ);
-			Assert.equals("abcXY", input.readUTFBytes(5));
+			Assert.equals("abcXY", input.readUtfBytes(5));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -231,7 +231,7 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTFBytes("async-read");
+			output.writeUtfBytes("async-read");
 			output.close();
 
 			input.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> {
@@ -249,7 +249,7 @@ class FileStreamTest extends utest.Test {
 			Assert.equals(file.size, progressLoaded);
 			Assert.equals(file.size, progressTotal);
 			Assert.equals(file.size, input.bytesAvailable);
-			Assert.equals("async-read", input.readUTFBytes(input.bytesAvailable));
+			Assert.equals("async-read", input.readUtfBytes(input.bytesAvailable));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -288,7 +288,7 @@ class FileStreamTest extends utest.Test {
 			session.mutex.acquire();
 			session.written += earlier;
 			session.mutex.release();
-			stream.writeUTFBytes("async-write");
+			stream.writeUtfBytes("async-write");
 			stream.close();
 
 			pumpUntil(() -> closeSeen, 2.0);
@@ -327,7 +327,7 @@ class FileStreamTest extends utest.Test {
 			});
 			stream.addEventListener(Event.CLOSE, (_:Event) -> closeSeen = true);
 			stream.openAsync(file, FileMode.WRITE);
-			stream.writeUTFBytes("async-write");
+			stream.writeUtfBytes("async-write");
 			stream.close();
 
 			pumpUntil(() -> closeSeen, 2.0);
@@ -338,7 +338,7 @@ class FileStreamTest extends utest.Test {
 			Assert.equals(11.0, lastBytesTotal);
 
 			input.open(file, FileMode.READ);
-			Assert.equals("async-write", input.readUTFBytes(11));
+			Assert.equals("async-write", input.readUtfBytes(11));
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -372,21 +372,21 @@ class FileStreamTest extends utest.Test {
 			stream.addEventListener(Event.CLOSE, (_:Event) -> closeSeen = true);
 			stream.openAsync(file, FileMode.WRITE);
 			var buffer = new ByteArray();
-			buffer.writeUTFBytes("first write;");
+			buffer.writeUtfBytes("first write;");
 			stream.writeBytes(buffer);
 			buffer.clear();
-			buffer.writeUTFBytes("second write.");
+			buffer.writeUtfBytes("second write.");
 			stream.writeBytes(buffer);
 			// Reused once more, after the last write.
 			buffer.position = 0;
-			buffer.writeUTFBytes("CHANGED AFTERWARDS");
+			buffer.writeUtfBytes("CHANGED AFTERWARDS");
 			stream.close();
 
 			pumpUntil(() -> closeSeen, 2.0);
 			Assert.isTrue(closeSeen);
 
 			input.open(file, FileMode.READ);
-			Assert.equals("first write;second write.", input.readUTFBytes(input.bytesAvailable), "an async write went out as the bytes became after writeBytes returned");
+			Assert.equals("first write;second write.", input.readUtfBytes(input.bytesAvailable), "an async write went out as the bytes became after writeBytes returned");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -406,11 +406,11 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTF(value);
+			output.writeUtf(value);
 			output.close();
 
 			input.open(file, FileMode.READ);
-			Assert.equals(value, input.readUTF());
+			Assert.equals(value, input.readUtf());
 			Assert.equals(0, input.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -583,10 +583,10 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			output.open(file, FileMode.WRITE);
-			output.writeUTF(mid);
+			output.writeUtf(mid);
 
 			try {
-				output.writeUTF(StringTools.lpad("", "x", 70000));
+				output.writeUtf(StringTools.lpad("", "x", 70000));
 			} catch (e:Dynamic) {
 				thrown = e;
 			}
@@ -597,7 +597,7 @@ class FileStreamTest extends utest.Test {
 			Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.RangeError), "70000 bytes did not raise RangeError: " + Std.string(thrown));
 
 			input.open(file, FileMode.READ);
-			Assert.equals(mid, input.readUTF());
+			Assert.equals(mid, input.readUtf());
 			// Nothing was written for the refused string, so the stream is
 			// still in step.
 			Assert.equals(42, input.readInt());
@@ -816,10 +816,10 @@ class FileStreamTest extends utest.Test {
 			stream.truncate();
 			Assert.equals(4, stream.position);
 			Assert.equals(4, sys.FileSystem.stat(file.nativePath).size);
-			stream.writeUTFBytes("XY");
+			stream.writeUtfBytes("XY");
 			Assert.equals(6, stream.position);
 			stream.position = 0;
-			Assert.equals("0123XY", stream.readUTFBytes(6));
+			Assert.equals("0123XY", stream.readUtfBytes(6));
 			Assert.equals(0, stream.bytesAvailable);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -839,10 +839,10 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			stream.openAsync(file, FileMode.WRITE);
-			stream.writeUTFBytes("0123456789");
+			stream.writeUtfBytes("0123456789");
 			stream.position = 4;
 			stream.truncate();
-			stream.writeUTFBytes("XY");
+			stream.writeUtfBytes("XY");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -865,11 +865,11 @@ class FileStreamTest extends utest.Test {
 		try {
 			stream.open(file, FileMode.READ);
 			__openAndLoad(stream, file, FileMode.READ, true);
-			Assert.equals("abc", stream.readUTFBytes(3));
+			Assert.equals("abc", stream.readUtfBytes(3));
 			__openAndLoad(stream, file, FileMode.READ, true);
-			Assert.equals("abc", stream.readUTFBytes(3));
+			Assert.equals("abc", stream.readUtfBytes(3));
 			stream.open(file, FileMode.READ);
-			Assert.equals("abc", stream.readUTFBytes(3));
+			Assert.equals("abc", stream.readUtfBytes(3));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -892,9 +892,9 @@ class FileStreamTest extends utest.Test {
 
 		try {
 			stream.openAsync(first, FileMode.WRITE);
-			stream.writeUTFBytes("first");
+			stream.writeUtfBytes("first");
 			stream.openAsync(second, FileMode.WRITE);
-			stream.writeUTFBytes("second");
+			stream.writeUtfBytes("second");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -955,12 +955,12 @@ class FileStreamTest extends utest.Test {
 			Assert.isTrue(complete);
 			Assert.isTrue(progress > 0);
 			Assert.equals(11, stream.bytesAvailable);
-			Assert.equals("hello", stream.readUTFBytes(5));
-			stream.writeUTFBytes(", big");
+			Assert.equals("hello", stream.readUtfBytes(5));
+			stream.writeUtfBytes(", big");
 			Assert.equals(10, stream.position);
-			Assert.equals("d", stream.readUTFBytes(1));
+			Assert.equals("d", stream.readUtfBytes(1));
 			stream.position = 0;
-			Assert.equals("hello, bigd", stream.readUTFBytes(11));
+			Assert.equals("hello, bigd", stream.readUtfBytes(11));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -982,7 +982,7 @@ class FileStreamTest extends utest.Test {
 			stream.openAsync(file, FileMode.WRITE);
 			// The handle taken away underneath, so the write cannot land.
 			@:privateAccess stream.__async.releaseHandles();
-			stream.writeUTFBytes("lost");
+			stream.writeUtfBytes("lost");
 			__pumpUntil(() -> error != null, 5.0);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));

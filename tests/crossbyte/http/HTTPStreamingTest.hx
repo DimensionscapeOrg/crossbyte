@@ -134,7 +134,7 @@ class HTTPStreamingTest extends utest.Test {
 
 		var request:String = "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n";
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(request);
+			client.writeUtfBytes(request);
 			client.flush();
 		});
 
@@ -172,7 +172,7 @@ class HTTPStreamingTest extends utest.Test {
 					// The second request goes out only now, which is the point:
 					// it has to reach a connection the first streamed response
 					// left usable.
-					client.writeUTFBytes(request);
+					client.writeUtfBytes(request);
 					client.flush();
 
 					var secondEnd:Int = -1;
@@ -217,7 +217,7 @@ class HTTPStreamingTest extends utest.Test {
 		var received = new ByteArray();
 		var closeSeen = false;
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.writeUtfBytes("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
@@ -281,7 +281,7 @@ class HTTPStreamingTest extends utest.Test {
 		var received = new ByteArray();
 		var closeSeen = false;
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /bytes HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.writeUtfBytes("GET /bytes HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
@@ -691,7 +691,7 @@ class HTTPStreamingTest extends utest.Test {
 		var received = new ByteArray();
 		var closeSeen = false;
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(requestText);
+			client.writeUtfBytes(requestText);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {

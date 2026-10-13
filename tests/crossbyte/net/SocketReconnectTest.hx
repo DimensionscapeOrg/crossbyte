@@ -48,10 +48,10 @@ class SocketReconnectTest extends utest.Test {
 				});
 				client.addEventListener(Event.CONNECT, function(_) {
 					connects++;
-					client.writeUTFBytes("ping");
+					client.writeUtfBytes("ping");
 					client.flush();
 				});
-				client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> answer += client.readUTFBytes(client.bytesAvailable));
+				client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> answer += client.readUtfBytes(client.bytesAvailable));
 				client.connect("127.0.0.1", refused);
 
 				NetPump.until(() -> answer.length >= 4 || failures > 1, 15.0, function(_) {
@@ -134,11 +134,11 @@ class SocketReconnectTest extends utest.Test {
 			var answer:String = "";
 			client.addEventListener(Event.CONNECT, function(_) {
 				connects++;
-				client.writeUTFBytes("ping");
+				client.writeUtfBytes("ping");
 				client.flush();
 			});
 			client.addEventListener(Event.CLOSE, _ -> closes++);
-			client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> answer += client.readUTFBytes(client.bytesAvailable));
+			client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> answer += client.readUtfBytes(client.bytesAvailable));
 
 			// The first given up at once, for the second.
 			client.connect("127.0.0.1", first.localPort);
@@ -175,9 +175,9 @@ class SocketReconnectTest extends utest.Test {
 			var peer:Socket = e.socket;
 			peers.push(peer);
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				var text:String = peer.readUTFBytes(peer.bytesAvailable);
+				var text:String = peer.readUtfBytes(peer.bytesAvailable);
 				heard.push(text);
-				peer.writeUTFBytes(text.toUpperCase());
+				peer.writeUtfBytes(text.toUpperCase());
 				peer.flush();
 			});
 		});

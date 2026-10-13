@@ -44,11 +44,11 @@ class WebSocketEchoSample extends HostApplication {
 
 		var client = new WebSocket();
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(MESSAGE);
+			client.writeUtfBytes(MESSAGE);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			echoed = client.readUTFBytes(client.bytesAvailable);
+			echoed = client.readUtfBytes(client.bytesAvailable);
 			Sys.println('echo: $echoed');
 			done = true;
 		});

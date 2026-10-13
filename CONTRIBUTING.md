@@ -28,6 +28,13 @@
 Where a well-known stack (TCP, QUIC, DTLS, browsers, major libraries) has settled a design question, follow it and
 name it in the docs. A design that measurably does better is welcome; show the measurement against that baseline.
 
+## Naming
+
+In a member's name an acronym after the first word is a word, only its first letter a capital (`requestId`,
+`writeUtfBytes`, `setAlpn`); types keep acronyms in capitals (`HTTPServer`, `URLRequest`), as do a type named inside a
+member's name (`fromINetConnection`) and a name another system defines (`toJSON`, which JavaScript calls; MongoDB's
+`maxTimeMS`).
+
 ## Continuous integration
 
 CI covers:

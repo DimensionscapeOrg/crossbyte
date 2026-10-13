@@ -138,7 +138,7 @@ class HTTPServerDrainTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("drain fixture");
+		fixture.writeUtfBytes("drain fixture");
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -148,12 +148,12 @@ class HTTPServerDrainTest extends utest.Test {
 		var closeSeen = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.writeUtfBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			}
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
@@ -198,7 +198,7 @@ class HTTPServerDrainTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("drain fixture");
+		fixture.writeUtfBytes("drain fixture");
 		indexFile.save(fixture);
 
 		// The middleware parks the request mid-dispatch so the drain is
@@ -215,12 +215,12 @@ class HTTPServerDrainTest extends utest.Test {
 		var closeSeen = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.writeUtfBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			}
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
@@ -269,7 +269,7 @@ class HTTPServerDrainTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("drain fixture");
+		fixture.writeUtfBytes("drain fixture");
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);

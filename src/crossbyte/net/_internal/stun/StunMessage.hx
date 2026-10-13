@@ -493,7 +493,7 @@ class StunMessage {
 		}
 
 		value.position = 0;
-		return value.length > 0 ? value.readUTFBytes(value.length) : "";
+		return value.length > 0 ? value.readUtfBytes(value.length) : "";
 	}
 
 	/**
@@ -525,7 +525,7 @@ class StunMessage {
 			attribute.value.readUnsignedShort();
 			var codeClass:Int = attribute.value.readUnsignedByte() & 0x07;
 			var codeNumber:Int = attribute.value.readUnsignedByte();
-			var reason:String = attribute.value.length > 4 ? attribute.value.readUTFBytes(attribute.value.length - 4) : "";
+			var reason:String = attribute.value.length > 4 ? attribute.value.readUtfBytes(attribute.value.length - 4) : "";
 
 			return (codeClass * 100 + codeNumber) + (reason != "" ? " " + reason : "");
 		}
@@ -828,7 +828,7 @@ class StunMessage {
 	**/
 	public static function username(value:String):StunAttribute {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return new StunAttribute(ATTR_USERNAME, bytes);
 	}
@@ -894,7 +894,7 @@ class StunMessage {
 		bytes.writeByte(code % 100);
 
 		if (reason != null && reason.length > 0) {
-			bytes.writeUTFBytes(reason);
+			bytes.writeUtfBytes(reason);
 		}
 
 		bytes.position = 0;
@@ -912,7 +912,7 @@ class StunMessage {
 			}
 
 			attribute.value.position = 4;
-			return attribute.value.length > 4 ? attribute.value.readUTFBytes(attribute.value.length - 4) : "";
+			return attribute.value.length > 4 ? attribute.value.readUtfBytes(attribute.value.length - 4) : "";
 		}
 
 		return null;
@@ -1055,7 +1055,7 @@ class StunMessage {
 		var bytes = new ByteArray();
 
 		if (value != null) {
-			bytes.writeUTFBytes(value);
+			bytes.writeUtfBytes(value);
 		}
 
 		bytes.position = 0;
@@ -1201,7 +1201,7 @@ class StunMessage {
 	/** `SOFTWARE`, which is advisory and never covered by anything. **/
 	public static function software(name:String):StunAttribute {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(name);
+		bytes.writeUtfBytes(name);
 		bytes.position = 0;
 		return new StunAttribute(ATTR_SOFTWARE, bytes);
 	}

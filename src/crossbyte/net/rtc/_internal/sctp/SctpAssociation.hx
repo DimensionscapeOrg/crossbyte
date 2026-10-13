@@ -667,7 +667,7 @@ class SctpAssociation {
 
 		if (reason != null && reason.length > 0) {
 			var text = new ByteArray();
-			text.writeUTFBytes(reason);
+			text.writeUtfBytes(reason);
 
 			// A reason is for a log line, and the packet has to fit a datagram.
 			var length:Int = text.length > MAX_ABORT_REASON ? MAX_ABORT_REASON : text.length;

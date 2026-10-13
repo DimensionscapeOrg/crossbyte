@@ -169,7 +169,7 @@ class RPCArgs {
 		final input:ByteArrayInput = __input;
 		final back:Int = input.position;
 		input.position = __at[index] + 1;
-		final text:String = input.readVarUTF();
+		final text:String = input.readVarUtf();
 		input.position = back;
 		return text;
 	}

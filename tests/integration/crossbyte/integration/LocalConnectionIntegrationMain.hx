@@ -19,7 +19,7 @@ class LocalConnectionIntegrationMain {
 		var state = new ReceiverState();
 		receiver.onData = input -> {
 			state.calls++;
-			state.lastMessage = input.readUTF();
+			state.lastMessage = input.readUtf();
 			state.lastValue = input.readInt();
 		};
 		receiver.readEnabled = true;
@@ -123,7 +123,7 @@ class LocalConnectionIntegrationMain {
 
 	private static function message(text:String, value:Int):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTF(text);
+		bytes.writeUtf(text);
 		bytes.writeInt(value);
 		bytes.position = 0;
 		return bytes;

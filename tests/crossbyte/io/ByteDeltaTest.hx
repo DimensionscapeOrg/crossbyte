@@ -265,9 +265,9 @@ class ByteDeltaTest extends utest.Test {
 	**/
 	public function testADeltaCutShortLeavesThePositionAlone():Void {
 		var baseline = new ByteArray();
-		baseline.writeUTFBytes("hello there");
+		baseline.writeUtfBytes("hello there");
 		var changed = new ByteArray();
-		changed.writeUTFBytes("hello world");
+		changed.writeUtfBytes("hello world");
 		var delta = ByteDelta.encode(changed, baseline);
 		var cut = new ByteArray();
 		cut.writeBytes(delta, 0, delta.length - 2);

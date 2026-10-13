@@ -166,15 +166,15 @@ class ReliableDatagramArrivalTest extends utest.Test {
 			kept = e;
 		});
 
-		link.sender.writeUTFBytes("held ");
+		link.sender.writeUtfBytes("held ");
 		link.sender.flush();
-		link.sender.writeUTFBytes("in order");
+		link.sender.writeUtfBytes("in order");
 		link.sender.flush();
 		var sent = link.sender.take();
 		link.deliver([sent[1], sent[0]]);
 
 		Assert.same([5, 8], loaded);
-		Assert.equals("held in order", link.receiver.readUTFBytes(link.receiver.bytesAvailable));
+		Assert.equals("held in order", link.receiver.readUtfBytes(link.receiver.bytesAvailable));
 		#if crossbyte_check_events
 		Assert.isTrue(kept.bytesLoaded == (cast -1 : UInt), "a SOCKET_DATA event kept past its call still said what arrived");
 		#end
@@ -235,7 +235,7 @@ class ReliableDatagramArrivalTest extends utest.Test {
 			server.listen();
 			// Read during the call, which is when the payload is valid.
 			server.admit = (address, port, payload) -> {
-				admitted.push(payload.readUTFBytes(payload.length));
+				admitted.push(payload.readUtfBytes(payload.length));
 				return true;
 			};
 
@@ -537,7 +537,7 @@ class ReliableDatagramArrivalTest extends utest.Test {
 			var orders:Array<String> = [];
 			server.admit = (address, port, payload) -> {
 				orders.push((payload.endian == Endian.BIG_ENDIAN ? "big" : "little") + "/" + payload.objectEncoding + "/" + payload.position);
-				payloads.push(payload.readUTFBytes(payload.length));
+				payloads.push(payload.readUtfBytes(payload.length));
 				// What a hook might leave behind on the payload it was handed.
 				payload.endian = payload.endian == Endian.BIG_ENDIAN ? Endian.LITTLE_ENDIAN : Endian.BIG_ENDIAN;
 				payload.objectEncoding = ObjectEncoding.JSON;
@@ -583,7 +583,7 @@ class ReliableDatagramArrivalTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

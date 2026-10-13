@@ -119,7 +119,7 @@ class DatagramSocketTest extends utest.Test {
 			got.set(name, []);
 			socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
 				e.data.position = 0;
-				got.get(name).push(e.data.readUTFBytes(e.data.length));
+				got.get(name).push(e.data.readUtfBytes(e.data.length));
 			});
 			socket.receive();
 			sockets.push(socket);
@@ -223,7 +223,7 @@ class DatagramSocketTest extends utest.Test {
 			receiver.bind(0, "127.0.0.1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
 				e.data.position = 0;
-				seen.push(e.data.readUTFBytes(e.data.length));
+				seen.push(e.data.readUtfBytes(e.data.length));
 			});
 			receiver.receive();
 			sender.bind(0, "127.0.0.1");
@@ -394,14 +394,14 @@ class DatagramSocketTest extends utest.Test {
 			listener.bind(0, "127.0.0.1");
 			listener.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
 				e.data.position = 0;
-				received = e.data.readUTFBytes(e.data.length);
+				received = e.data.readUtfBytes(e.data.length);
 			});
 			listener.receive();
 
 			sender.bind(0, "127.0.0.1");
 
 			var doomed = new ByteArray();
-			doomed.writeUTFBytes("nowhere");
+			doomed.writeUtfBytes("nowhere");
 
 			var refused = false;
 
@@ -418,7 +418,7 @@ class DatagramSocketTest extends utest.Test {
 			Assert.isTrue(listener.receiving, "one failed send stopped the socket receiving");
 
 			var hello = new ByteArray();
-			hello.writeUTFBytes("still here");
+			hello.writeUtfBytes("still here");
 			sender.send(hello, 0, hello.length, "127.0.0.1", listener.localPort);
 
 			pumpUntil(() -> received != null, 2.0);
@@ -453,7 +453,7 @@ class DatagramSocketTest extends utest.Test {
 
 		listener.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
 			e.data.position = 0;
-			received = e.data.readUTFBytes(e.data.length);
+			received = e.data.readUtfBytes(e.data.length);
 		});
 
 		try {
@@ -465,7 +465,7 @@ class DatagramSocketTest extends utest.Test {
 
 			// Port 1 on loopback: reliably nothing, reliably an ICMP answer.
 			var knock = new ByteArray();
-			knock.writeUTFBytes("nobody home");
+			knock.writeUtfBytes("nobody home");
 			sender.send(knock, 0, knock.length, "127.0.0.1", 1);
 
 			// Let the ICMP find its way back before the real traffic starts.
@@ -481,14 +481,14 @@ class DatagramSocketTest extends utest.Test {
 			});
 
 			var hello = new ByteArray();
-			hello.writeUTFBytes("still here");
+			hello.writeUtfBytes("still here");
 			sender.send(hello, 0, hello.length, "127.0.0.1", listener.localPort);
 
 			pumpUntil(() -> received != null, 2.0);
 			Assert.equals("still here", received, "the sender could not deliver after touching a closed port");
 
 			var back = new ByteArray();
-			back.writeUTFBytes("so am i");
+			back.writeUtfBytes("so am i");
 			listener.send(back, 0, back.length, "127.0.0.1", sender.localPort);
 
 			pumpUntil(() -> answered, 2.0);
@@ -666,7 +666,7 @@ class DatagramSocketTest extends utest.Test {
 			receiver.bind(0, "127.0.0.1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
 				event.data.position = 0;
-				payload = event.data.readUTFBytes(event.data.length);
+				payload = event.data.readUtfBytes(event.data.length);
 				srcPort = event.srcPort;
 				dstPort = event.dstPort;
 			});
@@ -701,7 +701,7 @@ class DatagramSocketTest extends utest.Test {
 			receiver.bind(0, "127.0.0.1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
 				event.data.position = 0;
-				payload = event.data.readUTFBytes(event.data.length);
+				payload = event.data.readUtfBytes(event.data.length);
 			});
 			receiver.receive();
 
@@ -743,7 +743,7 @@ class DatagramSocketTest extends utest.Test {
 			var srcAddress = "";
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
 				event.data.position = 0;
-				payload = event.data.readUTFBytes(event.data.length);
+				payload = event.data.readUtfBytes(event.data.length);
 				srcAddress = event.srcAddress;
 			});
 			receiver.receive();
@@ -786,7 +786,7 @@ class DatagramSocketTest extends utest.Test {
 			receiver.bind(0, "::1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
 				event.data.position = 0;
-				payload = event.data.readUTFBytes(event.data.length);
+				payload = event.data.readUtfBytes(event.data.length);
 			});
 			receiver.receive();
 
@@ -1337,7 +1337,7 @@ class DatagramSocketTest extends utest.Test {
 				var name:String = receiver == first ? "first" : "second";
 				receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
 					e.data.position = 0;
-					got[name].push(e.data.readUTFBytes(e.data.length));
+					got[name].push(e.data.readUtfBytes(e.data.length));
 				});
 				receiver.receive();
 			}
@@ -1589,7 +1589,7 @@ class DatagramSocketTest extends utest.Test {
 			receiver.bind(0, "127.0.0.1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
 				e.data.position = 0;
-				seen.push(e.data.readUTFBytes(e.data.length) + "@" + e.srcAddress + ":" + e.srcPort + ">" + e.dstAddress + ":" + e.dstPort);
+				seen.push(e.data.readUtfBytes(e.data.length) + "@" + e.srcAddress + ":" + e.srcPort + ">" + e.dstAddress + ":" + e.dstPort);
 			});
 			receiver.receive();
 			first.bind(0, "127.0.0.1");
@@ -1643,7 +1643,7 @@ class DatagramSocketTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

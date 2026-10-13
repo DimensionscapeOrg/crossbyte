@@ -45,7 +45,7 @@ class ResourcesTest extends utest.Test {
 		var lines = Resources.getLines("testsuite/sample.txt");
 		Assert.same(["alpha", "beta", "gamma"], lines);
 
-		var json:crossbyte.TypedObject<{name:String, count:Int}> = Resources.getJSON("testsuite/sample.json");
+		var json:crossbyte.TypedObject<{name:String, count:Int}> = Resources.getJson("testsuite/sample.json");
 		Assert.equals("crossbyte", json.name);
 		Assert.equals(3, json.count);
 	}

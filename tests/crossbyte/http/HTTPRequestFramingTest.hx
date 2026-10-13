@@ -169,14 +169,14 @@ class HTTPRequestFramingTest extends utest.Test {
 		var request = new crossbyte.io.ByteArray();
 		var body:String = __repeat("x".code, size);
 		for (i in 0...3) {
-			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
+			request.writeUtfBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
 		}
 
 		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
 
 			received.position = 0;
-			var raw:String = received.readUTFBytes(received.length);
+			var raw:String = received.readUtfBytes(received.length);
 			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
 			Assert.equals(200, response.status, "the answer being given was replaced");
 			Assert.equals('got $size', response.body);
@@ -208,14 +208,14 @@ class HTTPRequestFramingTest extends utest.Test {
 		var request = new crossbyte.io.ByteArray();
 		var body:String = __repeat("x".code, size);
 		for (i in 0...4) {
-			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
+			request.writeUtfBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $size\r\n\r\n' + body);
 		}
 
 		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
 
 			received.position = 0;
-			var raw:String = received.readUTFBytes(received.length);
+			var raw:String = received.readUtfBytes(received.length);
 			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(raw);
 			Assert.equals(200, response.status, "the answer being given was replaced");
 			Assert.equals('got $size', response.body);
@@ -236,13 +236,13 @@ class HTTPRequestFramingTest extends utest.Test {
 		var seen:Array<String> = [];
 		var server:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 10);
 		var request = new crossbyte.io.ByteArray();
-		request.writeUTFBytes("POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + __repeat("0".code, 80 * 1024));
+		request.writeUtfBytes("POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + __repeat("0".code, 80 * 1024));
 
 		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
 
 			received.position = 0;
-			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(received.readUTFBytes(received.length));
+			var response:HTTPTestResponse = HTTPTestSupport.parseResponse(received.readUtfBytes(received.length));
 			Assert.equals(413, response.status, "a chunk-size line past what one request may be was not refused");
 			Assert.isTrue(closed);
 			Assert.equals(0, seen.length);
@@ -272,17 +272,17 @@ class HTTPRequestFramingTest extends utest.Test {
 		var server:HTTPServer = new HTTPServer(config);
 
 		var request = new crossbyte.io.ByteArray();
-		request.writeUTFBytes("GET /stream HTTP/1.1\r\nHost: x\r\n\r\n");
+		request.writeUtfBytes("GET /stream HTTP/1.1\r\nHost: x\r\n\r\n");
 		var body:String = __repeat("x".code, 600 * 1024);
 		for (i in 0...3) {
-			request.writeUTFBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
+			request.writeUtfBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body);
 		}
 
 		__pipeline(server, request, function(received:crossbyte.io.ByteArray, closed:Bool):Void {
 			try server.close() catch (_:Dynamic) {}
 
 			received.position = 0;
-			var raw:String = received.readUTFBytes(received.length);
+			var raw:String = received.readUtfBytes(received.length);
 			Assert.isTrue(StringTools.startsWith(raw, "HTTP/1.1 200 "), "the response was not given: " + raw.substr(0, 40));
 			Assert.isTrue(raw.indexOf("first;") > 0 && raw.indexOf("last") > 0, "the response going out was cut off: " + raw.substr(raw.length - 60));
 			Assert.equals(-1, raw.indexOf("HTTP/1.1 ", 1), "requests past what was held were answered");
@@ -488,7 +488,7 @@ class HTTPRequestFramingTest extends utest.Test {
 				Assert.equals("not here", outcome.data);
 				Require.notNull(outcome.response, "HTTP_RESPONSE_STATUS was not dispatched");
 				Assert.equals(404, outcome.response.status);
-				Assert.equals(url, outcome.response.responseURL);
+				Assert.equals(url, outcome.response.responseUrl);
 				Assert.equals("30", __responseHeader(outcome.response, "retry-after"));
 				async.done();
 			});
@@ -531,7 +531,7 @@ class HTTPRequestFramingTest extends utest.Test {
 					Assert.equals("moved, auth=Bearer secret", followed.data, "credentials were dropped within the origin");
 					Require.notNull(followed.response);
 					Assert.isTrue(followed.response.redirected);
-					Assert.equals('http://127.0.0.1:${origin.localPort}/new', followed.response.responseURL);
+					Assert.equals('http://127.0.0.1:${origin.localPort}/new', followed.response.responseUrl);
 
 					Assert.isTrue(crossed.complete, "a cross-origin redirect was not followed: " + crossed.error);
 					Assert.equals("auth=null", crossed.data, "Authorization followed a redirect to another origin");

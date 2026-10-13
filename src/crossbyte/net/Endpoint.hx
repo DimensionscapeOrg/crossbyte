@@ -32,21 +32,21 @@ class Endpoint {
  * a URI reads it as a port the system chooses, as `ServerSocket.bind(0)`
  * does.
  */
-function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
-	return __parseURL(input, defaultProtocol, endpoint, false);
+function parseUrl(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
+	return __parseUrl(input, defaultProtocol, endpoint, false);
 }
 
 /**
-	`parseURL` for an endpoint to listen on, where port 0 is the system's
+	`parseUrl` for an endpoint to listen on, where port 0 is the system's
 	choice of a free port rather than nowhere: `NetHost`'s. Read as one to
 	dial, port 0 would be refused, and a host made from a URI could only be
 	given a port someone had found free a moment before.
 **/
-@:noCompletion function __parseListenURL(input:String):Endpoint {
-	return __parseURL(input, Protocol.TCP, null, true);
+@:noCompletion function __parseListenUrl(input:String):Endpoint {
+	return __parseUrl(input, Protocol.TCP, null, true);
 }
 
-@:noCompletion function __parseURL(input:String, defaultProtocol:Protocol, endpoint:Null<Endpoint>, listening:Bool):Endpoint {
+@:noCompletion function __parseUrl(input:String, defaultProtocol:Protocol, endpoint:Null<Endpoint>, listening:Bool):Endpoint {
 	// What is wrong is said as a short phrase below; the caller is told it
 	// with the URL it gave, as an ArgumentError.
 	try {

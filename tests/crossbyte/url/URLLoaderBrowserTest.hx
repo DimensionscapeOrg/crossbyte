@@ -52,9 +52,9 @@ class URLLoaderBrowserTest extends utest.Test {
 	**/
 	public function testAByteArrayBodyGoesOutAsItsLength(async:Async):Void {
 		var body:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
-		body.writeUTFBytes("a secret, written first and then cleared away");
+		body.writeUtfBytes("a secret, written first and then cleared away");
 		body.clear();
-		body.writeUTFBytes("hello");
+		body.writeUtfBytes("hello");
 
 		var sent:Array<Dynamic> = [];
 		var restore:Void->Void = wrap("send", (xhr, args) -> sent.push(args[0]));
@@ -168,7 +168,7 @@ class URLLoaderBrowserTest extends utest.Test {
 			Assert.equals(1, responses.length);
 			if (responses.length == 1) {
 				Assert.isFalse(responses[0].redirected, "a load nothing redirected said it was");
-				Assert.equals(js.Browser.location.origin + "/index.html", responses[0].responseURL);
+				Assert.equals(js.Browser.location.origin + "/index.html", responses[0].responseUrl);
 			}
 			async.done();
 		}

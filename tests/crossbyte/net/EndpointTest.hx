@@ -1,11 +1,11 @@
 package crossbyte.net;
 
-import crossbyte.net.Endpoint.parseURL;
+import crossbyte.net.Endpoint.parseUrl;
 import utest.Assert;
 
 class EndpointTest extends utest.Test {
 	public function testParsesWebSocketResourceAndSecureFlag():Void {
-		var endpoint = parseURL("wss://example.com/chat/room?token=1#ignored");
+		var endpoint = parseUrl("wss://example.com/chat/room?token=1#ignored");
 
 		Assert.equals(Protocol.WEBSOCKET, endpoint.protocol);
 		Assert.equals("example.com", endpoint.address);
@@ -15,7 +15,7 @@ class EndpointTest extends utest.Test {
 	}
 
 	public function testParsesWebSocketQueryOnlyAsRootResource():Void {
-		var endpoint = parseURL("ws://example.com?token=1");
+		var endpoint = parseUrl("ws://example.com?token=1");
 
 		Assert.equals(Protocol.WEBSOCKET, endpoint.protocol);
 		Assert.equals(80, endpoint.port);
@@ -24,18 +24,18 @@ class EndpointTest extends utest.Test {
 	}
 
 	public function testRejectsTcpUdpAndRudpPaths():Void {
-		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:9000/path")));
-		Assert.isTrue(throwsParseError(() -> parseURL("udp://127.0.0.1:9000?mode=test")));
-		Assert.isTrue(throwsParseError(() -> parseURL("rudp://127.0.0.1:9000/stream")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("tcp://127.0.0.1:9000/path")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("udp://127.0.0.1:9000?mode=test")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("rudp://127.0.0.1:9000/stream")));
 	}
 
 	public function testRejectsUnbracketedIpv6Literal():Void {
-		Assert.isTrue(throwsParseError(() -> parseURL("tcp://::1:9000")));
-		Assert.isTrue(throwsParseError(() -> parseURL("ws://::1")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("tcp://::1:9000")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("ws://::1")));
 	}
 
 	public function testParsesBracketedIpv6Literal():Void {
-		var endpoint = parseURL("tcp://[::1]:9000");
+		var endpoint = parseUrl("tcp://[::1]:9000");
 
 		Assert.equals(Protocol.TCP, endpoint.protocol);
 		Assert.equals("::1", endpoint.address);
@@ -44,7 +44,7 @@ class EndpointTest extends utest.Test {
 	}
 
 	public function testParsesReliableDatagramEndpoint():Void {
-		var endpoint = parseURL("rudp://127.0.0.1:9000");
+		var endpoint = parseUrl("rudp://127.0.0.1:9000");
 
 		Assert.equals(Protocol.RUDP, endpoint.protocol);
 		Assert.equals("127.0.0.1", endpoint.address);
@@ -53,7 +53,7 @@ class EndpointTest extends utest.Test {
 	}
 
 	public function testParsesLocalEndpoint():Void {
-		var endpoint = parseURL("local://crossbyte_ipc_demo");
+		var endpoint = parseUrl("local://crossbyte_ipc_demo");
 
 		Assert.equals(Protocol.LOCAL, endpoint.protocol);
 		Assert.equals("crossbyte_ipc_demo", endpoint.address);
@@ -69,11 +69,11 @@ class EndpointTest extends utest.Test {
 		parse error the caller is told to expect.
 	**/
 	public function testRejectsAPortTooBigForAnInt():Void {
-		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:4294967296")));
-		Assert.isTrue(throwsParseError(() -> parseURL("ws://example.com:4294967376/chat")));
-		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:99999999999999999999")));
-		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:65536")));
-		Assert.equals(65535, parseURL("tcp://127.0.0.1:65535").port);
+		Assert.isTrue(throwsParseError(() -> parseUrl("tcp://127.0.0.1:4294967296")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("ws://example.com:4294967376/chat")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("tcp://127.0.0.1:99999999999999999999")));
+		Assert.isTrue(throwsParseError(() -> parseUrl("tcp://127.0.0.1:65536")));
+		Assert.equals(65535, parseUrl("tcp://127.0.0.1:65535").port);
 	}
 
 	private static function throwsParseError(fn:Void->Void):Bool {

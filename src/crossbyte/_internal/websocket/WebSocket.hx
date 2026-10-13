@@ -1769,7 +1769,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 							return;
 						}
 						payload.position = 2;
-						reason = payload.readUTFBytes(payload.length - 2);
+						reason = payload.readUtfBytes(payload.length - 2);
 					}
 				}
 
@@ -3098,7 +3098,7 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		return Std.isOfType(negotiated, String) ? negotiated : null;
 		#else
 		return try {
-			__socket.getALPN();
+			__socket.getAlpn();
 		} catch (_:Dynamic) {
 			null;
 		}

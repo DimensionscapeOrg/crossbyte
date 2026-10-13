@@ -157,7 +157,7 @@ class RouterServerTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("static fallback");
+		fixture.writeUtfBytes("static fallback");
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, [router.middleware()]);
@@ -170,12 +170,12 @@ class RouterServerTest extends utest.Test {
 		var closeSeen = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(requestText);
+			client.writeUtfBytes(requestText);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			}
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);

@@ -170,7 +170,7 @@ class PassFlushTest extends utest.Test {
 
 	private static function bytes(text:String):crossbyte.io.ByteArray {
 		var bytes = new crossbyte.io.ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return bytes;
 	}

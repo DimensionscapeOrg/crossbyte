@@ -268,11 +268,11 @@ class IceCandidate {
 			return false;
 		}
 
-		return component == other.component && isIPv6() == other.isIPv6();
+		return component == other.component && isIpv6() == other.isIpv6();
 	}
 
 	/** Whether this address is IPv6, decided by the only thing that separates them. **/
-	public inline function isIPv6():Bool {
+	public inline function isIpv6():Bool {
 		return address.indexOf(":") >= 0;
 	}
 

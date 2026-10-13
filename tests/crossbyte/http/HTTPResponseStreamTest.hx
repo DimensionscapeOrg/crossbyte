@@ -459,7 +459,7 @@ private class RequestOnlySocket extends Socket {
 			// was, as a socket's read leaves it.
 			var position = bytes.position;
 			bytes.position = offset;
-			bytes.writeUTFBytes(__arriving);
+			bytes.writeUtfBytes(__arriving);
 			bytes.position = position;
 			__arriving = null;
 		}
@@ -532,7 +532,7 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
 		data.position = offset;
-		body.add(data.readUTFBytes(length));
+		body.add(data.readUtfBytes(length));
 		__unflushed += length;
 	}
 
@@ -591,14 +591,14 @@ private class RawClient {
 	/** Connects, sends `request`, and continues. */
 	public function request(request:String, then:Void->Void):Void {
 		__socket.addEventListener(Event.CONNECT, _ -> {
-			__socket.writeUTFBytes(request);
+			__socket.writeUtfBytes(request);
 			__socket.flush();
 		});
 		HTTPTestSupport.connectThen(__socket, __server, then);
 	}
 
 	public function send(request:String):Void {
-		__socket.writeUTFBytes(request);
+		__socket.writeUtfBytes(request);
 		__socket.flush();
 	}
 

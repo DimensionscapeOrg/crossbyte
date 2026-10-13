@@ -85,10 +85,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public static var isSupported(default, null):Bool = #if !html5 true #else false #end;
 
 	/**
-		Whether `setALPN()` reaches the TLS handshake on this target.
+		Whether `setAlpn()` reaches the TLS handshake on this target.
 
 		ALPN rides on hxcpp's mbedTLS natively and on Node's own TLS stack.
-		Elsewhere `setALPN()` is accepted and ignored, so a server can offer
+		Elsewhere `setAlpn()` is accepted and ignored, so a server can offer
 		`h2` unconditionally and simply keep serving HTTP/1.1 where the
 		handshake cannot advertise it.
 	**/
@@ -816,7 +816,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		// Nothing is built here. A Node TLS server takes its key, certificate,
 		// CA and SNI callback when it is created, and every one of those
 		// arrives after this through setCertificate(), requireClientCertificate()
-		// and addSNICertificate(). So the server is made in listen(), which is
+		// and addSniCertificate(). So the server is made in listen(), which is
 		// the same instant the native path calls "the point TLS configuration
 		// is materialized": it just has to be literal about it here.
 		__serverSocket = null;
@@ -914,8 +914,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		@throws Error When this server was not constructed with `secure` set,
 			or when it is already bound.
 	**/
-	public function addSNICertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
-		__requireSecure("addSNICertificate");
+	public function addSniCertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
+		__requireSecure("addSniCertificate");
 
 		#if nodejs
 		__tlsSni.push({match: serverNameMatch, certificate: cert, key: key});
@@ -975,15 +975,15 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		@throws Error When this server was not constructed with `secure` set,
 			or when it is already bound.
 	**/
-	public function setALPN(protocols:Null<Array<String>>):Void {
-		__requireSecure("setALPN");
+	public function setAlpn(protocols:Null<Array<String>>):Void {
+		__requireSecure("setAlpn");
 
 		#if nodejs
 		__tlsAlpn = protocols;
 		#elseif cpp
-		__applyTls(socket -> (cast socket : AlpnSocket).setALPN(protocols));
+		__applyTls(socket -> (cast socket : AlpnSocket).setAlpn(protocols));
 		#elseif (java || jvm)
-		__applyTls(socket -> (cast socket : SSLSocket).setALPN(protocols));
+		__applyTls(socket -> (cast socket : SSLSocket).setAlpn(protocols));
 		#end
 	}
 
@@ -1632,7 +1632,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	**/
 	@:noCompletion private static inline function __newSecureListener():Socket {
 		#if cpp
-		// AlpnSocket only adds a hook to buildSSLConfig; until setALPN() is
+		// AlpnSocket only adds a hook to buildSSLConfig; until setAlpn() is
 		// called it is an ordinary SSLSocket.
 		return new AlpnSocket();
 		#elseif neko

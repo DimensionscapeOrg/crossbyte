@@ -29,7 +29,7 @@ class NetConnectionTcpTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var socket = e.socket;
 			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable).toUpperCase());
+				socket.writeUtfBytes(socket.readUtfBytes(socket.bytesAvailable).toUpperCase());
 				socket.flush();
 			});
 		});
@@ -41,7 +41,7 @@ class NetConnectionTcpTest extends utest.Test {
 			var ready:Bool = false;
 			var failure:String = null;
 			var connection:NetConnection = null;
-			connection = new NetConnection('tcp://127.0.0.1:${server.localPort}', input -> heard += input.readUTFBytes(input.bytesAvailable),
+			connection = new NetConnection('tcp://127.0.0.1:${server.localPort}', input -> heard += input.readUtfBytes(input.bytesAvailable),
 				() -> ready = true, null, reason -> failure = Std.string(reason), true);
 
 			NetPump.until(() -> ready || failure != null, 5.0, function(_) {
@@ -135,7 +135,7 @@ class NetConnectionTcpTest extends utest.Test {
 
 	private static function __bytes(text:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return bytes;
 	}

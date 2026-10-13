@@ -149,7 +149,7 @@ class KeyTest extends utest.Test {
 
 		var server = new ServerSocket(true);
 		server.setCertificate(fallback.certificate, fallback.key);
-		server.addSNICertificate(name -> name == KeyFormFixture.COMMON_NAME, Certificate.fromPem(forms.rsaCertificate),
+		server.addSniCertificate(name -> name == KeyFormFixture.COMMON_NAME, Certificate.fromPem(forms.rsaCertificate),
 			Key.fromPem(encrypted.pem, KeyFormFixture.PASSPHRASE));
 		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(_) {});
 		server.bind(0, "127.0.0.1");

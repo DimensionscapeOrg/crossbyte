@@ -126,7 +126,7 @@ class RPCWire {
 	public static function refusalText(input:ByteArrayInput, code:Int):String {
 		final words:Null<String> = refusalMessage(code);
 		if (words == null) {
-			return input.readVarUTF();
+			return input.readVarUtf();
 		}
 		final start:Int = input.position;
 		final length:Int = input.readVarUInt();
@@ -146,7 +146,7 @@ class RPCWire {
 			return words;
 		}
 		input.position = start;
-		return input.readVarUTF();
+		return input.readVarUtf();
 	}
 
 	/**

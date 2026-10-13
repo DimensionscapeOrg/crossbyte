@@ -1836,7 +1836,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@param length The number of bytes to consume from the stream buffer.
 		@param charSet Accepted for source compatibility and **ignored**. No
 		       character set conversion happens: the bytes are decoded as
-		       UTF-8, exactly as `readUTFBytes` would. Passing `"shift-jis"`
+		       UTF-8, exactly as `readUtfBytes` would. Passing `"shift-jis"`
 		       does not decode Shift-JIS. Transcode the bytes yourself if you
 		       need another encoding.
 		@return The decoded string.
@@ -1906,10 +1906,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Reads a UTF-8 string prefixed by its 16-bit byte length.
 		@return The decoded UTF-8 string.
 	**/
-	public function readUTF():String {
+	public function readUtf():String {
 		__requireStreamMode();
 		__requireOpenConnection();
-		return __input.readUTF();
+		return __input.readUtf();
 	}
 
 	/**
@@ -1917,10 +1917,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		@param length The number of UTF-8 bytes to consume.
 		@return The decoded UTF-8 string.
 	**/
-	public function readUTFBytes(length:Int):String {
+	public function readUtfBytes(length:Int):String {
 		__requireStreamMode();
 		__requireOpenConnection();
-		return __input.readUTFBytes(length);
+		return __input.readUtfBytes(length);
 	}
 
 	/**
@@ -2122,7 +2122,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Appends a string to the stream-mode output buffer as UTF-8.
 		@param value The string to queue for sending.
 		@param charSet Accepted for source compatibility and **ignored**. The
-		       string is encoded as UTF-8, exactly as `writeUTFBytes` would.
+		       string is encoded as UTF-8, exactly as `writeUtfBytes` would.
 		       Transcode the bytes yourself if you need another encoding.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void {
@@ -2170,20 +2170,20 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Appends a UTF-8 string prefixed with a 16-bit byte length to the stream-mode output buffer.
 		@param value The string to queue for sending.
 	**/
-	public function writeUTF(value:String):Void {
+	public function writeUtf(value:String):Void {
 		__requireStreamMode();
 		__requireOpenConnection();
-		__output.writeUTF(value);
+		__output.writeUtf(value);
 	}
 
 	/**
 		Appends a raw UTF-8 string to the stream-mode output buffer without a length prefix.
 		@param value The string to queue for sending.
 	**/
-	public function writeUTFBytes(value:String):Void {
+	public function writeUtfBytes(value:String):Void {
 		__requireStreamMode();
 		__requireOpenConnection();
-		__output.writeUTFBytes(value);
+		__output.writeUtfBytes(value);
 	}
 
 	// Set on the thread making a session for a server, around its

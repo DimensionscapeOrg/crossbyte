@@ -76,7 +76,7 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 	}
 
 	public function writeContinue():Void {
-		__socket.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
+		__socket.writeUtfBytes("HTTP/1.1 100 Continue\r\n\r\n");
 	}
 
 	private static final KEEP_ALIVE_LINE:String = "\r\nConnection: " + Connection.KEEP_ALIVE + "\r\n";
@@ -88,33 +88,33 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		// encoded into bytes of its own, a head was most of what a response
 		// allocated.
 		var text:ByteArray = HeadBytes.take();
-		text.writeUTFBytes("HTTP/1.1 ");
+		text.writeUtfBytes("HTTP/1.1 ");
 		__writeDecimal(text, head.statusCode);
-		text.writeUTFBytes(" ");
-		text.writeUTFBytes(head.statusMessage);
-		text.writeUTFBytes(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
+		text.writeUtfBytes(" ");
+		text.writeUtfBytes(head.statusMessage);
+		text.writeUtfBytes(head.keepAlive ? KEEP_ALIVE_LINE : CLOSE_LINE);
 
 		for (header in head.headers) {
 			var safeName:String = HttpSyntax.sanitizeHeaderName(header.name);
 			if (safeName.length == 0) {
 				continue;
 			}
-			text.writeUTFBytes(safeName);
-			text.writeUTFBytes(": ");
-			text.writeUTFBytes(HttpSyntax.sanitizeHeaderValue(header.value));
-			text.writeUTFBytes("\r\n");
+			text.writeUtfBytes(safeName);
+			text.writeUtfBytes(": ");
+			text.writeUtfBytes(HttpSyntax.sanitizeHeaderValue(header.value));
+			text.writeUtfBytes("\r\n");
 		}
 
 		__chunked = head.chunked;
 		if (__chunked) {
-			text.writeUTFBytes("Transfer-Encoding: chunked\r\n");
+			text.writeUtfBytes("Transfer-Encoding: chunked\r\n");
 		} else if (head.contentLength != null) {
-			text.writeUTFBytes("Content-Length: ");
+			text.writeUtfBytes("Content-Length: ");
 			__writeDecimal(text, head.contentLength);
-			text.writeUTFBytes("\r\n");
+			text.writeUtfBytes("\r\n");
 		}
 
-		text.writeUTFBytes("\r\n");
+		text.writeUtfBytes("\r\n");
 		__writeTaken(text);
 	}
 
@@ -155,10 +155,10 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 
 		var size:ByteArray = HeadBytes.take();
 		__writeHex(size, length);
-		size.writeUTFBytes("\r\n");
+		size.writeUtfBytes("\r\n");
 		__writeTaken(size);
 		__socket.__writeBytes(data, offset, length);
-		__socket.writeUTFBytes("\r\n");
+		__socket.writeUtfBytes("\r\n");
 	}
 
 	/** A chunk's size, not negative, in upper-case hexadecimal digits, as `StringTools.hex` writes it. **/
@@ -188,7 +188,7 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 		// body ends, except a chunked one, whose end is the last chunk.
 		if (__chunked) {
 			__chunked = false;
-			__socket.writeUTFBytes("0\r\n\r\n");
+			__socket.writeUtfBytes("0\r\n\r\n");
 		}
 	}
 

@@ -56,7 +56,7 @@ class HTTPServerTLSTest extends utest.Test {
 
 		var root = File.createTempDirectory();
 		var page = new ByteArray();
-		page.writeUTFBytes("<html><body>over tls</body></html>");
+		page.writeUtfBytes("<html><body>over tls</body></html>");
 		root.resolvePath("index.html").save(page);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root);
@@ -494,10 +494,10 @@ class HTTPServerTLSTest extends utest.Test {
 			clients.push(socket);
 			var seen:String = "";
 			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-				seen += socket.readUTFBytes(socket.bytesAvailable);
+				seen += socket.readUtfBytes(socket.bytesAvailable);
 				if (seen.indexOf("\r\n\r\n") >= 0) {
 					seen = "";
-					socket.writeUTFBytes("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhello, client");
+					socket.writeUtfBytes("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhello, client");
 					socket.flush();
 				}
 			});
@@ -620,7 +620,7 @@ class HTTPServerTLSTest extends utest.Test {
 
 		var server = __tlsServer(fixture);
 		var socket = new TracingTlsSocket();
-		socket.setALPN(["h2"]);
+		socket.setAlpn(["h2"]);
 		socket.setCA(@:privateAccess fixture.certificate.__native);
 		socket.setTimeout(10);
 

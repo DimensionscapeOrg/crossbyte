@@ -42,7 +42,7 @@ class LocalConnectionTest extends utest.Test {
 
 		try {
 			server.onReady = () -> readyCount++;
-			server.onData = input -> received = input.readUTFBytes(input.length);
+			server.onData = input -> received = input.readUtfBytes(input.length);
 			server.readEnabled = true;
 			server.listen(name);
 
@@ -145,7 +145,7 @@ class LocalConnectionTest extends utest.Test {
 
 		try {
 			server.onReady = () -> readyCount++;
-			server.onData = input -> received.push(input.readUTFBytes(input.length));
+			server.onData = input -> received.push(input.readUtfBytes(input.length));
 			server.readEnabled = true;
 			server.listen(name);
 			client.onReady = () -> readyCount++;
@@ -156,13 +156,13 @@ class LocalConnectionTest extends utest.Test {
 			// that holds them until it ends.
 			var buffer = new ByteArray();
 			CrossByte.current().post(() -> {
-				buffer.writeUTFBytes("first message");
+				buffer.writeUtfBytes("first message");
 				client.send(buffer);
 				buffer.clear();
-				buffer.writeUTFBytes("second, longer message");
+				buffer.writeUtfBytes("second, longer message");
 				client.send(buffer);
 				buffer.position = 0;
-				buffer.writeUTFBytes("CHANGED AFTERWARDS");
+				buffer.writeUtfBytes("CHANGED AFTERWARDS");
 			});
 			pumpUntil(() -> received.length >= 2, 2.0);
 
@@ -203,7 +203,7 @@ class LocalConnectionTest extends utest.Test {
 			try {
 				var name = uniqueName("churn");
 				server.onReady = () -> ready = true;
-				server.onData = input -> received = input.readUTFBytes(input.length);
+				server.onData = input -> received = input.readUtfBytes(input.length);
 				server.readEnabled = true;
 				server.listen(name);
 				client.connect(name);
@@ -286,7 +286,7 @@ class LocalConnectionTest extends utest.Test {
 		var expected:Array<String> = [];
 		var problems:Array<String> = [];
 		server.readEnabled = true;
-		server.onData = input -> received.push(input.readUTFBytes(input.length));
+		server.onData = input -> received.push(input.readUtfBytes(input.length));
 		server.onError = reason -> problems.push('server error: $reason');
 		client.onError = reason -> problems.push('client error: $reason');
 
@@ -331,7 +331,7 @@ class LocalConnectionTest extends utest.Test {
 
 		try {
 			server.onReady = () -> readyCount++;
-			server.onData = input -> received = input.readUTFBytes(input.length);
+			server.onData = input -> received = input.readUtfBytes(input.length);
 			server.readEnabled = false;
 			server.listen(name);
 
@@ -685,7 +685,7 @@ class LocalConnectionTest extends utest.Test {
 		var readyCount = 0;
 		var count = 2000;
 		server.readEnabled = true;
-		server.onData = input -> received.push(input.readUTFBytes(input.length));
+		server.onData = input -> received.push(input.readUtfBytes(input.length));
 		server.onReady = () -> readyCount++;
 		client.onReady = () -> readyCount++;
 		var afterOneTick = 0;
@@ -792,7 +792,7 @@ class LocalConnectionTest extends utest.Test {
 			}
 			var parting = new ByteArray();
 			parting.writeInt(3);
-			parting.writeUTFBytes("bye");
+			parting.writeUtfBytes("bye");
 			LocalConnection.__write(peer, (cast parting : Bytes).getData(), parting.length);
 			LocalConnection.__close(peer);
 			// At once, while what the peer said is still unread here.
@@ -835,8 +835,8 @@ class LocalConnectionTest extends utest.Test {
 		var secondGot:String = null;
 		first.readEnabled = true;
 		second.readEnabled = true;
-		first.onData = input -> firstGot = input.readUTFBytes(input.length);
-		second.onData = input -> secondGot = input.readUTFBytes(input.length);
+		first.onData = input -> firstGot = input.readUtfBytes(input.length);
+		second.onData = input -> secondGot = input.readUtfBytes(input.length);
 		var refused = false;
 
 		try {
@@ -875,7 +875,7 @@ class LocalConnectionTest extends utest.Test {
 		var later = new LocalConnection();
 		var received:Array<String> = [];
 		server.readEnabled = true;
-		server.onData = input -> received.push(input.readUTFBytes(input.length));
+		server.onData = input -> received.push(input.readUtfBytes(input.length));
 
 		try {
 			server.listen(name);
@@ -886,7 +886,7 @@ class LocalConnectionTest extends utest.Test {
 			Assert.notNull(brief, "the brief client did not connect");
 			var frame = new ByteArray();
 			frame.writeInt(5);
-			frame.writeUTFBytes("brief");
+			frame.writeUtfBytes("brief");
 			LocalConnection.__write(brief, (cast frame : Bytes).getData(), frame.length);
 			LocalConnection.__close(brief);
 			pumpUntil(() -> received.length >= 1, 2.0);
@@ -927,8 +927,8 @@ class LocalConnectionTest extends utest.Test {
 			var gotB:String = null;
 			a.readEnabled = true;
 			b.readEnabled = true;
-			a.onData = input -> gotA = input.readUTFBytes(input.length);
-			b.onData = input -> gotB = input.readUTFBytes(input.length);
+			a.onData = input -> gotA = input.readUtfBytes(input.length);
+			b.onData = input -> gotB = input.readUtfBytes(input.length);
 			try {
 				a.listen(pair[0]);
 				if (throws(() -> b.listen(pair[1]))) {
@@ -1090,7 +1090,7 @@ class LocalConnectionTest extends utest.Test {
 		var heard:String = null;
 		server.readEnabled = true;
 		server.onData = input -> {
-			heard = input.readUTFBytes(input.length);
+			heard = input.readUtfBytes(input.length);
 			server.send(bytesOf("from the parent"));
 		};
 		var code:Null<Int> = null;
@@ -1131,7 +1131,7 @@ class LocalConnectionTest extends utest.Test {
 		var connection = new LocalConnection();
 		var answer:String = null;
 		connection.readEnabled = true;
-		connection.onData = input -> answer = input.readUTFBytes(input.length);
+		connection.onData = input -> answer = input.readUtfBytes(input.length);
 		try {
 			connection.connect(name);
 		} catch (e:Dynamic) {
@@ -1512,7 +1512,7 @@ class LocalConnectionTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

@@ -190,7 +190,7 @@ class DataChannel {
 		var payload = new ByteArray();
 
 		if (text != null && text.length > 0) {
-			payload.writeUTFBytes(text);
+			payload.writeUtfBytes(text);
 		}
 
 		// The empty case has an identifier of its own, since nothing else
@@ -292,7 +292,7 @@ class DataChannel {
 		switch (protocolId) {
 			case SctpDataChunk.PPID_STRING:
 				payload.position = 0;
-				onMessage(payload.length > 0 ? payload.readUTFBytes(payload.length) : "");
+				onMessage(payload.length > 0 ? payload.readUtfBytes(payload.length) : "");
 			case SctpDataChunk.PPID_STRING_EMPTY:
 				onMessage("");
 			case SctpDataChunk.PPID_BINARY:

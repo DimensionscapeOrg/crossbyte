@@ -52,7 +52,7 @@ class NetHostTLSTest extends utest.Test {
 		var host = new NetHost('wss://127.0.0.1:0', function(connection:INetConnection) {
 			connection.onData = input -> {
 				var answer = new ByteArray();
-				answer.writeUTFBytes(input.readUTFBytes(input.bytesAvailable).toUpperCase());
+				answer.writeUtfBytes(input.readUtfBytes(input.bytesAvailable).toUpperCase());
 				answer.position = 0;
 				connection.send(answer);
 			};
@@ -67,10 +67,10 @@ class NetHostTLSTest extends utest.Test {
 			client.secure = true;
 			client.certAuthority = fixture.certificate;
 			client.addEventListener(Event.CONNECT, function(_) {
-				client.writeUTFBytes("over wss");
+				client.writeUtfBytes("over wss");
 				client.flush();
 			});
-			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) heard += client.readUTFBytes(client.bytesAvailable));
+			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) heard += client.readUtfBytes(client.bytesAvailable));
 			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
 			client.connect("127.0.0.1", host.localPort);
 

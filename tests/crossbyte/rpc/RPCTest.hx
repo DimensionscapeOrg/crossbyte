@@ -253,16 +253,16 @@ class RPCTest extends utest.Test {
 		serverSession.register(104, args -> {
 			captured = args;
 			var answer = new ByteArray();
-			answer.writeUTFBytes("got " + (cast args[0] : Bytes).toString());
+			answer.writeUtfBytes("got " + (cast args[0] : Bytes).toString());
 			return answer;
 		});
 		var clientSession = new RPCSession(link.client);
 
 		// Written over what it held before, which must not go with it.
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes("written first and then cleared away");
+		bytes.writeUtfBytes("written first and then cleared away");
 		bytes.clear();
-		bytes.writeUTFBytes("abc");
+		bytes.writeUtfBytes("abc");
 
 		var response:RPCResponse<Bytes> = null;
 		try {
@@ -786,7 +786,7 @@ class RPCTest extends utest.Test {
 			out.writeInt(7);
 			out.writeByte(1);
 			out.writeDouble(1.25);
-			out.writeVarUTF("a");
+			out.writeVarUtf("a");
 			out.writeVarUInt(0x7FFFFFFF);
 		}));
 
@@ -885,7 +885,7 @@ class RPCTest extends utest.Test {
 			out.writeByte(RPCWire.FLAG_RESPONSE);
 			out.writeInt(opOf("getName(i32):utf8"));
 			out.writeVarUInt(999);
-			out.writeVarUTF("x");
+			out.writeVarUtf("x");
 		});
 	}
 
@@ -922,7 +922,7 @@ class RPCTest extends utest.Test {
 				input.readInt();
 				if ((flags & RPCWire.FLAG_ERROR) != 0) {
 					final id:Int = input.readVarUInt();
-					answers.push(id + ": " + input.readVarUTF());
+					answers.push(id + ": " + input.readVarUtf());
 				}
 				input.position = end;
 			}

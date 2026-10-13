@@ -37,7 +37,7 @@ class FileArrivalTest extends utest.Test {
 		});
 
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		client.send(bytes, 0, 0, "127.0.0.1", server.localPort);
 
 		var runtime = CrossByte.current();

@@ -130,13 +130,13 @@ class CrossThreadCloseTest extends utest.Test {
 		var clientEnded:Bool = false;
 		var failure:String = null;
 		client.addEventListener(Event.CONNECT, function(_) {
-			client.writeUTFBytes("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+			client.writeUtfBytes("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
 				+ "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
 			client.flush();
 		});
 		// Read as it comes, so nothing unread makes the client's own close a
 		// reset.
-		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> client.readUTFBytes(client.bytesAvailable));
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> client.readUtfBytes(client.bytesAvailable));
 		client.addEventListener(Event.CLOSE, _ -> clientEnded = true);
 		client.addEventListener(IOErrorEvent.IO_ERROR, e -> failure = e.text);
 		client.connect("127.0.0.1", server.localPort);

@@ -299,10 +299,10 @@ class WebSocketBroadcastTest extends utest.Test {
 	public function testTheBufferAMessageWasMadeFromIsTheCallersAgain(async:Async):Void {
 		__sessions(async, 1, null, function(server, sessions, peers, done) {
 			var bytes = new ByteArray();
-			bytes.writeUTFBytes("original");
+			bytes.writeUtfBytes("original");
 			var prepared = PreparedMessage.binary(bytes);
 			bytes.position = 0;
-			bytes.writeUTFBytes("CHANGED!");
+			bytes.writeUtfBytes("CHANGED!");
 			sessions[0].sendPrepared(prepared);
 			sessions[0].sendPrepared(prepared);
 			NetPump.until(() -> __allHave(peers, 2), 5.0, function(_) {
@@ -399,7 +399,7 @@ class WebSocketBroadcastTest extends utest.Test {
 			stream.writeByte(octet);
 		}
 		stream.uncompress(crossbyte.utils.CompressionAlgorithm.DEFLATE);
-		return stream.readUTFBytes(stream.length);
+		return stream.readUtfBytes(stream.length);
 	}
 
 	/**

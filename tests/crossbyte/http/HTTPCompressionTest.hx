@@ -174,7 +174,7 @@ class HTTPCompressionTest extends utest.Test {
 				config.compression.types = ["application/octet-stream"];
 				config.middleware.push((handler, next) -> {
 					var body:ByteArray = new ByteArray();
-					body.writeUTFBytes(__text(64));
+					body.writeUtfBytes(__text(64));
 					handler.respondBytes(200, handler.requestPath == "/bytes" ? "application/octet-stream" : "text/plain", body);
 				});
 			});
@@ -387,7 +387,7 @@ class HTTPCompressionTest extends utest.Test {
 
 	private static function __encode(text:String, algorithm:CompressionAlgorithm):ByteArray {
 		var bytes:ByteArray = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.compress(algorithm);
 		return bytes;
 	}
@@ -401,7 +401,7 @@ class HTTPCompressionTest extends utest.Test {
 
 	private static function __write(root:File, name:String, text:String):Void {
 		var bytes:ByteArray = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		root.resolvePath(name).save(bytes);
 	}
 

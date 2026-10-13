@@ -297,8 +297,8 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		var toB = a.connect("127.0.0.1", b.localPort, null, key(8));
 		b.connectTimeout = 5.0;
 		var toA = b.connect("127.0.0.1", a.localPort, null, key(8));
-		toB.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromB.push(e.data.readUTFBytes(e.data.length)));
-		toA.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromA.push(e.data.readUTFBytes(e.data.length)));
+		toB.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromB.push(e.data.readUtfBytes(e.data.length)));
+		toA.addEventListener(DatagramSocketDataEvent.DATA, (e:DatagramSocketDataEvent) -> fromA.push(e.data.readUtfBytes(e.data.length)));
 		Pair.pumpUntil(() -> toA.connected && toB.connected, 5.0);
 		Assert.isTrue(toA.connected && toB.connected, "the two dialling peers never connected");
 		if (toA.connected && toB.connected) {
@@ -583,7 +583,7 @@ class ReliableDatagramEncryptionTest extends utest.Test {
 		var bytes = new ByteArray();
 		var marker = "fragment-marker";
 		while (bytes.length < length) {
-			bytes.writeUTFBytes(marker);
+			bytes.writeUtfBytes(marker);
 		}
 		bytes.length = length;
 		bytes.position = 0;
@@ -667,12 +667,12 @@ private class Pair {
 		if (data.length > 100) {
 			return "big:" + data.length;
 		}
-		return data.readUTFBytes(data.length);
+		return data.readUtfBytes(data.length);
 	}
 
 	public static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

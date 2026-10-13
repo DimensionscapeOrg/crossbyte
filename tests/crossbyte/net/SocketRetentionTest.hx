@@ -131,7 +131,7 @@ class SocketRetentionTest extends utest.Test {
 		// One pass in which every connection writes: each joins the
 		// registry's writable queue, which the next pass drains.
 		for (socket in accepted) {
-			socket.writeUTFBytes("tick");
+			socket.writeUtfBytes("tick");
 			socket.flush();
 		}
 		__pump(0.1);

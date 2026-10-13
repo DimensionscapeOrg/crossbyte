@@ -32,7 +32,7 @@ class WebSocketFrameTest extends utest.Test {
 
 		Assert.equals(WebSocket.OPEN, ws.readyState);
 		Require.notNull(received);
-		Assert.equals("hello", received.readUTFBytes(received.length));
+		Assert.equals("hello", received.readUtfBytes(received.length));
 	}
 
 	// --- the cap on a reassembled message's total size ---
@@ -203,7 +203,7 @@ class WebSocketFrameTest extends utest.Test {
 
 		Assert.equals(WebSocket.OPEN, ws.readyState);
 		Require.notNull(received);
-		Assert.equals("héllo", received.readUTFBytes(received.length));
+		Assert.equals("héllo", received.readUtfBytes(received.length));
 	}
 
 	public function testUtf8ValidatorAcceptsValidSequences():Void {

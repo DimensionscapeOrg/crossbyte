@@ -69,7 +69,7 @@ class EchoServer extends ServerApplication {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
 				var socket = event.socket;
 				socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-					socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable));
+					socket.writeUtfBytes(socket.readUtfBytes(socket.bytesAvailable));
 					socket.flush();
 				});
 			});

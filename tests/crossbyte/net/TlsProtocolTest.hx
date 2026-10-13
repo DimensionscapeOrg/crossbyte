@@ -71,8 +71,8 @@ class TlsProtocolTest extends utest.Test {
 			accepted.push(peer);
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
 				serverProtocol = __protocolOf(peer);
-				var text = peer.readUTFBytes(peer.bytesAvailable);
-				peer.writeUTFBytes(text.toUpperCase());
+				var text = peer.readUtfBytes(peer.bytesAvailable);
+				peer.writeUtfBytes(text.toUpperCase());
 				peer.flush();
 			});
 		});
@@ -86,11 +86,11 @@ class TlsProtocolTest extends utest.Test {
 		client.secure = true;
 		client.certAuthority = fixture.certificate;
 		client.addEventListener(Event.CONNECT, function(_) {
-			client.writeUTFBytes(HELLO);
+			client.writeUtfBytes(HELLO);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-			heard += client.readUTFBytes(client.bytesAvailable);
+			heard += client.readUtfBytes(client.bytesAvailable);
 		});
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
 			if (failure == null) {
@@ -137,8 +137,8 @@ class TlsProtocolTest extends utest.Test {
 			var peer = e.socket;
 			accepted.push(peer);
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				peer.readUTFBytes(peer.bytesAvailable);
-				peer.writeUTFBytes("pong");
+				peer.readUtfBytes(peer.bytesAvailable);
+				peer.writeUtfBytes("pong");
 				peer.flush();
 			});
 		});
@@ -261,11 +261,11 @@ class TlsProtocolTest extends utest.Test {
 		client.secure = true;
 		client.certAuthority = fixture.certificate;
 		client.addEventListener(Event.CONNECT, function(_) {
-			client.writeUTFBytes(HELLO);
+			client.writeUtfBytes(HELLO);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-			heard += client.readUTFBytes(client.bytesAvailable);
+			heard += client.readUtfBytes(client.bytesAvailable);
 		});
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
 			if (failure == null) {
@@ -281,7 +281,7 @@ class TlsProtocolTest extends utest.Test {
 		NetPump.until(() -> {
 			if (!second && heard.length >= HELLO.length) {
 				second = true;
-				client.writeUTFBytes(HELLO);
+				client.writeUtfBytes(HELLO);
 				client.flush();
 			}
 			return heard.length >= HELLO.length * 2 || failure != null;
@@ -376,8 +376,8 @@ class TlsProtocolTest extends utest.Test {
 			var peer = e.socket;
 			accepted.push(peer);
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				var text = peer.readUTFBytes(peer.bytesAvailable);
-				peer.writeUTFBytes(text.toUpperCase());
+				var text = peer.readUtfBytes(peer.bytesAvailable);
+				peer.writeUtfBytes(text.toUpperCase());
 				peer.flush();
 			});
 		});
@@ -390,11 +390,11 @@ class TlsProtocolTest extends utest.Test {
 		client.secure = true;
 		client.certAuthority = fixture.certificate;
 		client.addEventListener(Event.CONNECT, function(_) {
-			client.writeUTFBytes(HELLO);
+			client.writeUtfBytes(HELLO);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-			heard += client.readUTFBytes(client.bytesAvailable);
+			heard += client.readUtfBytes(client.bytesAvailable);
 		});
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
 			if (failure == null) {
@@ -416,7 +416,7 @@ class TlsProtocolTest extends utest.Test {
 		// reads whatever the memory holds by then, and the run would end in a
 		// crash, not in the assertion.
 		if (after == 1) {
-			client.writeUTFBytes(HELLO);
+			client.writeUtfBytes(HELLO);
 			client.flush();
 			NetPump.until(() -> heard.length >= HELLO.length * 2 || failure != null, 15.0, _ -> {});
 		}
@@ -461,7 +461,7 @@ class TlsProtocolTest extends utest.Test {
 		var server = new AlpnSocket();
 		server.verifyCert = false;
 		server.setCertificate(fixture.certificate.__native, fixture.key.__native);
-		server.setALPN(["h2", "http/1.1"]);
+		server.setAlpn(["h2", "http/1.1"]);
 		server.bind(new sys.net.Host("127.0.0.1"), 0);
 		server.listen(1);
 		var port:Int = server.host().port;
@@ -470,7 +470,7 @@ class TlsProtocolTest extends utest.Test {
 			try {
 				var socket = new AlpnSocket();
 				socket.verifyCert = false;
-				socket.setALPN(["h2"]);
+				socket.setAlpn(["h2"]);
 				socket.connect(new sys.net.Host("127.0.0.1"), port);
 				sys.thread.Thread.readMessage(true);
 				socket.close();

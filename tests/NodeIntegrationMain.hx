@@ -272,7 +272,7 @@ class NodeIntegrationMain extends Application {
 
 		socket.addEventListener(Event.CONNECT, function(_):Void {
 			connected = true;
-			socket.writeUTFBytes(ROUND_TRIP);
+			socket.writeUtfBytes(ROUND_TRIP);
 			socket.flush();
 		});
 
@@ -286,7 +286,7 @@ class NodeIntegrationMain extends Application {
 				return;
 			}
 
-			var received = socket.readUTFBytes(ROUND_TRIP.length);
+			var received = socket.readUtfBytes(ROUND_TRIP.length);
 			check("Socket connected", connected, "no connect event");
 			check("Socket round-tripped its bytes", received == ROUND_TRIP, "got " + received);
 			check("Socket knows its remote end", socket.remoteAddress == "127.0.0.1", "got " + socket.remoteAddress);
@@ -321,9 +321,9 @@ class NodeIntegrationMain extends Application {
 					return;
 				}
 
-				var request = accepted.readUTFBytes(ROUND_TRIP.length);
+				var request = accepted.readUtfBytes(ROUND_TRIP.length);
 				check("ServerSocket read the client bytes", request == ROUND_TRIP, "got " + request);
-				accepted.writeUTFBytes(request.toUpperCase());
+				accepted.writeUtfBytes(request.toUpperCase());
 				accepted.flush();
 			});
 		});
@@ -364,7 +364,7 @@ class NodeIntegrationMain extends Application {
 		var client = new Socket();
 
 		client.addEventListener(Event.CONNECT, function(_):Void {
-			client.writeUTFBytes(ROUND_TRIP);
+			client.writeUtfBytes(ROUND_TRIP);
 			client.flush();
 		});
 
@@ -378,7 +378,7 @@ class NodeIntegrationMain extends Application {
 				return;
 			}
 
-			var reply = client.readUTFBytes(ROUND_TRIP.length);
+			var reply = client.readUtfBytes(ROUND_TRIP.length);
 			check("ServerSocket replied through the accepted socket", reply == ROUND_TRIP.toUpperCase(), "got " + reply);
 			client.close();
 			finishListener();
@@ -650,7 +650,7 @@ class NodeIntegrationMain extends Application {
 
 		ws.addEventListener(Event.CONNECT, function(_):Void {
 			check("WebSocket completed the upgrade handshake", true, "");
-			ws.writeUTFBytes(WS_SHORT);
+			ws.writeUtfBytes(WS_SHORT);
 			ws.flush();
 		});
 
@@ -660,7 +660,7 @@ class NodeIntegrationMain extends Application {
 		});
 
 		ws.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-			wsReceived += ws.readUTFBytes(ws.bytesAvailable);
+			wsReceived += ws.readUtfBytes(ws.bytesAvailable);
 
 			if (wsReceived == WS_SHORT) {
 				check("WebSocket echoed a short frame", true, "");
@@ -668,7 +668,7 @@ class NodeIntegrationMain extends Application {
 				// field, which is a different encoding path on the way out and
 				// a different parse on the way in.
 				wsReceived = "";
-				ws.writeUTFBytes(longMessage());
+				ws.writeUtfBytes(longMessage());
 				ws.flush();
 			} else if (wsReceived == longMessage()) {
 				check("WebSocket echoed an extended-length frame", true, "got " + wsReceived.length + " bytes");
@@ -740,7 +740,7 @@ class NodeIntegrationMain extends Application {
 		sender = new DatagramSocket();
 
 		var first = new crossbyte.io.ByteArray();
-		first.writeUTFBytes("datagram-one");
+		first.writeUtfBytes("datagram-one");
 		sender.send(first, 0, first.length, "127.0.0.1", udpPort);
 
 		// Connected: the destination comes from connect() rather than from
@@ -749,13 +749,13 @@ class NodeIntegrationMain extends Application {
 		check("connect() marked the socket connected", sender.connected, "not connected");
 
 		var second = new crossbyte.io.ByteArray();
-		second.writeUTFBytes("datagram-two");
+		second.writeUtfBytes("datagram-two");
 		sender.send(second, 0, second.length);
 	}
 
 	private function onDatagram(event:DatagramSocketDataEvent):Void {
 		datagrams++;
-		var text = event.data.readUTFBytes(event.data.bytesAvailable);
+		var text = event.data.readUtfBytes(event.data.bytesAvailable);
 
 		if (datagrams == 1) {
 			check("an unconnected send arrived", text == "datagram-one", "got " + text);
@@ -782,7 +782,7 @@ class NodeIntegrationMain extends Application {
 		stray.receive();
 
 		var payload = new crossbyte.io.ByteArray();
-		payload.writeUTFBytes("not-for-you");
+		payload.writeUtfBytes("not-for-you");
 		sender.send(payload, 0, payload.length);
 
 		haxe.Timer.delay(function():Void {
@@ -822,7 +822,7 @@ class NodeIntegrationMain extends Application {
 
 			rdAccepted.addEventListener(DatagramSocketDataEvent.DATA, function(dataEvent:DatagramSocketDataEvent):Void {
 				dataEvent.data.position = 0;
-				var text = dataEvent.data.readUTFBytes(dataEvent.data.length);
+				var text = dataEvent.data.readUtfBytes(dataEvent.data.length);
 				if (rdBurst.length == 0 && text == "reliable-over-node") {
 					check("a reliable message arrived intact", true, "");
 					rdBurst.push(text);
@@ -857,7 +857,7 @@ class NodeIntegrationMain extends Application {
 	private function sendReliableBurst():Void {
 		for (i in 0...RELIABLE_BURST) {
 			var payload = new crossbyte.io.ByteArray();
-			payload.writeUTFBytes("burst " + i);
+			payload.writeUtfBytes("burst " + i);
 			rdClient.send(payload);
 		}
 		waitForReliableBurst(0);
@@ -905,7 +905,7 @@ class NodeIntegrationMain extends Application {
 				: rdClient.receiveBufferSize > 0;
 			check("a reliable session asked for a window of socket buffer", windowGranted, "read back " + rdClient.receiveBufferSize);
 			var payload = new crossbyte.io.ByteArray();
-			payload.writeUTFBytes("reliable-over-node");
+			payload.writeUtfBytes("reliable-over-node");
 			rdClient.send(payload);
 			return;
 		}
@@ -961,9 +961,9 @@ class NodeIntegrationMain extends Application {
 			check("the server counts its sessions", wsListener.connectionCount == 1, "connectionCount " + wsListener.connectionCount);
 
 			wsAccepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-				var request = wsAccepted.readUTFBytes(wsAccepted.bytesAvailable);
+				var request = wsAccepted.readUtfBytes(wsAccepted.bytesAvailable);
 				check("the server read a masked client frame", request == WS_SHORT, "got " + request);
-				wsAccepted.writeUTFBytes(request.toUpperCase());
+				wsAccepted.writeUtfBytes(request.toUpperCase());
 				wsAccepted.flush();
 			});
 		});
@@ -996,7 +996,7 @@ class NodeIntegrationMain extends Application {
 
 		wsClient.addEventListener(Event.CONNECT, function(_):Void {
 			check("the client completed the upgrade against our own server", true, "");
-			wsClient.writeUTFBytes(WS_SHORT);
+			wsClient.writeUtfBytes(WS_SHORT);
 			wsClient.flush();
 		});
 
@@ -1006,7 +1006,7 @@ class NodeIntegrationMain extends Application {
 		});
 
 		wsClient.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-			var reply = wsClient.readUTFBytes(wsClient.bytesAvailable);
+			var reply = wsClient.readUtfBytes(wsClient.bytesAvailable);
 			// Unmasked on the way back: a server must not mask, and a client
 			// that could not tell the difference would read a masked frame as
 			// noise.
@@ -1040,9 +1040,9 @@ class NodeIntegrationMain extends Application {
 			check("the TLS server accepted a connection", tlsAccepted != null, "no socket on the event");
 
 			tlsAccepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-				var text = tlsAccepted.readUTFBytes(tlsAccepted.bytesAvailable);
+				var text = tlsAccepted.readUtfBytes(tlsAccepted.bytesAvailable);
 				check("the TLS server read the encrypted request", text == "over-tls", "got " + text);
-				tlsAccepted.writeUTFBytes(text.toUpperCase());
+				tlsAccepted.writeUtfBytes(text.toUpperCase());
 				tlsAccepted.flush();
 			});
 		});
@@ -1229,7 +1229,7 @@ class NodeIntegrationMain extends Application {
 				}
 
 				phpAnswered = true;
-				phpPeer.readUTFBytes(phpPeer.bytesAvailable);
+				phpPeer.readUtfBytes(phpPeer.bytesAvailable);
 
 				var payload = "Status: 201 Created\r\nContent-Type: text/plain\r\nX-From: fastcgi\r\n\r\nhello from php";
 				var body = ByteArray.fromBytes(haxe.io.Bytes.ofString(payload));

@@ -68,7 +68,7 @@ class IceOverDatagramTest extends utest.Test {
 				var accepted:ReliableDatagramSocket = e.socket;
 				accepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 					if (accepted.bytesAvailable > 0) {
-						delivered = accepted.readUTFBytes(accepted.bytesAvailable);
+						delivered = accepted.readUtfBytes(accepted.bytesAvailable);
 					}
 				});
 			});
@@ -113,7 +113,7 @@ class IceOverDatagramTest extends utest.Test {
 			Assert.isTrue(session.connected, "the negotiated path would not carry a session");
 
 			var payload = new ByteArray();
-			payload.writeUTFBytes("over the path ICE found");
+			payload.writeUtfBytes("over the path ICE found");
 			session.writeBytes(payload, 0, payload.length);
 			session.flush();
 
@@ -153,7 +153,7 @@ class IceOverDatagramTest extends utest.Test {
 				var accepted:ReliableDatagramSocket = e.socket;
 				accepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 					if (accepted.bytesAvailable > 0) {
-						delivered = accepted.readUTFBytes(accepted.bytesAvailable);
+						delivered = accepted.readUtfBytes(accepted.bytesAvailable);
 					}
 				});
 			});
@@ -164,7 +164,7 @@ class IceOverDatagramTest extends utest.Test {
 			Assert.isTrue(client.connected);
 
 			var payload = new ByteArray();
-			payload.writeUTFBytes("not a binding request");
+			payload.writeUtfBytes("not a binding request");
 			client.writeBytes(payload, 0, payload.length);
 			client.flush();
 

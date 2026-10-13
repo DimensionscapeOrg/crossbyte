@@ -54,7 +54,7 @@ class DtlsTransportTest extends utest.Test {
 
 		pair.server.onMessage = function(payload) {
 			payload.position = 0;
-			heard = payload.readUTFBytes(payload.length);
+			heard = payload.readUtfBytes(payload.length);
 		};
 
 		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
@@ -99,12 +99,12 @@ class DtlsTransportTest extends utest.Test {
 
 		pair.server.onMessage = function(payload) {
 			payload.position = 0;
-			delivered = payload.readUTFBytes(payload.length);
+			delivered = payload.readUtfBytes(payload.length);
 		};
 
 		pair.client.onMessage = function(payload) {
 			payload.position = 0;
-			back = payload.readUTFBytes(payload.length);
+			back = payload.readUtfBytes(payload.length);
 		};
 
 		Assert.isTrue(pair.run(() -> pair.client.connected && pair.server.connected), "the DTLS handshake never completed");
@@ -135,14 +135,14 @@ class DtlsTransportTest extends utest.Test {
 		var outerAfter:String = null;
 		pair.server.onMessage = function(payload:ByteArray) {
 			kept.push(payload);
-			var said:String = payload.readUTFBytes(payload.length);
+			var said:String = payload.readUtfBytes(payload.length);
 			heard.push(said);
 			if (said == "outer") {
 				// The next record is read while this one is being handled.
 				pair.client.send(text("nested, and longer"));
 				pair.deliverToServer();
 				payload.position = 0;
-				outerAfter = payload.readUTFBytes(payload.length);
+				outerAfter = payload.readUtfBytes(payload.length);
 			} else if (said == "throws") {
 				throw "a listener's own failure";
 			}
@@ -258,7 +258,7 @@ class DtlsTransportTest extends utest.Test {
 
 		pair.server.onMessage = function(payload) {
 			payload.position = 0;
-			heard.push(payload.readUTFBytes(payload.length));
+			heard.push(payload.readUtfBytes(payload.length));
 		};
 
 		pair.server.onClose = reason -> reasons.push(reason);
@@ -543,7 +543,7 @@ class DtlsTransportTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var out = new ByteArray();
-		out.writeUTFBytes(value);
+		out.writeUtfBytes(value);
 		out.position = 0;
 		return out;
 	}

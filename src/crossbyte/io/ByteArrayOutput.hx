@@ -34,7 +34,7 @@ import crossbyte.errors.RangeError;
  * var output = new ByteArrayOutput();
  * output.reserve(128);
  * output.writeInt(42);
- * output.writeVarUTF("Hello");
+ * output.writeVarUtf("Hello");
  *
  * final result:Bytes = output; // or a ByteArray
  * ```
@@ -393,7 +393,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param value    The string to write.
 	 * @param reserved Whether the space has already been reserved.
 	 */
-	public inline function writeUTFBytes(value:String, reserved:Bool = false):Void {
+	public inline function writeUtfBytes(value:String, reserved:Bool = false):Void {
 		#if (js || cpp)
 		if (__writeText(value, 0)) {
 			return;
@@ -416,7 +416,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 * @throws RangeError If the string is more than 65535 bytes as UTF-8.
 	 */
-	public inline function writeUTF(value:String, reserved:Bool = false):Void {
+	public inline function writeUtf(value:String, reserved:Bool = false):Void {
 		#if (js || cpp)
 		if (__writeText(value, 2)) {
 			return;
@@ -427,7 +427,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		// A sixteen-bit prefix cannot describe more, and past it the length
 		// wrapped and every later read landed in the wrong place.
 		if (b.length > 0xFFFF) {
-			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${b.length}.');
+			throw new RangeError('writeUtf takes at most 65535 bytes, and this string is ${b.length}.');
 		}
 
 		if (!reserved) {
@@ -471,7 +471,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param value    The string to write.
 	 * @param reserved Whether the space has already been reserved.
 	 */
-	public inline function writeVarUTF(value:String, reserved:Bool = false):Void {
+	public inline function writeVarUtf(value:String, reserved:Bool = false):Void {
 		#if (js || cpp)
 		if (__writeText(value, 1)) {
 			return;
@@ -544,7 +544,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		and one held as UTF-16 sized and encoded in place (see
 		Utf8.encodeNative), where `Bytes.ofString` made a buffer of it to copy
 		in. False, having written nothing, for one past the 16-bit prefix,
-		which writeUTF refuses.
+		which writeUtf refuses.
 	**/
 	@:noCompletion private function __writeText(value:String, head:Int):Bool {
 		var narrow:Bool = !(untyped __cpp__("{0}.isUTF16Encoded()", value));

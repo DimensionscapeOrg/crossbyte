@@ -7,7 +7,7 @@ class SocketChatCommon {
 	public static inline var PUMP_INTERVAL:Float = 1 / 60;
 
 	public static function sendFrame(socket:Socket, text:String):Void {
-		socket.writeUTF(text);
+		socket.writeUtf(text);
 		socket.flush();
 	}
 

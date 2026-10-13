@@ -495,7 +495,7 @@ class BrowserInteropPeer {
 				if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
 					dropped = true;
 					data.payload.position = 0;
-					say({event: "dropped", text: data.payload.readUTFBytes(data.payload.length)});
+					say({event: "dropped", text: data.payload.readUtfBytes(data.payload.length)});
 					return;
 				}
 			}

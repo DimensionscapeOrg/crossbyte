@@ -50,7 +50,7 @@ class FileStreamContractTest extends utest.Test {
 				() -> (stream.readUnsignedInt() : Dynamic),
 				() -> (stream.readFloat() : Dynamic),
 				() -> (stream.readDouble() : Dynamic),
-				() -> (stream.readUTFBytes(4) : Dynamic),
+				() -> (stream.readUtfBytes(4) : Dynamic),
 				() -> (stream.readObject() : Dynamic)
 			]) {
 				var raised:Dynamic = null;
@@ -76,10 +76,10 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testAStringLongerThanTheFileIsAnEOFError():Void {
-		// A writeUTF prefix promising more than is there.
+		// A writeUtf prefix promising more than is there.
 		__eachReader([0x00, 0x09, 0x41, 0x42], function(stream:FileStream, how:String) {
 			stream.endian = BIG_ENDIAN;
-			Assert.raises(() -> stream.readUTF(), EOFError);
+			Assert.raises(() -> stream.readUtf(), EOFError);
 			Assert.equals(0, stream.position, how);
 		});
 	}
@@ -176,7 +176,7 @@ class FileStreamContractTest extends utest.Test {
 			writer.writeUnsignedInt(0xFFFFFFFF);
 			writer.writeFloat(1.5);
 			writer.writeDouble(-2.25);
-			writer.writeUTF("héllo");
+			writer.writeUtf("héllo");
 			writer.writeBoolean(true);
 			writer.close();
 
@@ -190,7 +190,7 @@ class FileStreamContractTest extends utest.Test {
 				Assert.equals(-1, (reader.readUnsignedInt() : Int), how);
 				Assert.equals(1.5, reader.readFloat(), how);
 				Assert.equals(-2.25, reader.readDouble(), how);
-				Assert.equals("héllo", reader.readUTF(), how);
+				Assert.equals("héllo", reader.readUtf(), how);
 				Assert.isTrue(reader.readBoolean(), how);
 				Assert.equals(0, reader.bytesAvailable, how);
 				__close(reader);
@@ -218,7 +218,7 @@ class FileStreamContractTest extends utest.Test {
 	}
 
 	public function testObjectsLargerThanSixtyFourKilobytesRoundTrip():Void {
-		// Framed by writeUTF's 16-bit length, past 65,535 bytes writeObject
+		// Framed by writeUtf's 16-bit length, past 65,535 bytes writeObject
 		// would throw RangeError.
 		var big:Array<String> = [for (i in 0...20000) "item" + i];
 
@@ -275,7 +275,7 @@ class FileStreamContractTest extends utest.Test {
 					var writer = new FileStream();
 					writer.open(file, WRITE);
 					writer.writeUnsignedInt(body.length);
-					writer.writeUTFBytes(body);
+					writer.writeUtfBytes(body);
 					writer.close();
 
 					var reader = new FileStream();
@@ -307,7 +307,7 @@ class FileStreamContractTest extends utest.Test {
 						var writer = new FileStream();
 						writer.open(file, WRITE);
 						writer.writeUnsignedInt(body.length);
-						writer.writeUTFBytes(body);
+						writer.writeUtfBytes(body);
 						writer.close();
 
 						var reader = new FileStream();
@@ -397,14 +397,14 @@ class FileStreamContractTest extends utest.Test {
 		var drained:Bool = false;
 		stream.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, (event:OutputProgressEvent) -> if (event.bytesPending == 0) drained = true);
 		__open(stream, file, true, WRITE);
-		stream.writeUTFBytes("AAAAAAAA");
+		stream.writeUtfBytes("AAAAAAAA");
 		__pumpUntil(() -> drained, 5.0);
 		stream.position = 0;
-		stream.writeUTFBytes("BB");
+		stream.writeUtfBytes("BB");
 		Assert.equals(2, stream.position);
 		// Before the first write has reached the file, too.
 		stream.position = 6;
-		stream.writeUTFBytes("C");
+		stream.writeUtfBytes("C");
 		__close(stream);
 
 		Assert.equals("BBAAAACA", sys.io.File.getContent(file.nativePath));

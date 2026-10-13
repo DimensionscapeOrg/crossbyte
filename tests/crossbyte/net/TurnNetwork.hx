@@ -201,7 +201,7 @@ class TurnNetwork {
 	/** A peer sends to a relayed address of the first relay; it handles it at once. **/
 	public function peerSends(relayPort:Int, text:String, fromAddress:String, fromPort:Int):Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes(text);
+		payload.writeUtfBytes(text);
 		payload.position = 0;
 		relay.fromPeer(relayPort, payload, fromAddress, fromPort, now);
 	}

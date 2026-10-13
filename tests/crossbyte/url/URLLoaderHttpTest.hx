@@ -49,7 +49,7 @@ class URLLoaderHttpTest extends utest.Test {
 		if (result.responses.length > 0) {
 			var event:HTTPStatusEvent = result.responses[0];
 			Assert.equals(200, event.status);
-			Assert.equals(url, event.responseURL);
+			Assert.equals(url, event.responseUrl);
 			Assert.isFalse(event.redirected);
 			Assert.equals("\"abc\"", __header(event, "etag"));
 			Assert.equals("120", __header(event, "retry-after"));
@@ -70,7 +70,7 @@ class URLLoaderHttpTest extends utest.Test {
 		if (result.responses.length > 0) {
 			Assert.equals(200, result.responses[0].status);
 			Assert.isTrue(result.responses[0].redirected);
-			Assert.equals('http://127.0.0.1:${fixture.port}/final', result.responses[0].responseURL);
+			Assert.equals('http://127.0.0.1:${fixture.port}/final', result.responses[0].responseUrl);
 			Assert.equals("final", __header(result.responses[0], "x-served-by"));
 		}
 	}
@@ -141,7 +141,7 @@ class URLLoaderHttpTest extends utest.Test {
 		var text:String = "a deflate body, coded both ways";
 		for (algorithm in [crossbyte.utils.CompressionAlgorithm.ZLIB, crossbyte.utils.CompressionAlgorithm.DEFLATE]) {
 			var coded:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
-			coded.writeUTFBytes(text);
+			coded.writeUtfBytes(text);
 			coded.compress(algorithm);
 			var body:Bytes = Bytes.alloc(coded.length);
 			body.blit(0, coded, 0, coded.length);

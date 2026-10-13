@@ -35,11 +35,11 @@ class NodeListenerFailureTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var socket = e.socket;
 			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				var text = socket.readUTFBytes(socket.bytesAvailable);
+				var text = socket.readUtfBytes(socket.bytesAvailable);
 				if (text == "boom") {
 					throw "one client's message could not be parsed";
 				}
-				socket.writeUTFBytes(text.toUpperCase());
+				socket.writeUtfBytes(text.toUpperCase());
 				socket.flush();
 			});
 		});
@@ -104,7 +104,7 @@ class NodeListenerFailureTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var session:WebSocket = cast e.socket;
 			session.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				if (session.readUTFBytes(session.bytesAvailable) == "boom") {
+				if (session.readUtfBytes(session.bytesAvailable) == "boom") {
 					throw "one session's message could not be parsed";
 				}
 			});
@@ -120,7 +120,7 @@ class NodeListenerFailureTest extends utest.Test {
 				code = close == null ? 0 : close.code;
 			});
 			client.addEventListener(Event.CONNECT, function(_) {
-				client.writeUTFBytes("boom");
+				client.writeUtfBytes("boom");
 				client.flush();
 			});
 			client.connect("127.0.0.1", server.localPort);
@@ -138,7 +138,7 @@ class NodeListenerFailureTest extends utest.Test {
 		var receiver = new DatagramSocket();
 		var heard:Array<String> = [];
 		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
-			var text = e.data.readUTFBytes(e.data.length);
+			var text = e.data.readUtfBytes(e.data.length);
 			heard.push(text);
 			if (text == "boom") {
 				throw "one datagram could not be parsed";
@@ -151,7 +151,7 @@ class NodeListenerFailureTest extends utest.Test {
 		NetPump.until(() -> receiver.localPort != 0, 5.0, function(_) {
 			for (text in ["boom", "after"]) {
 				var bytes = new ByteArray();
-				bytes.writeUTFBytes(text);
+				bytes.writeUtfBytes(text);
 				sender.send(bytes, 0, bytes.length, "127.0.0.1", receiver.localPort);
 			}
 

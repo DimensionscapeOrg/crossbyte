@@ -29,7 +29,7 @@ import crossbyte.io.ByteArray;
  * ```haxe
  * final input:ByteArrayInput = someByteArray; // implicit from ByteArray
  * final tag  = input.readInt();
- * final name = input.readVarUTF();
+ * final name = input.readVarUtf();
  * if (!input.eof()) {
  *   final flags = input.readByte();
  * }
@@ -88,7 +88,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 		#if !final
 		// Against the bytes remaining rather than `position + n`: that sum
 		// overflows for a large n and wraps negative, so the comparison would
-		// succeed and the read go ahead, and readVarUTF can hand this a
+		// succeed and the read go ahead, and readVarUtf can hand this a
 		// length the peer chose, up to 2^31-1.
 		if (n < 0 || n > this.length - this.position)
 			throw new EOFError("ByteArrayInput underflow");
@@ -220,14 +220,14 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * **Note:** No length prefix is consumed; this reads a fixed-size slice.
 	 *
 	 * A NUL is a character like any other, and a malformed sequence reads
-	 * as U+FFFD, as `ByteArray.readUTFBytes` reads them, on every target.
+	 * as U+FFFD, as `ByteArray.readUtfBytes` reads them, on every target.
 	 *
 	 * @param len Number of bytes to decode into a string.
 	 * @return The decoded string.
 	 * @throws EOFError If the read would exceed `length`, in every build: the
 	 *                length is usually one a peer sent.
 	 */
-	public inline function readUTFBytes(len:Int):String {
+	public inline function readUtfBytes(len:Int):String {
 		if (len < 0 || len > this.length - this.position) {
 			throw new EOFError("ByteArrayInput underflow");
 		}
@@ -247,14 +247,14 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 *                `position` does not move, so the read can be tried again
 	 *                once the rest has arrived.
 	 */
-	public inline function readUTF():String {
+	public inline function readUtf():String {
 		var at:Int = this.position;
 		var len:Int = readShort();
 		if (len > this.length - this.position) {
 			this.position = at;
 			throw new EOFError("ByteArrayInput underflow");
 		}
-		return readUTFBytes(len);
+		return readUtfBytes(len);
 	}
 
 	/**
@@ -343,7 +343,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * @throws EOFError If the decoded length exceeds the bytes remaining. Checked in
 	 *                every build, including `final`. `position` does not move.
 	 */
-	public inline function readVarUTF():String {
+	public inline function readVarUtf():String {
 		var at:Int = this.position;
 		var len:Int = readVarUInt();
 		// The length is the peer's. Negative is a length from 2^31 up, which
@@ -352,6 +352,6 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 			this.position = at;
 			throw new EOFError("ByteArrayInput underflow");
 		}
-		return readUTFBytes(len);
+		return readUtfBytes(len);
 	}
 }

@@ -2206,7 +2206,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 		if (hasEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS)) {
 			var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-			statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
+			statusEvent.responseUrl = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
 			// A listener added since the fields were begun (by the hook above,
 			// say) is given new ones too: the kept ones are this connection's.
 			statusEvent.responseHeaders = handedOut ? fields : [for (field in fields) __handOutField(field)];
@@ -2719,7 +2719,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// caller's: a body too large to write at once is copied before it
 			// is streamed.
 			var text:ByteArray = TextBody.take();
-			text.writeUTFBytes(content);
+			text.writeUtfBytes(content);
 			try {
 				__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, text, false, null, false, true, true);
 			} catch (error:Dynamic) {

@@ -761,7 +761,7 @@ class HttpTest extends utest.Test {
 
 	public function testLoadDecodesGzipContentEncoding():Void {
 		var encoded = new ByteArray();
-		encoded.writeUTFBytes("hello from gzip");
+		encoded.writeUtfBytes("hello from gzip");
 		encoded.compress(CompressionAlgorithm.GZIP);
 
 		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
@@ -779,7 +779,7 @@ class HttpTest extends utest.Test {
 
 	public function testLoadDecodesLz4ContentEncoding():Void {
 		var encoded = new ByteArray();
-		encoded.writeUTFBytes("hello from lz4");
+		encoded.writeUtfBytes("hello from lz4");
 		encoded.compress(CompressionAlgorithm.LZ4);
 
 		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: lz4\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
@@ -797,7 +797,7 @@ class HttpTest extends utest.Test {
 
 	public function testLoadDecodesBrotliContentEncoding():Void {
 		var encoded = new ByteArray();
-		encoded.writeUTFBytes("hello from brotli");
+		encoded.writeUtfBytes("hello from brotli");
 		encoded.compress(CompressionAlgorithm.BROTLI);
 
 		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
@@ -834,7 +834,7 @@ class HttpTest extends utest.Test {
 
 	public function testHttpErrorBodyIsDecodedBeforeOnError():Void {
 		var encoded = new ByteArray();
-		encoded.writeUTFBytes("compressed missing");
+		encoded.writeUtfBytes("compressed missing");
 		encoded.compress(CompressionAlgorithm.GZIP);
 
 		var fixture = serveOnceWithBody("HTTP/1.1 404 Not Found\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);

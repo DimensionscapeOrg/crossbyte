@@ -43,7 +43,7 @@ class WebSocketFinalMessageStress implements StressCase {
 			var ws:WebSocket = cast e.socket;
 
 			ws.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
-				received = ws.readUTFBytes(ws.bytesAvailable);
+				received = ws.readUtfBytes(ws.bytesAvailable);
 			});
 			ws.addEventListener(Event.CLOSE, function(_):Void {
 				sessionClosed = true;

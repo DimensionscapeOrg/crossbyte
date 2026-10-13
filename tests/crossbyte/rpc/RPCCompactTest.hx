@@ -170,7 +170,7 @@ class RPCCompactTest extends utest.Test {
 			out.writeInt(sameOp);
 			out.writeVarUInt(9);
 			out.writeInt(1);
-			out.writeVarUTF("x");
+			out.writeVarUtf("x");
 			out.writeInt(5);
 		}));
 		Assert.isFalse(found, "an abstract's op was not its underlying type's");
@@ -225,7 +225,7 @@ class RPCCompactTest extends utest.Test {
 				input.readInt();
 				if ((flags & RPCWire.FLAG_ERROR) != 0) {
 					final id:Int = input.readVarUInt();
-					answers.push(id + ": " + input.readVarUTF());
+					answers.push(id + ": " + input.readVarUtf());
 				}
 				input.position = end;
 			}

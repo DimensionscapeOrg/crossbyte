@@ -137,13 +137,13 @@ class StoreTest extends utest.Test {
 
 	private function bytesOf(text:String):ByteArray {
 		var data = new ByteArray();
-		data.writeUTFBytes(text);
+		data.writeUtfBytes(text);
 		return data;
 	}
 
 	private function textOf(data:ByteArray):String {
 		data.position = 0;
-		return data.readUTFBytes(data.length);
+		return data.readUtfBytes(data.length);
 	}
 
 	/**
@@ -319,7 +319,7 @@ class StoreTest extends utest.Test {
 				// buffer is how one write ends up holding another's bytes, the same
 				// hazard the Node socket and the WebSocket output guard against.
 				buffer.clear();
-				buffer.writeUTFBytes("changed");
+				buffer.writeUtfBytes("changed");
 				return store.get("k");
 			})
 			.map(function(value:Null<ByteArray>):Bool {
@@ -381,7 +381,7 @@ class StoreTest extends utest.Test {
 			return Future.all([for (i in 0...20) store.putString("k" + i, "v" + i)])
 				.flatMap(_ -> store.forEach(function(key:String, value:ByteArray):Bool {
 					value.position = 0;
-					seen.set(key, value.readUTFBytes(value.length));
+					seen.set(key, value.readUtfBytes(value.length));
 					return true;
 				}))
 				.map(function(_):Bool {
@@ -486,7 +486,7 @@ class StoreTest extends utest.Test {
 			.flatMap(_ -> first.get("contested"))
 			.flatMap(function(value:Null<ByteArray>):Future<Null<String>> {
 				value.position = 0;
-				var text = value.readUTFBytes(value.length);
+				var text = value.readUtfBytes(value.length);
 
 				// Last writer wins, and which one that is is not promised. What
 				// is promised is that it is one of them entire.
@@ -637,7 +637,7 @@ class StoreTest extends utest.Test {
 
 	private static function __bytes(text:String):ByteArray {
 		var data = new ByteArray();
-		data.writeUTFBytes(text);
+		data.writeUtfBytes(text);
 		return data;
 	}
 	#end

@@ -469,14 +469,14 @@ private class Pair {
 		pair.server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
 			pair.accepted.push(e.socket);
 			e.socket.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent):Void {
-				pair.serverGot.push(d.data.readUTFBytes(d.data.length));
+				pair.serverGot.push(d.data.readUtfBytes(d.data.length));
 			});
 		});
 		pair.server.listen();
 		pair.nat = new NatRelay(pair.server.localPort);
 		pair.client = new ReliableDatagramSocket();
 		pair.client.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent):Void {
-			pair.clientGot.push(d.data.readUTFBytes(d.data.length));
+			pair.clientGot.push(d.data.readUtfBytes(d.data.length));
 		});
 		pair.client.addEventListener(Event.CLOSE, _ -> pair.clientClosed = true);
 		pair.client.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> pair.clientError = e.text);
@@ -515,7 +515,7 @@ private class Pair {
 
 	public static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}
@@ -606,7 +606,7 @@ private class Rebinder {
 private class ReliableDatagramRebindTestText {
 	public static function of(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

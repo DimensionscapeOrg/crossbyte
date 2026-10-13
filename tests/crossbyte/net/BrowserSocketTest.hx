@@ -26,7 +26,7 @@ class BrowserSocketTest extends utest.Test {
 	public function testOneWriteIsSentOnce(async:Async):Void {
 		__session(function(socket, peer) {
 			socket.addEventListener(Event.CONNECT, function(_) {
-				socket.writeUTFBytes("one-message");
+				socket.writeUtfBytes("one-message");
 				socket.flush();
 			});
 		}, function(socket, peer, done) {
@@ -46,7 +46,7 @@ class BrowserSocketTest extends utest.Test {
 		__session(function(socket, peer) {}, function(socket, peer, done) {
 			// Straight after connect(), while the page's WebSocket is still
 			// connecting, when its own send() would throw.
-			socket.writeUTFBytes("early");
+			socket.writeUtfBytes("early");
 			socket.flush();
 
 			NetPump.until(() -> peer.echoed.length >= "early".length, 5.0, function(_) {
@@ -83,7 +83,7 @@ class BrowserSocketTest extends utest.Test {
 		__session(function(socket, peer) {
 			socket.addEventListener(Event.CONNECT, function(_) {
 				tickedWhileOpen = __ticking(socket);
-				socket.writeUTFBytes("close-me");
+				socket.writeUtfBytes("close-me");
 				socket.flush();
 			});
 		}, function(socket, peer, done) {
@@ -118,11 +118,11 @@ class BrowserSocketTest extends utest.Test {
 		var failure:String = null;
 		var socket = new Socket();
 		var connection:NetConnection = NetConnection.fromSocket(socket);
-		connection.onData = input -> heard += input.readUTFBytes(input.bytesAvailable);
+		connection.onData = input -> heard += input.readUtfBytes(input.bytesAvailable);
 		connection.onError = reason -> failure = Std.string(reason);
 		connection.onReady = function() {
 			var bytes = new crossbyte.io.ByteArray();
-			bytes.writeUTFBytes(message);
+			bytes.writeUtfBytes(message);
 			bytes.position = 0;
 			try {
 				connection.send(bytes);
@@ -176,7 +176,7 @@ class BrowserSocketTest extends utest.Test {
 		NetPump.until(() -> ready == 2, 5.0, function(_) {
 			mine.close();
 			var bytes = new crossbyte.io.ByteArray();
-			bytes.writeUTFBytes("close-me");
+			bytes.writeUtfBytes("close-me");
 			bytes.position = 0;
 			theirs.send(bytes);
 			NetPump.until(() -> closes == 2, 5.0, function(_) {
@@ -206,13 +206,13 @@ class BrowserSocketTest extends utest.Test {
 		// second arrives.
 		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(e:ProgressEvent) loaded.push(e.bytesLoaded));
 		socket.addEventListener(Event.CONNECT, function(_) {
-			socket.writeUTFBytes("abc");
+			socket.writeUtfBytes("abc");
 			socket.flush();
 		});
 		socket.connect(js.Browser.location.hostname + "/" + ECHO_PATH, port);
 
 		NetPump.until(() -> loaded.length >= 1, 5.0, function(_) {
-			socket.writeUTFBytes("defg");
+			socket.writeUtfBytes("defg");
 			socket.flush();
 			NetPump.until(() -> socket.bytesAvailable >= 7, 5.0, function(_) {
 				Assert.same([3, 4], loaded, "bytesLoaded was not what arrived for each event");
@@ -237,7 +237,7 @@ class BrowserSocketTest extends utest.Test {
 
 		var socket = new Socket();
 		var peer = new EchoPeer();
-		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) peer.echoed += socket.readUTFBytes(socket.bytesAvailable));
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) peer.echoed += socket.readUtfBytes(socket.bytesAvailable));
 		socket.addEventListener(Event.CLOSE, function(_) peer.closes++);
 		socket.addEventListener(crossbyte.events.IOErrorEvent.IO_ERROR, function(_) peer.errors++);
 

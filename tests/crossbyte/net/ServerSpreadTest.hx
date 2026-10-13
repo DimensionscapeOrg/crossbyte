@@ -141,13 +141,13 @@ class ServerSpreadTest extends utest.Test {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 				var socket:Socket = e.socket;
 				socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-					var text:String = socket.readUTFBytes(socket.bytesAvailable);
+					var text:String = socket.readUtfBytes(socket.bytesAvailable);
 					seen.add("data:" + SpreadSupport.where(worker));
 					if (text == "bye") {
 						socket.close();
 						return;
 					}
-					socket.writeUTFBytes(text.toUpperCase());
+					socket.writeUtfBytes(text.toUpperCase());
 					socket.flush();
 				});
 				socket.addEventListener(Event.CLOSE, _ -> seen.add("close:" + SpreadSupport.where(worker)));
@@ -444,7 +444,7 @@ class ServerSpreadTest extends utest.Test {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 				var socket = e.socket;
 				socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-					socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable));
+					socket.writeUtfBytes(socket.readUtfBytes(socket.bytesAvailable));
 					socket.flush();
 				});
 				arrived.add(Arrival.of(socket));
@@ -871,7 +871,7 @@ class ServerSpreadTest extends utest.Test {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 				var socket = e.socket;
 				socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-					socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable).toUpperCase());
+					socket.writeUtfBytes(socket.readUtfBytes(socket.bytesAvailable).toUpperCase());
 					socket.flush();
 				});
 				arrived.add(Arrival.of(socket));

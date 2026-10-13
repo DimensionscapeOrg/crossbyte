@@ -104,7 +104,7 @@ interface IDataInput {
 		@param	length	The number of bytes from the byte stream to read.
 		@param	charSet	Accepted for source compatibility and **ignored**. No
 		character set conversion happens: the bytes are decoded as UTF-8, exactly
-		as `readUTFBytes` would. Passing "shift-jis" does not decode Shift-JIS.
+		as `readUtfBytes` would. Passing "shift-jis" does not decode Shift-JIS.
 		Transcode the bytes yourself if you need another encoding.
 		@returns	UTF-8 encoded string.
 		@throws	EOFError	There is not sufficient data available to read.
@@ -158,7 +158,7 @@ interface IDataInput {
 		@returns	A UTF-8 string produced by the byte representation of characters.
 		@throws	EOFError	There is not sufficient data available to read.
 	**/
-	public function readUTF():String;
+	public function readUtf():String;
 
 	/**
 		Reads a sequence of UTF-8 bytes from the byte stream or byte array and returns a
@@ -168,5 +168,5 @@ interface IDataInput {
 		the specified length.
 		@throws	EOFError	There is not sufficient data available to read.
 	**/
-	public function readUTFBytes(length:Int):String;
+	public function readUtfBytes(length:Int):String;
 }

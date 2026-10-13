@@ -135,11 +135,11 @@ class LocalAddress {
 		of, which is how a peer can tell whether it is behind a NAT at all: if
 		the two agree, it is not.
 
-		@param preferIPv6 Ask which interface carries the default IPv6 route
+		@param preferIpv6 Ask which interface carries the default IPv6 route
 		instead of the IPv4 one.
 	**/
-	public static function primary(preferIPv6:Bool = false):Future<String> {
-		return forDestination(preferIPv6 ? ROUTE_REFERENCE_V6 : ROUTE_REFERENCE);
+	public static function primary(preferIpv6:Bool = false):Future<String> {
+		return forDestination(preferIpv6 ? ROUTE_REFERENCE_V6 : ROUTE_REFERENCE);
 	}
 
 	@:noCompletion private static function __route(destination:String, future:Future<String>):Void {

@@ -98,7 +98,7 @@ class HTTPResponseStream {
 	public function writeText(text:String):Bool {
 		var bytes:ByteArray = crossbyte._internal.http.TextBody.take();
 		if (text != null) {
-			bytes.writeUTFBytes(text);
+			bytes.writeUtfBytes(text);
 		}
 		var room:Bool;
 		try {

@@ -135,7 +135,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 	}
 
 	/**
-		`addSNICertificate()` presents the certificate for the name a client
+		`addSniCertificate()` presents the certificate for the name a client
 		asks for, and the default for any other.
 
 		Checked by the client verifying what it is shown: a certificate
@@ -155,7 +155,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 		__serve(function(server) {
 			server.cert = {certificate: fixture.certificate, key: fixture.key};
-			server.addSNICertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
+			server.addSniCertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
 		}, function(server, sessions, finish) {
 			TlsProbe.run(server.localPort, {serverName: "alt.example", trust: alternate.certificate}, function(claimed) {
 				TlsProbe.run(server.localPort, {serverName: "localhost", trust: fixture.certificate}, function(unclaimed) {
@@ -168,7 +168,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 	}
 
 	/**
-		`setALPN()` reaches the handshake, and the session reports what was
+		`setAlpn()` reaches the handshake, and the session reports what was
 		agreed in `alpnProtocol`.
 	**/
 	@:timeout(30000)
@@ -184,7 +184,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 		var reported:Array<String> = [];
 		__serve(function(server) {
 			server.cert = {certificate: fixture.certificate, key: fixture.key};
-			server.setALPN(["http/1.1"]);
+			server.setAlpn(["http/1.1"]);
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) reported.push(e.socket.alpnProtocol));
 		}, function(server, sessions, finish) {
 			TlsProbe.run(server.localPort, {upgrade: true, alpn: ["h2", "http/1.1"]}, function(outcome) {
@@ -317,7 +317,7 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 		__serve(function(server) {
 			server.cert = {certificate: fixture.certificate, key: fixture.key};
-			server.addSNICertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
+			server.addSniCertificate(name -> name == "alt.example", alternate.certificate, alternate.key);
 		}, function(server, sessions, finish) {
 			var beforeHandshakes:Int = made;
 			TlsProbe.run(server.localPort, {serverName: "alt.example", trust: alternate.certificate}, function(first) {

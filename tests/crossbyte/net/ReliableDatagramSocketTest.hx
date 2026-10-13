@@ -496,12 +496,12 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			toAlice.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 				if (toAlice.bytesAvailable > 0) {
-					delivered = toAlice.readUTFBytes(toAlice.bytesAvailable);
+					delivered = toAlice.readUtfBytes(toAlice.bytesAvailable);
 				}
 			});
 
 			var payload = new ByteArray();
-			payload.writeUTFBytes("punched through");
+			payload.writeUtfBytes("punched through");
 			toBob.writeBytes(payload, 0, payload.length);
 			toBob.flush();
 
@@ -713,7 +713,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 				acceptedByBob = event.socket;
 				acceptedByBob.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 					if (acceptedByBob.bytesAvailable > 0) {
-						delivered = acceptedByBob.readUTFBytes(acceptedByBob.bytesAvailable);
+						delivered = acceptedByBob.readUtfBytes(acceptedByBob.bytesAvailable);
 					}
 				});
 			});
@@ -738,7 +738,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			}
 
 			var payload = new ByteArray();
-			payload.writeUTFBytes("punched");
+			payload.writeUtfBytes("punched");
 			toBob.writeBytes(payload, 0, payload.length);
 			toBob.flush();
 
@@ -884,7 +884,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 				accepted = event.socket;
 				accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> {
 					dataEvent.data.position = 0;
-					delivered = dataEvent.data.readUTFBytes(dataEvent.data.length);
+					delivered = dataEvent.data.readUtfBytes(dataEvent.data.length);
 				});
 			});
 			server.listen();
@@ -1152,7 +1152,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 				}
 				Assert.equals(-1, wrong, "the first byte out of place");
 				messages[1].position = 0;
-				Assert.equals("after", messages[1].readUTFBytes(messages[1].length));
+				Assert.equals("after", messages[1].readUtfBytes(messages[1].length));
 			}
 		} catch (e:Dynamic) {
 			closeQuietly(client);
@@ -1273,7 +1273,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
 				accepted = event.socket;
 				accepted.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-					delivered = accepted.readUTFBytes(accepted.bytesAvailable);
+					delivered = accepted.readUtfBytes(accepted.bytesAvailable);
 				});
 			});
 			server.listen();
@@ -1281,7 +1281,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
 
-			client.writeUTFBytes("stream");
+			client.writeUtfBytes("stream");
 			client.flush();
 			pumpUntil(() -> delivered != null, 2.0);
 
@@ -1535,7 +1535,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.admit = (_, _, payload) -> {
 				// Read to the end, which the admitted session must not inherit.
-				var token = payload.readUTFBytes(payload.bytesAvailable);
+				var token = payload.readUtfBytes(payload.bytesAvailable);
 				asked.push(token);
 				return token == "ticket-7";
 			};
@@ -1568,7 +1568,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		try {
 			server.bind(0, "127.0.0.1");
-			server.admit = (_, _, payload) -> payload.readUTFBytes(payload.bytesAvailable) == "good";
+			server.admit = (_, _, payload) -> payload.readUtfBytes(payload.bytesAvailable) == "good";
 			server.listen();
 
 			__injectConnect(server, 40300, bytesOf("good"));
@@ -1694,7 +1694,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			// Rewritten between attempts. connect copied it, so the repeat
 			// still says what the caller passed.
 			passed.position = 0;
-			passed.writeUTFBytes("other");
+			passed.writeUtfBytes("other");
 
 			// A lost CONNECT is recovered by the next attempt, which is only a
 			// recovery if the next attempt says the same thing.
@@ -1865,7 +1865,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 		}
 		var at:Int = bytes.position;
 		bytes.position = 0;
-		var text:String = bytes.readUTFBytes(bytes.length);
+		var text:String = bytes.readUtfBytes(bytes.length);
 		bytes.position = at;
 		return text;
 	}
@@ -1878,7 +1878,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

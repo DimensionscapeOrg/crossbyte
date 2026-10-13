@@ -115,7 +115,7 @@ class RPCSharedHandlerTest extends utest.Test {
 			out.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
 			out.writeInt(opOf("balance():i32"));
 			out.writeVarUInt(waiting.requestId);
-			out.writeVarUTF("No balance.");
+			out.writeVarUtf("No balance.");
 		}));
 
 		Assert.isTrue(waiting.completed);

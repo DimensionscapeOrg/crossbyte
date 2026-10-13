@@ -128,13 +128,13 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - TLS on both ends of a `Socket`. A client sets `secure` before
   `connect()`, and checks the server with `verifyCert` and
   `certAuthority`. A server is `new ServerSocket(true)` with
-  `setCertificate`, `addSNICertificate` and `requireClientCertificate()`,
+  `setCertificate`, `addSniCertificate` and `requireClientCertificate()`,
   stepped across ticks under `handshakeTimeout`. Natively, on the jvm and
   on Node.
 - `crossbyte.net.Certificate` and `crossbyte.net.Key`, loaded with
   `fromFile` or `fromPem`, a key in any form it comes in (PKCS#1, SEC1,
   PKCS#8, encrypted or not). A `Key` prints as `[Key: redacted]`.
-- ALPN: `ServerSocket.setALPN()` and `Socket.alpnProtocol`.
+- ALPN: `ServerSocket.setAlpn()` and `Socket.alpnProtocol`.
 - Native TLS servers resume returning clients with session tickets; build
   with `-D HXCPP_SSL_NO_TICKETS` to turn that off. With the hxcpp fork on
   mbedTLS 3.6.7, TLS 1.3 is negotiated with every peer that offers it.
@@ -296,7 +296,7 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - STUN and TURN: `gatherReflexive`, `gatherRelayed` and
   `gatherRelayedFrom(servers)` with failover; `TurnClient` over UDP, TCP or
   TLS (`TurnTransport`), with RFC 8656 channels (`useChannels`), IPv6
-  (`requestIPv6`), RFC 8489's SHA-256 credentials and 300 redirects;
+  (`requestIpv6`), RFC 8489's SHA-256 credentials and 300 redirects;
   `setRelayCredentials` for expiring credentials. A relay granting a
   lifetime of 2^31 seconds or more keeps the allocation that long.
 - `readyTimeout` (30 s), `maxPeerChannels` (512), `maxLabelSize`
@@ -681,8 +681,8 @@ says how.
 - On JavaScript, text is encoded and decoded through the platform's
   `TextEncoder` and `TextDecoder`, about ten times faster, and a NUL byte no
   longer ends a string read from bytes (on HashLink too).
-- `ByteArray.writeUTFBytes` and `writeUTF` write ASCII text without making
-  bytes of it first: natively by one copy (`writeUTF` of twelve characters
+- `ByteArray.writeUtfBytes` and `writeUtf` write ASCII text without making
+  bytes of it first: natively by one copy (`writeUtf` of twelve characters
   in 15 ns rather than 62), and on JavaScript a character at a time for
   text of up to 256 characters (twelve characters on Node in 56 ns rather
   than 690). On Node all other text is written straight into the
@@ -695,7 +695,7 @@ says how.
   a buffer of it to copy (eleven accented characters in 30 ns rather than
   84), and `ByteArrayOutput` copies text held a byte a character straight
   in as `ByteArray` does (twelve characters in 7.8 ns rather than 49). On the jvm
-  ASCII text of up to 256 characters (64 for `writeUTF`) is copied
+  ASCII text of up to 256 characters (64 for `writeUtf`) is copied
   straight in by `String.getBytes`, allocating nothing, where a loop wrote
   it a character at a time: 200 characters in 83 ns rather than 146. On HashLink
   strings are decoded in one pass, ASCII four bytes at a time, where
@@ -703,7 +703,7 @@ says how.
   reads of 200 characters take 790 ns rather than 1,530. There `ByteArray`
   writes text from the string's own units straight into its buffer, where
   HashLink's encoder made a buffer and a `Bytes` of it to copy in:
-  `writeUTFBytes` of twelve characters in 15 ns rather than 62, eleven
+  `writeUtfBytes` of twelve characters in 15 ns rather than 62, eleven
   with accents in 31 rather than 64, and 200 in 175 rather than 235. On Node
   `ByteArrayInput` and `ByteArrayOutput` strings go through the platform's
   decoder and encoder, 144 ns rather than 1,456 for 200 characters, though
@@ -761,7 +761,7 @@ says how.
 
 #### TCP
 
-- A URI that `NetConnection`, `NetHost` or `parseURL` cannot use throws an
+- A URI that `NetConnection`, `NetHost` or `parseUrl` cannot use throws an
   `ArgumentError` naming it, with what is wrong or the schemes that would
   work, where it threw a bare string such as "Protocol error" or
   "missing host". (Upgrading)
@@ -1116,6 +1116,10 @@ says how.
 
 #### Platform
 
+- A member's name spells an acronym after its first word as a word
+  (`writeUtfBytes`, `getJson`, `responseUrl`, `parseUrl`, `setAlpn`), as
+  `requestId` and `lastInsertRowId` do; a type's name keeps its capitals
+  (`URLRequest`). (Upgrading)
 - `File.applicationStorageDirectory`, and every `Store` in it, is the
   application's own directory. (Upgrading)
 - `File.applicationDirectory`, `System.appDir` and `Resources` are the
@@ -1205,7 +1209,7 @@ Fixes to code new in this release are not listed.
 - Writing past the end of a `ByteArray` zeroes the gap, where it could
   expose earlier contents (on eval too).
 - A multi-byte read that cannot be satisfied throws without moving
-  `position`, `readDouble` and `readUTF` included (each moved it part of
+  `position`, `readDouble` and `readUtf` included (each moved it part of
   the way).
 - A `ByteArray` read with the position far past the end is an `EOFError`:
   near 2^31 the check wrapped and passed, and natively the read answered 0
@@ -1242,7 +1246,7 @@ Fixes to code new in this release are not listed.
   readers and writers count past 256 MB.
 - The varint writers write every 32-bit value (bit 31 set went out as one
   byte), and the readers refuse a value past 32 bits.
-- `writeUTF` refuses a string over 65,535 bytes with a `RangeError`, where
+- `writeUtf` refuses a string over 65,535 bytes with a `RangeError`, where
   the length wrapped.
 - `ByteArrayOutput` grows in every writer, and `reserve` no longer
   reallocates on every call.
@@ -1572,7 +1576,7 @@ Fixes to code new in this release are not listed.
   sessions say they are `secure`, and `pendingHandshakeCount()` and
   `handshakeFailures` count.
 - `ServerWebSocket` takes the TLS methods it inherits (`setCertificate`,
-  `addSNICertificate`, `setALPN`, `requireClientCertificate`), which
+  `addSniCertificate`, `setAlpn`, `requireClientCertificate`), which
   crashed natively.
 - `ServerWebSocket.listen()` on a server never bound throws an `IOError`,
   and a server survives accepts the system refuses.
@@ -1883,6 +1887,20 @@ than waiting a thousand times as long: divide the old value by 1,000.
 | `RPCSession.DEFAULT_HEARTBEAT_INTERVAL`, `DEFAULT_HEARTBEAT_TIMEOUT` | `DEFAULT_PING_INTERVAL`, `DEFAULT_IDLE_TIMEOUT` |
 | `RPCSession.DEFAULT_HEARTBEAT_JITTER` | gone: nothing read it |
 
+#### Names
+
+A member's name spells an acronym after its first word as a word, as
+`requestId` does: rename each use. Nothing else about them changes.
+
+| rc.1 | 1.0 |
+| --- | --- |
+| `readUTF`, `readUTFBytes`, `writeUTF`, `writeUTFBytes`, on `ByteArray`, `IDataInput`, `IDataOutput` and every class implementing them | `readUtf`, `readUtfBytes`, `writeUtf`, `writeUtfBytes` |
+| `ByteArrayInput.readVarUTF`, `ByteArrayOutput.writeVarUTF` | `readVarUtf`, `writeVarUtf` |
+| `Resources.getJSON` | `getJson` |
+| `HTTPStatusEvent.responseURL` | `responseUrl` |
+| `crossbyte.net.Endpoint.parseURL` | `parseUrl` |
+| `HTTPServerConfig.phpCGIPath`, `phpINIPath` | `phpCgiPath`, `phpIniPath` |
+
 #### Runtime
 
 - An event, and a payload handed to a hook called once per arrival, is
@@ -2082,7 +2100,7 @@ than waiting a thousand times as long: divide the old value by 1,000.
 #### TCP
 
 - Code that caught a `String` from `new NetConnection(uri)`, `new
-  NetHost(uri)` or `parseURL` catches a `crossbyte.errors.ArgumentError`.
+  NetHost(uri)` or `parseUrl` catches a `crossbyte.errors.ArgumentError`.
 - `ServerSocket.listen()`, and `ServerWebSocket.listen()`, throw an
   `IOError` for a server never bound, where Linux and macOS listened on a
   port of the system's choosing: bind first, to port 0 for one the system

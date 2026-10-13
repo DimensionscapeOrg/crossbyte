@@ -21,12 +21,12 @@ import sys.ssl.Socket as SSLSocket;
  * Client:
  * ```haxe
  * var socket = new AlpnSocket();
- * socket.setALPN(["h2", "http/1.1"]);
+ * socket.setAlpn(["h2", "http/1.1"]);
  * socket.connect(new Host("example.com"), 443);
- * trace(socket.getALPN()); // "h2"
+ * trace(socket.getAlpn()); // "h2"
  * ```
  *
- * Server: call `setALPN` before `bind()`. Sockets returned by `accept()` are
+ * Server: call `setAlpn` before `bind()`. Sockets returned by `accept()` are
  * plain `sys.ssl.Socket` instances created by the std implementation, so read
  * their negotiated protocol with `AlpnSocket.negotiated(accepted)`.
  */
@@ -44,7 +44,7 @@ class AlpnSocket extends SSLSocket {
 	 * a client or before `bind()` on a server. Passing `null` or an empty
 	 * array disables ALPN.
 	 */
-	public function setALPN(protocols:Null<Array<String>>):Void {
+	public function setAlpn(protocols:Null<Array<String>>):Void {
 		__alpn = protocols;
 	}
 
@@ -56,7 +56,7 @@ class AlpnSocket extends SSLSocket {
 	 * is available as soon as it returns. A non-blocking socket reports `null`
 	 * until a retried `handshake()` stops throwing `Blocked`.
 	 */
-	public function getALPN():Null<String> {
+	public function getAlpn():Null<String> {
 		return negotiated(this);
 	}
 

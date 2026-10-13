@@ -114,7 +114,7 @@ class SocketMemoryTest extends utest.Test {
 			__pumpUntil(() -> received >= size, 10.0);
 			Assert.equals(size, received);
 			// Drained: the next pass finds it empty and lets go.
-			client.writeUTFBytes("x");
+			client.writeUtfBytes("x");
 			client.flush();
 			__pumpUntil(() -> received >= size + 1, 5.0);
 			Assert.isTrue(__storage(accepted.__input) <= 64 * 1024, "a buffer past 64 KB kept " + __storage(accepted.__input) + " bytes once it had emptied");

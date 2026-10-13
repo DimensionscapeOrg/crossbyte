@@ -7,7 +7,7 @@ import crossbyte.errors.IOError;
 #if !js
 import crossbyte.ipc.LocalConnection;
 #end
-import crossbyte.net.Endpoint.parseURL;
+import crossbyte.net.Endpoint.parseUrl;
 import crossbyte.net._internal.CloseObservable;
 import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.errors.SecurityError;
@@ -112,7 +112,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false):Void {
-		var endpoint:Endpoint = parseURL(uri);
+		var endpoint:Endpoint = parseUrl(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
 			case TCP:
@@ -191,7 +191,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	@:allow(crossbyte.rpc.RPCSession)
 	@:noCompletion private static function __dialWithin(uri:String, connectTimeout:Float):NetConnection {
 		#if !js
-		var endpoint:Endpoint = parseURL(uri);
+		var endpoint:Endpoint = parseUrl(uri);
 		if (endpoint.protocol == LOCAL) {
 			var connection = new LocalConnection();
 			connection.connectTimeout = connectTimeout;

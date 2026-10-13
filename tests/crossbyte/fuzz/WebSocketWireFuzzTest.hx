@@ -222,7 +222,7 @@ class WebSocketWireFuzzTest extends utest.Test {
 		for (data in __received) {
 			try {
 				data.position = 0;
-				out.add(data.readUTFBytes(data.length));
+				out.add(data.readUtfBytes(data.length));
 			} catch (_:Dynamic) {}
 		}
 

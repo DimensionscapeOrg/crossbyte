@@ -333,7 +333,7 @@ class H1Session extends ChurnSession {
 		bodyLength = post ? payload.length : -1;
 		sentAt = Timer.stamp();
 		try {
-			socket.writeUTFBytes(head.toString());
+			socket.writeUtfBytes(head.toString());
 			if (post) {
 				socket.writeBytes(payload);
 			}
@@ -352,7 +352,7 @@ class H1Session extends ChurnSession {
 				return;
 			}
 			buffer.position = 0;
-			var head:String = buffer.readUTFBytes(end);
+			var head:String = buffer.readUtfBytes(end);
 			var status:Null<Int> = Std.parseInt(head.split(" ")[1]);
 			var lengthMatch = ~/content-length:\s*([0-9]+)/i;
 			if (status != 200 || !lengthMatch.match(head)) {

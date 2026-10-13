@@ -143,7 +143,7 @@ class HTTPServer extends ServerSocket {
 				// every HTTP/1.1 client into a failed handshake, and a TLS
 				// listener has no second chance to negotiate: ALPN happens
 				// once, before any request exists to fall back on.
-				setALPN(["h2", "http/1.1"]);
+				setAlpn(["h2", "http/1.1"]);
 			}
 		}
 		// Null when the server has no static files; validate() has already
@@ -158,7 +158,7 @@ class HTTPServer extends ServerSocket {
 		if (__config.phpEnabled) {
 			var mode:PHPMode = switch (__config.phpMode) {
 				case 0: Connect(__config.phpAddress, __config.phpPort);
-				case 1: Launch(__config.phpAddress, __config.phpPort, __config.phpCGIPath, __config.phpINIPath);
+				case 1: Launch(__config.phpAddress, __config.phpPort, __config.phpCgiPath, __config.phpIniPath);
 				default:
 					throw new crossbyte.errors.ArgumentError("Invalid PHPMode enum");
 			}
@@ -597,7 +597,7 @@ class HTTPServer extends ServerSocket {
 		if (!counted && !__claimConnection()) {
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
-				socket.writeUTFBytes('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+				socket.writeUtfBytes('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
 				socket.flush();
 			} catch (_:Dynamic) {}
 			try

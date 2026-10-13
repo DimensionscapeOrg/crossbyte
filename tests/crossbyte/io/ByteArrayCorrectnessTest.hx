@@ -630,7 +630,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
-	 * The length in front of a writeUTF string is sixteen bits, so past 65535
+	 * The length in front of a writeUtf string is sixteen bits, so past 65535
 	 * it is refused: wrapped, the whole string would go out behind a length
 	 * describing some other number of bytes, so the reader would stop short
 	 * and every read after it would land in the middle of the string.
@@ -640,7 +640,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var raised:Dynamic = null;
 
 		try {
-			ba.writeUTF(StringTools.lpad("", "x", 70000));
+			ba.writeUtf(StringTools.lpad("", "x", 70000));
 		} catch (e:Dynamic) {
 			raised = e;
 		}
@@ -650,10 +650,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		Assert.equals(0, ba.length);
 
 		var widest:String = StringTools.lpad("", "y", 65535);
-		ba.writeUTF(widest);
+		ba.writeUtf(widest);
 		ba.writeInt(42);
 		ba.position = 0;
-		Assert.equals(widest, ba.readUTF());
+		Assert.equals(widest, ba.readUtf());
 		Assert.equals(42, ba.readInt());
 	}
 
@@ -670,7 +670,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var reads:Array<ByteArray->Dynamic> = [
 			b -> b.readInt(), b -> b.readUnsignedInt(), b -> b.readShort(), b -> b.readUnsignedShort(), b -> b.readInt64(),
 			b -> b.readDouble(), b -> b.readFloat(), b -> b.readByte(), b -> b.readUnsignedByte(), b -> b.readBoolean(),
-			b -> b.readUTFBytes(2), b -> b.readUTF(), b -> b.readVarUInt()
+			b -> b.readUtfBytes(2), b -> b.readUtf(), b -> b.readVarUInt()
 		];
 		for (at in [0x7FFFFFFF, 0x7FFFFFFE, 0x7FFFFFFC, 0x7FFFFFF9]) {
 			for (i in 0...reads.length) {
@@ -698,7 +698,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 		It is refused before any room is made for it. On JavaScript, whose Int
 		does not wrap, text grew the buffer past 2 GB first, which a browser
-		refuses with an allocation error of its own; and a `writeUTF` whose
+		refuses with an allocation error of its own; and a `writeUtf` whose
 		length fits where its text does not wrote the length, growing the
 		buffer to 2 GB for it, before the text was refused.
 	**/
@@ -711,11 +711,11 @@ class ByteArrayCorrectnessTest extends utest.Test {
 			{at: 0x7FFFFFFE, write: b -> b.writeUnsignedInt(1)},
 			{at: 0x7FFFFFFA, write: b -> b.writeDouble(1.5)},
 			{at: 0x7FFFFFFE, write: b -> b.writeFloat(1.5)},
-			{at: 0x7FFFFFFE, write: b -> b.writeUTFBytes("abc")},
+			{at: 0x7FFFFFFE, write: b -> b.writeUtfBytes("abc")},
 			{at: 0x7FFFFFFF, write: b -> b.writeVarUInt(300)},
-			{at: 0x7FFFFFFC, write: b -> b.writeUTFBytes("héllo")},
-			{at: 0x7FFFFFFD, write: b -> b.writeUTF("abc")},
-			{at: 0x7FFFFFF9, write: b -> b.writeUTF("héllo")}
+			{at: 0x7FFFFFFC, write: b -> b.writeUtfBytes("héllo")},
+			{at: 0x7FFFFFFD, write: b -> b.writeUtf("abc")},
+			{at: 0x7FFFFFF9, write: b -> b.writeUtf("héllo")}
 		];
 		for (i in 0...writes.length) {
 			var bytes = new ByteArray();
@@ -803,11 +803,11 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	/**
-		`readDouble` and `readUTF` cut short leave the position where it was,
+		`readDouble` and `readUtf` cut short leave the position where it was,
 		as every other read does, so a reader that catches the EOFError and
 		tries again with more bytes reads from the start of the value.
 		`readDouble` read two Ints and the first moved the position;
-		`readUTF` read its length and then failed on the text.
+		`readUtf` read its length and then failed on the text.
 	**/
 	public function testATruncatedDoubleOrUTFLeavesThePositionAlone():Void {
 		for (available in 4...8) {
@@ -822,14 +822,14 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 		var text = new ByteArray();
 		text.writeShort(5);
-		text.writeUTFBytes("abc");
+		text.writeUtfBytes("abc");
 		text.position = 0;
-		Assert.raises(() -> text.readUTF(), EOFError);
-		Assert.equals(0, (text.position : Int), "readUTF moved the position past its length");
+		Assert.raises(() -> text.readUtf(), EOFError);
+		Assert.equals(0, (text.position : Int), "readUtf moved the position past its length");
 		text.position = text.length;
-		text.writeUTFBytes("de");
+		text.writeUtfBytes("de");
 		text.position = 0;
-		Assert.equals("abcde", text.readUTF());
+		Assert.equals("abcde", text.readUtf());
 	}
 
 	/**
@@ -896,13 +896,13 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var high:String = "\u{1F600}".substr(0, 1);
 		var replaced:String = #if jvm "3F" #else "EF BF BD" #end;
 		var end = new ByteArray();
-		end.writeUTFBytes("x" + high);
+		end.writeUtfBytes("x" + high);
 		Assert.equals("78 " + replaced, __hex(end));
 		var middle = new ByteArray();
-		middle.writeUTFBytes("a" + high + "Z");
+		middle.writeUtfBytes("a" + high + "Z");
 		Assert.equals("61 " + replaced + " 5A", __hex(middle));
 		var paired = new ByteArray();
-		paired.writeUTFBytes("\u{1F600}");
+		paired.writeUtfBytes("\u{1F600}");
 		Assert.equals("F0 9F 98 80", __hex(paired));
 		#else
 		Assert.pass();
@@ -928,8 +928,8 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				}
 				var total:Int = buffer.length;
 				buffer.position = 5;
-				buffer.writeUTF(text);
-				buffer.writeUTFBytes(text);
+				buffer.writeUtf(text);
+				buffer.writeUtfBytes(text);
 				var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}';
 				Assert.equals(5 + 2 + 2 * size, buffer.position, label);
 				Assert.equals(total, buffer.length, label);
@@ -968,7 +968,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 					partly.writeByte(0x11);
 				}
 				partly.position = 58;
-				partly.writeUTFBytes(text);
+				partly.writeUtfBytes(text);
 				Assert.equals(58 + size > 60 ? 58 + size : 60, partly.length, label);
 				var same:Bool = true;
 				for (i in 0...58) {
@@ -986,7 +986,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				past.writeByte(1);
 				past.position = 6;
 				past.endian = LITTLE_ENDIAN;
-				past.writeUTF(text);
+				past.writeUtf(text);
 				Assert.equals(8 + size, past.length, label);
 				same = past[0] == 1;
 				for (i in 1...6) {
@@ -1000,7 +1000,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				Assert.isTrue(same, 'past: $label');
 
 				var exact = new ByteArray(size);
-				exact.writeUTFBytes(text);
+				exact.writeUtfBytes(text);
 				Assert.equals(size, exact.length, label);
 				Assert.equals(size, @:privateAccess (exact : crossbyte.io.ByteArray.ByteArrayData).__length, 'grown: $label');
 			}
@@ -1008,7 +1008,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var empty = new ByteArray();
 		empty.writeByte(1);
 		empty.position = 4;
-		empty.writeUTFBytes("");
+		empty.writeUtfBytes("");
 		Assert.equals(1, empty.length);
 	}
 
@@ -1061,7 +1061,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				buffer.writeByte(0xEE);
 			}
 			buffer.position = 0;
-			buffer.writeUTF(text);
+			buffer.writeUtf(text);
 			buffer.position = 0;
 			Assert.equals(size, buffer.readUnsignedShort(), label);
 			var same:Bool = true;
@@ -1071,24 +1071,24 @@ class ByteArrayCorrectnessTest extends utest.Test {
 			for (i in 2 + size...buffer.length) {
 				same = same && buffer[i] == 0xEE;
 			}
-			Assert.isTrue(same, 'writeUTF, $label');
+			Assert.isTrue(same, 'writeUtf, $label');
 
 			// Into a new one, which grows as the text needs, part of it into
 			// the room there was.
 			var grown = new ByteArray();
 			grown.writeInt(0);
-			grown.writeUTFBytes(text);
+			grown.writeUtfBytes(text);
 			same = grown.length == 4 + size;
 			for (i in 0...size) {
 				same = same && grown[4 + i] == expected[i];
 			}
-			Assert.isTrue(same, 'writeUTFBytes, $label');
+			Assert.isTrue(same, 'writeUtfBytes, $label');
 
 			#if (cpp || js)
 			// On HashLink ByteArrayOutput writes through HashLink's own encoder.
 			var output = new ByteArrayOutput();
-			output.writeUTF(text);
-			output.writeVarUTF(text);
+			output.writeUtf(text);
+			output.writeVarUtf(text);
 			var written:ByteArray = output;
 			var varint:Int = size < 0x80 ? 1 : 2;
 			same = written.length == 2 + size + varint + size;
@@ -1160,7 +1160,7 @@ class ByteArrayCorrectnessTest extends utest.Test {
 				bytes.writeByte(b);
 			}
 			bytes.position = 0;
-			var text:String = bytes.readUTFBytes(bytes.length);
+			var text:String = bytes.readUtfBytes(bytes.length);
 			// An operation on the string, which is where eval used to abort.
 			text.toLowerCase();
 			#if !(cpp || neko)

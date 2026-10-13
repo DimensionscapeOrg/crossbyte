@@ -165,7 +165,7 @@ class Http2Sample extends ServerApplication {
 
 	private function __write(root:File, name:String, html:String):Void {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(html);
+		bytes.writeUtfBytes(html);
 		root.resolvePath(name).save(bytes);
 	}
 }

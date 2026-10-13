@@ -53,7 +53,7 @@ class LocalConnectionSample extends HostApplication {
 		var client = new LocalConnection();
 		var receiver = new SampleReceiver();
 		server.readEnabled = true;
-		server.onData = input -> receiver.receive(input.readUTF(), input.readInt());
+		server.onData = input -> receiver.receive(input.readUtf(), input.readInt());
 		server.listen(name);
 		client.connect(name);
 
@@ -88,7 +88,7 @@ class LocalConnectionSample extends HostApplication {
 		var server = new LocalConnection();
 		var receiver = new SampleReceiver();
 		server.readEnabled = true;
-		server.onData = input -> receiver.receive(input.readUTF(), input.readInt());
+		server.onData = input -> receiver.receive(input.readUtf(), input.readInt());
 		server.listen(name);
 
 		Sys.println('Listening on "$name". Press Ctrl+C to stop.');
@@ -113,7 +113,7 @@ class LocalConnectionSample extends HostApplication {
 
 	private static function makePayload(message:String, value:Int):ByteArray {
 		var payload = new ByteArray();
-		payload.writeUTF(message);
+		payload.writeUtf(message);
 		payload.writeInt(value);
 		payload.position = 0;
 		return payload;

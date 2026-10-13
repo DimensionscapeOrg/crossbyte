@@ -266,14 +266,14 @@ class ReliableDatagramProtocolTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}
 
 	private static function readBytes(bytes:ByteArray):String {
 		bytes.position = 0;
-		return bytes.readUTFBytes(bytes.length);
+		return bytes.readUtfBytes(bytes.length);
 	}
 
 	private static function copy(bytes:ByteArray):ByteArray {

@@ -29,7 +29,7 @@ class SocketPassTest extends utest.Test {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> {
 				accepted = e.socket;
 				accepted.addEventListener(ProgressEvent.SOCKET_DATA, (_:ProgressEvent) -> {
-					received += accepted.readUTFBytes(accepted.bytesAvailable);
+					received += accepted.readUtfBytes(accepted.bytesAvailable);
 				});
 			});
 			server.bind(0, "127.0.0.1");

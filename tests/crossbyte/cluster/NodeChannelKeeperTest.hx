@@ -46,14 +46,14 @@ class NodeChannelKeeperTest extends utest.Test {
 		});
 
 		var message = new ByteArray();
-		message.writeUTFBytes("forwarded while the link was down");
+		message.writeUtfBytes("forwarded while the link was down");
 		udpOut.send(message, 0, 0, "127.0.0.1", udpIn.localPort);
 		pumpUntil(() -> forwarded >= 1, 5.0);
 		Assert.equals(1, forwarded, "the datagram never arrived");
 
 		// Another datagram, through the same socket, before the link is up.
 		var other = new ByteArray();
-		other.writeUTFBytes("the next datagram, which is not what was forwarded");
+		other.writeUtfBytes("the next datagram, which is not what was forwarded");
 		udpOut.send(other, 0, 0, "127.0.0.1", udpIn.localPort);
 		pumpUntil(() -> forwarded >= 2, 5.0);
 
@@ -64,7 +64,7 @@ class NodeChannelKeeperTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event):Void {
 			var accepted = NodeChannel.adopt(cast event.socket);
 			everyAccepted.push(accepted);
-			accepted.onMessage = payload -> received.push(payload.readUTFBytes(payload.length));
+			accepted.onMessage = payload -> received.push(payload.readUtfBytes(payload.length));
 		});
 		server.bind(port, "127.0.0.1");
 		server.listen();
@@ -96,11 +96,11 @@ class NodeChannelKeeperTest extends utest.Test {
 
 		var link = NodeChannel.dial("127.0.0.1", port);
 		var buffer = new ByteArray();
-		buffer.writeUTFBytes("as sent");
+		buffer.writeUtfBytes("as sent");
 		link.send(buffer);
 		// The caller's to reuse once send has returned, as every other send's is.
 		buffer.position = 0;
-		buffer.writeUTFBytes("CHANGED");
+		buffer.writeUtfBytes("CHANGED");
 
 		var server = new ServerSocket();
 		var everyAccepted:Array<NodeChannel> = [];
@@ -108,7 +108,7 @@ class NodeChannelKeeperTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event):Void {
 			var accepted = NodeChannel.adopt(cast event.socket);
 			everyAccepted.push(accepted);
-			accepted.onMessage = payload -> received.push(payload.readUTFBytes(payload.length));
+			accepted.onMessage = payload -> received.push(payload.readUtfBytes(payload.length));
 		});
 		server.bind(port, "127.0.0.1");
 		server.listen();
@@ -138,7 +138,7 @@ class NodeChannelKeeperTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event):Void {
 			var accepted = NodeChannel.adopt(cast event.socket);
 			everyAccepted.push(accepted);
-			accepted.onMessage = payload -> received.push(payload.readUTFBytes(payload.length));
+			accepted.onMessage = payload -> received.push(payload.readUtfBytes(payload.length));
 		});
 		server.bind(0, "127.0.0.1");
 		server.listen();
@@ -148,16 +148,16 @@ class NodeChannelKeeperTest extends utest.Test {
 		Assert.isTrue(link.up, "the link never came up");
 
 		var buffer = new ByteArray();
-		buffer.writeUTFBytes("first");
+		buffer.writeUtfBytes("first");
 		link.send(buffer);
 		buffer.clear();
-		buffer.writeUTFBytes("second, longer");
+		buffer.writeUtfBytes("second, longer");
 		link.send(buffer);
 		buffer.clear();
 		Assert.equals(2, @:privateAccess link.__inPassCount, "the pass's messages were not held for its end");
 
 		// Reused once more, and then the link fails before the pass ends.
-		buffer.writeUTFBytes("CHANGED");
+		buffer.writeUtfBytes("CHANGED");
 		@:privateAccess link.__scheduleRetry("failed in the pass");
 		Assert.equals(19, link.bufferedAmount, "what the pass wrote was not taken back whole");
 

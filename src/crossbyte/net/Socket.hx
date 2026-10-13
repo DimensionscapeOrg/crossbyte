@@ -188,7 +188,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Read this on the socket carried by a `ServerSocketConnectEvent` to see
 		what a client agreed to during the handshake. It is `null` on a plain
 		TCP connection, before the handshake completes, when the server never
-		called `ServerSocket.setALPN()`, and on targets where
+		called `ServerSocket.setAlpn()`, and on targets where
 		`ServerSocket.alpnSupported` is `false`.
 	**/
 	public var alpnProtocol(get, never):Null<String>;
@@ -1701,7 +1701,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@param length  The number of bytes from the byte stream to read.
 		@param charSet Accepted for source compatibility and **ignored**. No
 					   character set conversion happens: the bytes are decoded
-					   as UTF-8, exactly as `readUTFBytes` would. Passing
+					   as UTF-8, exactly as `readUtfBytes` would. Passing
 					   "shift-jis" does not decode Shift-JIS. Transcode the
 					   bytes yourself if you need another encoding.
 		@return A UTF-8 encoded string.
@@ -1802,12 +1802,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUTF():String {
+	public function readUtf():String {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		return __input.readUTF();
+		return __input.readUtf();
 	}
 
 	/**
@@ -1819,12 +1819,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUTFBytes(length:Int):String {
+	public function readUtfBytes(length:Int):String {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		return __input.readUTFBytes(length);
+		return __input.readUtfBytes(length);
 	}
 
 	public function readVarUInt():Int {
@@ -2133,7 +2133,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Writes a string to the socket as UTF-8.
 		@param value   The string value to be written.
 		@param charSet Accepted for source compatibility and **ignored**. The
-					   string is encoded as UTF-8, exactly as `writeUTFBytes`
+					   string is encoded as UTF-8, exactly as `writeUtfBytes`
 					   would. Transcode the bytes yourself if you need another
 					   encoding.
 		@throws IOError An I/O error occurred on the socket, or the socket is
@@ -2144,7 +2144,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__output.writeUTFBytes(value);
+		__output.writeUtfBytes(value);
 		__queueWrite();
 	}
 
@@ -2214,12 +2214,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						   is not open.
 		@throws RangeError The length is larger than 65535.
 	**/
-	public function writeUTF(value:String):Void {
+	public function writeUtf(value:String):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		__output.writeUTF(value);
+		__output.writeUtf(value);
 		__queueWrite();
 	}
 
@@ -2229,7 +2229,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeUTFBytes(value:String):Void {
+	public function writeUtfBytes(value:String):Void {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -2237,7 +2237,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if ((cpp || jvm) && !macro)
 		__makeOutputRoom(value.length);
 		#end
-		__output.writeUTFBytes(value);
+		__output.writeUtfBytes(value);
 		__queueWrite();
 	}
 
@@ -2644,7 +2644,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if ((msg.data is String)) {
 			__input.position = __input.length;
 			var cachePosition = __input.position;
-			__input.writeUTFBytes(msg.data);
+			__input.writeUtfBytes(msg.data);
 			__input.position = cachePosition;
 		} else {
 			var newData:ByteArray = (msg.data : ArrayBuffer);
@@ -3869,7 +3869,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return null;
 		}
 		return try {
-			tls.getALPN();
+			tls.getAlpn();
 		} catch (e:Dynamic) {
 			null;
 		}

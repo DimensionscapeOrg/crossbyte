@@ -269,7 +269,7 @@ class HTTPServerH2Test extends utest.Test {
 
 	public function testAnHttp2BodyIsDecodedBeforeMiddleware(async:Async):Void {
 		var body = new ByteArray();
-		body.writeUTFBytes("hello over h2");
+		body.writeUtfBytes("hello over h2");
 		body.compress(crossbyte.utils.CompressionAlgorithm.GZIP);
 		var compressed = Bytes.alloc(body.length);
 		compressed.blit(0, body, 0, body.length);
@@ -526,7 +526,7 @@ class HTTPServerH2Test extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello over h2");
+		fixture.writeUtfBytes("Hello over h2");
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -538,7 +538,7 @@ class HTTPServerH2Test extends utest.Test {
 		var done = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.writeUtfBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
@@ -2157,7 +2157,7 @@ class HTTPServerH2Test extends utest.Test {
 	private static function __servedThroughABreakingWrite(routed:Bool):Array<H2Frame> {
 		var root = File.createTempDirectory();
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello over h2");
+		fixture.writeUtfBytes("Hello over h2");
 		root.resolvePath("index.html").save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -2209,7 +2209,7 @@ class HTTPServerH2Test extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello over h2");
+		fixture.writeUtfBytes("Hello over h2");
 		indexFile.save(fixture);
 
 		if (largeFileSize > 0) {
@@ -2956,7 +2956,7 @@ private class H2Session {
 	public function new(configure:HTTPServerConfig->Void) {
 		__root = File.createTempDirectory();
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello over h2");
+		fixture.writeUtfBytes("Hello over h2");
 		__root.resolvePath("index.html").save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, __root, null, ["index.html"]);

@@ -512,14 +512,14 @@ private class PhpWorld {
 		client = new Socket();
 		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 			if (client.bytesAvailable > 0) {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			}
 		});
 	}
 
 	public function send(text:String):Void {
 		client.addEventListener(Event.CONNECT, function(_):Void {
-			client.writeUTFBytes(text);
+			client.writeUtfBytes(text);
 			client.flush();
 		});
 		client.connect("127.0.0.1", server.localPort);
@@ -527,7 +527,7 @@ private class PhpWorld {
 	}
 
 	public function sendMore(text:String):Void {
-		client.writeUTFBytes(text);
+		client.writeUtfBytes(text);
 		client.flush();
 		HTTPTestSupport.pumpMore(10);
 	}
@@ -578,7 +578,7 @@ private class PhpWorld {
 
 	private function __write(name:String, contents:String):Void {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(contents);
+		bytes.writeUtfBytes(contents);
 		root.resolvePath(name).save(bytes);
 	}
 }
@@ -590,12 +590,12 @@ private class ClientView {
 	public function new(port:Int, request:String) {
 		socket = new Socket();
 		socket.addEventListener(Event.CONNECT, function(_):Void {
-			socket.writeUTFBytes(request);
+			socket.writeUtfBytes(request);
 			socket.flush();
 		});
 		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 			if (socket.bytesAvailable > 0) {
-				raw += socket.readUTFBytes(socket.bytesAvailable);
+				raw += socket.readUtfBytes(socket.bytesAvailable);
 			}
 		});
 		socket.connect("127.0.0.1", port);

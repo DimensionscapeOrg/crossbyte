@@ -90,7 +90,7 @@ class SctpPacketTest extends utest.Test {
 
 	public function testAPacketSurvivesTheRoundTrip():Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes("chunk value");
+		payload.writeUtfBytes("chunk value");
 		payload.position = 0;
 
 		var packet = new SctpPacket(5000, 5000, 0x12345678, [
@@ -117,7 +117,7 @@ class SctpPacketTest extends utest.Test {
 		Assert.equals(SctpPacket.CHUNK_DATA, decoded.chunks[0].type);
 		Assert.equals(0x03, decoded.chunks[0].flags);
 		decoded.chunks[0].value.position = 0;
-		Assert.equals("chunk value", decoded.chunks[0].value.readUTFBytes(decoded.chunks[0].value.length));
+		Assert.equals("chunk value", decoded.chunks[0].value.readUtfBytes(decoded.chunks[0].value.length));
 
 		// The empty one survives too, which is the case a parser assuming every
 		// chunk has a body gets wrong.
@@ -215,7 +215,7 @@ class SctpPacketTest extends utest.Test {
 
 	public function testATamperedPacketFailsItsChecksum():Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes("original");
+		payload.writeUtfBytes("original");
 		payload.position = 0;
 
 		var encoded = new SctpPacket(5000, 5000, 0x12345678, [new SctpChunk(SctpPacket.CHUNK_DATA, 0, payload)]).encode();
@@ -258,7 +258,7 @@ class SctpPacketTest extends utest.Test {
 	**/
 	public function testChunksAreFoundAcrossThePadding():Void {
 		var odd = new ByteArray();
-		odd.writeUTFBytes("abc");
+		odd.writeUtfBytes("abc");
 		odd.position = 0;
 
 		var packet = new SctpPacket(5000, 5000, 1, [
@@ -284,7 +284,7 @@ class SctpPacketTest extends utest.Test {
 		Assert.isNull(SctpPacket.decode(new ByteArray()));
 
 		var short = new ByteArray();
-		short.writeUTFBytes("tiny");
+		short.writeUtfBytes("tiny");
 		short.position = 0;
 		Assert.isNull(SctpPacket.decode(short));
 	}

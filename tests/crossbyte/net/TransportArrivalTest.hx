@@ -72,16 +72,16 @@ class TransportArrivalTest extends utest.Test {
 					async.done();
 					return;
 				}
-				sessions[0].writeUTFBytes("kept, ");
+				sessions[0].writeUtfBytes("kept, ");
 				sessions[0].flush();
 
 				NetPump.until(() -> calls >= 1, 5.0, function(_) {
-					sessions[0].writeUTFBytes("and read a frame later");
+					sessions[0].writeUtfBytes("and read a frame later");
 					sessions[0].flush();
 
 					NetPump.until(() -> kept != null && kept.bytesAvailable >= 28, 5.0, function(_) {
 						Require.notNull(kept, "onData was never called");
-						Assert.equals("kept, and read a frame later", kept.readUTFBytes(28), "the input kept past its call lost what arrived");
+						Assert.equals("kept, and read a frame later", kept.readUtfBytes(28), "the input kept past its call lost what arrived");
 						__closeAll(server, sessions, connection);
 						async.done();
 					});

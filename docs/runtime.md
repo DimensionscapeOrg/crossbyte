@@ -85,7 +85,7 @@ server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event) {
 	// everything the connection does from here on.
 	var socket = event.socket;
 	socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-		socket.writeUTFBytes(socket.readUTFBytes(socket.bytesAvailable));
+		socket.writeUtfBytes(socket.readUtfBytes(socket.bytesAvailable));
 		socket.flush();
 	});
 });

@@ -8,7 +8,7 @@ import crossbyte.Future;
 import crossbyte.events.Event;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
-import crossbyte.net.Endpoint.__parseListenURL;
+import crossbyte.net.Endpoint.__parseListenUrl;
 
 /**
  * High-level server host wrapper over CrossByte's supported listener transports.
@@ -45,7 +45,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 	**/
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
 			startListening:Bool = false, ?cert:{certificate:Certificate, key:Key}):Void {
-		var endpoint:Endpoint = __parseListenURL(uri);
+		var endpoint:Endpoint = __parseListenUrl(uri);
 		var secureWebSocket = __isSecureWebSocketUri(uri);
 		// Before anything is bound. A wss:// host bound in this constructor
 		// with no way to reach its certificate: every handshake failed, and

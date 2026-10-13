@@ -60,7 +60,7 @@ class HttpConcurrentLoadStress implements StressCase {
 	public function run():StressResult {
 		var root:File = File.createTempDirectory();
 		var fixture:ByteArray = new ByteArray();
-		fixture.writeUTFBytes(BODY);
+		fixture.writeUtfBytes(BODY);
 		root.resolvePath("index.html").save(fixture);
 
 		// Every client here comes from 127.0.0.1, so the default limiter, a

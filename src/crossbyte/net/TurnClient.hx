@@ -88,7 +88,7 @@ import haxe.io.Bytes;
 	reached by; `transport` reaches it over a TCP or TLS connection instead,
 	with every message framed for a stream (RFC 8656 section 3.1); hand
 	what arrives to `receiveStream`, and `streamClosed` when the connection
-	ends. `requestIPv6` asks for an IPv6 relayed address, for peers on IPv6.
+	ends. `requestIpv6` asks for an IPv6 relayed address, for peers on IPv6.
 	A relay that offers RFC 8489's password algorithms is answered with
 	SHA-256 keys and MESSAGE-INTEGRITY-SHA256, and one that offers username
 	anonymity with USERHASH in place of USERNAME.
@@ -354,7 +354,7 @@ class TurnClient {
 		otherwise. Set before `allocate`. An allocation's peers are its own
 		family, so an IPv6 one permits and sends to IPv6 peers only.
 	**/
-	public var requestIPv6:Bool = false;
+	public var requestIpv6:Bool = false;
 
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
@@ -566,7 +566,7 @@ class TurnClient {
 
 		var attributes:Array<StunAttribute> = [StunMessage.requestedTransport(), StunMessage.lifetime(DEFAULT_LIFETIME)];
 
-		if (requestIPv6) {
+		if (requestIpv6) {
 			attributes.push(StunMessage.requestedAddressFamily(true));
 		}
 

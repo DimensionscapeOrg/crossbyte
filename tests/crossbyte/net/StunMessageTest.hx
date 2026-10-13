@@ -355,7 +355,7 @@ class StunMessageTest extends utest.Test {
 		value.writeShort(0);
 		value.writeByte(4);
 		value.writeByte(1);
-		value.writeUTFBytes("Unauthorized");
+		value.writeUtfBytes("Unauthorized");
 		value.position = 0;
 
 		var response = new StunMessage(StunMessage.BINDING_ERROR, transaction(), [new StunAttribute(StunMessage.ATTR_ERROR_CODE, value)]);
@@ -553,7 +553,7 @@ class StunMessageTest extends utest.Test {
 		decoy.endian = Endian.BIG_ENDIAN;
 		decoy.writeShort(StunMessage.ATTR_MESSAGE_INTEGRITY);
 		decoy.writeShort(20);
-		decoy.writeUTFBytes("xxxx");
+		decoy.writeUtfBytes("xxxx");
 		decoy.position = 0;
 
 		var message = new StunMessage(StunMessage.BINDING_REQUEST, transaction(), [
@@ -585,7 +585,7 @@ class StunMessageTest extends utest.Test {
 		var username = decoded.attribute(StunMessage.ATTR_USERNAME);
 		Require.notNull(username);
 		username.position = 0;
-		Assert.equals("theirfrag:myfrag", username.readUTFBytes(username.length));
+		Assert.equals("theirfrag:myfrag", username.readUtfBytes(username.length));
 
 		var priority = decoded.attribute(StunMessage.ATTR_PRIORITY);
 		Require.notNull(priority);

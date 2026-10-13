@@ -83,7 +83,7 @@ class NetConnectionClockTest extends utest.Test {
 			}
 			client = new NetConnection(scheme + "://127.0.0.1:" + host.localPort, null, function():Void {
 				var message = new ByteArray();
-				message.writeUTFBytes("what time is it");
+				message.writeUtfBytes("what time is it");
 				message.position = 0;
 				client.send(message);
 				sentStamp = client.outTimestamp;

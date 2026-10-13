@@ -81,7 +81,7 @@ class URLLoader extends EventDispatcher {
 	@:noCompletion private function __dispatchResponse(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool):Void {
 		var event:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, status, redirected);
 		event.responseHeaders = headers;
-		event.responseURL = url;
+		event.responseUrl = url;
 		dispatchEvent(event);
 	}
 

@@ -8,7 +8,7 @@ import crossbyte.utils.CompressionAlgorithm;
 class ByteArrayTest extends utest.Test {
 	public function testClearResetsLengthPositionAndBytesAvailable():Void {
 		var byteArray = new ByteArray();
-		byteArray.writeUTFBytes("hello");
+		byteArray.writeUtfBytes("hello");
 		byteArray.position = 2;
 
 		byteArray.clear();
@@ -23,7 +23,7 @@ class ByteArrayTest extends utest.Test {
 		var byteArray:ByteArray = ByteArray.fromBytes(bytes);
 
 		Assert.equals(bytes.length, byteArray.length);
-		Assert.equals("hello", byteArray.readUTFBytes(byteArray.length));
+		Assert.equals("hello", byteArray.readUtfBytes(byteArray.length));
 	}
 
 	/**
@@ -50,8 +50,8 @@ class ByteArrayTest extends utest.Test {
 		// The halves of U+1F600, alone: HashLink's fromCharCode refuses a
 		// surrogate.
 		var data = new ByteArray();
-		data.writeUTFBytes("a" + "\u{1F600}".substr(0, 1) + "b");
-		data.writeUTFBytes("a" + "\u{1F600}".substr(1, 1) + "b");
+		data.writeUtfBytes("a" + "\u{1F600}".substr(0, 1) + "b");
+		data.writeUtfBytes("a" + "\u{1F600}".substr(1, 1) + "b");
 		var written = Bytes.alloc(data.length);
 		written.blit(0, data, 0, data.length);
 		Assert.equals("61efbfbd6261efbfbd62", written.toHex());
@@ -73,9 +73,9 @@ class ByteArrayTest extends utest.Test {
 		data.writeByte(0);
 		data.writeByte(0x62);
 		data.position = 0;
-		var read:String = data.readUTFBytes(3);
-		Assert.equals(3, read.length, "readUTFBytes stopped short");
-		Assert.isTrue(read.length == 3 && StringTools.fastCodeAt(read, 1) == 0 && StringTools.fastCodeAt(read, 2) == 0x62, "readUTFBytes read other characters");
+		var read:String = data.readUtfBytes(3);
+		Assert.equals(3, read.length, "readUtfBytes stopped short");
+		Assert.isTrue(read.length == 3 && StringTools.fastCodeAt(read, 1) == 0 && StringTools.fastCodeAt(read, 2) == 0x62, "readUtfBytes read other characters");
 		Assert.equals(3, data.toString().length, "toString stopped short");
 
 		var marked = new ByteArray();
@@ -83,7 +83,7 @@ class ByteArrayTest extends utest.Test {
 			marked.writeByte(b);
 		}
 		marked.position = 0;
-		Assert.equals("\u{FEFF}a", marked.readUTFBytes(4));
+		Assert.equals("\u{FEFF}a", marked.readUtfBytes(4));
 	}
 
 	public function testFromBytesAllocatesNothingTheSizeOfTheBytes():Void {
@@ -134,7 +134,7 @@ class ByteArrayTest extends utest.Test {
 
 		Assert.equals(4, target.length);
 		target.position = 0;
-		Assert.equals("xhel", target.readUTFBytes(target.length));
+		Assert.equals("xhel", target.readUtfBytes(target.length));
 		Assert.equals(3, source.position);
 		Assert.equals(2, source.bytesAvailable);
 	}
@@ -147,7 +147,7 @@ class ByteArrayTest extends utest.Test {
 
 		Assert.equals(3, target.length);
 		target.position = 0;
-		Assert.equals("llo", target.readUTFBytes(target.length));
+		Assert.equals("llo", target.readUtfBytes(target.length));
 		Assert.equals(0, source.position);
 	}
 
@@ -254,16 +254,16 @@ class ByteArrayTest extends utest.Test {
 		var first = new ByteArray();
 		var second = new ByteArray();
 		var adopted = ByteArray.fromBytes(Bytes.ofString("xy"));
-		first.writeUTFBytes("aaaa");
-		second.writeUTFBytes("bb");
+		first.writeUtfBytes("aaaa");
+		second.writeUtfBytes("bb");
 		Assert.equals(4, first.length);
 		Assert.equals(2, second.length);
 		first.position = 0;
 		second.position = 0;
-		Assert.equals("aaaa", first.readUTFBytes(4));
-		Assert.equals("bb", second.readUTFBytes(2));
+		Assert.equals("aaaa", first.readUtfBytes(4));
+		Assert.equals("bb", second.readUtfBytes(2));
 		adopted.position = 0;
-		Assert.equals("xy", adopted.readUTFBytes(2));
+		Assert.equals("xy", adopted.readUtfBytes(2));
 		Assert.equals(0, new ByteArray().length);
 	}
 
@@ -293,13 +293,13 @@ class ByteArrayTest extends utest.Test {
 		var bytes = ByteArray.fromBytes(Bytes.ofString("abcd"));
 		bytes.position = 1;
 
-		Assert.raises(() -> bytes.readUTFBytes(2147483647));
-		Assert.raises(() -> bytes.readUTFBytes(-1));
+		Assert.raises(() -> bytes.readUtfBytes(2147483647));
+		Assert.raises(() -> bytes.readUtfBytes(-1));
 
 		// The honest overrun still fails, and a legitimate read still works.
-		Assert.raises(() -> bytes.readUTFBytes(4));
+		Assert.raises(() -> bytes.readUtfBytes(4));
 		bytes.position = 1;
-		Assert.equals("bcd", bytes.readUTFBytes(3));
+		Assert.equals("bcd", bytes.readUtfBytes(3));
 	}
 
 	public function testReadBytesRejectsALengthThatWouldOverflowTheBoundsCheck():Void {

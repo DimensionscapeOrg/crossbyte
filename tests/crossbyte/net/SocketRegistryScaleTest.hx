@@ -27,7 +27,7 @@ class SocketRegistryScaleTest extends utest.Test {
 			var session:Socket = e.socket;
 			sessions.push(session);
 			session.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-				session.writeUTFBytes(session.readUTFBytes(session.bytesAvailable));
+				session.writeUtfBytes(session.readUtfBytes(session.bytesAvailable));
 				session.flush();
 			});
 		});

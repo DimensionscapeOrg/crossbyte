@@ -272,7 +272,7 @@ class WebSocketClientTest extends utest.Test {
 				if (socket.bytesAvailable > 0) {
 					var discard = new crossbyte.io.ByteArray();
 					socket.readBytes(discard, 0, socket.bytesAvailable);
-					socket.writeUTFBytes(endless);
+					socket.writeUtfBytes(endless);
 					socket.flush();
 				}
 			});
@@ -341,7 +341,7 @@ class WebSocketClientTest extends utest.Test {
 					var keyMatch = ~/Sec-WebSocket-Key: ([^\r]+)/;
 					var key:String = keyMatch.match(request) ? keyMatch.matched(1) : "";
 					var accept:String = haxe.crypto.Base64.encode(haxe.crypto.Sha1.make(haxe.io.Bytes.ofString(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
-					socket.writeUTFBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept
+					socket.writeUtfBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept
 						+ "\r\n\r\n");
 					socket.flush();
 					answered = true;

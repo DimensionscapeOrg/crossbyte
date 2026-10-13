@@ -19,9 +19,9 @@ class FlexSocketTest extends utest.Test {
 
 		// ALPN is TLS-only for the same reason verifyCert is: there is no
 		// handshake on a plain socket to carry it.
-		Assert.isTrue(throwsSslOnlyError(() -> socket.setALPN(["h2"])));
+		Assert.isTrue(throwsSslOnlyError(() -> socket.setAlpn(["h2"])));
 		Assert.isTrue(throwsSslOnlyError(() -> {
-			var ignored = socket.getALPN();
+			var ignored = socket.getAlpn();
 		}));
 
 		Assert.equals(#if (cpp || java || jvm) true #else false #end, FlexSocket.alpnSupported);
@@ -34,12 +34,12 @@ class FlexSocketTest extends utest.Test {
 		// Accepted on every target: where alpnSupported is false the call is a
 		// no-op rather than an error, so a caller can offer h2 unconditionally
 		// and read back null on the targets that cannot negotiate it.
-		socket.setALPN(["h2", "http/1.1"]);
-		socket.setALPN(null);
-		socket.setALPN(["h2"]);
+		socket.setAlpn(["h2", "http/1.1"]);
+		socket.setAlpn(null);
+		socket.setAlpn(["h2"]);
 
 		// Nothing is negotiated until a handshake happens.
-		Assert.isNull(socket.getALPN());
+		Assert.isNull(socket.getAlpn());
 
 		closeQuietly(socket);
 	}

@@ -59,7 +59,7 @@ class WebSocketMessageEvent extends Event {
 		if (__text == null && data != null) {
 			var at:Int = data.position;
 			data.position = 0;
-			__text = data.readUTFBytes(data.length);
+			__text = data.readUtfBytes(data.length);
 			data.position = at;
 		}
 		return __text;

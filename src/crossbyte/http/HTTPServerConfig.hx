@@ -405,8 +405,8 @@ class HTTPServerConfig {
 	public var phpEnabled:Bool;
 	public var phpAddress:String;
 	public var phpPort:Int;
-	public var phpCGIPath:String;
-	public var phpINIPath:String;
+	public var phpCgiPath:String;
+	public var phpIniPath:String;
 	public var phpMode:Int;
 
 	/**
@@ -769,7 +769,7 @@ class HTTPServerConfig {
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
 			maxConnections:Int = 10000, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
-			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, phpTimeout:Float = 30, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
+			phpCgiPath:String = "php-cgi", phpIniPath:String = "php.ini", phpMode:Int = 1, phpTimeout:Float = 30, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
 			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 1000, http2Enabled:Bool = false) {
 		this.address = address;
 		this.port = port;
@@ -794,8 +794,8 @@ class HTTPServerConfig {
 		this.phpEnabled = phpEnabled;
 		this.phpAddress = phpAddress;
 		this.phpPort = phpPort;
-		this.phpCGIPath = phpCGIPath;
-		this.phpINIPath = phpINIPath;
+		this.phpCgiPath = phpCgiPath;
+		this.phpIniPath = phpIniPath;
 		this.phpMode = phpMode;
 		this.phpTimeout = phpTimeout;
 		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/"] : tryFiles;

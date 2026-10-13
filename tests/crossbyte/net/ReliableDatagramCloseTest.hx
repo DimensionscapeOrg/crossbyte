@@ -85,7 +85,7 @@ class ReliableDatagramCloseTest extends utest.Test {
 		var link = Link.make(STREAM);
 		if (link == null) return;
 
-		link.a.writeUTFBytes("written and never flushed");
+		link.a.writeUtfBytes("written and never flushed");
 		Assert.isTrue(link.a.bytesPending > 0);
 		link.a.close();
 		link.run();
@@ -98,7 +98,7 @@ class ReliableDatagramCloseTest extends utest.Test {
 		if (link == null) return;
 
 		// Arrived and never read, then closed.
-		link.b.writeUTFBytes("unread");
+		link.b.writeUtfBytes("unread");
 		link.b.flush();
 		link.a.removeAllListeners();
 		for (frame in link.b.take()) {
@@ -108,7 +108,7 @@ class ReliableDatagramCloseTest extends utest.Test {
 
 		link.a.close();
 		Assert.equals(0, link.a.bytesAvailable, "a closed stream still said it had bytes to read");
-		Assert.raises(() -> link.a.readUTFBytes(1), IOError);
+		Assert.raises(() -> link.a.readUtfBytes(1), IOError);
 		link.a.abort();
 		link.b.abort();
 	}
@@ -338,7 +338,7 @@ class ReliableDatagramCloseTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}
@@ -476,7 +476,7 @@ private class TapSocket extends ReliableDatagramSocket {
 		socket.__firstSequence = out;
 		socket.__inSequence = inbound;
 		socket.addEventListener(DatagramSocketDataEvent.DATA, e -> log.push(name + " data " + e.data.toString()));
-		socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> log.push(name + " data " + socket.readUTFBytes(socket.bytesAvailable)));
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, _ -> log.push(name + " data " + socket.readUtfBytes(socket.bytesAvailable)));
 		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> log.push(name + " ioError"));
 		socket.addEventListener(Event.CLOSE, _ -> log.push(name + " close"));
 		return socket;

@@ -453,7 +453,7 @@ class AllocationBudgetTest extends utest.Test {
 		try {
 			client.connect("127.0.0.1", server.localPort);
 			__pumpUntil(() -> connected);
-			client.writeUTFBytes("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+			client.writeUtfBytes("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
 			client.flush();
 			__pumpUntil(() -> stream != null && received > 0);
 			// A chunk: its size in hex, CRLF, the text, CRLF.
@@ -1242,7 +1242,7 @@ class AllocationBudgetTest extends utest.Test {
 		var server = new HTTPServer(config);
 		var client = new Http1Client(tls);
 		var request = new ByteArray();
-		request.writeUTFBytes(head);
+		request.writeUtfBytes(head);
 		if (body != null) {
 			request.writeBytes(ByteArray.fromBytes(body), 0, body.length);
 		}
@@ -1608,7 +1608,7 @@ private class H2Client {
 		for (b in [0x82, 0x86, 0x84, 0x41, 0x09]) {
 			__firstRequest.writeByte(b);
 		}
-		__firstRequest.writeUTFBytes("127.0.0.1");
+		__firstRequest.writeUtfBytes("127.0.0.1");
 		__frameHeader(__request, 4, 0x1, 0x5, 0);
 		for (b in [0x82, 0x86, 0x84, 0xBE]) {
 			__request.writeByte(b);
@@ -1645,7 +1645,7 @@ private class H2Client {
 
 	private function __greet():Void {
 		var hello = new ByteArray();
-		hello.writeUTFBytes(crossbyte._internal.http.h2.H2Connection.PREFACE);
+		hello.writeUtfBytes(crossbyte._internal.http.h2.H2Connection.PREFACE);
 		// SETTINGS: INITIAL_WINDOW_SIZE as large as it goes, so no stream
 		// waits for credit.
 		__frameHeader(hello, 6, 0x4, 0, 0);

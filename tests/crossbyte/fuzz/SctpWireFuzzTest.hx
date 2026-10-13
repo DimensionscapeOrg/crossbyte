@@ -93,7 +93,7 @@ class SctpWireFuzzTest extends utest.Test {
 		var got:String = null;
 		pair.serverData.onMessage = function(_, payload:ByteArray, _):Void {
 			payload.position = 0;
-			got = payload.readUTFBytes(payload.length);
+			got = payload.readUtfBytes(payload.length);
 		};
 
 		pair.clientData.send(0, Pair.text("still here"), SctpDataChunk.PPID_STRING, true, pair.now);
@@ -289,7 +289,7 @@ private class Pair {
 
 	public static function text(value:String):ByteArray {
 		var out = new ByteArray();
-		out.writeUTFBytes(value);
+		out.writeUtfBytes(value);
 		out.position = 0;
 		return out;
 	}

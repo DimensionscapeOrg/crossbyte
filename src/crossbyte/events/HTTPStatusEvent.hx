@@ -31,7 +31,7 @@ class HTTPStatusEvent extends Event {
 		answers, as `requestPath` and `queryString` read: `/index.html?x=1`.
 		The client's address is `remoteAddress`.
 	**/
-	public var responseURL:String;
+	public var responseUrl:String;
 
 	/**
 		The HTTP status code returned by the server.
@@ -48,7 +48,7 @@ class HTTPStatusEvent extends Event {
 	public override function clone():HTTPStatusEvent {
 		var event = new HTTPStatusEvent(type, status, redirected);
 		event.responseHeaders = responseHeaders;
-		event.responseURL = responseURL;
+		event.responseUrl = responseUrl;
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;

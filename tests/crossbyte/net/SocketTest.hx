@@ -844,11 +844,11 @@ class SocketTest extends utest.Test {
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			connected = true;
-			client.writeUTFBytes("ping");
+			client.writeUtfBytes("ping");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			echoed = client.readUTFBytes(client.bytesAvailable);
+			echoed = client.readUtfBytes(client.bytesAvailable);
 		});
 		try {
 			client.connect("127.0.0.1", server.localPort);
@@ -887,7 +887,7 @@ class SocketTest extends utest.Test {
 				peerClosed = true;
 				// Answering from here is the idiom the policy exists for: the
 				// request is complete precisely because the peer half-closed.
-				serverPeer.writeUTFBytes("answered-after-fin");
+				serverPeer.writeUtfBytes("answered-after-fin");
 				serverPeer.flush();
 			});
 		});
@@ -895,12 +895,12 @@ class SocketTest extends utest.Test {
 		server.listen();
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("request");
+			client.writeUtfBytes("request");
 			client.flush();
 			client.shutdown(false, true);
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			answer = client.readUTFBytes(client.bytesAvailable);
+			answer = client.readUtfBytes(client.bytesAvailable);
 		});
 
 		try {
@@ -948,7 +948,7 @@ class SocketTest extends utest.Test {
 		server.listen();
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("request");
+			client.writeUtfBytes("request");
 			client.flush();
 			client.shutdown(false, true);
 		});
@@ -990,7 +990,7 @@ class SocketTest extends utest.Test {
 		server.listen();
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("request");
+			client.writeUtfBytes("request");
 			client.flush();
 			client.shutdown(false, true);
 		});
@@ -1045,11 +1045,11 @@ class SocketTest extends utest.Test {
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			connected = true;
-			client.writeUTFBytes("pong");
+			client.writeUtfBytes("pong");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			echoed = client.readUTFBytes(client.bytesAvailable);
+			echoed = client.readUtfBytes(client.bytesAvailable);
 		});
 		try {
 			client.connect("::1", server.localPort);
@@ -1158,7 +1158,7 @@ class SocketTest extends utest.Test {
 		socket.__connected = true;
 		socket.__output = new ByteArray();
 		socket.__output.endian = socket.__endian;
-		socket.__output.writeUTFBytes(value);
+		socket.__output.writeUtfBytes(value);
 		socket.__isDirty = true;
 		return socket;
 	}
@@ -1167,7 +1167,7 @@ class SocketTest extends utest.Test {
 	private static function readOutput(socket:Socket):String {
 		var pending:Int = socket.bytesPending;
 		socket.__output.position = socket.__output.length - pending;
-		return socket.__output.readUTFBytes(pending);
+		return socket.__output.readUtfBytes(pending);
 	}
 }
 

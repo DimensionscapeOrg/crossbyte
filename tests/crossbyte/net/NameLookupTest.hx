@@ -208,7 +208,7 @@ class NameLookupTest extends utest.Test {
 	public function testADatagramToANameFromAThreadWithoutARuntime(async:Async):Void {
 		var receiver = new DatagramSocket();
 		var received:Array<String> = [];
-		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) received.push(e.data.readUTFBytes(e.data.length)));
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) received.push(e.data.readUtfBytes(e.data.length)));
 		receiver.bind(0, "127.0.0.1");
 		receiver.receive();
 
@@ -220,7 +220,7 @@ class NameLookupTest extends utest.Test {
 				try {
 					var socket = new DatagramSocket();
 					var payload = new ByteArray();
-					payload.writeUTFBytes("from a thread");
+					payload.writeUtfBytes("from a thread");
 					socket.send(payload, 0, 0, "localhost", port);
 					socket.close();
 				} catch (e:Dynamic) {
@@ -254,7 +254,7 @@ class NameLookupTest extends utest.Test {
 		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("hello");
+		payload.writeUtfBytes("hello");
 
 		var started:Float = haxe.Timer.stamp();
 		try {
@@ -279,7 +279,7 @@ class NameLookupTest extends utest.Test {
 	public function testDatagramsToANameArriveAndItIsLookedUpOnce(async:Async):Void {
 		var receiver = new DatagramSocket();
 		var received:Array<String> = [];
-		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) received.push(e.data.readUTFBytes(e.data.length)));
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) received.push(e.data.readUtfBytes(e.data.length)));
 		receiver.bind(0, "127.0.0.1");
 		receiver.receive();
 
@@ -296,13 +296,13 @@ class NameLookupTest extends utest.Test {
 			// more once it has.
 			for (i in 0...3) {
 				var payload = new ByteArray();
-				payload.writeUTFBytes("datagram " + i);
+				payload.writeUtfBytes("datagram " + i);
 				sender.send(payload, 0, 0, "localhost", receiver.localPort);
 			}
 
 			NetPump.until(() -> received.length >= 3 || failures.length > 0, 10.0, function(_) {
 				var payload = new ByteArray();
-				payload.writeUTFBytes("datagram 3");
+				payload.writeUtfBytes("datagram 3");
 				sender.send(payload, 0, 0, "localhost", receiver.localPort);
 
 				NetPump.until(() -> received.length >= 4 || failures.length > 0, 10.0, function(_) {
@@ -400,7 +400,7 @@ class NameLookupTest extends utest.Test {
 		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("hello");
+		payload.writeUtfBytes("hello");
 
 		var started:Float = haxe.Timer.stamp();
 		try {
@@ -436,14 +436,14 @@ class NameLookupTest extends utest.Test {
 	public function testADatagramSocketConnectsToAName(async:Async):Void {
 		var peer = new DatagramSocket();
 		var heardByPeer:Array<String> = [];
-		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUTFBytes(e.data.length)));
+		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUtfBytes(e.data.length)));
 		peer.bind(0, "127.0.0.1");
 		peer.receive();
 
 		var socket = new DatagramSocket();
 		var heard:Array<String> = [];
 		var failures:Array<String> = [];
-		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heard.push(e.data.readUTFBytes(e.data.length)));
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heard.push(e.data.readUtfBytes(e.data.length)));
 		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
 
 		NetPump.until(() -> peer.localPort != 0, 5.0, function(_) {
@@ -455,7 +455,7 @@ class NameLookupTest extends utest.Test {
 			// receiving from before then too, while the socket has no address
 			// of its own yet.
 			var payload = new ByteArray();
-			payload.writeUTFBytes("sent while looking up");
+			payload.writeUtfBytes("sent while looking up");
 			socket.send(payload);
 			socket.receive();
 
@@ -467,7 +467,7 @@ class NameLookupTest extends utest.Test {
 				Assert.equals(peer.localPort, socket.remotePort);
 
 				var reply = new ByteArray();
-				reply.writeUTFBytes("reply");
+				reply.writeUtfBytes("reply");
 				peer.send(reply, 0, 0, "127.0.0.1", socket.localPort);
 
 				NetPump.until(() -> heard.length > 0, 5.0, function(_) {
@@ -494,7 +494,7 @@ class NameLookupTest extends utest.Test {
 
 		var peer = new DatagramSocket();
 		var heardByPeer:Array<String> = [];
-		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUTFBytes(e.data.length)));
+		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUtfBytes(e.data.length)));
 		peer.bind(0, "127.0.0.1");
 		peer.receive();
 
@@ -504,7 +504,7 @@ class NameLookupTest extends utest.Test {
 			socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
 			socket.connect("localhost", peer.localPort);
 			var payload = new ByteArray();
-			payload.writeUTFBytes("never sent");
+			payload.writeUtfBytes("never sent");
 			socket.send(payload);
 			socket.close();
 

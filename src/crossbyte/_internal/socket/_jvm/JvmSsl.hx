@@ -147,12 +147,12 @@ class JvmSslSocket extends sys.net.Socket {
 		Built into the JDK, unlike the cpp path, which needs a native extension
 		to reach mbedTLS's ALPN. `null` or an empty list disables it.
 	**/
-	public function setALPN(protocols:Null<Array<String>>):Void {
+	public function setAlpn(protocols:Null<Array<String>>):Void {
 		__alpn = (protocols != null && protocols.length > 0) ? protocols : null;
 	}
 
 	/** The protocol agreed on, or null when none was. **/
-	public function getALPN():Null<String> {
+	public function getAlpn():Null<String> {
 		if (__engine == null) {
 			return null;
 		}

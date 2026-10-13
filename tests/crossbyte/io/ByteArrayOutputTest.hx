@@ -217,7 +217,7 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.floatEquals(1.5, input.readFloat());
 		Assert.floatEquals(-2.25, input.readDouble());
 		Assert.isTrue(input.readBoolean());
-		Assert.equals("tail", input.readUTFBytes(4));
+		Assert.equals("tail", input.readUtfBytes(4));
 		Assert.isTrue(input.eof());
 	}
 
@@ -293,7 +293,7 @@ class ByteArrayOutputTest extends utest.Test {
 		var raised:Dynamic = null;
 
 		try {
-			output.writeUTF(StringTools.lpad("", "x", 70000));
+			output.writeUtf(StringTools.lpad("", "x", 70000));
 		} catch (e:Dynamic) {
 			raised = e;
 		}
@@ -363,7 +363,7 @@ class ByteArrayOutputTest extends utest.Test {
 	public function testStringsAreWrittenAsByteArrayWritesThem():Void {
 		#if (js || cpp)
 		var output = new ByteArrayOutput();
-		output.writeUTFBytes("a" + "\u{1F600}".substr(0, 1) + "Z");
+		output.writeUtfBytes("a" + "\u{1F600}".substr(0, 1) + "Z");
 		var bytes:Bytes = output;
 		Assert.equals("61efbfbd5a", bytes.toHex());
 		#else
@@ -385,9 +385,9 @@ class ByteArrayOutputTest extends utest.Test {
 				var size:Int = expected.length;
 				var output = new ByteArrayOutput(3);
 				output.writeByte(0x55);
-				output.writeUTF(text);
-				output.writeVarUTF(text);
-				output.writeUTFBytes(text);
+				output.writeUtf(text);
+				output.writeVarUtf(text);
+				output.writeUtfBytes(text);
 				var bytes:ByteArray = output.copy();
 				var label:String = '$count of U+${StringTools.hex(StringTools.fastCodeAt(piece, 0), 4)}';
 				var head:Int = size < 0x80 ? 1 : (size < 0x4000 ? 2 : 3);
@@ -437,7 +437,7 @@ class ByteArrayOutputTest extends utest.Test {
 			var label:String = [for (i in 0...text.length) StringTools.hex(StringTools.fastCodeAt(text, i), 4)].join(" ");
 			var written:String = try {
 				var output = new ByteArrayOutput();
-				output.writeUTFBytes(text);
+				output.writeUtfBytes(text);
 				var bytes:ByteArray = output;
 				[for (i in 0...bytes.length) StringTools.hex(bytes[i], 2)].join(" ");
 			} catch (e:Dynamic) {

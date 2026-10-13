@@ -196,7 +196,7 @@ class ReliableDatagramTamperTest extends utest.Test {
 
 	static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}
@@ -233,7 +233,7 @@ private class SealedEnd extends ReliableDatagramSocket {
 				}
 				got.push(whole ? "numbered:" + data.length : "garbled:" + data.length);
 			} else {
-				got.push(data.readUTFBytes(data.length));
+				got.push(data.readUtfBytes(data.length));
 			}
 		});
 	}

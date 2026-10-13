@@ -100,7 +100,7 @@ class Crc32c {
 	/** The same over a string's UTF-8 bytes, which is what the test vectors are. **/
 	public static function ofString(text:String):Int {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return of(bytes);
 	}

@@ -1014,7 +1014,7 @@ class FileTest extends utest.Test {
 
 			var stream = new FileStream();
 			stream.open(file, FileMode.WRITE);
-			stream.writeUTFBytes("ef");
+			stream.writeUtfBytes("ef");
 			stream.close();
 			seen.push(HaxeFile.getContent(file.nativePath));
 

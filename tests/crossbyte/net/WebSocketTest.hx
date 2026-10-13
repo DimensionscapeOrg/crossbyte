@@ -101,7 +101,7 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Require.notNull(received);
-		Assert.equals("hello", received.readUTFBytes(received.length));
+		Assert.equals("hello", received.readUtfBytes(received.length));
 	}
 
 	/**
@@ -127,7 +127,7 @@ class WebSocketTest extends utest.Test {
 		ws.__connected = true;
 		ws.__tls = false;
 		var received:String = null;
-		ws.onmessage = e -> received = e.message.readUTFBytes(e.message.length);
+		ws.onmessage = e -> received = e.message.readUtfBytes(e.message.length);
 
 		var frame = maskedFrame(0x01, Bytes.ofString("hello"));
 		peer.output.writeBytes(frame, 0, frame.length);
@@ -351,7 +351,7 @@ class WebSocketTest extends utest.Test {
 
 		Assert.equals(1, calls);
 		Require.notNull(received);
-		Assert.equals("hello", received.readUTFBytes(received.length));
+		Assert.equals("hello", received.readUtfBytes(received.length));
 	}
 
 	public function testPartialFrameWaitsForMoreBytes():Void {
@@ -584,7 +584,7 @@ class WebSocketTest extends utest.Test {
 
 		Assert.equals(InternalWebSocket.OPEN, ws.readyState);
 		Require.notNull(received);
-		Assert.equals("ready", received.readUTFBytes(received.length));
+		Assert.equals("ready", received.readUtfBytes(received.length));
 	}
 
 	public function testSplitHandshakeBuffersUntilComplete():Void {
@@ -621,7 +621,7 @@ class WebSocketTest extends utest.Test {
 
 		Assert.equals(1, opened);
 		Require.notNull(received);
-		Assert.equals("after", received.readUTFBytes(received.length));
+		Assert.equals("after", received.readUtfBytes(received.length));
 	}
 
 	public function testCloseDetachesFromOwningRuntimeEvenIfCurrentRuntimeChanges():Void {

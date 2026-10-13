@@ -104,13 +104,13 @@ class TlsProbe {
 					client.setHostname(options.serverName);
 				}
 				if (options.alpn != null) {
-					client.setALPN(options.alpn);
+					client.setAlpn(options.alpn);
 				}
 				if (options.present != null) {
 					client.setCertificate(@:privateAccess options.present.certificate.__native, @:privateAccess options.present.key.__native);
 				}
 				client.connect("127.0.0.1", port);
-				outcome.alpn = client.getALPN();
+				outcome.alpn = client.getAlpn();
 
 				if (options.upgrade == true) {
 					step = "write";

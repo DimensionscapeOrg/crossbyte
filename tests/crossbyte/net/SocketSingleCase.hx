@@ -31,11 +31,11 @@ class SocketSingleCase extends utest.Test {
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			connected = true;
-			client.writeUTFBytes("ping");
+			client.writeUtfBytes("ping");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			echoed = client.readUTFBytes(client.bytesAvailable);
+			echoed = client.readUtfBytes(client.bytesAvailable);
 		});
 		try {
 			client.connect("127.0.0.1", server.localPort);
@@ -80,11 +80,11 @@ class SocketSingleCase extends utest.Test {
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			connected = true;
-			client.writeUTFBytes("pong");
+			client.writeUtfBytes("pong");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
-			echoed = client.readUTFBytes(client.bytesAvailable);
+			echoed = client.readUtfBytes(client.bytesAvailable);
 		});
 		try {
 			client.connect("::1", server.localPort);

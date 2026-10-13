@@ -27,7 +27,7 @@ class ChatInbox {
 				break;
 			}
 
-			onMessage(buffer.readUTFBytes(length));
+			onMessage(buffer.readUtfBytes(length));
 		}
 
 		compact();

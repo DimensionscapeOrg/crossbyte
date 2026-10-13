@@ -38,7 +38,7 @@ class NetHostUriTest extends utest.Test {
 			var client = new Socket();
 			client.addEventListener(IOErrorEvent.IO_ERROR, e -> failed(e.text));
 			client.addEventListener(Event.CONNECT, function(_) {
-				client.writeUTFBytes("GET / HTTP/1.1\r\nHost: 127.0.0.1:" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+				client.writeUtfBytes("GET / HTTP/1.1\r\nHost: 127.0.0.1:" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
 					+ "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
 				client.flush();
 			});

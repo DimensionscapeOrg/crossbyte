@@ -81,11 +81,11 @@ class HTTPWireFuzzTest extends utest.Test {
 			var client:Socket = new Socket();
 			var raw:String = "";
 			client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
-				raw += client.readUTFBytes(client.bytesAvailable);
+				raw += client.readUtfBytes(client.bytesAvailable);
 			});
 
 			HTTPTestSupport.connectThen(client, server, function():Void {
-				client.writeUTFBytes("GET /index.html HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+				client.writeUtfBytes("GET /index.html HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
 				client.flush();
 
 				HTTPTestSupport.pumpUntilAsync(() -> HTTPTestSupport.isResponseComplete(raw), 5.0, function(complete:Bool):Void {
@@ -129,7 +129,7 @@ class HTTPWireFuzzTest extends utest.Test {
 			var reply:String = "";
 			client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
 				try {
-					reply += client.readUTFBytes(client.bytesAvailable);
+					reply += client.readUtfBytes(client.bytesAvailable);
 				} catch (_:Dynamic) {}
 			});
 
@@ -221,7 +221,7 @@ class HTTPWireFuzzTest extends utest.Test {
 		var root:File = File.createTempDirectory();
 		var indexFile:File = root.resolvePath("index.html");
 		var fixture:ByteArray = new ByteArray();
-		fixture.writeUTFBytes("fuzz fixture");
+		fixture.writeUtfBytes("fuzz fixture");
 		indexFile.save(fixture);
 
 		__roots.push(root);

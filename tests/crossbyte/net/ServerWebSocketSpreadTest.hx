@@ -50,7 +50,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 				var runtime:CrossByte = CrossByte.__currentOrNull();
 				session.addEventListener(WebSocketMessageEvent.MESSAGE, function(message:WebSocketMessageEvent) {
 					seen.add("message:" + SpreadSupport.where(runtime));
-					session.sendText(message.data.readUTFBytes(message.data.length).toUpperCase());
+					session.sendText(message.data.readUtfBytes(message.data.length).toUpperCase());
 				});
 				session.addEventListener(Event.CLOSE, _ -> seen.add("close:" + SpreadSupport.where(runtime)));
 				opened.add(Arrival.of(session));
@@ -123,7 +123,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 				var session:WebSocket = cast e.socket;
 				session.addEventListener(WebSocketMessageEvent.MESSAGE, function(message:WebSocketMessageEvent) {
-					session.sendText("echo:" + message.data.readUTFBytes(message.data.length));
+					session.sendText("echo:" + message.data.readUtfBytes(message.data.length));
 				});
 				opened.add(Arrival.of(session));
 			});

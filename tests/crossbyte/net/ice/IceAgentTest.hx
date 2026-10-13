@@ -874,7 +874,7 @@ class IceAgentTest extends utest.Test {
 		agent.start(credentials("bob"), 0);
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("this is application data, not a binding request");
+		payload.writeUtfBytes("this is application data, not a binding request");
 		payload.position = 0;
 
 		Assert.isFalse(agent.receive(payload, BOB_ADDRESS, PORT, 0), "the agent consumed a datagram that was not STUN");

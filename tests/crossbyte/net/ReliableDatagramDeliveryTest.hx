@@ -234,7 +234,7 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		pair.carry(pair.sender.take());
 
 		var utf8 = new ByteArray();
-		utf8.writeUTFBytes(text);
+		utf8.writeUtfBytes(text);
 		Assert.equals(utf8.length, pair.receiver.bytesAvailable, "the string was not written as UTF-8");
 		Assert.equals(text, pair.receiver.readMultiByte(pair.receiver.bytesAvailable, "iso-8859-1"), "the bytes were not read as UTF-8");
 		pair.close();
@@ -463,7 +463,7 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

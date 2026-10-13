@@ -34,7 +34,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent) {
 			var session = e.socket;
 			accepted.push(session);
-			session.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent) heard.push(d.data.readUTFBytes(d.data.length)));
+			session.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent) heard.push(d.data.readUtfBytes(d.data.length)));
 		});
 
 		var first = new ReliableDatagramSocket();
@@ -79,7 +79,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 						// old one's sequence.
 						if (connected) {
 							var message = new ByteArray();
-							message.writeUTFBytes("after the restart");
+							message.writeUtfBytes("after the restart");
 							second.send(message);
 						}
 
@@ -226,7 +226,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 
 			NetPump.until(() -> restarted.localPort > 0, 5.0, function(_) {
 				var message = new ByteArray();
-				message.writeUTFBytes("still there?");
+				message.writeUtfBytes("still there?");
 				client.send(message);
 
 				// Well inside the client's own idle timeout, so only an answer
@@ -261,7 +261,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 		var heardAtClose:Int = -1;
 		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent) {
 			var session = e.socket;
-			session.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent) heard.push(d.data.readUTFBytes(d.data.length)));
+			session.addEventListener(DatagramSocketDataEvent.DATA, function(d:DatagramSocketDataEvent) heard.push(d.data.readUtfBytes(d.data.length)));
 			session.addEventListener(Event.CLOSE, function(_) heardAtClose = heard.length);
 		});
 
@@ -286,7 +286,7 @@ class ReliableDatagramLifecycleTest extends utest.Test {
 				var sent:Array<String> = [for (i in 0...300) "message " + i];
 				for (message in sent) {
 					var bytes = new ByteArray();
-					bytes.writeUTFBytes(message);
+					bytes.writeUtfBytes(message);
 					client.send(bytes);
 				}
 				client.close();

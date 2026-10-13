@@ -160,14 +160,14 @@ class ReliableDatagramSessionMemoryTest extends utest.Test {
 
 	private static function sequenced(channel:Int, counter:Int, value:String):ReliableDatagramFrame {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return new ReliableDatagramFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, false);
 	}
 
 	private static function packet(sequence:Int, value:String):ReliableDatagramFrame {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return new ReliableDatagramFrame(PACKET, sequence, bytes, false, 7000);
 	}

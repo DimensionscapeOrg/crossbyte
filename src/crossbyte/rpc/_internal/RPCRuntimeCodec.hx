@@ -138,7 +138,7 @@ class RPCRuntimeCodec {
 			case TAG_TRUE: true;
 			case TAG_INT: input.readInt();
 			case TAG_FLOAT: input.readDouble();
-			case TAG_STRING: input.readVarUTF();
+			case TAG_STRING: input.readVarUtf();
 			case TAG_BYTES:
 				final length:Int = input.readVarUInt();
 				RPCWire.requireRoom(input, end, length);

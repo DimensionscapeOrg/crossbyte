@@ -170,7 +170,7 @@ class SocketOutputTest extends utest.Test {
 		var accepted:Socket = null;
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			accepted = e.socket;
-			accepted.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) got += accepted.readUTFBytes(accepted.bytesAvailable));
+			accepted.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) got += accepted.readUtfBytes(accepted.bytesAvailable));
 		});
 		server.bind(0, "127.0.0.1");
 		server.listen();
@@ -182,7 +182,7 @@ class SocketOutputTest extends utest.Test {
 			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) errors.push(e.text));
 			client.connect("127.0.0.1", server.localPort);
 			try {
-				client.writeUTFBytes("early");
+				client.writeUtfBytes("early");
 				client.flush();
 			} catch (e:Dynamic) {
 				thrown = e;
@@ -239,7 +239,7 @@ class SocketOutputTest extends utest.Test {
 		});
 		client.connect("127.0.0.1", port);
 		try {
-			client.writeUTFBytes("early");
+			client.writeUtfBytes("early");
 			client.flush();
 		} catch (e:Dynamic) {
 			thrown = e;

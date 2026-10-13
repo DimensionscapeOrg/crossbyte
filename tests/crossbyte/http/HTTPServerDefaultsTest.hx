@@ -62,12 +62,12 @@ class HTTPServerDefaultsTest extends utest.Test {
 			var raw:String = "";
 			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 				try {
-					raw += client.readUTFBytes(client.bytesAvailable);
+					raw += client.readUtfBytes(client.bytesAvailable);
 				} catch (_:Dynamic) {}
 			});
 
 			HTTPTestSupport.connectThen(client, server, function():Void {
-				client.writeUTFBytes("GET " + paths[index] + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+				client.writeUtfBytes("GET " + paths[index] + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
 				client.flush();
 
 				HTTPTestSupport.pumpUntilAsync(() -> HTTPTestSupport.isResponseComplete(raw), 3.0, function(_):Void {
@@ -238,12 +238,12 @@ class HTTPServerDefaultsTest extends utest.Test {
 		__roots.push(root);
 
 		var page:ByteArray = new ByteArray();
-		page.writeUTFBytes("index");
+		page.writeUtfBytes("index");
 		root.resolvePath("index.html").save(page);
 
 		for (i in 0...PAGE_REQUESTS - 1) {
 			var asset:ByteArray = new ByteArray();
-			asset.writeUTFBytes("asset " + i);
+			asset.writeUtfBytes("asset " + i);
 			root.resolvePath("a" + i + ".css").save(asset);
 		}
 

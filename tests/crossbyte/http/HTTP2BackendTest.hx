@@ -110,7 +110,7 @@ class HTTP2BackendTest extends utest.Test {
 
 	public function testAGzipResponseOverHttp2IsDecoded():Void {
 		var body = new crossbyte.io.ByteArray();
-		body.writeUTFBytes("hello compressed h2");
+		body.writeUtfBytes("hello compressed h2");
 		body.compress(crossbyte.utils.CompressionAlgorithm.GZIP);
 		var compressed = Bytes.alloc(body.length);
 		compressed.blit(0, body, 0, body.length);

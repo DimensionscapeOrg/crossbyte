@@ -97,7 +97,7 @@ class SQLiteArrivalTest extends utest.Test {
 
 	private static function __bytesOf(text:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(text);
+		bytes.writeUtfBytes(text);
 		bytes.position = 0;
 		return bytes;
 	}

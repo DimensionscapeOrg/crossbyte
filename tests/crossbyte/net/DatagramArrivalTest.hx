@@ -383,7 +383,7 @@ class DatagramArrivalTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}
@@ -420,7 +420,7 @@ class DatagramArrivalTest extends utest.Test {
 		});
 		pair.server.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
 			e.data.position = 0;
-			seen.push(e.data.readUTFBytes(e.data.length));
+			seen.push(e.data.readUtfBytes(e.data.length));
 		});
 
 		// Ports nobody holds: bound here, then let go.
@@ -435,7 +435,7 @@ class DatagramArrivalTest extends utest.Test {
 					socket.close();
 				}
 				var probe:ByteArray = new ByteArray();
-				probe.writeUTFBytes("anyone?");
+				probe.writeUtfBytes("anyone?");
 				for (port in ports) {
 					pair.server.send(probe, 0, 0, "127.0.0.1", port);
 				}
@@ -443,7 +443,7 @@ class DatagramArrivalTest extends utest.Test {
 				// Time for what comes back to come back, and be read.
 				NetPump.wait(0.5, function():Void {
 					var alive:ByteArray = new ByteArray();
-					alive.writeUTFBytes("alive");
+					alive.writeUtfBytes("alive");
 					pair.client.send(alive, 0, 0, "127.0.0.1", pair.server.localPort);
 					NetPump.until(() -> seen.length > 0, 5.0, function(_) {
 						Assert.same(["alive"], seen, "the socket stopped hearing after sending to ports nobody holds");

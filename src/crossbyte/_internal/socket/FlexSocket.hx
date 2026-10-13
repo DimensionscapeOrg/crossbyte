@@ -37,10 +37,10 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	public static var DEFAULT_VERIFY_CERT(get, set):Null<Bool>;
 
 	/**
-	 * Whether `setALPN` on a secure socket actually reaches the TLS handshake.
+	 * Whether `setAlpn` on a secure socket actually reaches the TLS handshake.
 	 *
 	 * Negotiated on cpp, through hxcpp's mbedTLS, and on jvm, through the JDK's
-	 * SSLParameters. Elsewhere `setALPN` is accepted and ignored and `getALPN`
+	 * SSLParameters. Elsewhere `setAlpn` is accepted and ignored and `getAlpn`
 	 * stays `null`, which lets a caller offer `h2` unconditionally and fall
 	 * back to HTTP/1.1 on the targets that cannot reach it.
 	 */
@@ -93,7 +93,7 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	public inline function new(secure:Bool = false) {
 		if (secure) {
 			// AlpnSocket only adds a hook to buildSSLConfig, so it behaves
-			// exactly like SSLSocket until setALPN is called.
+			// exactly like SSLSocket until setAlpn is called.
 			#if cpp
 			this = new AlpnSocket();
 			#elseif hl
@@ -119,13 +119,13 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	 * Must be called before `connect`, which is where the TLS configuration is
 	 * built. Does nothing on targets where `alpnSupported` is `false`.
 	 */
-	public inline function setALPN(protocols:Null<Array<String>>):Void {
-		__requireSSL("setALPN", this);
+	public inline function setAlpn(protocols:Null<Array<String>>):Void {
+		__requireSSL("setAlpn", this);
 
 		#if cpp
-		(cast this : AlpnSocket).setALPN(protocols);
+		(cast this : AlpnSocket).setAlpn(protocols);
 		#elseif (java || jvm)
-		(cast this : SSLSocket).setALPN(protocols);
+		(cast this : SSLSocket).setAlpn(protocols);
 		#end
 	}
 
@@ -134,13 +134,13 @@ abstract FlexSocket(Socket) from Socket to Socket from SSLSocket {
 	 * negotiated, the handshake has not completed, or the target does not
 	 * support ALPN.
 	 */
-	public inline function getALPN():Null<String> {
-		__requireSSL("getALPN", this);
+	public inline function getAlpn():Null<String> {
+		__requireSSL("getAlpn", this);
 
 		#if cpp
 		return AlpnSocket.negotiated(cast this);
 		#elseif (java || jvm)
-		return (cast this : SSLSocket).getALPN();
+		return (cast this : SSLSocket).getAlpn();
 		#else
 		return null;
 		#end

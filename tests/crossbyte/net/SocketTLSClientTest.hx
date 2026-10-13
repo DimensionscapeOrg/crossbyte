@@ -170,9 +170,9 @@ class SocketTLSClientTest extends utest.Test {
 			accepted.push(peer);
 			outcome.serverSideSecure = peer.secure;
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-				var text:String = peer.readUTFBytes(peer.bytesAvailable);
+				var text:String = peer.readUtfBytes(peer.bytesAvailable);
 				outcome.serverHeard = (outcome.serverHeard == null ? "" : outcome.serverHeard) + text;
-				peer.writeUTFBytes(text.toUpperCase());
+				peer.writeUtfBytes(text.toUpperCase());
 				peer.flush();
 			});
 		});
@@ -183,11 +183,11 @@ class SocketTLSClientTest extends utest.Test {
 		var client = new Socket();
 		client.addEventListener(Event.CONNECT, function(_) {
 			outcome.connected = true;
-			client.writeUTFBytes(HELLO);
+			client.writeUtfBytes(HELLO);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) {
-			var text:String = client.readUTFBytes(client.bytesAvailable);
+			var text:String = client.readUtfBytes(client.bytesAvailable);
 			outcome.clientHeard = (outcome.clientHeard == null ? "" : outcome.clientHeard) + text;
 		});
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {

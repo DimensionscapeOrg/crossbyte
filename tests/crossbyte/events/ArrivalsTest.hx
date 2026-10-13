@@ -56,7 +56,7 @@ class ArrivalsTest extends utest.Test {
 
 	public function testACloneOfAWebSocketMessageKeepsItsBytesAndText():Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes("hello");
+		payload.writeUtfBytes("hello");
 		payload.position = 0;
 		var event = new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, payload, true);
 		Assert.equals("hello", event.text);
@@ -70,7 +70,7 @@ class ArrivalsTest extends utest.Test {
 		Assert.equals("hello", kept.text);
 		Assert.isTrue(kept.isText);
 		kept.data.position = 0;
-		Assert.equals("hello", kept.data.readUTFBytes(kept.data.length));
+		Assert.equals("hello", kept.data.readUtfBytes(kept.data.length));
 	}
 
 	public function testACloneOfAnEventWithNoPayloadIsOne():Void {
@@ -150,7 +150,7 @@ class ArrivalsTest extends utest.Test {
 
 	public function testAKilledMessageEventMakesNoTextFromItsDeadBytes():Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes("later");
+		payload.writeUtfBytes("later");
 		var message = new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, payload, true);
 		Arrivals.kill(payload);
 		message.__kill();

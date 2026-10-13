@@ -188,7 +188,7 @@ class SysSocketResetTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			accepted = e.socket;
 			// Left unread by the client, so its close is a reset.
-			accepted.writeUTFBytes("never read");
+			accepted.writeUtfBytes("never read");
 			accepted.flush();
 		});
 		server.bind(0, "127.0.0.1");

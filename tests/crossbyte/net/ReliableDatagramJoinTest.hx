@@ -372,7 +372,7 @@ class ReliableDatagramJoinTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.joinValidation = ALWAYS;
 			server.admit = (_, _, payload) -> {
-				asked.push(payload.readUTFBytes(payload.bytesAvailable));
+				asked.push(payload.readUtfBytes(payload.bytesAvailable));
 				return true;
 			};
 			server.addEventListener(crossbyte.events.ReliableDatagramSocketConnectEvent.CONNECT, e -> accepted = e.socket);
@@ -391,7 +391,7 @@ class ReliableDatagramJoinTest extends utest.Test {
 			// And a message each way.
 			var heard:Array<String> = [];
 			if (accepted != null) {
-				accepted.addEventListener(DatagramSocketDataEvent.DATA, e -> heard.push(e.data.readUTFBytes(e.data.length)));
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, e -> heard.push(e.data.readUtfBytes(e.data.length)));
 			}
 			client.send(bytesOf("hello"));
 			pumpUntil(() -> heard.length > 0, 2.0);
@@ -650,7 +650,7 @@ class ReliableDatagramJoinTest extends utest.Test {
 		}
 		var at:Int = bytes.position;
 		bytes.position = 0;
-		var text:String = bytes.readUTFBytes(bytes.length);
+		var text:String = bytes.readUtfBytes(bytes.length);
 		bytes.position = at;
 		return text;
 	}
@@ -681,7 +681,7 @@ class ReliableDatagramJoinTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

@@ -107,11 +107,11 @@ class SocketCloseTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var socket = e.socket;
 			socket.peerShutdownPolicy = HALF_OPEN;
-			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) request += socket.readUTFBytes(socket.bytesAvailable));
+			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) request += socket.readUtfBytes(socket.bytesAvailable));
 			socket.addEventListener(Event.PEER_CLOSE, function(_) {
 				// The whole request is in: answer it, then close.
 				peerClosed = true;
-				socket.writeUTFBytes("ANSWER TO " + request);
+				socket.writeUtfBytes("ANSWER TO " + request);
 				socket.flush();
 				socket.close();
 			});
@@ -158,14 +158,14 @@ class SocketCloseTest extends utest.Test {
 		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
 			var client = new Socket();
 			var got:String = "";
-			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) got += client.readUTFBytes(client.bytesAvailable));
+			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) got += client.readUtfBytes(client.bytesAvailable));
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> accepted != null && client.connected, 5.0, function(_) {
 				Assert.equals(before, __tickListeners(), "open connections are visited every tick");
 
 				// Written, and never flushed.
-				accepted.writeUTFBytes("unflushed");
+				accepted.writeUtfBytes("unflushed");
 
 				NetPump.until(() -> got == "unflushed", 5.0, function(_) {
 					Assert.equals("unflushed", got, "a write without a flush never went");

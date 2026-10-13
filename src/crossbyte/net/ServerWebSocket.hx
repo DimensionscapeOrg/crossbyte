@@ -1751,10 +1751,10 @@ class ServerWebSocket extends ServerSocket {
 		@throws ArgumentError When the predicate, the certificate or the key
 			is missing.
 	**/
-	override public function addSNICertificate(serverNameMatch:String->Bool, certificate:Certificate, key:Key):Void {
-		__requireUnboundTls("addSNICertificate");
+	override public function addSniCertificate(serverNameMatch:String->Bool, certificate:Certificate, key:Key):Void {
+		__requireUnboundTls("addSniCertificate");
 		if (serverNameMatch == null || certificate == null || key == null) {
-			throw new ArgumentError("addSNICertificate needs a predicate, a certificate and its key.");
+			throw new ArgumentError("addSniCertificate needs a predicate, a certificate and its key.");
 		}
 
 		#if nodejs
@@ -1767,7 +1767,7 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Advertises `protocols` to clients during the TLS handshake, most
-		preferred first, as `ServerSocket.setALPN` does; each session reports
+		preferred first, as `ServerSocket.setAlpn` does; each session reports
 		what it agreed in `alpnProtocol`. Does nothing where `alpnSupported`
 		is `false`.
 
@@ -1775,13 +1775,13 @@ class ServerWebSocket extends ServerSocket {
 
 		@throws Error When this server is not secure, or is already bound.
 	**/
-	override public function setALPN(protocols:Null<Array<String>>):Void {
-		__requireUnboundTls("setALPN");
+	override public function setAlpn(protocols:Null<Array<String>>):Void {
+		__requireUnboundTls("setAlpn");
 
 		#if nodejs
 		__tlsAlpn = protocols;
 		#else
-		__applyTls(socket -> (socket : FlexSocket).setALPN(protocols));
+		__applyTls(socket -> (socket : FlexSocket).setAlpn(protocols));
 		#end
 	}
 

@@ -203,7 +203,7 @@ class HTTPTestSupport {
 			var closed:Bool = false;
 
 			client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
-				client.writeUTFBytes(request);
+				client.writeUtfBytes(request);
 				client.flush();
 			});
 			client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {

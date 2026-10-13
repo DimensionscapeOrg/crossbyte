@@ -38,7 +38,7 @@ class SocketContractTest extends utest.Test {
 	public function testWriteBytesPastTheBytesGivenIsARangeError(async:Async):Void {
 		__connected(function(client, peer, done) {
 			var bytes = new ByteArray();
-			bytes.writeUTFBytes("abcd");
+			bytes.writeUtfBytes("abcd");
 
 			Assert.raises(() -> client.writeBytes(bytes, 5), RangeError);
 			Assert.raises(() -> client.writeBytes(bytes, 1, 4), RangeError);
@@ -59,7 +59,7 @@ class SocketContractTest extends utest.Test {
 	@:timeout(15000)
 	public function testWhatIsWrittenBeforeCloseIsSent(async:Async):Void {
 		__connected(function(client, peer, done) {
-			client.writeUTFBytes("last words");
+			client.writeUtfBytes("last words");
 			client.close();
 
 			NetPump.until(() -> peer.heard.length >= 10 || peer.ended, 5.0, function(_) {
@@ -132,11 +132,11 @@ class SocketContractTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> client.connected && accepted != null, 5.0, function(_) {
-				accepted.writeUTFBytes("abc");
+				accepted.writeUtfBytes("abc");
 				accepted.flush();
 
 				NetPump.until(() -> loaded.length >= 1, 5.0, function(_) {
-					accepted.writeUTFBytes("defg");
+					accepted.writeUtfBytes("defg");
 					accepted.flush();
 
 					NetPump.until(() -> client.bytesAvailable >= 7, 5.0, function(_) {
@@ -176,7 +176,7 @@ class SocketContractTest extends utest.Test {
 			@:privateAccess client.__bytesSent += earlier;
 			var total:Float = -1;
 			client.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) total = e.bytesTotal);
-			client.writeUTFBytes("abcd");
+			client.writeUtfBytes("abcd");
 			client.flush();
 
 			NetPump.until(() -> peer.heard.length >= 4 && total != -1, 5.0, function(_) {
@@ -281,7 +281,7 @@ class SocketContractTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var socket = e.socket;
 			accepted.push(socket);
-			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) peer.heard += socket.readUTFBytes(socket.bytesAvailable));
+			socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_) peer.heard += socket.readUtfBytes(socket.bytesAvailable));
 			socket.addEventListener(Event.CLOSE, function(_) peer.ended = true);
 		});
 		server.bind(0, "127.0.0.1");

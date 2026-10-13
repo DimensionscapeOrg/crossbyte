@@ -65,12 +65,12 @@ class NetConnectionTest extends utest.Test {
 		connection.onReady = () -> readyCount++;
 		connection.onClose = reason -> closed = reason;
 		connection.onData = input -> {
-			received = input.readUTFBytes(input.length);
+			received = input.readUtfBytes(input.length);
 		};
 		connection.readEnabled = true;
 
 		socket.__input = new ByteArray();
-		socket.__input.writeUTFBytes("hello");
+		socket.__input.writeUtfBytes("hello");
 		socket.__input.position = 0;
 		socket.dispatchEvent(new Event(Event.CONNECT));
 		socket.dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, socket.__input.length, 0));
@@ -104,7 +104,7 @@ class NetConnectionTest extends utest.Test {
 		var received:String = null;
 
 		try {
-			server.onData = input -> received = input.readUTFBytes(input.length);
+			server.onData = input -> received = input.readUtfBytes(input.length);
 			server.readEnabled = true;
 			server.listen(name);
 
@@ -145,7 +145,7 @@ class NetConnectionTest extends utest.Test {
 			server.bind(0, "127.0.0.1");
 			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
 				accepted = NetConnection.fromReliableDatagramSocket(event.socket);
-				accepted.onData = input -> received = input.readUTFBytes(input.length);
+				accepted.onData = input -> received = input.readUtfBytes(input.length);
 				accepted.readEnabled = true;
 			});
 			server.listen();
@@ -176,7 +176,7 @@ class NetConnectionTest extends utest.Test {
 
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(value);
+		bytes.writeUtfBytes(value);
 		bytes.position = 0;
 		return bytes;
 	}

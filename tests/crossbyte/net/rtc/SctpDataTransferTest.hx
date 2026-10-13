@@ -193,7 +193,7 @@ class SctpDataTransferTest extends utest.Test {
 		var got:String = null;
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			got = payload.readUTFBytes(payload.length);
+			got = payload.readUtfBytes(payload.length);
 		};
 
 		pair.clientData.send(0, text("a message"), SctpDataChunk.PPID_STRING, true, pair.now);
@@ -263,7 +263,7 @@ class SctpDataTransferTest extends utest.Test {
 		var got:String = null;
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			got = payload.readUTFBytes(payload.length);
+			got = payload.readUtfBytes(payload.length);
 		};
 
 		pair.dropNextToServer = 1;
@@ -287,7 +287,7 @@ class SctpDataTransferTest extends utest.Test {
 		var order:Array<String> = [];
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			order.push(payload.readUTFBytes(payload.length));
+			order.push(payload.readUtfBytes(payload.length));
 		};
 
 		pair.reorderNextToServer = true;
@@ -318,7 +318,7 @@ class SctpDataTransferTest extends utest.Test {
 		var order:Array<String> = [];
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			order.push(payload.readUTFBytes(payload.length));
+			order.push(payload.readUtfBytes(payload.length));
 		};
 
 		pair.reorderNextToServer = true;
@@ -2452,7 +2452,7 @@ class SctpDataTransferTest extends utest.Test {
 
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			events.push(payload.readUTFBytes(payload.length));
+			events.push(payload.readUtfBytes(payload.length));
 		};
 		pair.serverData.onStreamsReset = streams -> events.push("reset " + streams.join(","));
 		pair.watchServer(packet -> for (found in reconfigIn(packet)) if (found.type == SctpParameter.RECONFIG_RESPONSE) answers.push(found.fields[1]));
@@ -2630,7 +2630,7 @@ class SctpDataTransferTest extends utest.Test {
 		var heard:Array<String> = [];
 		pair.serverData.onMessage = (_, payload, _) -> {
 			payload.position = 0;
-			heard.push(payload.readUTFBytes(payload.length));
+			heard.push(payload.readUtfBytes(payload.length));
 		};
 
 		pair.clientData.send(5, text("one"), SctpDataChunk.PPID_STRING, true, pair.now);
@@ -2787,7 +2787,7 @@ class SctpDataTransferTest extends utest.Test {
 
 	private static function text(value:String):ByteArray {
 		var out = new ByteArray();
-		out.writeUTFBytes(value);
+		out.writeUtfBytes(value);
 		out.position = 0;
 		return out;
 	}

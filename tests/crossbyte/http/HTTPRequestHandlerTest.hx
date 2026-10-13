@@ -117,7 +117,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// in different seconds, which would return 200.
 		var root = File.createTempDirectory();
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello from middleware test");
+		fixture.writeUtfBytes("Hello from middleware test");
 		root.resolvePath("index.html").save(fixture);
 
 		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(first):Void {
@@ -307,7 +307,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testMiddlewareCanReadGzipRequestBody(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello world");
+		body.writeUtfBytes("hello world");
 		body.compress(CompressionAlgorithm.GZIP);
 
 		__sendRequest(async, [
@@ -326,7 +326,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testMiddlewareCanReadDeflateRequestBody(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello world");
+		body.writeUtfBytes("hello world");
 		body.compress(CompressionAlgorithm.DEFLATE);
 
 		__sendRequest(async, [
@@ -350,7 +350,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testMiddlewareCanReadAZlibDeflateRequestBody(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello world");
+		body.writeUtfBytes("hello world");
 		body.compress(CompressionAlgorithm.ZLIB);
 
 		__sendRequest(async, [
@@ -372,7 +372,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	**/
 	public function testAMalformedCodedBodyIsABadRequest(async:Async):Void {
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("this was never gzip");
+		body.writeUtfBytes("this was never gzip");
 		var reached:Bool = false;
 
 		__sendRequest(async, [
@@ -390,7 +390,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testMiddlewareCanReadBrotliRequestBody(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello world");
+		body.writeUtfBytes("hello world");
 		body.compress(CompressionAlgorithm.BROTLI);
 
 		__sendRequest(async, [
@@ -429,7 +429,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testMoreThanTwoStackedCodingsAreRefused(async:Async):Void {
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello");
+		body.writeUtfBytes("hello");
 		body.compress(CompressionAlgorithm.GZIP);
 		body.compress(CompressionAlgorithm.GZIP);
 		body.compress(CompressionAlgorithm.GZIP);
@@ -445,7 +445,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	public function testTwoStackedCodingsStillDecode(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello twice");
+		body.writeUtfBytes("hello twice");
 		body.compress(CompressionAlgorithm.GZIP);
 		body.compress(CompressionAlgorithm.DEFLATE);
 
@@ -463,7 +463,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	public function testUnsupportedRequestContentEncodingReturns415AndSkipsRouting(async:Async):Void {
 		var body:ByteArray = new ByteArray();
-		body.writeUTFBytes("hello world");
+		body.writeUtfBytes("hello world");
 		var middlewareCalled = false;
 
 		__sendRequest(async, [
@@ -839,14 +839,14 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var chunks = ["GET / HT", "TP/1.1\r", "\nHost: x", "\r", "\n\r", "\n"];
 		for (i in 0...chunks.length - 1) {
 			buffer.position = buffer.length;
-			buffer.writeUTFBytes(chunks[i]);
+			buffer.writeUtfBytes(chunks[i]);
 			buffer.position = 0;
 			Assert.isFalse(handler.__hasCompleteHeaderBlock(buffer));
 			Assert.equals(0, buffer.position);
 		}
 
 		buffer.position = buffer.length;
-		buffer.writeUTFBytes(chunks[chunks.length - 1]);
+		buffer.writeUtfBytes(chunks[chunks.length - 1]);
 		buffer.position = 0;
 		Assert.isTrue(handler.__hasCompleteHeaderBlock(buffer));
 		Assert.equals(0, buffer.position);
@@ -854,11 +854,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// Finding the block resets the scan, so a cleared buffer starts over
 		// rather than resuming at an offset into bytes that no longer exist.
 		buffer.clear();
-		buffer.writeUTFBytes("GET /two HTTP/1.1\nHost: y\n");
+		buffer.writeUtfBytes("GET /two HTTP/1.1\nHost: y\n");
 		buffer.position = 0;
 		Assert.isFalse(handler.__hasCompleteHeaderBlock(buffer));
 		buffer.position = buffer.length;
-		buffer.writeUTFBytes("\n");
+		buffer.writeUtfBytes("\n");
 		buffer.position = 0;
 		// Bare LF LF terminates a block too.
 		Assert.isTrue(handler.__hasCompleteHeaderBlock(buffer));
@@ -884,7 +884,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 		// An incomplete line leaves the buffer where it started.
 		var partial = new ByteArray();
-		partial.writeUTFBytes("no newline yet");
+		partial.writeUtfBytes("no newline yet");
 		partial.position = 0;
 		Assert.isNull(handler.__readLine(partial));
 		Assert.equals(0, partial.position);
@@ -1232,7 +1232,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testTheResponseStatusEventSaysWhatWasAnswered(async:Async):Void {
-		// HTTPStatusEvent says responseURL is the URL the response came from
+		// HTTPStatusEvent says responseUrl is the URL the response came from
 		// and responseHeaders the fields it carried: on the server, not the
 		// client's address, nor only the fields a caller had added (for a static
 		// file, Accept-Ranges and Last-Modified, with no Content-Type, Date or
@@ -1246,7 +1246,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		], "GET /index.html?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 			Assert.equals(200, response.status);
 			Require.notNull(seen, "HTTP_RESPONSE_STATUS was not dispatched");
-			Assert.equals("/index.html?x=1", seen.responseURL);
+			Assert.equals("/index.html?x=1", seen.responseUrl);
 			var names:Array<String> = [for (field in seen.responseHeaders) field.name.toLowerCase()];
 			for (name in ["content-type", "date", "server", "last-modified", "accept-ranges"]) {
 				Assert.isTrue(names.indexOf(name) >= 0, 'the event did not carry $name, which the response did');
@@ -1344,7 +1344,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, config -> {
 			var document = config.rootDirectory.resolvePath("oops.html");
 			var bytes = new ByteArray();
-			bytes.writeUTFBytes(page);
+			bytes.writeUtfBytes(page);
 			document.save(bytes);
 			config.errorDocument = document;
 		}, true);
@@ -1453,10 +1453,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 			var dir = config.rootDirectory.resolvePath("both");
 			dir.createDirectory();
 			var php = new ByteArray();
-			php.writeUTFBytes("<?php $SECRET = 1; ?>");
+			php.writeUtfBytes("<?php $SECRET = 1; ?>");
 			dir.resolvePath("index.php").save(php);
 			var html = new ByteArray();
-			html.writeUTFBytes("REAL HTML INDEX");
+			html.writeUtfBytes("REAL HTML INDEX");
 			dir.resolvePath("index.html").save(html);
 		});
 	}
@@ -1650,7 +1650,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 	private static function __saveFixture(config:HTTPServerConfig, name:String, content:String):Void {
 		var bytes = new ByteArray();
-		bytes.writeUTFBytes(content);
+		bytes.writeUtfBytes(content);
 		config.rootDirectory.resolvePath(name).save(bytes);
 	}
 
@@ -1667,7 +1667,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			async.done();
 		}, null, false, null, config -> {
 			var secret = new ByteArray();
-			secret.writeUTFBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
+			secret.writeUtfBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
 			config.rootDirectory.resolvePath("config.php").save(secret);
 		});
 	}
@@ -1693,7 +1693,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			var dir = config.rootDirectory.resolvePath("private");
 			dir.createDirectory();
 			var secret = new ByteArray();
-			secret.writeUTFBytes("<?php $API_KEY = 'sk-live-secret'; ?>");
+			secret.writeUtfBytes("<?php $API_KEY = 'sk-live-secret'; ?>");
 			dir.resolvePath("index.php").save(secret);
 		});
 	}
@@ -1710,7 +1710,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			async.done();
 		}, null, false, null, config -> {
 			var secret = new ByteArray();
-			secret.writeUTFBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
+			secret.writeUtfBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
 			config.rootDirectory.resolvePath("config.PHP").save(secret);
 		});
 	}
@@ -1747,7 +1747,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		if (ownsRoot) {
 			var indexFile = root.resolvePath("index.html");
 			var fixture = new ByteArray();
-			fixture.writeUTFBytes("Hello from middleware test");
+			fixture.writeUtfBytes("Hello from middleware test");
 			indexFile.save(fixture);
 		}
 
@@ -1767,7 +1767,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var rawResponseBytes = new ByteArray();
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(requestText);
+			client.writeUtfBytes(requestText);
 			if (requestBody != null) {
 				client.writeBytes(requestBody, 0, requestBody.length);
 			}
@@ -1775,7 +1775,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			if (secondChunk != null) {
 				Timer.delay(function() {
 					if (client.connected) {
-						client.writeUTFBytes(secondChunk);
+						client.writeUtfBytes(secondChunk);
 						client.flush();
 					}
 				}, 10);
@@ -1860,13 +1860,13 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello from middleware test");
+		fixture.writeUtfBytes("Hello from middleware test");
 		indexFile.save(fixture);
 		// A second, distinct fixture so ordering tests can tell response
 		// N from response N+1 by body alone.
 		var secondFile = root.resolvePath("second.html");
 		var secondFixture = new ByteArray();
-		secondFixture.writeUTFBytes("Second fixture body");
+		secondFixture.writeUtfBytes("Second fixture body");
 		secondFile.save(secondFixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware);
@@ -1880,7 +1880,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var responses:Array<HTTPTestResponse> = [];
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes(pipelined ? requests.join("") : requests[0]);
+			client.writeUtfBytes(pipelined ? requests.join("") : requests[0]);
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
@@ -1964,7 +1964,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 					// The point of the sequential mode: the connection must
 					// still be open when the next request goes out.
 					Assert.isFalse(closeSeen);
-					client.writeUTFBytes(requests[i + 1]);
+					client.writeUtfBytes(requests[i + 1]);
 					client.flush();
 				}
 
@@ -2118,7 +2118,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			var label:String = routed ? "from a middleware" : "from the files";
 			var root:File = File.createTempDirectory();
 			var page = new ByteArray();
-			page.writeUTFBytes("Hello");
+			page.writeUtfBytes("Hello");
 			root.resolvePath("index.html").save(page);
 
 			var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
@@ -2176,13 +2176,13 @@ private class BreakingBodySocket extends Socket {
 		if (__arriving != null) {
 			var position = bytes.position;
 			bytes.position = offset;
-			bytes.writeUTFBytes(__arriving);
+			bytes.writeUtfBytes(__arriving);
 			bytes.position = position;
 			__arriving = null;
 		}
 	}
 
-	override public function writeUTFBytes(value:String):Void {
+	override public function writeUtfBytes(value:String):Void {
 		written.add(value);
 	}
 

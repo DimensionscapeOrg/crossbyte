@@ -29,7 +29,7 @@ import crossbyte.io._internal.store.StoreBackend;
  * ```haxe
  * Store.open("session").then(store -> {
  *     var token = new ByteArray();
- *     token.writeUTFBytes("abc123");
+ *     token.writeUtfBytes("abc123");
  *     store.put("token", token).then(_ -> trace("saved"));
  * });
  * ```
@@ -269,7 +269,7 @@ class Store {
 		}
 
 		var data = new ByteArray();
-		data.writeUTFBytes(text);
+		data.writeUtfBytes(text);
 		return put(key, data);
 	}
 
@@ -289,7 +289,7 @@ class Store {
 			}
 
 			value.position = 0;
-			return value.readUTFBytes(value.length);
+			return value.readUtfBytes(value.length);
 		});
 	}
 

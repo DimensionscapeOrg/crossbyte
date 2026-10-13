@@ -141,7 +141,7 @@ class TurnClientTest extends utest.Test {
 
 		client.onData = function(payload, address, port):Void {
 			payload.position = 0;
-			received = payload.readUTFBytes(payload.length);
+			received = payload.readUtfBytes(payload.length);
 			from = address + ":" + port;
 		};
 
@@ -173,7 +173,7 @@ class TurnClientTest extends utest.Test {
 		relay.run(client, () -> client.active);
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("to the peer");
+		payload.writeUtfBytes("to the peer");
 		client.sendTo(payload, "198.51.100.4", 40000);
 		relay.run(client, () -> relay.lastIndication != null);
 
@@ -193,7 +193,7 @@ class TurnClientTest extends utest.Test {
 		var carried = indication.attribute(StunMessage.ATTR_DATA);
 		Require.notNull(carried);
 		carried.position = 0;
-		Assert.equals("to the peer", carried.readUTFBytes(carried.length));
+		Assert.equals("to the peer", carried.readUtfBytes(carried.length));
 	}
 
 	/**
@@ -217,7 +217,7 @@ class TurnClientTest extends utest.Test {
 		relay.run(client, () -> client.active);
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("to nobody");
+		payload.writeUtfBytes("to nobody");
 
 		for (address in ["1.2.3.999", "2001:db8::1", "010.1.1.1"]) {
 			Assert.raises(() -> client.permit(address, 1), crossbyte.errors.ArgumentError, address + " was permitted");
@@ -464,7 +464,7 @@ class TurnClientTest extends utest.Test {
 		Assert.isFalse(client.receive(binding.encode(), RELAY, RELAY_PORT, 0), "a binding response was taken by the relay client");
 
 		var noise = new ByteArray();
-		noise.writeUTFBytes("not stun at all");
+		noise.writeUtfBytes("not stun at all");
 		noise.position = 0;
 		Assert.isFalse(client.receive(noise, RELAY, RELAY_PORT, 0));
 	}
@@ -696,7 +696,7 @@ class TurnClientTest extends utest.Test {
 		network.run(() -> network.relay.count("permitted") > 0, 5);
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("still relaying");
+		payload.writeUtfBytes("still relaying");
 		payload.position = 0;
 		client.sendTo(payload, PEER, PEER_PORT);
 		network.advance(0.1);
@@ -926,7 +926,7 @@ class TurnClientTest extends utest.Test {
 
 		var before:Int = network.toPeers.length;
 		var payload = new ByteArray();
-		payload.writeUTFBytes("input frame");
+		payload.writeUtfBytes("input frame");
 		payload.position = 0;
 		client.sendTo(payload, PEER, PEER_PORT);
 		network.advance(0.1);
@@ -961,7 +961,7 @@ class TurnClientTest extends utest.Test {
 		Assert.equals(1, network.relay.count("bind-400"), "the rebind was never refused, so this proved nothing");
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("input frame");
+		payload.writeUtfBytes("input frame");
 		payload.position = 0;
 		client.sendTo(payload, PEER, PEER_PORT);
 		network.advance(0.1);
@@ -993,7 +993,7 @@ class TurnClientTest extends utest.Test {
 
 		for (i in 0...10) {
 			var payload = new ByteArray();
-			payload.writeUTFBytes("datagram " + i);
+			payload.writeUtfBytes("datagram " + i);
 			payload.position = 0;
 			client.sendTo(payload, PEER, PEER_PORT);
 			network.advance(0.25);
@@ -1211,11 +1211,11 @@ class TurnClientTest extends utest.Test {
 		network.relay.relayIPv6Address = "2001:db8::10";
 
 		var client = network.client();
-		client.requestIPv6 = true;
+		client.requestIpv6 = true;
 		var heard:Array<String> = [];
 		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
 			payload.position = 0;
-			heard.push(address + " " + port + " " + payload.readUTFBytes(payload.length));
+			heard.push(address + " " + port + " " + payload.readUtfBytes(payload.length));
 		};
 		client.allocated.then(_ -> {}, _ -> {});
 		client.allocate(network.now);
@@ -1228,7 +1228,7 @@ class TurnClientTest extends utest.Test {
 		network.run(() -> network.relay.count("permitted") > 0, 5);
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("to a v6 peer");
+		payload.writeUtfBytes("to a v6 peer");
 		payload.position = 0;
 		client.sendTo(payload, "2001:db8::7", 5000);
 		network.advance(0.1);
@@ -1254,7 +1254,7 @@ class TurnClientTest extends utest.Test {
 
 		var network = new TurnNetwork();
 		var client = network.client();
-		client.requestIPv6 = true;
+		client.requestIpv6 = true;
 		var failure:String = null;
 		client.allocated.then(_ -> {}, error -> failure = error);
 		client.allocate(network.now);
@@ -1376,7 +1376,7 @@ class TurnClientTest extends utest.Test {
 		var heard:Array<String> = [];
 		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
 			payload.position = 0;
-			heard.push(payload.readUTFBytes(payload.length));
+			heard.push(payload.readUtfBytes(payload.length));
 		};
 		client.allocated.then(_ -> {}, _ -> {});
 		client.allocate(network.now);
@@ -1401,7 +1401,7 @@ class TurnClientTest extends utest.Test {
 		Assert.equals("a,ab,abc,a longer one", heard.join(","), "what arrived over the stream was not read message by message");
 
 		var payload = new ByteArray();
-		payload.writeUTFBytes("odd");
+		payload.writeUtfBytes("odd");
 		payload.position = 0;
 		client.sendTo(payload, PEER, PEER_PORT);
 		network.advance(0.1);
@@ -1527,7 +1527,7 @@ class TurnClientTest extends utest.Test {
 		var heard:Array<String> = [];
 		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
 			payload.position = 0;
-			heard.push(payload.readUTFBytes(payload.length));
+			heard.push(payload.readUtfBytes(payload.length));
 		};
 		client.allocated.then(_ -> {}, _ -> {});
 		client.allocate(network.now);
@@ -1583,13 +1583,13 @@ class TurnClientTest extends utest.Test {
 		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
 			calls++;
 			kept.push(payload);
-			var text:String = payload.readUTFBytes(payload.length);
+			var text:String = payload.readUtfBytes(payload.length);
 			heard.push(text + "@" + address + ":" + port);
 			if (text == "outer") {
 				// The next datagram arrives inside this call.
 				network.inject(client, channelData(TurnClient.FIRST_CHANNEL, "nested, and longer"), network.relayAddress, network.relayPort);
 				payload.position = 0;
-				outerAfter = payload.readUTFBytes(payload.length);
+				outerAfter = payload.readUtfBytes(payload.length);
 			} else if (text == "throws") {
 				throw "a listener's own failure";
 			}
@@ -1814,7 +1814,7 @@ class TurnClientTest extends utest.Test {
 	/** A Data indication, as a relay forwards a peer's datagram. **/
 	private static function dataIndication(peer:String, port:Int, text:String):ByteArray {
 		var payload = new ByteArray();
-		payload.writeUTFBytes(text);
+		payload.writeUtfBytes(text);
 		payload.position = 0;
 
 		return new StunMessage(StunMessage.DATA_INDICATION, transaction(9), [
@@ -1826,7 +1826,7 @@ class TurnClientTest extends utest.Test {
 	/** A ChannelData message on `number`. **/
 	private static function channelData(number:Int, text:String):ByteArray {
 		var payload = new ByteArray();
-		payload.writeUTFBytes(text);
+		payload.writeUtfBytes(text);
 
 		var framed = new ByteArray();
 		framed.writeByte((number >> 8) & 0xFF);
@@ -1841,7 +1841,7 @@ class TurnClientTest extends utest.Test {
 	/** Whether the client's next datagram to the peer goes over a channel rather than as a Send indication. **/
 	private static function sendsOverAChannel(network:TurnNetwork, client:TurnClient):Bool {
 		var payload = new ByteArray();
-		payload.writeUTFBytes("game state");
+		payload.writeUtfBytes("game state");
 		payload.position = 0;
 
 		var before:Int = network.sent.length;
@@ -1952,7 +1952,7 @@ private class Relay {
 	/** Hands the client a datagram as though a peer had sent it. **/
 	public function deliver(client:TurnClient, peerAddress:String, peerPort:Int, text:String):Void {
 		var payload = new ByteArray();
-		payload.writeUTFBytes(text);
+		payload.writeUtfBytes(text);
 		payload.position = 0;
 
 		var indication = new StunMessage(StunMessage.DATA_INDICATION, StunMessage.bindingRequest().transactionId, [
