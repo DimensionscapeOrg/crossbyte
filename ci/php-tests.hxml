@@ -1,0 +1,8 @@
+# The suite classes that claim PHP, run on PHP 8 with sqlite3 and sodium enabled:
+#   php export/php-tests/index.php
+-cp src
+-cp tests
+-lib utest
+-main PhpTestMain
+--php export/php-tests
+--macro crossbyte.test.SuiteCoverage.check()

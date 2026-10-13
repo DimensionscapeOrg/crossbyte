@@ -1,7 +1,8 @@
 # Targets
 
-CrossByte builds natively through hxcpp, and for the JVM, Node.js, HashLink, Neko and the Haxe interpreter. Native
-builds have every feature. What a target cannot do, its class says at the member, usually through `isSupported`.
+CrossByte builds natively through hxcpp, and for the JVM, Node.js, HashLink, Neko and the Haxe interpreter; some of
+its classes build for PHP. Native builds have every feature. What a target cannot do, its class says at the member,
+usually through `isSupported`.
 
 ## Native (hxcpp)
 
@@ -43,6 +44,13 @@ target; the runtime runs on the page's own event loop. A page connects and canno
 WebSocket, so `NetConnection` takes `ws://` and `wss://` (and `tcp://`, the same thing), and its server is a
 `ServerWebSocket` or a `NetHost` made from a `ws://` or `wss://` URI. RPC, timers and events work as
 elsewhere. Files, UDP, reliable UDP, IPC, threads and databases are not there.
+
+## PHP
+
+Some classes are built for PHP code to use, and these are tested on PHP 8 (`ci/php-tests.hxml`): SQLite through
+PHP's `sqlite3` extension (`open()` only; see [data.md](data.md#sqlite)), `BCrypt` through PHP's own
+`password_hash` and `password_verify`, `SecureRandom` and HMAC-SHA256. PostgreSQL goes through PDO. SQLite needs
+`extension=sqlite3` in `php.ini`. PHP has no threads, so nothing that needs one is there.
 
 ## The interpreter
 

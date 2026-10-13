@@ -328,7 +328,7 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
 
 ### Data, storage and the rest
 
-- **Databases.** SQLite natively. MySQL and MariaDB natively, through hxcpp's bundled client, and on the jvm
+- **Databases.** SQLite natively and on php. MySQL and MariaDB natively, through hxcpp's bundled client, and on the jvm
   through Connector/J. PostgreSQL natively through libpq, and on php through PDO. MongoDB over its wire protocol on
   hxcpp, the jvm, the interpreter, hl and neko. `ConnectionPool` and `AsyncDatabase` keep these blocking drivers
   off the runtime's thread. [docs/data.md](docs/data.md) has the details and limits.

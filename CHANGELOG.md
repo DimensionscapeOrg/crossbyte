@@ -4,6 +4,12 @@ All notable changes to CrossByte will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
+  (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
+  on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.
+
 ### Fixed
 
 - **SQLite on PHP ran every statement that returns no rows twice.** PHP's

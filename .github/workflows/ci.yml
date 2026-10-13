@@ -135,6 +135,51 @@ jobs:
       - name: Run interpreter test suite with arrivals checked
         run: haxe ci/interp-tests.hxml -D crossbyte_check_events
 
+  # The suite classes that claim PHP (SQLite, BCrypt, SecureRandom,
+  # HMAC-SHA256), on PHP 8.3 from Ubuntu 24.04's own packages. The rest of
+  # the suite needs threads and native code PHP does not have, so this is a
+  # short list of its own (tests/PhpTestMain.hx).
+  php-tests:
+    name: Core | PHP Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
+
+      # sodium is part of Ubuntu's php8.3-common, which the CLI pulls in;
+      # SQLite and mbstring (which Haxe's PHP strings are built on) are
+      # packages of their own. Each is checked for by name, so a missing
+      # extension fails here rather than as a test that cannot load.
+      - name: Install PHP
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::Exit code $? from: $BASH_COMMAND"' ERR
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends php8.3-cli php8.3-sqlite3 php8.3-mbstring
+          php --version
+          php -m | grep -qx sqlite3
+          php -m | grep -qx sodium
+          php -m | grep -qx mbstring
+
+      - name: Build the PHP suite
+        run: haxe ci/php-tests.hxml
+
+      - name: Run the PHP suite
+        run: php export/php-tests/index.php
+
   # The jvm target, smoke and full suites, on Java 8 and 17. Java 8 is the
   # floor the jvm's bytecode quirks (VerifyErrors from some code shapes) are
   # checked against, and a newer JVM would not reproduce them. Java 17 takes
