@@ -121,9 +121,9 @@ in flight and no copy. A `send` per session copies the message for each, and hol
 peer acknowledges it.
 
 For a kilobyte to 1,000 sessions with 1% loss each way, what the sessions hold for it until every peer has it is
-under 0.1 MB of frame records, where a `send` each holds 1.27 MB (9 KB against 1.08 MB on the jvm). The call takes
-630 ns a session natively, where a `send` each takes 880 to 940 (500 against 630 to 645 on the jvm), and natively it
-allocates nothing for the message, where a `send` each allocates 630 KB.
+0.25 MB natively, where a `send` each holds 1.4 MB (0.11 MB against 1.2 MB on the jvm). The call takes 485 ns a
+session natively, where a `send` each takes 740 (388 to 430 against 557 to 584 on the jvm), and natively neither
+allocates anything for the message.
 
 Who receives (rooms, areas of interest) stays the game's choice. An encrypted session shares the message the same
 way, sealing each datagram as it goes into a buffer its server's sessions share; what it cannot share is the sealing,
@@ -132,9 +132,10 @@ or closing is passed over, and one past its output limit under `THROW` is not th
 
 ## What a session costs
 
-**Memory.** An idle session a server holds costs about 2.7 KB natively and 1.6 KB on the jvm (heap after a full
-collection with 1,000 idle sessions connected, less with none, over 1,000), and an encrypted one about 1.9 KB more
-natively (1.3 KB on the jvm). What only some sessions use is made when they first need it:
+**Memory.** An idle session a server holds, with a listener for what arrives, costs about 2.8 KB natively and
+1.8 KB on the jvm (heap after a full collection with 1,000 idle sessions connected, less with none, over 1,000), and
+an encrypted one about 1.9 KB more natively (1.3 KB on the jvm). What only some sessions use is made when they first
+need it:
 
 - the ring holding frames that arrive past a gap is made when the first such frame arrives, with 16 slots; it grows
   as far as the frames held reach, and goes at the next keepalive check that finds it empty;

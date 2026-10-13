@@ -85,16 +85,16 @@ server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
 
 ### What a connection holds
 
-An idle connection a `ServerSocket` accepted holds about 1.5 KB of heap natively and 1.6 KB on the jvm (a client
-about 2 KB), plus the listeners the application adds (two cost about 450 bytes) and the kernel's buffers. Its buffers
-keep their storage while the connection is busy, so a message read or written allocates nothing, and let it go once
-the connection has read and written nothing for one of its runtime's sweeps, every five seconds: after one 16 KB
-message each way, a connection holds 1.7 KB once quiet. A buffer grown past 64 KB lets go as soon
+An idle connection a `ServerSocket` accepted, with a listener for what arrives, holds about 1.3 KB of heap natively
+and 1.6 KB on the jvm (a client about 2 KB), plus the kernel's buffers. Its buffers keep their storage while the
+connection is busy, so a message read or written allocates nothing, and let it go once the connection has read and
+written nothing for one of its runtime's sweeps, every five seconds: after one 16 KB message each way, a connection
+holds 1.5 KB once quiet (1.7 KB on the jvm). A buffer grown past 64 KB lets go as soon
 as it empties: natively and on the jvm its storage goes to a pool its runtime keeps, by size, which the next buffer
 to grow that far takes from, so a connection sending or receiving a large burst each pass reuses the same storage
-rather than allocating it again (1 MB bursts allocate about 17 KB for each megabyte, where growing anew took
-2.4 MB). The pool's sizes are a quarter apart (64, 80, 96, 112 and 128 KB, and so on to 32 MB), so a buffer holds
-at most a quarter more than it needs, and a buffer takes at once the size its last burst needed. The pool lets go
+rather than allocating it again (over 20 seconds of 1 MB bursts, about 6 KB for each megabyte, where growing anew
+took 2.4 MB). The pool's sizes are a quarter apart (64, 80, 96, 112 and 128 KB, and so on to 32 MB), so a buffer
+holds at most a quarter more than it needs, and a buffer takes at once the size its last burst needed. The pool lets go
 of what nobody has taken for ten to fifteen seconds. A WebSocket session's buffers, and a message past 64 KB, do
 the same. On Node a socket keeps its buffers' storage.
 

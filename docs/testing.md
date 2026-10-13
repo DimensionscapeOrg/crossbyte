@@ -58,6 +58,9 @@ haxe ci/bench.hxml
 It reports the best of several samples per case. The numbers compare shapes of code on one machine in one sitting,
 and are not comparable across machines. CI runs it so it keeps compiling, and ignores the numbers.
 
+[performance.md](performance.md) has the published figures, how each was measured, and the programs under
+`tests/perf` and `tests/scaling` that measure them.
+
 ## Allocation budgets
 
 `tests/crossbyte/AllocationBudgetTest.hx` measures how many bytes each common operation allocates (an HTTP/1.1,

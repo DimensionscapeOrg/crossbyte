@@ -103,6 +103,7 @@ const GUIDES = [
   'README.md',
   'docs/data.md',
   'docs/limits.md',
+  'docs/performance.md',
   'docs/reliable-udp.md',
   'docs/rpc.md',
   'docs/runtime.md',

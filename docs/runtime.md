@@ -114,16 +114,17 @@ Each request is served on its connection's runtime, HTTP/1.1 and HTTP/2 alike. `
 and the metrics count every runtime's connections together, and `drain()`, `close()` and `stopAccepting()` cover all
 of them.
 
-What it buys, measured natively on Windows with small GETs from 64 kept-alive connections, the server held to eight
-logical CPUs and the clients to eight others (`tests/scaling`):
+What it buys, measured natively on Windows with small GETs from 256 kept-alive connections, one request in flight on
+each, the server held to eight logical CPUs and the clients to 24 others (`tests/scaling`):
 
 | runtimes | HTTP/1.1 requests/s | HTTP/2 requests/s |
 | --- | --- | --- |
-| one (not spread) | 78,000 | 75,000 |
-| 2 | 178,000 | 154,000 |
-| 4 | 312,000 | 312,000 |
+| one (not spread) | 152,000 | 134,000 |
+| 2 | 277,000 | 239,000 |
+| 4 | 488,000 | 431,000 |
 
-A server on one runtime pays nothing for the feature.
+A server on one runtime pays nothing for the feature. [performance.md](performance.md#http) gives the ranges and
+how they were measured.
 
 ### Choosing the runtime
 
