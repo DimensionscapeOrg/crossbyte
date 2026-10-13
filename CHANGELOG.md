@@ -65,6 +65,11 @@ All notable changes to CrossByte will be documented in this file.
   matches. On the wire the id follows the refusal code 0 after the message,
   where a 1.0 peer reads the handler's refusal and passes over it; an id of
   0 sends nothing more than before (`docs/rpc.md`, "On the wire").
+- **`RPCSession.maxInboundFrameSize`** limits the frames a session reads
+  apart from `maxFrameSize`, which then limits only what it sends, so a
+  server can refuse large calls in (a request is answered `TooLarge`, naming
+  the limit) without blocking its own large answers and snapshots out. It
+  reads as `maxFrameSize` until set; `-1` makes it follow again.
 
 ### Fixed
 

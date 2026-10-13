@@ -769,6 +769,17 @@ sending session's `maxFrameSize` fails at once with an `ArgumentError` as its
 sent: its caller is answered `TooLarge`, and `onHandlerError` is told. Both
 ends of a connection should agree on the limit.
 
+A server that should take only small calls, but sends large answers or
+snapshots of its own, limits the two ways apart: `maxInboundFrameSize`
+limits what arrives, and `maxFrameSize` then only what goes out. Until it is
+set it reads as `maxFrameSize`, so a session that sets neither, or only
+`maxFrameSize`, limits both ways alike.
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+session.maxInboundFrameSize = 64 * 1024;
+```
+
 A frame has to fit its transport too. Over a WebSocket a large frame goes as
 messages of 64 KiB, which the other side reads as one stream, so its peer's
 `maxMessageSize` (1 MiB unless set) is no limit on it as long as it is 64 KiB

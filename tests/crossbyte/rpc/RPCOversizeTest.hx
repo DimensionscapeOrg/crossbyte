@@ -53,6 +53,42 @@ class RPCOversizeTest extends utest.Test {
 		Assert.equals(7, commands.size(7).result, "the session did not answer after it");
 	}
 
+	public function testAnInboundLimitRefusesLargeCallsAndLetsLargeAnswersOut():Void {
+		final link = LinkedConnection.pair();
+		final commands = new SizeCommands();
+		final handler = new SizeHandler();
+		final client = new RPCSession<SizeCommands>(link.client, commands);
+		final server = new RPCSession(link.server, null, handler);
+		Assert.notNull(client);
+		Assert.equals(RPCSession.DEFAULT_MAX_FRAME_SIZE, server.maxInboundFrameSize, "not maxFrameSize until set");
+
+		// maxFrameSize alone limits both ways: the large answer cannot go.
+		server.maxFrameSize = 1000;
+		Assert.isTrue(Type.enumEq(TooLarge, commands.make(50000).failure), "an answer past maxFrameSize went out");
+		server.maxFrameSize = RPCSession.DEFAULT_MAX_FRAME_SIZE;
+
+		server.maxInboundFrameSize = 1000;
+		final big = commands.echo(Bytes.alloc(5000));
+		Assert.isTrue(Type.enumEq(TooLarge, big.failure), "a call past the inbound limit failed as " + big.failure);
+		Assert.stringContains("1000-byte maxInboundFrameSize", big.error);
+		commands.drop(Bytes.alloc(5000));
+		Assert.equals(0, handler.dropped, "a one-way call past the inbound limit ran");
+		final snapshot = commands.make(50000);
+		Assert.isTrue(snapshot.succeeded, "a large answer could not go out: " + snapshot.error);
+		Assert.equals(50000, snapshot.result != null ? snapshot.result.length : -1);
+		Assert.equals(7, commands.size(7).result, "the session did not answer after it");
+
+		// Its own, whatever maxFrameSize says, until -1 makes it follow again.
+		server.maxFrameSize = 2000;
+		Assert.equals(1000, server.maxInboundFrameSize);
+		server.maxInboundFrameSize = -1;
+		Assert.equals(2000, server.maxInboundFrameSize);
+		server.maxInboundFrameSize = 0;
+		Assert.equals(0, server.maxInboundFrameSize, "0 is no limit, as maxFrameSize's is");
+		server.maxFrameSize = RPCSession.DEFAULT_MAX_FRAME_SIZE;
+		Assert.isTrue(commands.echo(Bytes.alloc(5000)).succeeded, "with no inbound limit a call was refused");
+	}
+
 	public function testAnAnswerPastTheCallersFrameLimitFailsItsCall():Void {
 		final link = LinkedConnection.pair();
 		final commands = new SizeCommands();

@@ -215,8 +215,42 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		8 MiB by default. Both ends of a connection should agree on it: a call
 		larger than the other side's limit ends the connection there, failing
 		every call waiting on it. `0` removes the limit.
+
+		What this session reads can be limited apart from what it sends, with
+		`maxInboundFrameSize`; until that is set, this limits both.
 	**/
 	public var maxFrameSize:Int = DEFAULT_MAX_FRAME_SIZE;
+
+	/**
+		The most bytes a frame arriving may hold, after its 4-byte length,
+		apart from `maxFrameSize`, which then limits only what this session
+		sends: a server can refuse large calls in (a request is answered
+		`RPCFailure.TooLarge`, naming this limit, and read past as it
+		arrives) while still sending its own large answers and snapshots out.
+		Answers arriving in pieces count toward it as they do toward
+		`maxFrameSize`.
+
+		Reads as `maxFrameSize` until it is set; `-1` makes it follow
+		`maxFrameSize` again, and `0` removes the limit on what arrives.
+
+		```haxe
+		// Given session:RPCSession<ChatCommands>.
+		session.maxInboundFrameSize = 64 * 1024; // calls in: 64 KiB at most
+		session.maxFrameSize = 16 * 1024 * 1024; // what it sends: up to 16 MiB
+		```
+	**/
+	public var maxInboundFrameSize(get, set):Int;
+
+	@:noCompletion private var __maxInboundFrameSize:Int = -1;
+
+	@:noCompletion private inline function get_maxInboundFrameSize():Int {
+		return __maxInboundFrameSize >= 0 ? __maxInboundFrameSize : maxFrameSize;
+	}
+
+	@:noCompletion private function set_maxInboundFrameSize(value:Int):Int {
+		__maxInboundFrameSize = value < 0 ? -1 : value;
+		return get_maxInboundFrameSize();
+	}
 
 	/** Default for `maxFrameSize`: 8 MiB. **/
 	public static inline final DEFAULT_MAX_FRAME_SIZE:Int = 8 * 1024 * 1024;
@@ -1322,7 +1356,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		stays connected. Only a length that cannot be trusted ends it.
 	**/
 	@:noCompletion private inline function __readFrames(input:ByteArrayInput):Void {
-		final maxLength:Int = maxFrameSize;
+		final maxLength:Int = maxInboundFrameSize;
 		while (input.bytesAvailable >= 9 || (__skipping > 0 && input.bytesAvailable > 0)) {
 			if (__skipping > 0) {
 				__skip(input);
@@ -1502,10 +1536,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return true;
 	}
 
-	/** Why a frame of `payloadLen` bytes was refused: past `maxFrameSize`, or past what the connection holds. **/
+	/** Why a frame of `payloadLen` bytes was refused: past `maxInboundFrameSize`, or past what the connection holds. **/
 	@:noCompletion private function __tooLargeWhy(payloadLen:Int):String {
-		if (maxFrameSize > 0 && payloadLen > maxFrameSize) {
-			return "An RPC frame of " + payloadLen + " bytes is over the other side's " + maxFrameSize + "-byte maxFrameSize";
+		final limit:Int = maxInboundFrameSize;
+		if (limit > 0 && payloadLen > limit) {
+			return "An RPC frame of " + payloadLen + " bytes is over the other side's " + limit + "-byte "
+				+ (__maxInboundFrameSize >= 0 ? "maxInboundFrameSize" : "maxFrameSize");
 		}
 		return "An RPC frame of " + payloadLen + " bytes is more than the other side's connection holds to read it whole ("
 			+ (__connection : NetConnectionBase).__inputCapacity() + " bytes; for TCP its Socket.maxInputBufferSize)";
@@ -1517,7 +1553,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (chunks == null) {
 			chunks = __chunks = new RPCChunks(cast this);
 		}
-		chunks.arrived(stream, input, frameEnd, last, maxFrameSize);
+		chunks.arrived(stream, input, frameEnd, last, maxInboundFrameSize);
 	}
 
 	/** An answer that arrived in pieces, whole: read as a frame that came so. **/
