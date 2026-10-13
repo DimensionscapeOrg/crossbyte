@@ -114,23 +114,26 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	/**
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
-	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`
-	 * (natively only). In a browser, `ws://` and `wss://` (and `tcp://`, since a
-	 * page's `Socket` is a WebSocket) connect to a WebSocket server, as a
-	 * `NetHost` made from a `ws://` or `wss://` URI is. Any other scheme throws an
-	 * `ArgumentError` naming the ones this target takes.
+	 * Supported schemes are `tcp://`, `tls://` (TCP with TLS), `ws://`,
+	 * `wss://`, `rudp://`, and `local://` (natively only). In a browser, `ws://`
+	 * and `wss://` (and `tcp://`, since a page's `Socket` is a WebSocket)
+	 * connect to a WebSocket server, as a `NetHost` made from a `ws://` or
+	 * `wss://` URI is. Any other scheme throws an `ArgumentError` naming the
+	 * ones this target takes.
 	 *
-	 * A `wss://` connection verifies the server's certificate against the
-	 * system's trust store. To trust a private CA, or a development server's
-	 * self-signed certificate, make the socket yourself so its settings are in
-	 * place before it connects:
+	 * A `tls://` or `wss://` connection verifies the server's certificate
+	 * against the system's trust store, and presents none of its own. `tls`
+	 * says otherwise: an authority to trust in place of the system's (a
+	 * private CA, or a development server's own certificate), whether to
+	 * verify at all, and a certificate and key to present to a server that
+	 * requires one (see `TLSOptions`):
 	 *
 	 * ```haxe
-	 * var socket = new WebSocket();
-	 * socket.secure = true;
-	 * socket.certAuthority = Certificate.fromFile("dev-ca.pem");
-	 * socket.connect("rpc.internal/rpc", 8443);
-	 * var connection = NetConnection.fromWebSocket(socket);
+	 * var connection = new NetConnection("tls://rpc.internal:7000", null, null, null, null, false, {
+	 * 	certAuthority: Certificate.fromFile("cluster-ca.pem"),
+	 * 	certificate: Certificate.fromFile("host.pem"),
+	 * 	key: Key.fromFile("host.key")
+	 * });
 	 * ```
 	 *
 	 * A `local://` connect waits on the calling thread for a listener, for
@@ -141,15 +144,27 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 *
 	 * @throws crossbyte.errors.ArgumentError For `local://`, when no listener
 	 * took the connection in that time, where the other transports report a
-	 * failed connect through `onError` and `onClose` alone.
+	 * failed connect through `onError` and `onClose` alone. For `tls` given
+	 * with a scheme that is not `tls://` or `wss://`, which would not use it,
+	 * and for a certificate in it without its key.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			readEnabled:Bool = false):Void {
+			readEnabled:Bool = false #if !(js && !nodejs), ?tls:TLSOptions #end):Void {
 		var endpoint:Endpoint = parseUrl(uri);
 		var protocol:Protocol = endpoint.protocol;
+		#if !(js && !nodejs)
+		__checkTls(uri, endpoint, tls);
+		#else
+		if (protocol == TCP && endpoint.secure) {
+			throw new crossbyte.errors.ArgumentError(__unsupported(uri));
+		}
+		#end
 		this = switch (protocol) {
 			case TCP:
 				var socket:Socket = new Socket();
+				#if !(js && !nodejs)
+				__applyTls(socket, endpoint.secure, tls);
+				#end
 				var nc:TCPConnection = new TCPConnection(socket);
 				nc.onData = onData;
 				nc.onClose = onClose;
@@ -162,6 +177,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 			#if !(js && !nodejs)
 			case WEBSOCKET:
 				var socket = new WebSocket();
+				__applyTls(socket, endpoint.secure, tls);
 				var nc = new WSConnection(socket);
 				nc.onData = onData;
 				nc.onClose = onClose;
@@ -169,7 +185,6 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				nc.onError = onError;
 				nc.readEnabled = readEnabled;
 
-				socket.secure = endpoint.secure;
 				socket.connect(endpoint.address + endpoint.resource, endpoint.port);
 				nc;
 			case RUDP:
@@ -239,11 +254,40 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		#if (js && !nodejs)
 		return 'NetConnection cannot connect to $uri: in a browser it takes tcp://, ws:// and wss:// (each a WebSocket to the server).';
 		#elseif js
-		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss:// and rudp:// (local:// is native only).';
+		return 'NetConnection cannot connect to $uri: it takes tcp://, tls://, ws://, wss:// and rudp:// (local:// is native only).';
 		#else
-		return 'NetConnection cannot connect to $uri: it takes tcp://, ws://, wss://, rudp:// and local://' + (LocalConnection.isSupported ? '.' : ' (local:// native only).');
+		return 'NetConnection cannot connect to $uri: it takes tcp://, tls://, ws://, wss://, rudp:// and local://'
+			+ (LocalConnection.isSupported ? '.' : ' (local:// native only).');
 		#end
 	}
+
+	#if !(js && !nodejs)
+	/** Refuses `tls` for a connection that would not use it, before anything is made. **/
+	@:noCompletion private static function __checkTls(uri:String, endpoint:Endpoint, tls:Null<TLSOptions>):Void {
+		if (tls == null) {
+			return;
+		}
+		if (!endpoint.secure || (endpoint.protocol != TCP && endpoint.protocol != WEBSOCKET)) {
+			throw new crossbyte.errors.ArgumentError("Only a tls:// or wss:// connection takes TLS options; " + uri + " would not use them.");
+		}
+		if ((tls.certificate == null) != (tls.key == null)) {
+			throw new crossbyte.errors.ArgumentError("A client certificate needs its key, and a key its certificate.");
+		}
+	}
+
+	/** A `tls://` or `wss://` socket made secure, with what `tls` says, before it connects. **/
+	@:noCompletion private static function __applyTls(socket:Socket, secure:Bool, tls:Null<TLSOptions>):Void {
+		socket.secure = secure;
+		if (!secure || tls == null) {
+			return;
+		}
+		socket.verifyCert = tls.verifyCert != false;
+		if (tls.certAuthority != null) {
+			socket.certAuthority = tls.certAuthority;
+		}
+		socket.setCertificate(tls.certificate, tls.key);
+	}
+	#end
 
 	@:to public inline function toINetConnection():INetConnection {
 		return cast this;

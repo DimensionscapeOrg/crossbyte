@@ -27,6 +27,14 @@ All notable changes to CrossByte will be documented in this file.
   them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
   its sessions against it and an `HTTPServer` its connections, natively,
   on the jvm and on Node.
+- **`tls://` for `NetHost` and `NetConnection`**, TCP with TLS beside
+  `wss://`, and one options type for both: `TLSOptions` (`certificate`,
+  `key`, `certAuthority`, `verifyCert`, `clientAuthority`), named as
+  `Socket` and `HTTPTLSOptions` name them. A host reads its certificate and
+  key and the authority clients' certificates must come from; a connection
+  reads what to trust, whether to verify and what to present. The host's
+  `cert` parameter is now `tls`, and takes the same `{certificate, key}` as
+  before.
 - **Client certificates.** `Socket.setCertificate(certificate, key)` (and so
   a `wss://` `WebSocket`'s) presents a certificate to a server that asks
   for one, to go with `ServerSocket.requireClientCertificate`, natively, on

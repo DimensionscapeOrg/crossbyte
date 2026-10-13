@@ -25,47 +25,66 @@ import crossbyte.net.Endpoint.__parseListenUrl;
 @:forward
 abstract NetHost(INetHost) from INetHost to INetHost {
 	/**
-		Creates a host from a transport URI (`tcp://`, `ws://`, `wss://` or
-		`rudp://`), binds it, and starts it listening if asked.
+		Creates a host from a transport URI (`tcp://`, `tls://`, `ws://`,
+		`wss://` or `rudp://`), binds it, and starts it listening if asked.
 
 		Port 0, as in `tcp://127.0.0.1:0`, binds a port the system chooses,
 		as `ServerSocket.bind(0)` does, and `localPort` says which: once the
 		host is bound, and on Node once it is listening, a turn after
 		`listen()`.
 
-		A `wss://` host terminates TLS, and needs the certificate it presents
-		and its key in `cert`, which is installed before the host binds, as
-		a TLS server's material has to be. For anything more (client
-		certificates, SNI), make the `ServerWebSocket` and wrap it with
-		`fromServerWebSocket`.
+		A `tls://` host (TCP with TLS) or a `wss://` one terminates TLS, and
+		needs the certificate it presents and its key in `tls`, which are
+		installed before the host binds, as a TLS server's material has to
+		be. `tls.clientAuthority` requires every client to present a
+		certificate that authority issued (mutual TLS); a host reads nothing
+		else in `TLSOptions`, so the options its own connections dial with
+		can be the same object. For anything more (SNI, ALPN), make the
+		`ServerSocket` or `ServerWebSocket` and wrap it with
+		`fromServerSocket` or `fromServerWebSocket`.
 
-		@throws crossbyte.errors.ArgumentError For a `wss://` host without a
-			`cert`, and for `cert` given to a host of any other scheme, which
-			would not use it.
+		```haxe
+		// Given certificate:Certificate, key:Key, clusterAuthority:Certificate.
+		var host = new NetHost("tls://0.0.0.0:7000", connection -> {}, null, null, true,
+			{certificate: certificate, key: key, clientAuthority: clusterAuthority});
+		```
+
+		@throws crossbyte.errors.ArgumentError For a `tls://` or `wss://` host
+			without a certificate and key in `tls`, and for `tls` given to a
+			host of any other scheme, which would not use it.
 	**/
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
-			startListening:Bool = false, ?cert:{certificate:Certificate, key:Key}):Void {
+			startListening:Bool = false, ?tls:TLSOptions):Void {
 		var endpoint:Endpoint = __parseListenUrl(uri);
-		var secureWebSocket = __isSecureWebSocketUri(uri);
-		// Before anything is bound. A wss:// host bound in this constructor
+		var secure:Bool = endpoint.secure;
+		// Before anything is bound. A secure host bound in this constructor
 		// with no way to reach its certificate: every handshake failed, and
 		// nothing said why.
-		if (secureWebSocket && cert == null) {
-			throw new crossbyte.errors.ArgumentError("A wss:// host needs the certificate it presents: pass `cert` to NetHost's constructor, or make "
-				+ "the ServerWebSocket yourself and wrap it with NetHost.fromServerWebSocket.");
+		if (secure && (tls == null || tls.certificate == null || tls.key == null)) {
+			throw new crossbyte.errors.ArgumentError("A " + (endpoint.protocol == TCP ? "tls://" : "wss://")
+				+ " host needs the certificate it presents and its key: pass them in `tls` to NetHost's constructor, or make the server yourself and wrap it.");
 		}
-		if (!secureWebSocket && cert != null) {
-			throw new crossbyte.errors.ArgumentError("Only a wss:// host takes a certificate; " + uri + " would not use it.");
+		if (!secure && tls != null) {
+			throw new crossbyte.errors.ArgumentError("Only a tls:// or wss:// host takes TLS options; " + uri + " would not use them.");
 		}
 		this = switch (endpoint.protocol) {
 			case TCP:
-				var server = new ServerSocket();
+				var server = new ServerSocket(secure);
+				if (secure) {
+					server.setCertificate(tls.certificate, tls.key);
+					if (tls.clientAuthority != null) {
+						server.requireClientCertificate(tls.clientAuthority);
+					}
+				}
 				server.bind(endpoint.port, endpoint.address);
 				fromServerSocket(server, onAccept, onDisconnect, onError);
 			case WEBSOCKET:
-				var server = new ServerWebSocket(secureWebSocket);
-				if (cert != null) {
-					server.cert = cert;
+				var server = new ServerWebSocket(secure);
+				if (secure) {
+					server.cert = {certificate: tls.certificate, key: tls.key};
+					if (tls.clientAuthority != null) {
+						server.requireClientCertificate(tls.clientAuthority);
+					}
 				}
 				server.bind(endpoint.port, endpoint.address);
 				fromServerWebSocket(server, onAccept, onDisconnect, onError);
@@ -75,7 +94,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 				fromReliableDatagramServerSocket(server, onAccept, onDisconnect, onError);
 			default:
 				throw new crossbyte.errors.ArgumentError("NetHost cannot listen on " + uri
-					+ ": it takes tcp://, ws://, wss:// and rudp://. For local IPC, listen with a crossbyte.ipc.LocalConnection, one per peer.");
+					+ ": it takes tcp://, tls://, ws://, wss:// and rudp://. For local IPC, listen with a crossbyte.ipc.LocalConnection, one per peer.");
 		}
 
 		if (startListening) {
@@ -113,14 +132,6 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		return host;
 	}
 
-	private static inline function __isSecureWebSocketUri(uri:String):Bool {
-		if (uri == null) {
-			return false;
-		}
-
-		var normalized = StringTools.trim(uri).toLowerCase();
-		return StringTools.startsWith(normalized, "wss://");
-	}
 }
 
 private typedef DisconnectHandler = (INetConnection, Reason) -> Void;

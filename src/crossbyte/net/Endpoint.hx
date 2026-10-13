@@ -13,7 +13,7 @@ class Endpoint {
 	public var address:String;
 	/** Explicit or inferred port number. */
 	public var port:Int;
-	/** `true` when the original URI requested a secure WebSocket (`wss://`). */
+	/** `true` when the original URI asked for TLS: `tls://` (TCP with TLS) or `wss://`. */
 	public var secure:Bool = false;
 	/** WebSocket resource path including query string when present. */
 	public var resource:String = "";
@@ -22,8 +22,8 @@ class Endpoint {
 /**
  * Parses a transport URI into an `Endpoint`.
  *
- * Supports `tcp://`, `rudp://`, `local://`, `ws://`, and `wss://`. Plain TCP/RUDP
- * endpoints require an explicit port and do not accept path or query
+ * Supports `tcp://`, `tls://` (TCP with TLS), `rudp://`, `local://`, `ws://`,
+ * and `wss://`. TCP, TLS and RUDP endpoints require an explicit port and do not accept path or query
  * components. `local://` endpoints treat the remainder as a local pipe name.
  * WebSocket endpoints accept optional paths and infer port `80` or
  * `443` when omitted.
@@ -79,6 +79,9 @@ function parseUrl(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		switch (scheme) {
 			case "tcp":
 				proto = Protocol.TCP;
+			case "tls":
+				proto = Protocol.TCP;
+				wasWss = true;
 			case "udp":
 				proto = Protocol.UDP;
 			case "rudp":
@@ -91,7 +94,7 @@ function parseUrl(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 				proto = Protocol.WEBSOCKET;
 				wasWss = true;
 			default:
-				throw 'unknown scheme "$scheme" (tcp, ws, wss, rudp and local are known)';
+				throw 'unknown scheme "$scheme" (tcp, tls, ws, wss, rudp and local are known)';
 		}
 	}
 
@@ -174,7 +177,7 @@ function parseUrl(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		}
 	} else {
 		if (port < 0) {
-			throw "a port is required for tcp://, udp:// and rudp://";
+			throw "a port is required for tcp://, tls://, udp:// and rudp://";
 		}
 
 		if (port == 0 && !listening) {

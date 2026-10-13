@@ -120,8 +120,8 @@ made differs:
 | Transport | A client | A server |
 |---|---|---|
 | TCP | `new NetConnection("tcp://host:4000")` | `new NetHost("tcp://0.0.0.0:4000", ...)` |
-| TLS over TCP | a `Socket` with `secure` set, connected, then `NetConnection.fromSocket(socket)` | `new ServerSocket(true)` with `setCertificate`, then `NetHost.fromServerSocket(server, ...)` |
-| WebSocket | `"ws://host:8080/rpc"`, or `"wss://..."` | `new NetHost("ws://0.0.0.0:8080", ...)`, or `"wss://..."` with its `cert` |
+| TLS over TCP | `"tls://host:4000"`, with `TLSOptions` for a private authority or a client certificate | `new NetHost("tls://0.0.0.0:4000", ...)` with its certificate and key in `TLSOptions` |
+| WebSocket | `"ws://host:8080/rpc"`, or `"wss://..."` | `new NetHost("ws://0.0.0.0:8080", ...)`, or `"wss://..."` with `TLSOptions` |
 | reliable UDP | `"rudp://host:7777"` | `new NetHost("rudp://0.0.0.0:7777", ...)` |
 | reliable UDP, encrypted | a `ReliableDatagramSocket` with its `encryptionKey`, then `NetConnection.fromReliableDatagramSocket` | a `ReliableDatagramServerSocket` with `encryptionKeyFor`, then `NetHost.fromReliableDatagramServerSocket` |
 | local IPC (native only) | `"local://name"` | a `LocalConnection` that listens on the name, then `NetConnection.fromLocalConnection` |
@@ -132,6 +132,34 @@ cannot listen. Over reliable UDP every frame goes as one reliable, ordered
 message, split over datagrams when it is larger than one. A `NetConnection`
 or `NetHost` given a URI it cannot use throws an `ArgumentError` naming the
 URI and the schemes it takes.
+
+Links between hosts of one's own usually run on a private authority, and
+prove both ends by certificate (mutual TLS): one `TLSOptions` names this
+host's certificate and key, the authority to trust, and the authority a
+dialler's certificate must come from, and serves both the host and the
+connections it dials. The host reads who dialled it from the certificate:
+
+```haxe
+import crossbyte.net.Certificate;
+import crossbyte.net.Key;
+import crossbyte.net.TLSOptions;
+
+function linkHosts(handler:ChatHandler):NetHost {
+	var cluster = Certificate.fromFile("certs/cluster-ca.pem");
+	var tls:TLSOptions = {
+		certificate: Certificate.fromFile("certs/hub.pem"),
+		key: Key.fromFile("certs/hub.key"),
+		certAuthority: cluster,
+		clientAuthority: cluster
+	};
+	var dialled = new NetConnection("tls://peer.internal:7000", null, null, null, null, false, tls);
+	return new NetHost("tls://0.0.0.0:7000", connection -> {
+		var peer = NetConnection.toSocket(connection).peerCertificate;
+		trace("dialled by " + (peer == null ? "nobody known" : peer.commonName));
+		new RPCSession(connection, null, handler);
+	}, null, null, true, tls);
+}
+```
 
 A local IPC listener serves one peer at a time on its name, and takes the
 next once that one has gone, so one session over it answers each in turn
