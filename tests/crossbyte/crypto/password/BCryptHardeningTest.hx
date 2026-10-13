@@ -32,6 +32,14 @@ class BCryptHardeningTest extends utest.Test {
 		Assert.isTrue(BCrypt.needsRehash("$2y$" + COST_12_HASH.substr(4), 12));
 	}
 
+	public function testTheFixedHashDummyHashSuggestsForPhpIsAStandardCostTwelveHash():Void {
+		// Copied from BCrypt.dummyHash's docs: a hash a reader pastes in has to
+		// be one verify spends the full cost on, at the default cost.
+		var fixed:String = "$2b$12$B.XKt1N9Rf6008g6qPvPxuLXbpHUg7BpmNRY5VqvzyIH4UpspdWnW";
+		Assert.equals(60, fixed.length);
+		Assert.isFalse(BCrypt.needsRehash(fixed, 12));
+	}
+
 	public function testEmptyPasswordIsRejected():Void {
 		// hash() throws on an empty/null password before touching the CSPRNG,
 		// so this is exercisable on every target.

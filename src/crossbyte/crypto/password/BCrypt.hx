@@ -353,6 +353,26 @@ class BCrypt {
 	 * Made once per cost and kept, so only the first call pays for a hash. Use the cost
 	 * real hashes use, or the timing differs again.
 	 *
+	 * **On PHP** it is kept in a static, which lasts as long as the PHP process, and a
+	 * process serving one request rarely still has it: such a sign-in pays a hash to
+	 * make it and then the verify, and takes about twice as long as a wrong password,
+	 * which tells the timer what this is here to hide. There, verify against a fixed
+	 * hash instead: one made once at the cost real hashes use, of a random password
+	 * nobody keeps, and written into the code or the configuration.
+	 *
+	 * ```haxe
+	 * // Made once with BCrypt.hash of 32 random characters, at cost 12, and the
+	 * // password thrown away: no password matches it.
+	 * static inline final NO_USER_HASH:String = "$2b$12$B.XKt1N9Rf6008g6qPvPxuLXbpHUg7BpmNRY5VqvzyIH4UpspdWnW";
+	 *
+	 * var stored:String = user != null ? user.passwordHash : #if php NO_USER_HASH #else BCrypt.dummyHash(12) #end;
+	 * var ok:Bool = BCrypt.verify(password, stored) && user != null;
+	 * ```
+	 *
+	 * A hash in the code is public, which is fine: it is there to cost a verify, and
+	 * `user != null` keeps even its password from signing anyone in. Make it again
+	 * whenever the cost of real hashes changes.
+	 *
 	 * @param cost The cost factor real hashes are made with. Defaults to 12.
 	 */
 	public static function dummyHash(cost:Int = 12):String {

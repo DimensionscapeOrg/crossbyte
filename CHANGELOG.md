@@ -55,6 +55,10 @@ All notable changes to CrossByte will be documented in this file.
   shortest only once the peer's hello has come, and a connection closed
   before it counts as a failed attempt, so the wait doubles as it does for a
   refused connect.
+- **`BCrypt.dummyHash` says what it does on PHP.** It keeps its hash in a
+  static, which a PHP process serving one request rarely still has, so
+  there the sign-in it protects pays for a hash as well as the verify. Its
+  docs say so and show a fixed hash to verify against on PHP instead.
 
 ## 1.0.0 - 2026-10-13
 
