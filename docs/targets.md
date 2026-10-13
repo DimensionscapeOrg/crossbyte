@@ -97,6 +97,15 @@ On Linux, HashLink polls its sockets through `select`, which cannot watch a desc
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
 
+**Half a surrogate pair, on HashLink.** A string can hold half of a surrogate pair on its own (a string cut in the
+middle of an emoji does). A `ByteArray` writes one as U+FFFD, as every target does, and so do HTTP text responses,
+which go through one. Everything else that turns text into UTF-8 there (WebSocket and data channel text, RPC string
+values, JWTs, `FileStream`'s text writes, an HTTP client's text body) uses HashLink's own encoder, which takes the
+character after a lone half into it, so that character is lost; only a lone half at the very end of a string is
+caught. Finding them first would cost every string a pass, half again the time a long one takes to encode, so on
+HashLink keep text that could hold one well formed before it reaches those: pair it, or replace the lone half with
+U+FFFD.
+
 **A listener kept as another function type, on HashLink.** A function passed where another function type is wanted
 is wrapped there, and a function wrapped twice is not the one wrapped once. So a listener added as it was made and
 removed through a copy kept as another type is not found, and stays: a lambda whose body returns a value (`e ->
