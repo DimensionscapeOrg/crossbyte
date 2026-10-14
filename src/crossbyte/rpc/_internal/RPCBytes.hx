@@ -86,6 +86,9 @@ class RPCBytes {
 	public static inline function getI16(data:Bytes, at:Int):Int {
 		#if cpp
 		return untyped __global__.__hxcpp_memory_get_i16(data.getData(), at);
+		#elseif (php && !macro)
+		// Signed without the shifts on PHP, as in Int16.fromInt.
+		return (data.getUInt16(at) ^ 0x8000) - 0x8000;
 		#else
 		return (data.getUInt16(at) << 16) >> 16;
 		#end

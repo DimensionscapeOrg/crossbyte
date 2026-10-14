@@ -35,7 +35,12 @@ abstract Int16(Int) to Int {
 
 	/** `value`'s low sixteen bits, as a signed short. **/
 	@:from public static inline function fromInt(value:Int):Int16 {
+		#if (php && !macro)
+		// Signed without the shifts on PHP, as in Int8.fromInt.
+		return new Int16(((value & 0xFFFF) ^ 0x8000) - 0x8000);
+		#else
 		return new Int16((value << 16) >> 16);
+		#end
 	}
 
 	// Every operator works on the Int a value holds, the other side an Int

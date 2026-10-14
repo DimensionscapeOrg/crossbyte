@@ -34,7 +34,13 @@ abstract Int8(Int) to Int {
 
 	/** `value`'s low eight bits, as a signed byte. **/
 	@:from public static inline function fromInt(value:Int):Int8 {
+		#if (php && !macro)
+		// PHP's Int is 64 bits, in which bit 31 is a bit like any other, so
+		// the shifts would not sign the byte: signed as wrap32 signs 32 bits.
+		return new Int8(((value & 0xFF) ^ 0x80) - 0x80);
+		#else
 		return new Int8((value << 24) >> 24);
+		#end
 	}
 
 	// Every operator works on the Int a value holds, the other side an Int
