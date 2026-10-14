@@ -88,6 +88,23 @@ class RPCReuseTest extends utest.Test {
 		Assert.isTrue(fromA == handler.lastRecent);
 	}
 
+	public function testACallInsideACallReadsIntoItsOwn():Void {
+		// The server's handler, in its call, has the client call it again
+		// (both ends deliver at once): the inner call's inputs are not read
+		// into the outer call's.
+		final link = LinkedConnection.pair();
+		final toClient = new EchoCommands();
+		final toServer = new ReuseCommands();
+		final outer = new NestingHandler(toClient);
+		final serverSession = new RPCSession<EchoCommands>(link.server, toClient, outer);
+		final clientSession = new RPCSession<ReuseCommands>(link.client, toServer, new EchoHandler(toServer));
+		toServer.inputs(1, 1, [input(7, 7, 1)]);
+		Assert.equals("inner 9:9; outer 7:7", outer.seen.join("; "));
+		Assert.isFalse(outer.outerArray == outer.innerArray, "a call inside a call read into the outer one's array");
+		Assert.notNull(serverSession);
+		Assert.notNull(clientSession);
+	}
+
 	public function testNothingChangesOnTheWire():Void {
 		// The same op as a handler that keeps nothing: a peer of either kind answers.
 		final plain = new ReuseNothing();
@@ -139,6 +156,60 @@ interface ReuseContract {
 @:rpcContract(ReuseContract)
 private class ReuseCommands extends RPCCommands {
 	public function new() {}
+}
+
+interface EchoContract {
+	function poke():Void;
+}
+
+@:rpcContract(EchoContract)
+private class EchoCommands extends RPCCommands {
+	public function new() {}
+}
+
+/** The client's side: told to poke, it calls the server's inputs again, at once. **/
+private class EchoHandler extends RPCHandler implements EchoContract {
+	final back:ReuseCommands;
+
+	public function new(back:ReuseCommands) {
+		this.back = back;
+	}
+
+	public function poke():Void {
+		final i = new ReuseInput();
+		i.controls = 9;
+		i.aimSteps = 9;
+		back.inputs(2, 2, [i]);
+	}
+}
+
+private class NestingHandler extends RPCHandler implements ReuseContract {
+	public final seen:Array<String> = [];
+	public var outerArray:Null<Array<ReuseInput>> = null;
+	public var innerArray:Null<Array<ReuseInput>> = null;
+	final client:EchoCommands;
+	var depth:Int = 0;
+
+	public function new(client:EchoCommands) {
+		this.client = client;
+	}
+
+	public function inputs(ack:VarUInt, newest:VarUInt, @:reuse recent:Array<ReuseInput>):Void {
+		depth++;
+		if (depth == 1) {
+			outerArray = recent;
+			client.poke();
+			seen.push("outer " + [for (i in recent) i.controls + ":" + (i.aimSteps : Int)].join(","));
+		} else {
+			innerArray = recent;
+			seen.push("inner " + [for (i in recent) i.controls + ":" + (i.aimSteps : Int)].join(","));
+		}
+		depth--;
+	}
+
+	public function update(state:ReuseState):Void {}
+
+	public function keep(recent:Array<ReuseInput>):Void {}
 }
 
 private class ReuseHandler extends RPCHandler implements ReuseContract {

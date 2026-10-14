@@ -99,13 +99,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private var __connection:NetConnection;
 	@:noCompletion private var __handler:RPCHandler<Dynamic, Dynamic>;
-	/**
-		What this session's handler reads its patches and `@:reuse` arguments
-		into, valid during each call: made by the handler's generated code at
-		the first call that needs it, and let go when the handler changes.
-		Per session, since one handler may serve many.
-	**/
-	@:noCompletion public var __reuse:Any = null;
 	@:noCompletion private var __commands:C;
 	// TimerHandle.INVALID when no heartbeat is scheduled. Not 0: that is a real
 	// handle, the first timer a scheduler hands out.
@@ -1528,14 +1521,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				} else if (requestId == 0 && op == RPCWire.PING_OP) {
 					__pinged();
 				} else if (handler != null) {
-					// A call arriving while another of this session's runs (a
-					// connection that delivers at once) reads into what is kept
-					// for it alone: the outer one's patches are still its own.
-					final nested:Bool = __inRequestId != NOT_DISPATCHING;
-					final outerReuse:Any = __reuse;
-					if (nested) {
-						__reuse = null;
-					}
 					handler.this_session = cast this;
 					handler.this_frameEnd = frameEnd;
 					__inOp = op;
@@ -1544,9 +1529,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 					__inRuntime = false;
 					__currentCall = null;
 					handler.dispatch(op, input, requestId);
-					if (nested) {
-						__reuse = outerReuse;
-					}
 					__inRequestId = NOT_DISPATCHING;
 					__currentCall = null;
 				} else {
@@ -1729,6 +1711,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public var onUnreadableFrame(get, set):(op:Int, requestId:Int, reason:String) -> Void;
 
 	@:noCompletion private var __onUnreadable:Null<(op:Int, requestId:Int, reason:String) -> Void> = null;
+
+	/**
+		What this session's handler reads its patches and `@:reuse` arguments
+		into, valid during each call: made by the handler's generated code at
+		the first call that needs it, and let go when the handler changes.
+		Per session, since one handler may serve many. Declared last, so the
+		fields every call reads keep their places.
+	**/
+	@:noCompletion public var __reuse:Any = null;
 
 	@:noCompletion private function get_onUnreadableFrame():(op:Int, requestId:Int, reason:String) -> Void {
 		return __onUnreadable != null ? __onUnreadable : __noUnreadable;

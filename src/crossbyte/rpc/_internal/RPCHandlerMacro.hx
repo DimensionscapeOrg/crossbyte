@@ -450,6 +450,10 @@ class RPCHandlerMacro {
 		final name:String = holderName(tag);
 		final init:Array<Expr> = [];
 		final fields:Array<Field> = [];
+		// Set while a call reads into it and runs: a call arriving inside
+		// it (over a connection that delivers at once) reads into one of
+		// its own, so the outer call's are still its own.
+		fields.push({name: "__busy", access: [APublic], kind: FVar(macro :Bool, macro false), pos: pos});
 		for (arg in reused) {
 			fields.push({name: arg.field, access: [APublic], kind: FVar(arg.type, null), pos: pos});
 			init.push(macro $i{arg.field} = ${arg.make});
@@ -486,6 +490,7 @@ class RPCHandlerMacro {
 		final reads:Array<Expr> = [];
 		// This method's arguments read into what the session keeps.
 		final mine:Array<ReusedArg> = [];
+		var holderType:Null<ComplexType> = null;
 
 		// Each argument a local, read into below.
 		for (i in 0...m.args.length) {
@@ -522,11 +527,8 @@ class RPCHandlerMacro {
 				final readInto:Expr = Context.defined("crossbyte_fresh_events") ? reuse.readInto(macro input, macro this.this_frameEnd,
 					reuse.make) : macro __held.$field = ${reuse.readInto(macro input, macro this.this_frameEnd, macro __held.$field)};
 				final isOpt:Bool = a.opt || RPCContractMacroTools.isNullable(a.type, m.pos);
-				final get:Expr = macro {
-					final __held:$holderPath = cast this.__rpc_reuse();
-					$readInto;
-				};
-				reads.push(macro $i{local} = ${isOpt ? macro(input.readByte() != 0 ? $get : null) : get});
+				holderType = holderPath;
+				reads.push(macro $i{local} = ${isOpt ? macro(input.readByte() != 0 ? $readInto : null) : readInto});
 			} else {
 				reads.push(macro $i{local} = $e{readerForArg(a, m.pos)});
 			}
@@ -598,7 +600,23 @@ class RPCHandlerMacro {
 				});
 			}
 		}
+		if (holderType != null) {
+			// What the session keeps, taken before the reads and given back
+			// once the call has run; one of its own for a call inside one.
+			final held:ComplexType = holderType;
+			stmts.unshift(macro {
+				__held = cast this.__rpc_reuse();
+				if (__held.__busy) {
+					__held = cast this.__rpc_newReuse();
+				}
+				__held.__busy = true;
+			});
+			stmts.unshift(macro var __held:$held = null);
+		}
 		stmts.push(macro if (__read) $b{run});
+		if (holderType != null) {
+			stmts.push(macro __held.__busy = false);
+		}
 		// Under -D crossbyte_check_events, what was kept for the call is
 		// garbage once it returns: a handler keeping it shows at once.
 		if (Context.defined("crossbyte_check_events")) {
