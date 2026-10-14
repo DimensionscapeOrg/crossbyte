@@ -204,6 +204,11 @@ class AllocationBudgetTest extends utest.Test {
 	// either end once the patches, pools and frames have grown.
 	private static final RPC_PATCH_TICK = new Budget("a tick of patches: a structure and two keyed maps, diffed, sent, read and applied", "tick",
 		[0, 0, 0], [8, 8, 8]);
+	// The same with one bolt entering and one leaving the view each tick:
+	// natively hxcpp's IntMap makes a node (56 B) for each key it did not
+	// hold, the client's frame map here; on the jvm the map's table is reused.
+	private static final RPC_PATCH_TICK_CHURN = new Budget("a tick of patches with one entry added and one removed", "tick", [64, 64, 3],
+		[144, 144, 72]);
 	private static final RPC_TYPED_ONE_WAY =new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
@@ -1317,6 +1322,14 @@ class AllocationBudgetTest extends utest.Test {
 	}
 
 	public function testATickOfPatches():Void {
+		// The same entities each tick: nothing at either end.
+		__within(RPC_PATCH_TICK, __measureTicks(false));
+		// One bolt in and one out each tick: natively the client's frame map
+		// makes a node for the key it did not hold, as any IntMap does.
+		__within(RPC_PATCH_TICK_CHURN, __measureTicks(true));
+	}
+
+	static function __measureTicks(churn:Bool):AllocationReading {
 		final link = LinkedConnection.pair();
 		final commands = new ReplicaCommands();
 		final client = new ReplicaClient();
@@ -1329,18 +1342,21 @@ class AllocationBudgetTest extends utest.Test {
 			server.step(tick);
 			// The first tick against nothing, as a joining client is sent it.
 			final first:Bool = tick == 1;
+			final now:Int = churn ? tick : 0;
+			final before:Int = churn ? tick - 1 : 0;
 			commands.state(tick, tick - 1, server.ownPatch.diff(first ? null : server.ownBefore, server.own),
 				server.shipPatch.diffKeys(first ? null : server.shipsBefore, server.shipKeys, server.ships, server.shipKeys),
-				server.boltPatch.diffKeys(first ? null : server.bolts, server.boltView(tick - 1), server.bolts, server.boltView(tick)));
+				server.boltPatch.diffKeys(first ? null : server.bolts, server.boltView(before), server.bolts, server.boltView(now)));
 			if (client.applied != tick) {
 				throw "the tick was not applied";
 			}
 		};
 		__warm(op, WARM_CHEAP);
-		__within(RPC_PATCH_TICK, AllocationMeter.measure(op, 20000));
+		final reading = AllocationMeter.measure(op, 20000);
 		Assert.isTrue(client.applied > 0);
 		Assert.notNull(serverSession);
 		Assert.notNull(clientSession);
+		return reading;
 	}
 
 	public function testATypedRuntimeRpcCall():Void {
