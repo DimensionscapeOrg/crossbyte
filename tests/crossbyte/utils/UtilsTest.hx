@@ -214,10 +214,12 @@ class UtilsTest extends utest.Test {
 				crc.update(data, offset, length);
 				var expected:Int = crc.get();
 				var actual:Bytes = Checksum.compute(CRC32, data, offset, length);
-				var value:Int = (actual.get(0) << 24) | (actual.get(1) << 16) | (actual.get(2) << 8) | actual.get(3);
-				if (value != expected) {
-					Assert.fail('CRC-32 of $length bytes from $offset was $value, not $expected');
-					return;
+				// Byte by byte: an Int rebuilt with `<< 24` does not wrap on PHP.
+				for (i in 0...4) {
+					if (actual.get(i) != ((expected >> (24 - 8 * i)) & 0xFF)) {
+						Assert.fail('CRC-32 of $length bytes from $offset was ${actual.toHex()}, not ${StringTools.hex(expected, 8)}');
+						return;
+					}
 				}
 			}
 		}

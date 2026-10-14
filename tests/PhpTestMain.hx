@@ -39,6 +39,7 @@ class PhpTestMain {
 		runner.addCase(new crossbyte.auth.jwt.JWTRevocationTest());
 		runner.addCase(new crossbyte.auth.SecretTest());
 		runner.addCase(new crossbyte.core.ConfigTreeTest());
+		runner.addCase(new crossbyte.utils.UtilsTest());
 		utest.ui.Report.create(runner);
 		runner.run();
 	}

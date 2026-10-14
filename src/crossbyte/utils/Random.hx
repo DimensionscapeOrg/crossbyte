@@ -68,7 +68,7 @@ final class Random {
 		__sharedLock.acquire();
 		#end
 		var current:Int = __shared;
-		__shared = (current + 1) | 0;
+		__shared = Hash.wrap32((current + 1) | 0);
 		#if target.threaded
 		__sharedLock.release();
 		#end
@@ -302,12 +302,14 @@ final class Random {
 		// wrap, so the same seed would produce a different sequence, breaking
 		// the one promise this class makes, in its own words: "reproducible
 		// results when seeded".
-		z += 0x9E3779B9;
-		z ^= (z >>> 16);
+		// wrap32 and ushr32 are `z` and `>>>` everywhere but PHP, whose 64-bit
+		// Int needs them to take the same 32-bit steps.
+		z = Hash.wrap32(z + 0x9E3779B9);
+		z ^= Hash.ushr32(z, 16);
 		z = Hash.mul32(z, 0x85EBCA6B);
-		z ^= (z >>> 13);
+		z ^= Hash.ushr32(z, 13);
 		z = Hash.mul32(z, 0xC2B2AE35);
-		z ^= (z >>> 16);
+		z ^= Hash.ushr32(z, 16);
 		return z;
 	}
 
@@ -784,9 +786,9 @@ final class Random {
 
 	@:pure
 	@:noCompletion private inline function __xorshift32Step(x:Int):Int {
-		x ^= (x << 13);
-		x ^= (x >>> 17);
-		x ^= (x << 5);
+		x = Hash.wrap32(x ^ (x << 13));
+		x ^= Hash.ushr32(x, 17);
+		x = Hash.wrap32(x ^ (x << 5));
 		return x;
 	}
 

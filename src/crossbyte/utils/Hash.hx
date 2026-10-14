@@ -39,8 +39,35 @@ class Hash {
 		// where there is no JavaScript to put it in.
 		#if (js && !macro)
 		return js.Syntax.code("Math.imul({0}, {1})", a, b);
+		#elseif (php && !macro)
+		// Two 32-bit values multiply exactly in PHP's 64-bit integer.
+		return wrap32(wrap32(a) * wrap32(b));
 		#else
 		return a * b;
+		#end
+	}
+
+	/**
+		`x` as a 32-bit Int. On PHP an Int is PHP's 64-bit integer, which does
+		not wrap where a 32-bit one does; everywhere else this is `x`.
+	**/
+	@:pure @:noCompletion public static inline function wrap32(x:Int):Int {
+		#if (php && !macro)
+		return php.Syntax.code("(((({0}) & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000)", x);
+		#else
+		return x;
+		#end
+	}
+
+	/**
+		`x >>> n` on `x`'s 32 bits, for `n` from 1 to 31. On PHP Haxe's `>>>`
+		shifts all 64 bits of a negative value; everywhere else this is `>>>`.
+	**/
+	@:pure @:noCompletion public static inline function ushr32(x:Int, n:Int):Int {
+		#if (php && !macro)
+		return php.Syntax.code("((({0}) & 0xFFFFFFFF) >> ({1}))", x, n);
+		#else
+		return x >>> n;
 		#end
 	}
 
@@ -62,12 +89,12 @@ class Hash {
 
 	/** Finalizes a 32-bit hash value with an avalanche mix. */
 	@:pure public static inline function fmix32(z:Int):Int {
-		z += PHI32;
-		z ^= (z >>> 16);
+		z = wrap32(z + PHI32);
+		z ^= ushr32(z, 16);
 		z = mul32(z, MM3_C1);
-		z ^= (z >>> 13);
+		z ^= ushr32(z, 13);
 		z = mul32(z, MM3_C2);
-		z ^= (z >>> 16);
+		z ^= ushr32(z, 16);
 		return z;
 	}
 
