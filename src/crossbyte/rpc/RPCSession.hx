@@ -2383,7 +2383,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (call == null && __answerTimeoutMs <= 0 && __inTimeout <= 0) {
 			__settleWhenComplete(future, () -> {
 				__callsWaiting--;
-				settle(future, false);
+				__settleBetweenCalls(future, settle);
 			});
 			return;
 		}
@@ -2396,6 +2396,28 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		final waiting:RPCCall = call;
 		waiting.__wait(cast future, cast settle, __answerTimeoutMs);
 		__settleWhenComplete(future, waiting.__finish);
+	}
+
+	/**
+		Settles a call answered later that nothing tracked (its handler never
+		read `currentCall`, so it has no `RPCCall`) as no call being
+		dispatched: its hooks read `currentCall` as `null`, not as the call
+		the session may be on when its future completes.
+	**/
+	@:noCompletion private function __settleBetweenCalls<T>(future:Future<T>, settle:(Future<T>, Bool) -> Void):Void {
+		final outerRequestId:Int = __inRequestId;
+		final outerCall:Null<RPCCall> = __currentCall;
+		__inRequestId = NOT_DISPATCHING;
+		__currentCall = null;
+		try {
+			settle(future, false);
+		} catch (error:Dynamic) {
+			__inRequestId = outerRequestId;
+			__currentCall = outerCall;
+			throw error;
+		}
+		__inRequestId = outerRequestId;
+		__currentCall = outerCall;
 	}
 
 	/** Has `finish` run on this session's thread once `future` completes. **/

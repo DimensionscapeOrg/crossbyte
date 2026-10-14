@@ -1409,6 +1409,14 @@ against `maxCallsWaiting`, `afterCall` is told (with
 ending, where it is told as the future completes, as before), and the future's
 answer goes nowhere. A runtime handler reads `session.currentCall`.
 
+A call's `data` holds whatever the application keeps for that call alone (a
+request context, a start time, the user it acts for), set in `beforeCall` or
+the method and read in `afterCall`. It stays with the call when it answers
+later: `afterCall` runs with the call as its `currentCall`, and its session as
+`session`, however many other calls the handler has run since, where state
+kept on the handler would hold the last call's. Keep an object there: a bare
+number or `Bool` is boxed natively and on the jvm, an allocation each time.
+
 `currentCall` is made the first time it is read in a call: a handler that
 never reads it costs nothing for it, and a deadline costs the call a few
 bytes on the wire and nothing else. A call answered later whose handler never

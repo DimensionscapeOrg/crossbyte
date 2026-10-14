@@ -70,6 +70,14 @@ All notable changes to CrossByte will be documented in this file.
   server can refuse large calls in (a request is answered `TooLarge`, naming
   the limit) without blocking its own large answers and snapshots out. It
   reads as `maxFrameSize` until set; `-1` makes it follow again.
+- **`RPCCall.data`**, a slot for state that belongs to one call (a request
+  context, a start time), set in `beforeCall` or the method and read in
+  `afterCall`. It stays with the call when it answers later through a
+  `Future`, and `afterCall` then runs with that call as its `currentCall`
+  and its session as `session`, rather than whichever call the handler is
+  on by then. A plain field: a call whose handler never reads `currentCall`
+  pays nothing for it, and a number stored there is boxed natively and on
+  the jvm, so a hot path keeps an object it has already.
 
 ### Fixed
 

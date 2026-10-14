@@ -87,6 +87,50 @@ final class RPCCall {
 	**/
 	public var onCancel:Null<Void->Void> = null;
 
+	/**
+		Whatever the application keeps for this call and no other: set in
+		`beforeCall` or the method, and read in the method, in `afterCall`, or
+		wherever the call is kept. It stays with the call when it answers
+		later through a `Future`: `afterCall` then runs with this call as its
+		`currentCall`, however many calls the handler has run since, where
+		state kept on the handler would hold the last one's. `null` until set.
+
+		```haxe
+		class TimedHandler extends RPCHandler {
+			public function new() {}
+
+			override public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
+				currentCall.data = new CallStart(haxe.Timer.stamp());
+				return null;
+			}
+
+			override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {
+				final start:CallStart = currentCall.data;
+				trace('$method took ${haxe.Timer.stamp() - start.at} s');
+			}
+
+			@:rpc public function lookup(id:Int):Future<String> {
+				return Future.resolved("player " + id);
+			}
+		}
+
+		class CallStart {
+			public final at:Float;
+
+			public function new(at:Float) {
+				this.at = at;
+			}
+		}
+		```
+
+		A plain field, so keeping an object costs a reference written, and a
+		call whose handler never reads `currentCall` pays nothing for it. A
+		bare number or `Bool` stored here is boxed, natively and on the jvm:
+		an allocation each time. On a hot path keep an object the call has
+		already (a context or a request record) rather than a number.
+	**/
+	public var data:Any = null;
+
 	@:noCompletion private final __session:RPCSession<Dynamic, Dynamic>;
 	@:noCompletion private final __runtime:Bool;
 	// While it waits for its future: what settles it, how, and its place in
@@ -149,7 +193,42 @@ final class RPCCall {
 		if (!__leave()) {
 			return;
 		}
-		__settle(__future, false);
+		__settleAsItself(__future, false);
+	}
+
+	/**
+		Settles the call with `future` as the call its session is
+		dispatching, as it was while its method ran: so a hook or a runtime
+		handler's `afterRuntimeCall` reading `currentCall` gets this one,
+		with its `data`, and not whichever call the session is on now.
+	**/
+	@:noCompletion private function __settleAsItself(future:Future<Dynamic>, byCaller:Bool):Void {
+		final session = __session;
+		final outerOp:Int = session.__inOp;
+		final outerRequestId:Int = session.__inRequestId;
+		final outerTimeout:Int = session.__inTimeout;
+		final outerRuntime:Bool = session.__inRuntime;
+		final outerCall:Null<RPCCall> = session.__currentCall;
+		session.__inOp = op;
+		session.__inRequestId = requestId;
+		session.__inTimeout = 0;
+		session.__inRuntime = __runtime;
+		session.__currentCall = this;
+		try {
+			__settle(future, byCaller);
+		} catch (error:Dynamic) {
+			session.__inOp = outerOp;
+			session.__inRequestId = outerRequestId;
+			session.__inTimeout = outerTimeout;
+			session.__inRuntime = outerRuntime;
+			session.__currentCall = outerCall;
+			throw error;
+		}
+		session.__inOp = outerOp;
+		session.__inRequestId = outerRequestId;
+		session.__inTimeout = outerTimeout;
+		session.__inRuntime = outerRuntime;
+		session.__currentCall = outerCall;
 	}
 
 	/** Its deadline passed: the caller's, which is not answered, or `answerTimeout`, which is. **/
@@ -159,7 +238,7 @@ final class RPCCall {
 			return;
 		}
 		__end(TimedOut);
-		__settle(RPCSession.__handlerTimedOut(), byCaller);
+		__settleAsItself(RPCSession.__handlerTimedOut(), byCaller);
 	}
 
 	/** The caller cancelled it. **/
@@ -171,7 +250,7 @@ final class RPCCall {
 		final cancelled = new Future<Dynamic>();
 		cancelled.__failureObserved = true;
 		cancelled.__fail(RPCError.CANCELLED_MESSAGE, new RPCError(RPCError.CANCELLED_MESSAGE));
-		__settle(cancelled, true);
+		__settleAsItself(cancelled, true);
 	}
 
 	/**

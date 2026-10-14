@@ -271,11 +271,17 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 				}
 			}
 			if (hooked) {
+				// As the call's own, whenever it settles: its session as
+				// `session`, and its call as `currentCall`, with what was kept
+				// in its `data`.
+				final outer:RPCSession<Dynamic, Dynamic> = this_session;
+				this_session = session;
 				try {
 					afterCall(method, requestId, failure);
 				} catch (error:haxe.Exception) {
 					session.__reportHandlerError(op, method, error);
 				}
+				this_session = outer;
 			}
 		};
 		session.__settleOnThisThread(future, settle);
