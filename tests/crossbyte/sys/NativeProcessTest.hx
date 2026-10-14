@@ -437,11 +437,12 @@ class NativeProcessTest extends utest.Test {
 		#if (sys && target.threaded && !eval && !hl && !neko)
 		var info:NativeProcessStartupInfo;
 		if (System.isWindows) {
-			info = __powershell("Write-Output ('[' + $env:CB_ALONE + '][' + $env:USERNAME + '][' + $env:TEMP + ']')");
-			// What PowerShell needs to start at all, and where it keeps its
-			// caches, which without SystemDrive it makes in a folder named
-			// %SystemDrive% where it runs.
-			info.environment = ["CB_ALONE" => "1", "SystemRoot" => Sys.getEnv("SystemRoot"), "SystemDrive" => Sys.getEnv("SystemDrive")];
+			// cmd starts with no environment at all, where what PowerShell
+			// needs to start differs from one Windows image to the next; `set`
+			// lists every variable the child has.
+			var cmd:String = Sys.getEnv("ComSpec");
+			info = new NativeProcessStartupInfo(cmd != null ? cmd : "cmd.exe", ["/c", "set"]);
+			info.environment = ["CB_ALONE" => "1"];
 		} else {
 			info = new NativeProcessStartupInfo("/bin/sh", ["-c", "echo \"[$CB_ALONE][${HOME-unset}][${USER-unset}]\""]);
 			info.environment = ["CB_ALONE" => "1"];
@@ -452,7 +453,15 @@ class NativeProcessTest extends utest.Test {
 		var result = __run(info);
 		__removeTree(directory);
 		Assert.equals(0, result.exitCode, result.errors);
-		Assert.equals(System.isWindows ? "[1][][]" : "[1][unset][unset]", StringTools.trim(result.output));
+		if (System.isWindows) {
+			var names:Array<String> = [for (line in result.output.split("\n")) if (line.indexOf("=") > 0) line.substr(0, line.indexOf("=")).toUpperCase()];
+			Assert.isTrue(result.output.indexOf("CB_ALONE=1") >= 0, result.output);
+			Assert.isFalse(names.contains("USERNAME"), result.output);
+			Assert.isFalse(names.contains("TEMP"), result.output);
+			Assert.isFalse(names.contains("PATH"), result.output);
+		} else {
+			Assert.equals("[1][unset][unset]", StringTools.trim(result.output));
+		}
 		#else
 		Assert.pass();
 		#end

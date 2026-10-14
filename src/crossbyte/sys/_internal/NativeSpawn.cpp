@@ -178,9 +178,18 @@ std::wstring wideOf(String value) {
 	return std::wstring(text == nullptr ? L"" : text);
 }
 
-// An argument in quotes, as hxcpp's process_run writes one: each quote
-// escaped, and the backslashes before a quote or the closing quote doubled.
+// An argument as the command line carries it. One with nothing to protect goes
+// as it is, as libuv, Python and Rust write one: cmd.exe reads its own command
+// line, and a quoted "/c" ends its command with a stray quote. Otherwise in
+// quotes, as hxcpp's process_run writes one: each quote escaped, and the
+// backslashes before a quote or the closing quote doubled. A program reading
+// its arguments the usual way (CommandLineToArgvW, the C runtime) gets the same
+// arguments either way.
 void appendQuoted(std::wstring &line, const std::wstring &argument) {
+	if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+		line += argument;
+		return;
+	}
 	line += L'"';
 	size_t backslashes = 0;
 	for (size_t i = 0; i < argument.size(); ++i) {

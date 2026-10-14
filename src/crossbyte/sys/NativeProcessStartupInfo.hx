@@ -23,12 +23,14 @@ class NativeProcessStartupInfo {
 	/**
 		The arguments, each reaching the program as one.
 
-		On Windows, natively, on HashLink and on neko each goes in quotes, as
-		Haxe's `sys.io.Process` writes them. Programs read that as they should,
-		but `cmd.exe` takes a quoted word for the name of a program, never one
-		of its own commands: `cmd.exe /C echo hi` runs an `echo.exe` from the
-		PATH there, or fails where there is none. Run a program instead. The
-		jvm and Node quote only an argument that needs it.
+		On Windows the jvm and Node quote only an argument that needs it, and so
+		does a native start given a `workingDirectory` or an `environment`.
+		Otherwise natively, and on HashLink and neko, each goes in quotes, as
+		Haxe's `sys.io.Process` writes them. Programs read either as they
+		should, but `cmd.exe` takes a quoted word for the name of a program,
+		never one of its own commands: there `cmd.exe /C echo hi` runs an
+		`echo.exe` from the PATH, or fails where there is none. Run a program
+		instead.
 	**/
 	public var arguments:Array<String>;
 
