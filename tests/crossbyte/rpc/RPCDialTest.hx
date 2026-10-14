@@ -27,6 +27,8 @@ class RPCDialTest extends utest.Test {
 		CrossByte.current().pump(0, 0);
 	}
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testADialledSessionComesBackAfterItsConnectionDrops():Void {
 		var server = new ServerSocket();
 		var host:NetHost = null;
@@ -92,7 +94,10 @@ class RPCDialTest extends utest.Test {
 		}
 		closeQuietly(session, host);
 	}
+	#end
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	/**
 		A peer that accepts and closes before saying hello is dialled again
 		after a wait that doubles each time, as a refused connect is: the wait
@@ -129,7 +134,10 @@ class RPCDialTest extends utest.Test {
 		}
 		closeQuietly(session, host);
 	}
+	#end
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testAPeerBackedOffAfterItsHelloIsDialledWithGrowingWaits():Void {
 		// A peer that accepts and says hello, but that the application
 		// refuses: before backOff, dialled again at once, in a loop.
@@ -184,6 +192,7 @@ class RPCDialTest extends utest.Test {
 		}
 		closeQuietly(session, host);
 	}
+	#end
 
 	public function testAConnectorThatThrowsIsAnAttemptThatFailed():Void {
 		var attempts:Int = 0;
@@ -241,6 +250,8 @@ class RPCDialTest extends utest.Test {
 		#end
 	}
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testACallInFlightWhenTheConnectionGoesCarriesItsReason():Void {
 		var server = new ServerSocket();
 		var host:NetHost = null;
@@ -278,6 +289,7 @@ class RPCDialTest extends utest.Test {
 		}
 		closeQuietly(session, host);
 	}
+	#end
 
 	public function testADialledSessionWaitsForALocalListener():Void {
 		#if (cpp && (windows || linux || mac || macos))

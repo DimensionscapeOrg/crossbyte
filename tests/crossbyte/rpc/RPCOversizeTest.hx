@@ -136,6 +136,8 @@ class RPCOversizeTest extends utest.Test {
 		Assert.equals(7, small.result);
 	}
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testACallPastWhatATcpSocketHoldsIsRefusedNotWaitedFor():Void {
 		final pair = Pair.over("tcp", connection -> NetConnection.toSocket(connection).maxInputBufferSize = 64 * 1024);
 		final told = new SizeReceiver();
@@ -148,6 +150,7 @@ class RPCOversizeTest extends utest.Test {
 		pair.stillAnswers();
 		pair.close();
 	}
+	#end
 
 	public function testACallPastAWebSocketsMessageSizeIsAnswered():Void {
 		#if (cpp || jvm || java)

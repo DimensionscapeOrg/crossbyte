@@ -31,9 +31,12 @@ class RPCTransportTest extends utest.Test {
 		CrossByte.current().pump(0, 0);
 	}
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testABurstCrossesTcpWhole():Void {
 		burstOver("tcp");
 	}
+	#end
 
 	public function testABurstCrossesAWebSocketWhole():Void {
 		// A client masks what it sends with secure random bytes, which the
@@ -81,6 +84,8 @@ class RPCTransportTest extends utest.Test {
 		#end
 	}
 
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	/**
 		A large answer goes in pieces between the frames sent after it, so a
 		small call made just after a large one is answered first, and the
@@ -91,6 +96,7 @@ class RPCTransportTest extends utest.Test {
 	public function testALargeAnswerOverTcpDoesNotHoldUpASmallOne():Void {
 		largeThenSmallOver("tcp");
 	}
+	#end
 
 	public function testALargeAnswerOverAWebSocketDoesNotHoldUpASmallOne():Void {
 		#if (cpp || jvm || java)

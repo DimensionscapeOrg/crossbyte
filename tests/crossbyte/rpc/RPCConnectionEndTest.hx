@@ -23,6 +23,8 @@ import utest.Assert;
 	happened, and on Node nothing happens until the pump returns.
 **/
 class RPCConnectionEndTest extends utest.Test {
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
+	#if !php
 	public function testACallWaitingOverTcpFailsWhenThePeerHangsUp():Void {
 		var server = new ServerSocket();
 		var host:NetHost = null;
@@ -70,6 +72,7 @@ class RPCConnectionEndTest extends utest.Test {
 		}
 		closeQuietly(connection, host);
 	}
+	#end
 
 	public function testACallWaitingOverLocalIpcFailsWhenThePeerCloses():Void {
 		#if (cpp && (windows || linux || mac || macos))
