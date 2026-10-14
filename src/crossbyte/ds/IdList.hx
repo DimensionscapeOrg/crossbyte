@@ -67,6 +67,44 @@ final class IdList {
 	}
 
 	/**
+	 * Makes this list hold the ids `other` holds, in its order, keeping this
+	 * list's storage (grown if `other` is longer): a pooled list a tick's
+	 * view is copied into, allocating nothing once it has grown.
+	 *
+	 * ```haxe
+	 * // A list per tick, reused as the ring turns.
+	 * var slot:IdList = views.get(tick - views.capacity);
+	 * views.put(tick, (slot != null ? slot : new IdList()).copyFrom(visible));
+	 * ```
+	 *
+	 * @return This list.
+	 */
+	public function copyFrom(other:IdList):IdList {
+		if (other == this) {
+			return this;
+		}
+		length = 0;
+		addAll(other);
+		return this;
+	}
+
+	/**
+	 * Adds every id `other` holds at the end, in its order. A list may add
+	 * itself, which doubles it.
+	 */
+	public function addAll(other:IdList):Void {
+		final count:Int = other.length;
+		if (count == 0) {
+			return;
+		}
+		while (__ids.length < length + count) {
+			__grow();
+		}
+		Vector.blit(other.__ids, 0, __ids, length, count);
+		length += count;
+	}
+
+	/**
 	 * Iterates the ids in the order they were pushed. Written as a `for`
 	 * loop, the iteration allocates nothing.
 	 */

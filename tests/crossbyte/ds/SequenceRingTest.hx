@@ -69,6 +69,31 @@ class SequenceRingTest extends utest.Test {
 		Assert.equals(-2147483647, ring.newest);
 	}
 
+	/** A ring of acknowledged baselines keyed by a tick that wraps: what ages out still ages out across it. **/
+	public function testTheWindowAgesOutAcrossTheWrap():Void {
+		var ring = new SequenceRing<Int>(4);
+		var tick:Int = 2147483647 - 5;
+		for (_ in 0...12) {
+			Assert.isTrue(ring.put(tick, tick));
+			tick = (tick + 1) | 0;
+		}
+		// Newest is 2^31 - 1 + 6 wrapped; it holds the four up to it.
+		var newest:Int = (2147483647 + 6) | 0;
+		Assert.equals(newest, ring.newest);
+		for (back in 0...4) {
+			var held:Int = (newest - back) | 0;
+			Assert.equals(held, ring.get(held));
+		}
+		Assert.isNull(ring.get((newest - 4) | 0));
+		Assert.isNull(ring.get(2147483647));
+		// One that has aged out is not filed again, though its slot is free.
+		Assert.isFalse(ring.put((newest - 4) | 0, 0));
+		// A number ahead across the wrap moves the window on.
+		Assert.isTrue(ring.put((newest + 2) | 0, 1));
+		Assert.isNull(ring.get((newest - 2) | 0));
+		Assert.equals(newest, ring.get(newest));
+	}
+
 	public function testAnEmptyRingHoldsNothing():Void {
 		// Every slot starts out numbered 0; none of them may answer for it.
 		var ring = new SequenceRing<String>(4);

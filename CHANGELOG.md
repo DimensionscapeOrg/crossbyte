@@ -209,6 +209,9 @@ All notable changes to CrossByte will be documented in this file.
   All 32 bits arrive, so a tick that has wrapped past 2^31 - 1 (as
   `SequenceRing` orders them) carries on, in five bytes. Each is an `Int`
   wherever one is wanted. Kinds `vu` and `vi` in a signature.
+- **`IdList.copyFrom(other)` and `IdList.addAll(other)`**, so a pooled list
+  (one per tick in a `SequenceRing<IdList>`) takes a view's ids in order
+  and keeps its storage, allocating nothing once it has grown.
 
 ### Fixed
 

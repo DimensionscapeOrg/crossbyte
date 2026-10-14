@@ -43,6 +43,33 @@ class IdListTest extends utest.Test {
 		Assert.isTrue(storage == @:privateAccess list.__ids, "emptying the list gave its storage away");
 	}
 
+	/** A pooled list takes another's ids in order, keeping its own storage. **/
+	public function testCopyFromAndAddAllKeepTheOrderAndTheStorage():Void {
+		var view = new IdList(4);
+		for (id in [42, 7, 900000, -3]) {
+			view.push(id);
+		}
+		var pooled = new IdList(64);
+		pooled.push(1);
+		var storage = @:privateAccess pooled.__ids;
+		Assert.isTrue(pooled.copyFrom(view) == pooled);
+		Assert.equals("42,7,900000,-3", pooled.toArray().join(","));
+		Assert.isTrue(storage == @:privateAccess pooled.__ids, "copying gave the storage away");
+		pooled.addAll(view);
+		Assert.equals("42,7,900000,-3,42,7,900000,-3", pooled.toArray().join(","));
+		// Past the storage it has, it grows.
+		var small = new IdList(1);
+		small.copyFrom(pooled);
+		Assert.equals(8, small.length);
+		Assert.equals(-3, small.get(7));
+		small.addAll(small);
+		Assert.equals(16, small.length);
+		Assert.equals("42,7,900000,-3,42,7,900000,-3,42,7,900000,-3,42,7,900000,-3", small.toArray().join(","));
+		Assert.equals(16, small.copyFrom(small).length);
+		small.copyFrom(new IdList());
+		Assert.equals(0, small.length);
+	}
+
 	/** An id query answers exactly what the array query answers. **/
 	public function testIdQueriesFindWhatArrayQueriesFind():Void {
 		var seed:Int = 99;
