@@ -368,6 +368,29 @@ A server on one runtime pays nothing for the feature.
 
   Either way the round took 175 ms until everything was acknowledged, the time loss recovery takes at 1% each way.
 
+## Spatial grids
+
+The arena sample's index upkeep, grown (`tests/perf/spatial/SpatialBench.hx`, 2026-10-14): N entities wandering at
+40 units a second at 20 Hz, the world grown with N so a view of radius 300 holds about 22 of them as the sample's does,
+cells of 300, and 16 views asked for every step. Moving is `set` for every entity, a view is `queryCircleIds` into a
+list, inserting is the first `set` into an empty grid. `SpatialGrid` over the world's rectangle and
+`SparseSpatialGrid` with no bounds, on the same moves, each in a process of its own; medians of three interleaved
+runs, nanoseconds:
+
+| Entities | Native: move, dense / sparse | view | insert | JVM: move, dense / sparse | view | insert |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10,000 | 6.0 / 5.7 | 184 / 193 | 20 / 31 | 3.1 / 4.4 | 422 / 464 | 171 / 212 |
+| 100,000 | 5.8 / 6.0 | 306 / 341 | 14 / 25 | 2.4 / 3.5 | 315 / 379 | 42 / 48 |
+| 250,000 | 6.2 / 6.8 | 422 / 479 | 12 / 29 | 2.5 / 3.4 | 345 / 409 | 15 / 34 |
+
+The sparse grid moves an entity that stays in its cell for a comparison, as the dense one does, so its upkeep is
+within 0.6 ns of the dense grid's natively and about a nanosecond more on the JVM; a view looks each cell up by its
+coordinates, 5 to 20% more; and an entity's first cell costs a hash-table insert. With the same crowds in sixteen
+towns a hundred million units apart (`--spread`), which no dense grid can hold (it would need 10^12 cells), the
+sparse grid moves at 5.8, 5.8 and 6.8 ns natively and answers a view in 173, 329 and 498 ns. The dense grid's own
+code is unchanged by it: built from before the sparse grid, it moves at 5.8, 5.8 and 6.2 ns and answers in 184, 311
+and 416.
+
 ## What is not measured
 
 - macOS, and Linux beyond the figures marked so.
@@ -449,6 +472,9 @@ Within a budget: `ReplicationBench --diffs` times the map patch alone, and `--sy
 within a budget that fits everything (`W`) and within one of about half (`D`). On the JVM, run each system in a
 process of its own, as `run.js` does: one process running several lets the first ones' calls shape how the later ones
 are compiled.
+
+**Spatial grids.** `tests/perf/spatial/spatial.hxml` builds `SpatialBench` natively and for the JVM; `--grids dense`
+or `sparse`, `--counts`, `--steps`, and `--spread` for the far-apart towns. Run each grid in a process of its own.
 
 **HTTP over cores.** `tests/scaling`: `ScalingServer <port> <runtimes>` and `ScalingLoad <port> <connections>
 <seconds> <h1|h2>`, pinned apart (on Windows `start /affinity FF` for the server, `start /affinity FFFFFF00` for the

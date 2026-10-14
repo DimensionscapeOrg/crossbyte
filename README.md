@@ -355,7 +355,8 @@ runtime lane.
 - **Files and bytes.** File APIs, `ByteArray`, `ByteArrayInput` and `ByteArrayOutput`.
 - **Data structures.** `ExpiringMap` for what a server keeps on a peer's behalf, bounded by time (`ttl`) and by
   count (`maxSize`, 100,000 unless set); `ObjectPool`, which keeps 10,000 free objects unless `maxFree` says
-  otherwise; and for game servers `FixedStep`, `SpatialGrid`, `InterestSet`, `SequenceRing` and `ByteDelta`.
+  otherwise; and for game servers `FixedStep`, `SpatialGrid` (and `SparseSpatialGrid` for a world with no edge),
+  `InterestSet`, `SequenceRing` and `ByteDelta`.
 
 ## Build defines
 

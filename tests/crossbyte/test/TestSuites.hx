@@ -83,6 +83,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
 		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());
+		runner.addCase(new crossbyte.ds.SparseSpatialGridTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
 		runner.addCase(new crossbyte.ds.BitmapDataTest());

@@ -1,0 +1,15 @@
+# SpatialBench natively and on the jvm: the dense and sparse grids' upkeep
+# and queries on the arena sample's workload, grown (docs/performance.md,
+# "Spatial grids"). From the repository root:
+#   haxe tests/perf/spatial/spatial.hxml
+-cp src
+-cp tests/perf/spatial
+-main SpatialBench
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()
+--each
+-D HXCPP_M64
+--cpp export/spatial/native
+--next
+-lib hxjava
+--jvm export/spatial/jvm/SpatialBench.jar

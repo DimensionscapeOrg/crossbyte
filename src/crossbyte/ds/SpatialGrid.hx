@@ -51,7 +51,9 @@ import haxe.ds.Vector;
  * **Bounds** are for speed, not for correctness. A position outside them is
  * filed in the nearest edge cell and is still found by any query that reaches
  * it, only more slowly, if much is out there. The grid holds one array
- * entry per cell, so the bounds and cell size decide its size up front.
+ * entry per cell, so the bounds and cell size decide its size up front. A
+ * world with no edge, or one too large for an entry per cell, takes
+ * `SparseSpatialGrid`, whose cells exist only where something is.
  *
  * **Ids** are small non-negative integers (entity slots, say), as
  * `InterestSet` takes them, so what a query finds can be added to one
