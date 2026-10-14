@@ -250,7 +250,9 @@ class RPCFrame extends ByteArrayData {
 	/** An unsigned LEB128 varint: 0 to 0xFFFFFFFF, a negative `Int` as the unsigned value it holds. **/
 	public inline function putVarUInt(value:Int):Void {
 		__fit(5);
-		var v:Int = value;
+		// wrap32 is `value` but on PHP, whose 64-bit Int can hold more than
+		// 32 bits: its low 32 go, as `putInt` sends them, in five bytes.
+		var v:Int = crossbyte.utils.Hash.wrap32(value);
 		while ((v & ~0x7F) != 0) {
 			set(position++, (v & 0x7F) | 0x80);
 			v >>>= 7;
@@ -260,7 +262,14 @@ class RPCFrame extends ByteArrayData {
 
 	/** `value` zigzagged, then as a varint: small magnitudes of either sign in a byte, as `ByteArrayInput.readVarInt` reads it. **/
 	public inline function putVarInt(value:Int):Void {
+		#if (php && !macro)
+		// Zigzagged from its low 32 bits, as `putVarUInt` takes them: on PHP
+		// 2^31, which an Int reaches there unwrapped, zigzags past 32 bits.
+		final v:Int = crossbyte.utils.Hash.wrap32(value);
+		putVarUInt((v << 1) ^ (v >> 31));
+		#else
 		putVarUInt((value << 1) ^ (value >> 31));
+		#end
 	}
 
 	/**

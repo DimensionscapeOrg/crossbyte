@@ -344,7 +344,9 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 			shift += 7;
 		}
 		this.position = at;
-		return result;
+		// The value's 32 bits as an Int, from 2^31 up negative, on PHP too,
+		// whose 64-bit Int kept the fifth byte's top bit a positive one.
+		return crossbyte.utils.Hash.wrap32(result);
 	}
 
 	/**

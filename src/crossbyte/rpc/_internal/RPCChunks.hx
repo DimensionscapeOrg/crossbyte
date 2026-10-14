@@ -475,7 +475,9 @@ class RPCChunks implements PassFlush {
 				return;
 			}
 			b = data.get(at++);
-			requestId |= (b & 0x7F) << shift;
+			// wrap32 is the shift itself but on PHP, whose 64-bit Int would
+			// read the fifth byte's top bit as a positive one.
+			requestId |= crossbyte.utils.Hash.wrap32((b & 0x7F) << shift);
 			shift += 7;
 		} while ((b & 0x80) != 0);
 		var count:Int = 0;
@@ -486,7 +488,7 @@ class RPCChunks implements PassFlush {
 				return;
 			}
 			b = data.get(at++);
-			count |= (b & 0x7F) << shift;
+			count |= crossbyte.utils.Hash.wrap32((b & 0x7F) << shift);
 			shift += 7;
 		} while ((b & 0x80) != 0);
 		final head:Int = at - 4;
