@@ -2,6 +2,7 @@ package crossbyte.ds;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.RangeError;
+import haxe.ds.Vector;
 import haxe.io.Bytes;
 
 /**
@@ -69,7 +70,9 @@ final class SequenceRing<T> {
 
 	private var __mask:Int;
 	private var __empty:Bool = true;
-	private var __sequences:Array<Int>;
+	// A Vector, not an Array<Int>: on the jvm an Array<Int> holds a number
+	// past 127 as a boxed Integer, one allocation for every `put`.
+	private var __sequences:Vector<Int>;
 	private var __values:Array<Null<T>>;
 	// A bit per slot, set while it holds a value: packed, so `writeBits`
 	// reads eight slots at a time.
@@ -94,7 +97,7 @@ final class SequenceRing<T> {
 
 		this.capacity = size;
 		this.__mask = size - 1;
-		this.__sequences = [for (_ in 0...size) 0];
+		this.__sequences = new Vector<Int>(size, 0);
 		this.__values = [for (_ in 0...size) null];
 		this.__present = Bytes.alloc((size + 7) >> 3);
 		this.__present.fill(0, this.__present.length, 0);

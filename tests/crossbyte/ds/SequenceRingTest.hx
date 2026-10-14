@@ -232,4 +232,39 @@ class SequenceRingTest extends utest.Test {
 		Assert.raises(() -> ring.writeBits(0, out, -1, 1), crossbyte.errors.RangeError);
 		Assert.raises(() -> ring.writeBits(0, null, 0, 1));
 	}
+
+	public function testFilingANumberAllocatesNothing():Void {
+		// A baseline filed under each tick, every tick, for every observer: on
+		// the jvm a ring keeping its numbers in an Array<Int> boxed each one
+		// past 127, 16 bytes a put.
+		if (!crossbyte.test.AllocationMeter.SUPPORTED) {
+			Assert.pass();
+			return;
+		}
+		final filer = new RingFiler();
+		for (_ in 0...2000) {
+			filer.step();
+		}
+		final reading = crossbyte.test.AllocationMeter.measure(filer.step, 500);
+		Assert.isTrue(reading.perOperation == 0, 'filing a number allocated $reading');
+		Assert.isTrue(filer.found > 0);
+	}
+}
+
+/** Files a value under the next tick and reads back one a few ticks old. **/
+private class RingFiler {
+	public var found:Int = 0;
+
+	final ring = new SequenceRing<RingFiler>(32);
+	var tick:Int = 1000;
+
+	public function new() {}
+
+	public function step():Void {
+		tick++;
+		ring.put(tick, this);
+		if (ring.get(tick - 3) == this && ring.has(tick - 31) && !ring.has(tick - 32)) {
+			found++;
+		}
+	}
 }
