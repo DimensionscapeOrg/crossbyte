@@ -8,6 +8,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTOptionsTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());

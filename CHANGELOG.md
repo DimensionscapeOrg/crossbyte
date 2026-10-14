@@ -30,6 +30,14 @@ All notable changes to CrossByte will be documented in this file.
   publicKey)` makes such a key, and `JWKSet.ofKeys(keys).toJson()` (and
   `JWK.toJson()`) write a set out, the same text on every target, so an
   issuer can publish its current and next keys for rotation.
+- **JWT verification options.** `JWT.expectedIssuers` accepts a token from
+  any of several issuers (beside `expectedIssuer`, compared exactly).
+  `JWT.requireIssuedAt` refuses a token without `iat` (`MISSING_ISSUED_AT`)
+  or whose `exp` is not after it (`EXPIRY_NOT_AFTER_ISSUE`).
+  `JWT.verifySignature(token)` makes every check but those of the times,
+  for a caller that judges them itself, such as one revoking a token until
+  it would have expired. `JWT`, `JWKSet`, the `JWT` tests and the new ones
+  now run on PHP as well.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.

@@ -23,6 +23,10 @@ class PhpTestMain {
 		runner.addCase(new crossbyte.crypto.password.Argon2idVectorsTest());
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTOptionsTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		utest.ui.Report.create(runner);
 		runner.run();
 	}

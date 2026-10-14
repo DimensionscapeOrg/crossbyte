@@ -40,8 +40,35 @@ using StringTools;
 class JWT {
 	@:noCompletion private var __keys:JWTKeys;
 
-	/** The issuer a token's `iss` has to be. `null` leaves `iss` unchecked. */
+	/**
+	 * The issuer a token's `iss` has to be, compared exactly. With
+	 * `expectedIssuers` as well, `iss` may be this or any of those. Both
+	 * `null` leaves `iss` unchecked.
+	 */
 	public var expectedIssuer:String;
+
+	/**
+	 * The issuers a token's `iss` may be, beside `expectedIssuer`: for a
+	 * service that takes tokens from more than one issuer, such as its own and
+	 * an account service's, under the same keys. Compared exactly; a token
+	 * with no `iss` is refused once either is set, and an empty array with no
+	 * `expectedIssuer` accepts no issuer. `null` by default.
+	 *
+	 * ```haxe
+	 * // Given jwt:JWT.
+	 * jwt.expectedIssuers = ["https://game.example", "https://accounts.example"];
+	 * ```
+	 */
+	public var expectedIssuers:Null<Array<String>> = null;
+
+	/**
+	 * Whether a token must carry `iat`, and expire after it: one without is
+	 * `MISSING_ISSUED_AT`, and one whose `exp` is not after its `iat` is
+	 * `EXPIRY_NOT_AFTER_ISSUE`. RFC 7519 makes `iat` optional, so `false` by
+	 * default; set it for tokens a service issues itself, whose age it reads.
+	 * `verifySignature` does not apply it.
+	 */
+	public var requireIssuedAt:Bool = false;
 
 	/**
 	 * The audience this verifier is: a token's `aud` has to name it, or hold
@@ -143,7 +170,7 @@ class JWT {
 	 * a value to pass on: pass `token -> jwt.verifyToken(token)`.
 	 */
 	public overload extern inline function verifyToken(token:String):JWTPayload {
-		return __verify(token, 0.0, true).payload;
+		return __verify(token, 0.0, true, true).payload;
 	}
 
 	/**
@@ -154,7 +181,7 @@ class JWT {
 	 *         expired.
 	 */
 	public overload extern inline function verifyToken(token:String, now:Float):JWTPayload {
-		return __verify(token, now, false).payload;
+		return __verify(token, now, false, true).payload;
 	}
 
 	/**
@@ -163,7 +190,8 @@ class JWT {
 	 *
 	 * Checks run cheapest first and the first failure is the answer: size and
 	 * shape, the header's `alg`, `crit`, `typ` and `kid`, the signature, and
-	 * then the claims: `exp` (required), `iat`, `nbf`, `iss` and `aud`.
+	 * then the claims: `exp` (required), `iat` when `requireIssuedAt` is set,
+	 * the times against the clock, `iss` and `aud`.
 	 * Nothing in a refused token is returned, so claims are never read before
 	 * the signature over them has been checked. A header whose objects and
 	 * arrays nest more than 32 deep is `MALFORMED`, refused before it is
@@ -174,7 +202,7 @@ class JWT {
 	 * Two functions, with a time and without, as `verifyToken` is.
 	 */
 	public overload extern inline function verify(token:String):JWTVerification {
-		return __verify(token, 0.0, true);
+		return __verify(token, 0.0, true, true);
 	}
 
 	/**
@@ -184,11 +212,35 @@ class JWT {
 	 *         expired.
 	 */
 	public overload extern inline function verify(token:String, now:Float):JWTVerification {
-		return __verify(token, now, false);
+		return __verify(token, now, false, true);
 	}
 
-	/** `verify`, the time `now` or, with `clock`, the wall clock's. **/
-	@:noCompletion private function __verify(token:String, now:Float, clock:Bool):JWTVerification {
+	/**
+	 * Every check `verify` makes but those of the times, for a caller that
+	 * judges `exp`, `nbf` and `iat` itself: revoking a token until it would
+	 * have expired, say, which has to accept one that already has. The
+	 * signature, header, claim types, `iss` and `aud` are checked as `verify`
+	 * checks them; a token without `exp` is accepted, one whose `exp`, `iat` or
+	 * `nbf` is not a number is `MALFORMED`, and `requireIssuedAt` is not
+	 * applied.
+	 *
+	 * ```haxe
+	 * // Given jwt:JWT, token:String.
+	 * var result = jwt.verifySignature(token);
+	 * if (result.valid) {
+	 * 	trace('signed by the issuer; expires at ${result.payload.expiresAt}');
+	 * }
+	 * ```
+	 */
+	public function verifySignature(token:String):JWTVerification {
+		return __verify(token, 0.0, true, false);
+	}
+
+	/**
+		`verify`, the time `now` or, with `clock`, the wall clock's; with
+		`times` false, `verifySignature`.
+	**/
+	@:noCompletion private function __verify(token:String, now:Float, clock:Bool, times:Bool):JWTVerification {
 		#if !static
 		// Where a Float can be null (JavaScript, eval, neko), a time given as
 		// null asks the wall clock, as the optional time it replaces did,
@@ -316,26 +368,40 @@ class JWT {
 		if ((issuedAtValue != null && Math.isNaN(issuedAt)) || (notBeforeValue != null && Math.isNaN(notBefore))) {
 			return JWTVerification.refused(MALFORMED);
 		}
-		var expiresAt:Float = __seconds(Reflect.field(claims, "exp"));
-		if (Math.isNaN(expiresAt)) {
-			return JWTVerification.refused(MISSING_EXPIRY);
-		}
+		var expiresAtValue:Dynamic = Reflect.field(claims, "exp");
+		var expiresAt:Float = __seconds(expiresAtValue);
 
-		// Float throughout: a time past 2038 does not fit an Int, and one near
-		// the limit plus the leeway wrapped where an Int is 32 bits.
-		var nowSec:Float = clock ? __wallClock() : now;
-		if (nowSec > expiresAt + leeway) {
-			return JWTVerification.refused(EXPIRED);
-		}
-		if (issuedAtValue != null && (nowSec + leeway) < issuedAt) {
-			return JWTVerification.refused(ISSUED_IN_FUTURE);
-		}
-		if (notBeforeValue != null && (nowSec + leeway) < notBefore) {
-			return JWTVerification.refused(NOT_YET_VALID);
+		if (times) {
+			if (Math.isNaN(expiresAt)) {
+				return JWTVerification.refused(MISSING_EXPIRY);
+			}
+			if (requireIssuedAt) {
+				if (issuedAtValue == null) {
+					return JWTVerification.refused(MISSING_ISSUED_AT);
+				}
+				if (!(expiresAt > issuedAt)) {
+					return JWTVerification.refused(EXPIRY_NOT_AFTER_ISSUE);
+				}
+			}
+
+			// Float throughout: a time past 2038 does not fit an Int, and one near
+			// the limit plus the leeway wrapped where an Int is 32 bits.
+			var nowSec:Float = clock ? __wallClock() : now;
+			if (nowSec > expiresAt + leeway) {
+				return JWTVerification.refused(EXPIRED);
+			}
+			if (issuedAtValue != null && (nowSec + leeway) < issuedAt) {
+				return JWTVerification.refused(ISSUED_IN_FUTURE);
+			}
+			if (notBeforeValue != null && (nowSec + leeway) < notBefore) {
+				return JWTVerification.refused(NOT_YET_VALID);
+			}
+		} else if (expiresAtValue != null && Math.isNaN(expiresAt)) {
+			return JWTVerification.refused(MALFORMED);
 		}
 
 		var issuer:Null<String> = issuerValue;
-		if (expectedIssuer != null && issuer != expectedIssuer) {
+		if ((expectedIssuer != null || expectedIssuers != null) && !__issuerAccepted(issuer)) {
 			return JWTVerification.refused(WRONG_ISSUER);
 		}
 		var audience:JWTAudience = Reflect.field(claims, "aud");
@@ -397,6 +463,25 @@ class JWT {
 		var next:Array<JWTHeaderSeen> = headers.length < __HEADERS_KEPT ? headers.copy() : [];
 		next.push(new JWTHeaderSeen(segment, alg, typ, kid));
 		__headers = next;
+	}
+
+	/** Whether `issuer` is `expectedIssuer` or one of `expectedIssuers`. **/
+	@:noCompletion private function __issuerAccepted(issuer:Null<String>):Bool {
+		if (issuer == null) {
+			return false;
+		}
+		if (issuer == expectedIssuer) {
+			return true;
+		}
+		var accepted:Null<Array<String>> = expectedIssuers;
+		if (accepted != null) {
+			for (candidate in accepted) {
+				if (candidate == issuer) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	@:noCompletion private static function __isSupported(alg:String):Bool {

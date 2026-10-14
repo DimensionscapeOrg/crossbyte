@@ -43,6 +43,15 @@ enum abstract JWTRejection(String) to String {
 	/** No `exp` claim, or one that is not a number. */
 	var MISSING_EXPIRY = "missing-expiry";
 
+	/** No `iat` claim, where `JWT.requireIssuedAt` asks for one. */
+	var MISSING_ISSUED_AT = "missing-issued-at";
+
+	/**
+	 * `exp` is not after `iat`, where `JWT.requireIssuedAt` is set: a token
+	 * that was never valid, or one stamped in other units than seconds.
+	 */
+	var EXPIRY_NOT_AFTER_ISSUE = "expiry-not-after-issue";
+
 	/** `exp` is in the past, beyond the leeway. */
 	var EXPIRED = "expired";
 
@@ -52,7 +61,7 @@ enum abstract JWTRejection(String) to String {
 	/** `iat` is in the future, beyond the leeway. */
 	var ISSUED_IN_FUTURE = "issued-in-future";
 
-	/** `iss` is not `JWT.expectedIssuer`. */
+	/** `iss` is neither `JWT.expectedIssuer` nor one of `JWT.expectedIssuers`, or is missing where either is set. */
 	var WRONG_ISSUER = "wrong-issuer";
 
 	/**

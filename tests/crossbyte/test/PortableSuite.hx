@@ -233,6 +233,7 @@ class PortableSuite {
 		// HS256 is pure Haxe, so tokens verify alike on every target.
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTOptionsTest());
 		// Times past 2038 and a 32-bit Int are where the targets would disagree.
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		// PKCE everywhere; the token exchange itself against Node's own http
