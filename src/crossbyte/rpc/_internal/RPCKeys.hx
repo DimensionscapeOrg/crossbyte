@@ -57,9 +57,10 @@ class RPCKeys {
 
 	/** The key `gap + 1` past `previous`, or a throw when that is past 2^31 - 1. **/
 	public static function nextKey(previous:Int, gap:Int):Int {
-		// `| 0` so the sum wraps on JavaScript as elsewhere; past 2^31 - 1 it
-		// comes out at or below `previous`.
-		final next:Int = (previous + 1 + gap) | 0;
+		// `| 0` so the sum wraps on JavaScript as elsewhere, and wrap32 on
+		// PHP, whose 64-bit Int `| 0` leaves as it is; past 2^31 - 1 it comes
+		// out at or below `previous`.
+		final next:Int = crossbyte.utils.Hash.wrap32((previous + 1 + gap) | 0);
 		if (gap < 0 || previous == 0x7FFFFFFF || next <= previous) {
 			throw "RPC map patch key past 2^31 - 1";
 		}

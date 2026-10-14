@@ -188,6 +188,14 @@ class RPCMapPatchTest extends utest.Test {
 				out.writeVarUInt(2);
 				out.writeVarUInt(0xFFFFFFFF);
 			},
+			// A gap carrying the next key past 2^31 - 1: 5, then 5 + 2^31.
+			out -> {
+				out.writeVarUInt(4);
+				out.writeVarUInt(0);
+				out.writeVarUInt(0);
+				out.writeVarUInt(10);
+				out.writeVarUInt(0x7FFFFFFF);
+			},
 			// Counts past the frame.
 			out -> {
 				out.writeVarUInt(0);
