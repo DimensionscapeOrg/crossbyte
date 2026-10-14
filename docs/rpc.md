@@ -454,6 +454,7 @@ on the wire:
 | a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
 | an enum | its constructor's index, 1 byte (2 past 256 constructors), then that constructor's arguments |
 | an abstract over any of these, such as `enum abstract Team(Int)` or `UInt` | as the type it abstracts |
+| `RPCPatch<T>`, `RPCMapPatch<V>`, `RPCStringMapPatch<V>`, an argument or an answer | what changed since a base (see "Replicating state") |
 
 An argument that may be absent (`?value:Int`, or `value:Null<Int>`) costs
 one more byte to say whether it is there, whatever its kind (a compact number,
@@ -662,6 +663,297 @@ method exactly: its name, its arguments in order, and their types. Build both
 from one contract and they do. If they do not (a client and a server built
 from two versions of a method), the call finds no method, rather than one end
 reading the other's bytes as its own; see "What names a call", below.
+
+## Replicating state
+
+A game server sends each player, every tick, the part of the world that player
+sees: their own ship in full, the ships near them, what is flying. Most of it
+is what the player already has. The compiled lane sends what changed since a
+state both ends hold, typed and generated as the rest of it is:
+
+- `RPCPatch<T>`: a structure as the fields that differ from a base.
+- `RPCMapPatch<V>` (and `RPCStringMapPatch<V>`): a map of ids to structures as
+  the keys removed, the entries added, and patches of those whose values
+  differ.
+- `@:quantize`, `@:range` and `@:rpcBits`: fields in as few bits as they need.
+- `@:reuse`: an argument read into what the session keeps, so a call of
+  structures allocates nothing.
+
+The base is explicit: the sender names the state it diffs against, and the
+receiver applies the patch to that state. Over a reliable connection that is
+what was last sent; over reliable UDP's `sequenced` or `UNRELIABLE` delivery it
+is the tick the client last acknowledged, as Quake 3 and Source do it, and a
+lost datagram costs nothing but the next patch being against an older base.
+
+### A structure as what changed
+
+```haxe
+import crossbyte.rpc.RPCMapPatch;
+import crossbyte.rpc.RPCPatch;
+import crossbyte.rpc.RPCStruct;
+import crossbyte.rpc.UInt16;
+import crossbyte.rpc.UInt8;
+import crossbyte.rpc.VarUInt;
+
+class OwnShip implements RPCStruct {
+	public var lastSeq:VarUInt = 0; // the last input the server applied
+	public var x:Float = 0;
+	public var y:Float = 0;
+	public var vx:Float = 0;
+	public var vy:Float = 0;
+	public var energy:Float = 0;
+	public var aimSteps:UInt16 = 0;
+	public var controls:UInt8 = 0;
+	public var engineLocked:Bool = false;
+
+	public function new() {}
+}
+```
+
+A patch carries a bit for each field (whether it changed), then each that did,
+whole: a `Float` eight bytes, a `UInt16` two. Values are absolute, never
+differences, so a patch applied to the right base is exactly the sender's
+value, whatever was lost before it. A nested structure is patched field by
+field against the base's; an array, a map, a `String` or an enum goes whole
+when it differs. Fields are compared as they go: a `Float32` at single
+precision, NaN equal to NaN.
+
+`diff(base, current)` works the patch out and answers it, to pass as the
+argument. A `null` base sends the patch from the structure as its constructor
+makes it (`isFull`), which applies to anything: what a joining client, or one
+whose base has aged out, is sent. The received patch is the session's, reused
+for every call, and valid only during the call; `apply(base, into)` makes the
+sender's value:
+
+```haxe
+import crossbyte.ds.SequenceRing;
+import crossbyte.rpc.RPCCodecs;
+
+interface MatchContract {
+	function own(tick:VarUInt, base:VarUInt, ship:RPCPatch<OwnShip>):Void;
+}
+
+@:rpcContract(MatchContract)
+class MatchCommands extends RPCCommands {
+	public function new() {}
+}
+
+class MatchClient extends RPCHandler implements MatchContract {
+	// What was applied, by tick, for the patches to come.
+	final frames = new SequenceRing<OwnShip>(32);
+
+	public function new() {}
+
+	public function own(tick:VarUInt, base:VarUInt, ship:RPCPatch<OwnShip>):Void {
+		final from:Null<OwnShip> = ship.isFull ? null : frames.get(base);
+		if (from == null && !ship.isFull) {
+			return; // its base has aged out here: keep acknowledging, and the server sends a full one
+		}
+		final slot:Null<OwnShip> = frames.get((tick : Int) - frames.capacity);
+		frames.put(tick, ship.apply(from, slot != null ? slot : new OwnShip()));
+	}
+}
+```
+
+```haxe
+// Given commands:MatchCommands, sent:SequenceRing<OwnShip>, patch:RPCPatch<OwnShip>, ship:OwnShip, tick:Int, acked:Int.
+// Per observer per tick: against what the client acknowledged, or a full one.
+commands.delivery(crossbyte.net.DeliveryMode.sequenced(0)).own(tick, acked, patch.diff(sent.get(acked), ship));
+final kept:Null<OwnShip> = sent.get(tick - sent.capacity);
+sent.put(tick, RPCCodecs.of(OwnShip).copy(ship, kept != null ? kept : new OwnShip()));
+```
+
+Writing allocates nothing (the patch holds the two values until it is sent),
+and neither does reading once the session has made its patch. A structure of
+up to 64 fields can be patched.
+
+### Keyed maps
+
+A map of ids to structures goes as a map patch. Its keys go in three groups,
+each ascending: the first a zigzag varint and each next the distance from the
+one before, so ids that sit close together take a byte each, where an `Int` is
+four. An entry both ends hold whose value is the same bytes is not sent, so a
+value that never changes once made (a projectile) is only ever added and
+removed.
+
+```haxe
+import crossbyte.ds.IdList;
+import haxe.ds.IntMap;
+
+class RemoteShip implements RPCStruct {
+	public var x:Float32 = 0;
+	public var y:Float32 = 0;
+	public var aimSteps:UInt16 = 0;
+
+	public function new() {}
+}
+
+interface ViewContract {
+	function ships(tick:VarUInt, base:VarUInt, ships:RPCMapPatch<RemoteShip>):Void;
+}
+
+@:rpcContract(ViewContract)
+class ViewCommands extends RPCCommands {
+	public function new() {}
+}
+```
+
+`diffKeys(baseValues, baseKeys, currentValues, currentKeys)` diffs views of
+shared frames: one map of the world's values per tick, shared by every
+observer, and an `IdList` of the ids each observer sees, in any order (grid
+order is fine). Nothing is copied per observer, and nothing is allocated once
+the patch's lists have grown:
+
+```haxe
+// Given commands:ViewCommands, patch:RPCMapPatch<RemoteShip>, world:IntMap<RemoteShip>, before:IntMap<RemoteShip>, seen:IdList, seeing:IdList, tick:Int, acked:Int.
+commands.ships(tick, acked, patch.diffKeys(before, seen, world, seeing));
+```
+
+The client keeps its frames as a map and its keys, and `applyKeys` makes the
+new frame from the one the patch names. A value already in the new frame
+under a key is patched in place, and with `recycle` the values it drops serve
+the next keys it gains, so a ring of frames allocates nothing once warm
+(natively an `IntMap` makes a node for a key it did not hold, 56 bytes):
+
+```haxe
+// Given ships:RPCMapPatch<RemoteShip>, from:IntMap<RemoteShip>, fromKeys:IdList, into:IntMap<RemoteShip>, intoKeys:IdList.
+ships.applyKeys(from, fromKeys, into, intoKeys, true);
+```
+
+`apply(base, into, recycle)` does the same for maps alone, and finds their keys
+by iterating them, which allocates an iterator natively and on the jvm; into
+the base itself it iterates nothing. One by one, `removed`, `addedKey(i)` and
+`addedValue(i)`, `updatedKey(i)` and `applyUpdate(i, target)` give what
+arrived. A base that lacks a key the patch removes or updates is refused,
+naming the key: it is not the one the sender used. `sizeBound()` bounds a
+patch's bytes, for a call that must fit one datagram.
+
+### Fewer bits
+
+A structure marked `@:rpcBits`, or with a field marked `@:quantize` or
+`@:range`, is in the *bit layout*: those fields, its `Bool`s, and whether each
+field that may be absent is there, a bit each, go in a bit section before its
+other fields.
+
+```haxe
+class BoltRules {
+	public static inline final LIFETIME:Float = 4.2;
+}
+
+@:rpcBits
+class Bolt implements RPCStruct {
+	@:quantize(0, BoltRules.LIFETIME, 8) public var age:Float = 0;
+	@:range(0, 1023) public var owner:Int = 0;
+	@:quantize(-8192, 8192, 16) public var x:Float = 0;
+	@:quantize(-8192, 8192, 16) public var y:Float = 0;
+	public var piercing:Bool = false;
+
+	public function new() {}
+}
+```
+
+`@:quantize(min, max, bits)` sends a `Float` or `Float32` as one of 2^bits
+evenly spaced points from `min` to `max`, both ends included: what arrives is
+within half a step, and a value outside the range is clamped to it, as
+`BitWriter.writeQuantized` does (a NaN is refused). `@:range(min, max)` sends an
+integer in the bits its range needs, and refuses one outside it. The bounds are
+number literals or static inline constants of a class, as above, and `+`, `-`,
+`*`, `/` of those. Patches compare a quantized field by its step, so jitter
+below one sends nothing. The bits are laid out as `BitWriter` lays them (the
+first bit the lowest of the first byte), so a structure's bit section reads
+back with a `BitReader`.
+
+An array of a class whose fields are all bits is one run of bits, padded once,
+where each element alone would pad its own: Stellar's last four inputs, 22
+bits each, are 11 bytes.
+
+### Arguments the session keeps
+
+An argument marked `@:reuse` is read into one instance the session keeps, the
+same each call and valid only during the call: a structure's fields set in
+place, its nested structures and arrays too, an array's element instances
+kept, a map cleared and refilled. On a handler's argument, on the handler class
+(every structure, array and map argument it reads), or on a contract method,
+naming its arguments (a typed interface keeps no argument metadata):
+
+```haxe
+@:rpcBits
+class TurnInput implements RPCStruct {
+	@:range(0, 63) public var controls:Int = 0;
+	@:range(0, 65535) public var aimSteps:Int = 0;
+
+	public function new() {}
+}
+
+interface InputContract {
+	@:reuse(recent) function inputs(ack:VarUInt, newest:VarUInt, recent:Array<TurnInput>):Void;
+}
+```
+
+Nothing changes on the wire. A handler that keeps such an argument past its
+call keeps what the next call overwrites: copy what is kept
+(`RPCCodecs.of(TurnInput).copy`). A call that arrives while another of the
+session's is running (over a connection that delivers at once) reads into
+instances of its own. Built with `-D crossbyte_check_events`, a
+session sets what it kept to garbage when the call returns (numbers 0xDBDBDBDB,
+floats NaN, strings a marker), so a handler that keeps one shows it at once;
+`-D crossbyte_fresh_events` reads each call's afresh. Patches are always read
+this way.
+
+### From code that does not name the types
+
+A replication layer that knows nothing of the game's types holds an
+`RPCCodec<T>`, which the game hands it: `RPCCodecs.of(OwnShip)`. It makes,
+copies and compares values, and writes and reads them and their patches as
+bytes of their own. One value per observer, sent as patches against what that
+observer acknowledged:
+
+```haxe
+import crossbyte.rpc.RPCCodec;
+
+class Replicated<T> {
+	final codec:RPCCodec<T>;
+	final sent:SequenceRing<T>;
+	final patch:RPCPatch<T>;
+
+	public function new(codec:RPCCodec<T>, window:Int) {
+		this.codec = codec;
+		sent = new SequenceRing(window);
+		patch = new RPCPatch(codec);
+	}
+
+	public function next(tick:Int, acked:Int, current:T):RPCPatch<T> {
+		patch.diff(sent.get(acked), current); // aged out or never acknowledged: a full patch
+		final slot:Null<T> = sent.get(tick - sent.capacity); // about to age out: reused
+		sent.put(tick, codec.copy(current, slot != null ? slot : codec.make()));
+		return patch;
+	}
+}
+```
+
+`RPCPatch.write(out)` and `read(input)`, and the same on map patches, give a
+patch as bytes of its own: for a test, a recording, a resync frame kept for
+later, or a patch carried in a `Bytes` argument. `codec.layout` is the hash of
+a structure's layout, to keep beside a stored baseline. A contract carrying a
+structure never goes through the interface, so a typed call pays no virtual
+call.
+
+### What it costs
+
+Stellar's hot messages, driven by its simulation with bots (17 ships, each the
+observer of the other 16, patched against the tick acknowledged two before),
+per observer message (see [performance.md](performance.md#replication-beside-yggdrasils-codec-and-protobuf)):
+
+| | bytes | made, natively | read, natively | allocated |
+|---|---|---|---|---|
+| typed patches, today's field types | 437 | 0.82 us | 0.82 us | 0 |
+| typed patches, quantized | 276 | 1.21 us | 1.01 us | 0 |
+| Yggdrasil's codec today | 546 | 5.6 us | 6.3 us | 18.8 KB (JVM) |
+| protobuf (grpc-go's runtime, codec alone) | 613 | 3.7 us | 3.5 us | 7.3 KB |
+
+On the design's tick (the own ship and 16 others with 3 of their 8 fields
+changed) the quantized message is 216 bytes on the wire, against 557 through
+Yggdrasil's codec and 423 through protobuf on a gRPC stream.
 
 ## Contracts or `@:rpc` methods
 
@@ -1060,11 +1352,20 @@ kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
                      | "f32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi"
                      | "[" kind "]"
                      | "[" ( "utf8" | "i32" ) ":" kind "]"
-                     | "{" field ("," field)* "}"
-                     | "<" ctor ("," ctor)* ">" )
-field     := [ id "=" ] name ":" kind
+                     | [ "b" ] "{" field ("," field)* "}"
+                     | "<" ctor ("," ctor)* ">"
+                     | "~" struct
+                     | "~[" ( "utf8" | "i32" ) ":" struct "]" )
+field     := [ id "=" ] name ":" ( kind | bits )
+bits      := "q" width "(" hex16 "," hex16 ")" | "r(" min "," max ")"
 ctor      := name [ "(" kind ("," kind)* ")" ]
 ```
+
+A structure in the bit layout is `b{...}`, its quantized fields `q16(...)`
+with their bounds as the 16 hex digits of their IEEE 754 binary64 bits, and its
+ranged ones `r(0,63)`. A patch of a structure is `~` before its kind, a map
+patch `~[i32:{...}]`: a peer without patches, or with other bounds, finds no
+method.
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
 `bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16`, `u16`, `vu` and `vi` are
@@ -1564,6 +1865,38 @@ to 6,299; with many calls in flight the server spends 0.88 and 23 us of
 processor time on one, where grpc-go on one thread spends 10 and 94.
 [performance.md](performance.md#rpc-beside-grpc) has how these were counted,
 and what each call costs in time, maps included.
+
+**Patches.** A structure's patch is a bit section and then a byte section:
+
+```
+bit section, the first bit the lowest of the first byte:
+  1 bit     on an RPCPatch argument or answer only: set when it is full
+  n bits    the mask: bit i for field i, in wire order
+  per field that changed, in the bit layout: its presence bit if it may be
+            absent, and its bits if it is a bit kind and there
+  0-7 bits  zeros, to a whole byte
+byte section, per field that changed (and is there), in wire order:
+  a nested structure: its own patch, with no full bit, against the base's
+  any other field: as a whole value of its kind is written
+```
+
+A map patch:
+
+```
+varuint  head        the removed count twice, plus 1 when full
+varuint  added       count
+varuint  updated     count
+removed  keys, ascending
+added    per entry, ascending: its key, then its value's patch from the default
+updated  per entry, ascending: its key, then its value's patch from the base's
+```
+
+An `Int` key is the first of its group as a zigzag varint, and each after it a
+varint of its distance from the one before, less one; a `String` key is
+written whole, each group in the order maps order their keys. A structure in
+the bit layout is its bit section (its presence bits, `Bool`s and quantized and
+ranged fields, in wire order, padded to a byte) and then its other fields. An
+array of one that is all bits is a varint count and one run of bits.
 
 A piece of an answer:
 

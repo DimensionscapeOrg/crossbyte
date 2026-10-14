@@ -16,7 +16,7 @@ package crossbyte.rpc;
 	```haxe
 	import crossbyte.rpc.VarUInt;
 
-	interface MatchContract {
+	interface AckContract {
 		// 3 bytes for a tick of 36,000, where an Int is 4.
 		function ack(tick:VarUInt):Void;
 	}

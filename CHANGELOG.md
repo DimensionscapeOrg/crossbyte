@@ -222,7 +222,14 @@ All notable changes to CrossByte will be documented in this file.
   keeps, valid during the call, as a socket's event is. Up to 64 fields;
   kind `~{...}` in a signature, so a peer without patches finds no method.
   `write(out)` and `read(input)` give a patch as bytes of its own, for a
-  recording or a patch carried in a `Bytes` argument.
+  recording or a patch carried in a `Bytes` argument. Stellar's per-player
+  tick (its own ship and 16 others, driven by its simulation) is 437 bytes
+  with today's field types and 276 quantized, against 546 through
+  Yggdrasil's codec and 613 through protobuf, made in 0.82 us and read in
+  0.82 us natively, against 5.6 and 6.3 us and 3.7 and 3.5 us
+  (`docs/performance.md`, "Replication beside Yggdrasil's codec and
+  protobuf"; the benches in `tests/perf/replication`). The RPC guide's
+  "Replicating state" shows the whole of it.
 - **Keyed maps sent as what changed: `RPCMapPatch<V>` and
   `RPCStringMapPatch<V>`.** A map of entity ids (or `String` keys) to
   structures goes as the keys removed, the entries added (each a patch from
@@ -244,8 +251,8 @@ All notable changes to CrossByte will be documented in this file.
   fields.** A quantized `Float` or `Float32` goes as one of 2^bits evenly
   spaced points from `min` to `max` (clamped; NaN refused), a ranged
   integer in the bits its range needs (outside it refused, and a read past
-  it unreadable), in a bit section before the structure's other fields:
-  `BitWriter`'s arithmetic and layout, so a section reads back with a
+  it unreadable), in a bit section before the structure's other fields,
+  laid out as `BitWriter` lays its bits, so a section reads back with a
   `BitReader`. Stellar's remote ship is 13 bytes whole, where its `Float32`
   form is 24, and 7 as a patch of three fields. Patches compare quantized
   fields by their step, so jitter below one sends nothing. Bounds are

@@ -24,7 +24,8 @@ lacks a feature, the member says so, usually through `isSupported`.
   sessions that follow a player to a new address, opt-in encryption and one copy of a message for many sessions;
   plus fixed-step simulation, spatial indexes and delta encoding.
 - **Typed RPC over any connection,** encoded and dispatched by code a macro writes: no reflection, and no field
-  names on the wire.
+  names on the wire. Game state goes as what changed since what each client acknowledged, structures and keyed
+  maps of them, in quantized bits where asked, allocating nothing.
 - HTTP/1.1 and HTTP/2, clients and servers, WebSocket, and TLS 1.3 natively; peer-to-peer through NAT, with WebRTC
   data channels that interoperate with Chrome's; and headless tools and services that want a runtime without an
   engine around it.
@@ -324,7 +325,8 @@ connection.onReady = () -> {
 };
 ```
 
-The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, deadlines and the runtime lane.
+The [RPC guide](docs/rpc.md) covers the server side, what can be sent, replicating state, errors, deadlines and the
+runtime lane.
 
 ### Data, storage and the rest
 

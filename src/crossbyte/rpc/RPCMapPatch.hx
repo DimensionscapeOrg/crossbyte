@@ -17,12 +17,20 @@ import haxe.ds.IntMap;
 	an answer of a contract method, `V` a class that implements `RPCStruct`.
 
 	```haxe
+	import crossbyte.rpc.Float32;
 	import crossbyte.rpc.RPCMapPatch;
-	import crossbyte.rpc.RPCPatch;
+	import crossbyte.rpc.RPCStruct;
 	import crossbyte.rpc.VarUInt;
 
-	interface MatchContract {
-		function matchState(tick:VarUInt, base:VarUInt, own:RPCPatch<OwnShip>, others:RPCMapPatch<OtherShip>):Void;
+	class OtherShip implements RPCStruct {
+		public var x:Float32 = 0;
+		public var y:Float32 = 0;
+
+		public function new() {}
+	}
+
+	interface ShipsContract {
+		function ships(tick:VarUInt, base:VarUInt, others:RPCMapPatch<OtherShip>):Void;
 	}
 	```
 
@@ -33,6 +41,9 @@ import haxe.ds.IntMap;
 	each observer sees, as Quake 3 keeps its snapshots. Keys in any order.
 
 	```haxe
+	import crossbyte.ds.IdList;
+	import haxe.ds.IntMap;
+
 	// Given patch:RPCMapPatch<OtherShip>, world:IntMap<OtherShip>, acked:Null<IntMap<OtherShip>>, ackedView:Null<IdList>, view:IdList.
 	patch.diffKeys(acked, ackedView, world, view);
 	```

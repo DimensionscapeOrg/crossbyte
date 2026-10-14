@@ -56,6 +56,12 @@ package crossbyte.rpc;
 	are what `toBinary()` makes; mark the fields hxwire ignores
 	`@:rpcSkip`. See "Structures" in the RPC guide.
 
+	A class can also go as what changed since a base (`RPCPatch`, and as
+	the values of an `RPCMapPatch`), in fewer bits (`@:rpcBits`, and
+	`@:quantize` and `@:range` on its fields), and be read into what the
+	session keeps (`@:reuse`): see "Replicating state" in the RPC guide.
+	`RPCCodecs.of` gives generic code its codec.
+
 	Prefer a class to a typedef'd anonymous structure for hot calls:
 	natively an anonymous structure's fields are looked up by name and its
 	numbers boxed. A one-way call carrying five numbers takes 50 ns and 40

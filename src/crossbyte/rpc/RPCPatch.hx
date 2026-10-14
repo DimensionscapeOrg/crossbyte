@@ -13,6 +13,7 @@ import crossbyte.rpc._internal.RPCKeys;
 	`RPCStruct`.
 
 	```haxe
+	import crossbyte.rpc.RPCCommands;
 	import crossbyte.rpc.RPCPatch;
 	import crossbyte.rpc.RPCStruct;
 	import crossbyte.rpc.VarUInt;
@@ -27,6 +28,11 @@ import crossbyte.rpc._internal.RPCKeys;
 
 	interface HeroContract {
 		function hero(tick:VarUInt, base:VarUInt, state:RPCPatch<Hero>):Void;
+	}
+
+	@:rpcContract(HeroContract)
+	class HeroCommands extends RPCCommands {
+		public function new() {}
 	}
 	```
 

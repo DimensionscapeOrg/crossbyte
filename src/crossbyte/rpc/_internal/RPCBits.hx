@@ -16,9 +16,10 @@ import haxe.macro.TypeTools;
 	a signature).
 
 	A quantized value is one of 2^bits evenly spaced points from `min` to
-	`max`, both included, rounded as `floor(t * (2^bits - 1) + 0.5)`:
-	`BitWriter.writeQuantized`'s arithmetic, clamped to the range, NaN
-	refused. It reads back as `BitReader.readQuantized` reads it. A ranged
+	`max`, both included: its step `floor((v - min) * (2^bits - 1) / (max -
+	min) + 0.5)`, the factor folded into one constant, clamped to the range,
+	NaN refused, as `BitWriter.writeQuantized` quantizes. It reads back as
+	`BitReader.readQuantized` reads it, the ends exact. A ranged
 	integer takes the bits its range needs (none when `min == max`); one
 	outside it is refused, and a read past `max` is unreadable.
 

@@ -20,8 +20,16 @@ import haxe.ds.StringMap;
 
 	```haxe
 	import crossbyte.rpc.RPCStringMapPatch;
+	import crossbyte.rpc.RPCStruct;
 
-	interface LobbyContract {
+	class Member implements RPCStruct {
+		public var level:Int = 0;
+		public var ready:Bool = false;
+
+		public function new() {}
+	}
+
+	interface MembersContract {
 		function members(base:Int, members:RPCStringMapPatch<Member>):Void;
 	}
 	```

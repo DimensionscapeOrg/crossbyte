@@ -11,15 +11,15 @@ import crossbyte.io.ByteArrayInput;
 
 	A replication layer that knows nothing of the game's types is handed
 	the codec by the game, as Go code is handed a protobuf message's
-	descriptor and Rust code a serde implementation:
+	descriptor and Rust code a serde implementation. One value per observer, sent
+	as patches against what it acknowledged:
 
 	```haxe
 	import crossbyte.ds.SequenceRing;
 	import crossbyte.rpc.RPCCodec;
 	import crossbyte.rpc.RPCPatch;
 
-	// One value per observer, sent as patches against what it acknowledged.
-	class Replicated<T> {
+	class ReplicatedValue<T> {
 		final codec:RPCCodec<T>;
 		final sent:SequenceRing<T>;
 		final patch:RPCPatch<T>;

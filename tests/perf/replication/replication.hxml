@@ -1,0 +1,23 @@
+# ReplicationBench natively, on the jvm and on Node, for the comparison of
+# typed patches with Yggdrasil's codec and protobuf that run.js makes
+# (docs/performance.md, "Replication beside Yggdrasil's codec and protobuf").
+# From the repository root, with CrossByte, Yggdrasil and stellar-shared
+# registered as development haxelibs:
+#   haxe tests/perf/replication/replication.hxml
+-cp src
+-cp tests
+-cp tests/perf/replication
+-lib yggdrasil
+-lib stellar-shared
+-main ReplicationBench
+--macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()
+--each
+-D HXCPP_M64
+--cpp export/replication/native
+--next
+-lib hxjava
+--jvm export/replication/jvm/ReplicationBench.jar
+--next
+-lib hxnodejs
+--js export/replication/node/bench.js

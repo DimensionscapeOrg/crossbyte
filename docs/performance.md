@@ -1,7 +1,8 @@
 # Performance
 
 What CrossByte costs, measured: the bytes an operation allocates, what a server holds for each connection, an RPC
-call's latency, processor time and bytes on the wire beside gRPC's, and how an HTTP server scales over cores. Every
+call's latency, processor time and bytes on the wire beside gRPC's, replicated game state beside Yggdrasil's codec and
+protobuf, and how an HTTP server scales over cores. Every
 figure comes from one machine, over loopback, and is for comparing shapes of work there; another machine's numbers
 will differ. Every one can be measured again with a program in this repository (see the end of the page).
 
@@ -234,6 +235,86 @@ Reading it:
   (each side sorts what it writes): half; on the JVM 5.8 us of 29. A map of 8 is sorted in 81 ns, and its call and
   answer take 0.87 us natively.
 
+## Replication beside Yggdrasil's codec and protobuf
+
+Stellar's hot messages (2026-10-14), per observer: what a game server sends each player every tick, and what the
+player sends back. Driven by Stellar's own simulation (`stellar-shared`) with bots: 17 ships, each the observer of
+the other 16, at 30 Hz, 1,740 ticks measured after 60 warm ones, the same recorded ticks for every system. Each
+message carries the observer's own ship (13 fields at full precision) and the 16 other ships (8 fields), patched
+against the tick its client acknowledged two before. The bots turn most ticks and thrust most of the time, so most
+ships change five or six of their eight fields against that base.
+
+- **CrossByte, typed, A:** `matchState(tick:VarUInt, base:VarUInt, own:RPCPatch<OwnShip>, others:RPCMapPatch<OtherShip>)`,
+  the other ships with today's field types (`Float32` positions, velocities and heat, `UInt16` aim, `UInt8`
+  controls, `Bool`).
+- **CrossByte, typed, B:** the same with the other ships quantized (`@:quantize(-8192, 8192, 16)` positions,
+  `(-1024, 1024, 16)` velocities, `(0, ShipRules.MAX_ENGINE_HEAT, 10)` heat, `@:range(0, 63)` controls).
+- **Yggdrasil's codec today:** each ship's payload encoded once a tick (`ShipStateCodec`), each observer's snapshot
+  made of them and its own ship's, its delta against the acknowledged tick's snapshot computed and encoded
+  (`DeltaCompute`, `DeltaCodec`), sent as `spaceDelta(spaceId:Int, delta:Bytes)`; the client decodes it, applies it
+  (`DeltaApply`) and decodes each changed ship.
+- **protobuf:** the same patches as proto3 `optional` fields, the other ships in a `map<int32, ShipPatch>`
+  (`tests/perf/replication/replication.proto`), made and marshalled, then unmarshalled and applied into the client's
+  frames, with grpc-go's runtime (`google.golang.org/protobuf` 1.36.12) and grpc-js's (protobufjs 7.6.6, as
+  `@grpc/proto-loader` uses it). On a gRPC stream each message also takes a 5-byte prefix and a 9-byte HTTP/2 DATA
+  frame header.
+
+Made is the observer's message diffed and written into a connection that keeps it (for CrossByte the whole call:
+frame, stub and session); read is that message handed to its client's session, dispatched, and applied into the
+client's ring of frames. Both ends ran in one process; one thread. For protobuf, the codec and the diffs and
+applies alone, with no transport.
+
+| System | Target | Bytes a message | On the wire | Made | Read | Allocated a message, both ends |
+| --- | --- | --- | --- | --- | --- | --- |
+| CrossByte, A | native | 437 | 446 over TCP | 0.82 us (0.81-0.83) | 0.82 us (0.80-0.82) | 0 |
+| CrossByte, A | JVM | 437 | 446 | 0.70 us (0.67-0.74) | 0.66 us (0.62-0.72) | 0 |
+| CrossByte, A | Node | 437 | 446 | 0.90 us (0.86-0.96) | 0.90 us (0.88-0.95) | not read |
+| CrossByte, B | native | 276 | 285 | 1.21 us (1.21-1.23) | 1.01 us (1.01-1.02) | 0 |
+| CrossByte, B | JVM | 276 | 285 | 0.93 us (0.92-0.99) | 0.67 us (0.67-0.70) | 0 |
+| CrossByte, B | Node | 276 | 285 | 1.25 us (1.18-1.44) | 1.00 us (0.99-1.01) | not read |
+| Yggdrasil's codec | native | 546 | 555 | 5.59 us (5.58-5.64) | 6.27 us (6.09-6.34) | too much for the meter |
+| Yggdrasil's codec | JVM | 546 | 555 | 3.89 us (3.77-3.97) | 2.30 us (2.25-2.32) | 18,783 B |
+| Yggdrasil's codec | Node | 546 | 555 | 17.5 us (17.0-18.1) | 24.3 us (24.0-24.8) | not read |
+| protobuf, grpc-go's runtime | Go | 613 | 627 on a gRPC stream | 3.68 us (3.45-3.78) | 3.45 us (3.37-3.59) | 7,291 B |
+| protobuf, grpc-js's runtime | Node | 613 | 627 | 9.77 us (9.52-9.99) | 5.43 us (5.33-5.60) | not read |
+
+The design's shapes, bytes alone (`ReplicationBench --shapes`, `protogo --shapes`): the other ship with 3 of its 8
+fields changed (`aimSteps`, `x`, `y`), the own ship with 10 of its 13, and a tick of both:
+
+| Shape | CrossByte A | CrossByte B | Yggdrasil's codec | protobuf |
+| --- | --- | --- | --- | --- |
+| another ship, 3 of 8 changed, as a map entry | 12 | 8 | 28 | 20 |
+| the own ship, 10 of 13 changed | 68 | 68 | 82 | 79 |
+| a tick: the own ship and 16 others of 3 changed, arguments | 271 | 207 | 548 | 409 |
+| the same on the wire | 280 over TCP | 216 | 557 | 423 on a gRPC stream |
+| one input (seq 1,000) | 5 | 5 | 11 | 9 |
+| the last four inputs (ack 36,000, newest 1,000) | 26 | 17 | 44 (four calls) | 51 |
+
+Inputs over the recorded ticks, each a one-way call made and read (for protobuf, marshalled and unmarshalled): one
+input natively 112 ns (A) and 109 ns (B), the last four 134 and 124 ns, against Yggdrasil's 228 ns for one and
+912 ns for four calls; grpc-go's runtime 49 and 447 ns, grpc-js's 228 and 733 ns, codec alone.
+
+Reading it:
+
+- **Bytes.** Over the bots' ticks, B is 51% of Yggdrasil's codec and 45% of protobuf's, A 80% and 71%; on the
+  design's tick (3 of 8 fields changed) B is 39% of Yggdrasil's and 51% of protobuf's. A changed field costs a mask bit
+  and its value, where Yggdrasil sends every changed ship's whole 24-byte payload in a 4-byte entry, and protobuf a
+  tag for each field and a tag and a length for each entry and its value. An id close to the one before costs a byte.
+- **Processor time.** CrossByte makes a message in 0.82 us natively (B 1.21) and reads it in 0.82 us (1.01), 4.6 to
+  7.6 times less than Yggdrasil's codec and 3 to 4.5 times less than grpc-go's runtime, which allocate 18.8 KB (JVM)
+  and 7.3 KB a message where CrossByte allocates nothing. Quantizing costs B about 0.4 us a message to make and
+  0.2 us to read, natively: each changed field's step, for the comparison and for the bits.
+- **Allocation.** Nothing at either end once the patches, their pools and the client's frames have grown, natively
+  and on the JVM (`AllocationBudgetTest`, "a tick of patches"). Natively a client frame's `IntMap` makes a node for a
+  key it did not hold, 56 bytes: a tick with one entity entering and one leaving the view allocates 64 bytes.
+
+**Two sections, or one bit stream.** The design writes a structure's bits in a section of whole bytes and its other
+fields after, where Quake 3, Source and Unreal write one bit stream. Written by hand as one stream with `BitWriter`
+(every changed field in bits, `aimSteps` among them, padded once), B's other ships take 204.5 bytes a message against
+213.3, 4% fewer, and cost 1.37 us to write and 1.61 us to read natively against 0.44 and 0.91 us (on the JVM 0.74
+and 1.07 against 0.25 and 0.56; Node 1.23 and 1.51 against 0.59 and 0.84). Two sections stay; a field that should be
+in the bits takes `@:range` or `@:quantize`.
+
 ## RPC over local IPC
 
 The same small call, one at a time, natively on Windows between two processes over `local://`: 90 us (p50) and
@@ -332,6 +413,21 @@ node tests/perf/rpc/run.js --grpc-node ../grpc-node --systems crossbyte,crossbyt
 changes. Local IPC is `RpcCallBench` on its own:
 `export/rpc-bench/native/RpcCallBench server --transport local --port 7`, then the same with `client --transport local
 --port 7 --kind int`.
+
+**Replication.** `tests/perf/replication`: `ReplicationBench` (natively, on the JVM and on Node; it needs Yggdrasil
+and `stellar-shared` registered as development haxelibs), the protobuf benches (`proto-go` with Go 1.25 or later,
+`proto-js` with the protobufjs grpc-js installs), and `run.js`, which records the ticks once, runs every cell and
+prints the medians:
+
+```sh
+haxe tests/perf/replication/replication.hxml
+cd tests/perf/replication/proto-go && go build -o ../../../../export/replication/protogo.exe . && cd ../../../..
+node tests/perf/replication/run.js --grpc-node ../grpc-node
+./export/replication/native/ReplicationBench.exe --shapes
+./export/replication/protogo.exe --shapes
+```
+
+`proto-go/replicationpb` is generated from `replication.proto` by `protoc` with `protoc-gen-go`.
 
 **HTTP over cores.** `tests/scaling`: `ScalingServer <port> <runtimes>` and `ScalingLoad <port> <connections>
 <seconds> <h1|h2>`, pinned apart (on Windows `start /affinity FF` for the server, `start /affinity FFFFFF00` for the

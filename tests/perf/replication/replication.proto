@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package replication;
+
+option go_package = "replicationbench/replicationpb";
+
+// Stellar's hot messages as protobuf carries them: a patch of the own ship
+// and of each other ship with proto3 `optional` fields (present when they
+// changed), the other ships in a map by id, as ReplicationBench's typed
+// patches carry them. Tick and base as varints.
+message OwnPatch {
+  optional uint32 last_seq = 1;
+  optional double x = 2;
+  optional double y = 3;
+  optional double vx = 4;
+  optional double vy = 5;
+  optional double engine_heat = 6;
+  optional double energy = 7;
+  optional double reactor_heat = 8;
+  optional double drag_timer = 9;
+  optional double fire_cooldown = 10;
+  optional uint32 aim_steps = 11;
+  optional uint32 controls = 12;
+  optional bool engine_locked = 13;
+}
+
+message ShipPatch {
+  optional float x = 1;
+  optional float y = 2;
+  optional float vx = 3;
+  optional float vy = 4;
+  optional uint32 aim_steps = 5;
+  optional uint32 controls = 6;
+  optional bool engine_locked = 7;
+  optional float engine_heat = 8;
+}
+
+message MatchState {
+  uint32 tick = 1;
+  uint32 base = 2;
+  OwnPatch own = 3;
+  map<int32, ShipPatch> ships = 4;
+  repeated int32 removed_ships = 5;
+}
+
+message Input {
+  uint32 seq = 1;
+  uint32 controls = 2;
+  uint32 aim_steps = 3;
+}
+
+message Inputs {
+  uint32 ack = 1;
+  uint32 newest = 2;
+  repeated Input recent = 3;
+}

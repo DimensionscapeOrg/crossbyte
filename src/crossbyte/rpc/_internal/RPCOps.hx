@@ -16,9 +16,12 @@ import haxe.io.Bytes;
 	                     | "f32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi"
 	                     | "[" kind "]"
 	                     | "[" ( "utf8" | "i32" ) ":" kind "]"
-	                     | "{" field ("," field)* "}"
-	                     | "<" ctor ("," ctor)* ">" )
-	field     := [ id "=" ] name ":" kind
+	                     | [ "b" ] "{" field ("," field)* "}"
+	                     | "<" ctor ("," ctor)* ">"
+	                     | "~" struct
+	                     | "~[" ( "utf8" | "i32" ) ":" struct "]" )
+	field     := [ id "=" ] name ":" ( kind | bits )
+	bits      := "q" width "(" hex16 "," hex16 ")" | "r(" min "," max ")"
 	ctor      := name [ "(" kind ("," kind)* ")" ]
 	```
 
@@ -52,6 +55,9 @@ import haxe.io.Bytes;
 	still hash alike, and on one connection they would be one method, so a
 	surface with two such fails the build. `ping`, every session's own, is
 	the hash of its name alone (`RPCWire.PING_OP`).
+
+	A structure in the bit layout (`RPCBits`) is `b{...}`; a patch of one
+	(`RPCPatches`) `~` before its kind, a map patch `~[i32:{...}]`.
 
 	A kind added later (a structure, an enum) names its own layout, and
 	every kind above keeps its token. Compiled into the macros as well as the runtime, so
