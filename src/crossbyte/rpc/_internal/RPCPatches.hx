@@ -464,7 +464,11 @@ class RPCPatches {
 		readBits.push(macro var __maskHigh:Int = 0);
 		for (chunk in maskChunks(n)) {
 			final target:String = chunk.high ? "__maskHigh" : "__mask";
-			readBits.push(macro $i{target} |= ${takeBits(chunk.bits)} << $v{chunk.shift});
+			final piece:Expr = macro ${takeBits(chunk.bits)} << $v{chunk.shift};
+			// Into bit 31 on PHP, whose 64-bit Int would keep it a positive
+			// bit, wrapped to 32 bits: the mask the diff makes.
+			final wrap:Bool = chunk.shift + chunk.bits > 31 && Context.defined("php");
+			readBits.push(wrap ? macro $i{target} |= crossbyte.utils.Hash.wrap32($piece) : macro $i{target} |= $piece);
 		}
 		final readBytes:Array<Expr> = [];
 		final readBitFields:Array<Expr> = [];

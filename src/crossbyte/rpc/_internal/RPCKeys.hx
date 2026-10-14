@@ -23,7 +23,10 @@ class RPCKeys {
 		var v:Int = mask;
 		var count:Int = 0;
 		while (v != 0) {
-			v &= v - 1;
+			// wrap32 is `v - 1` but on PHP: there `v - 1` of a mask with bit 31
+			// set goes below -2^31, each step then clears one bit past 32, and
+			// at PHP's own sign bit `v` never comes to 0.
+			v &= crossbyte.utils.Hash.wrap32(v - 1);
 			count++;
 		}
 		return count;
