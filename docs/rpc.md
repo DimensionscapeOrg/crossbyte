@@ -483,10 +483,9 @@ interface BoardContract {
 A map's entries go in the order of their keys, so one map is the same bytes
 however it was built and whichever target wrote it: `Int` keys ascending,
 `String` keys by their UTF-16 code units, as JSON's canonical form (RFC 8785)
-orders names and as Haxe compares strings natively, on the jvm and on
-JavaScript (on neko, whose strings are bytes, by their UTF-8 bytes: the same
-but for a key past U+FFFF beside one from U+E000 up). Its count is checked as an array's is, before a map is made, and
-a reader takes entries in any order, a key given twice keeping its last
+orders names and as Haxe compares strings natively on the jvm and on
+JavaScript, on every target. Its count is checked as an array's is, before
+a map is made, and a reader takes entries in any order, a key given twice keeping its last
 value, as protobuf's maps do. Keys are `String` or `Int`; any other key type
 fails the build. Values are written straight from the map and read straight
 into one made for the call, so natively a map of numbers or strings boxes

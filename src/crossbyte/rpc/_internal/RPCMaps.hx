@@ -12,11 +12,9 @@ import haxe.ds.StringMap;
 	insertion order wrote it. `String` keys are ordered by their UTF-16 code
 	units, as JSON's canonical form (RFC 8785) orders a member's names and as
 	Haxe compares strings natively, on the jvm, JavaScript and HashLink;
-	where a target compares by code point (eval, PHP, Python, Lua) the
-	comparison here does it by unit itself. Neko's strings are bytes, so
-	there keys are ordered by their UTF-8 bytes, which is code point order:
-	the one difference, for a key past U+FFFF beside one from U+E000 up at
-	the same place. `Int` keys go in ascending order, signed.
+	where a target compares by code point (eval, PHP, Python, Lua) or by
+	UTF-8 byte (neko) the comparison here does it by unit itself. `Int`
+	keys go in ascending order, signed.
 
 	The keys are copied into an array of their own (natively the one the
 	map's own `keys` makes), sorted in place there with no closure and no
@@ -75,23 +73,57 @@ class RPCMaps {
 	**/
 	@:noCompletion public static function __byUnits(a:String, b:String):Int {
 		final shorter:Int = a.length < b.length ? a.length : b.length;
+		#if neko
+		// Neko's strings are UTF-8 bytes. The two agree up to the first byte
+		// that differs, so the code point holding it starts at the same place
+		// in both: back up to that start and compare the two code points.
+		var i:Int = 0;
+		while (i < shorter && StringTools.fastCodeAt(a, i) == StringTools.fastCodeAt(b, i)) {
+			i++;
+		}
+		if (i == shorter) {
+			return a.length - b.length;
+		}
+		while (i > 0 && (StringTools.fastCodeAt(a, i) & 0xC0) == 0x80) {
+			i--;
+		}
+		return byUnitsOf(codePointAt(a, i), codePointAt(b, i));
+		#else
 		for (i in 0...shorter) {
 			final x:Int = StringTools.fastCodeAt(a, i);
 			final y:Int = StringTools.fastCodeAt(b, i);
-			if (x == y) {
-				continue;
+			if (x != y) {
+				return byUnitsOf(x, y);
 			}
-			final xUnit:Int = x >= 0x10000 ? 0xD800 + ((x - 0x10000) >> 10) : x;
-			final yUnit:Int = y >= 0x10000 ? 0xD800 + ((y - 0x10000) >> 10) : y;
-			if (xUnit != yUnit) {
-				return xUnit - yUnit;
-			}
-			// Two code points past the first plane with one high surrogate:
-			// their low ones decide.
-			return ((x - 0x10000) & 0x3FF) - ((y - 0x10000) & 0x3FF);
 		}
 		return a.length - b.length;
+		#end
 	}
+
+	/** Two different code points against each other as their UTF-16 units. **/
+	static inline function byUnitsOf(x:Int, y:Int):Int {
+		final xUnit:Int = x >= 0x10000 ? 0xD800 + ((x - 0x10000) >> 10) : x;
+		final yUnit:Int = y >= 0x10000 ? 0xD800 + ((y - 0x10000) >> 10) : y;
+		// Two code points past the first plane with one high surrogate: their
+		// low ones decide.
+		return xUnit != yUnit ? xUnit - yUnit : ((x - 0x10000) & 0x3FF) - ((y - 0x10000) & 0x3FF);
+	}
+
+	#if neko
+	/** The code point whose UTF-8 starts at byte `at` of `s` (a stray byte as itself). **/
+	static function codePointAt(s:String, at:Int):Int {
+		final lead:Int = StringTools.fastCodeAt(s, at);
+		final count:Int = lead >= 0xF0 ? 3 : (lead >= 0xE0 ? 2 : (lead >= 0xC0 ? 1 : 0));
+		if (count == 0 || at + count >= s.length) {
+			return lead;
+		}
+		var code:Int = lead & (0x3F >> count);
+		for (k in 1...count + 1) {
+			code = (code << 6) | (StringTools.fastCodeAt(s, at + k) & 0x3F);
+		}
+		return code;
+	}
+	#end
 
 	// ------------------------------------------------------------ sorting
 
