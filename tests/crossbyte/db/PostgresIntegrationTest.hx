@@ -174,7 +174,9 @@ class PostgresIntegrationTest extends utest.Test {
 			Assert.raises(() -> failing.migrate(connection));
 			Assert.isFalse(connection.inTransaction);
 			Assert.same([], again.migrate(connection).applied);
+			// getIntResult reads the row next() last gave: move to it first.
 			var held = connection.request('SELECT count(*) AS n FROM pg_locks WHERE locktype = \'advisory\' AND pid = pg_backend_pid()');
+			Assert.notNull(held.next(), "the count of advisory locks held came back with no row");
 			Assert.equals(0, held.getIntResult(0));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
