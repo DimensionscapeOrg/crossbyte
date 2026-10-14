@@ -115,6 +115,7 @@ const STANDALONE = [
   'src/crossbyte/rpc/RPCCallWriter.hx',
   'src/crossbyte/rpc/RPCCodec.hx',
   'src/crossbyte/rpc/RPCCommands.hx',
+  'src/crossbyte/rpc/RPCHandler.hx',
   'src/crossbyte/rpc/RPCMapPatch.hx',
   'src/crossbyte/rpc/RPCPatch.hx',
   'src/crossbyte/rpc/RPCRequestWriter.hx',

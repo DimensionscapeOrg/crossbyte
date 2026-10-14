@@ -474,33 +474,37 @@ class RPCBits {
 
 	// ------------------------------------------------------------ bounds
 
-	/** A bound: a literal, a static inline constant, or arithmetic of them. **/
-	static function number(e:Expr, where:String, module:Null<String>, pos:Position):Float {
+	/**
+		A bound: a literal, a static inline constant, or arithmetic of them.
+		A handler's `@:rpcLimit` values are read so as well, `what` naming
+		them in an error.
+	**/
+	public static function number(e:Expr, where:String, module:Null<String>, pos:Position, what:String = "a bound"):Float {
 		return switch (e.expr) {
 			case EConst(CInt(text)):
 				StringTools.startsWith(text, "0x") ? (Std.parseInt(text) : Float) : Std.parseFloat(text);
 			case EConst(CFloat(text)):
 				Std.parseFloat(text);
 			case EParenthesis(inner):
-				number(inner, where, module, pos);
+				number(inner, where, module, pos, what);
 			case EUnop(OpNeg, false, inner):
-				-number(inner, where, module, pos);
+				-number(inner, where, module, pos, what);
 			case EBinop(op, a, b):
-				final x:Float = number(a, where, module, pos);
-				final y:Float = number(b, where, module, pos);
+				final x:Float = number(a, where, module, pos, what);
+				final y:Float = number(b, where, module, pos, what);
 				switch (op) {
 					case OpAdd: x + y;
 					case OpSub: x - y;
 					case OpMult: x * y;
 					case OpDiv: x / y;
-					case _: Context.error('RPC $where: a bound is a number, a constant, or + - * / of them.', e.pos);
+					case _: Context.error('RPC $where: $what is a number, a constant, or + - * / of them.', e.pos);
 				}
 			case EField(owner, name):
 				constant(pathOf(owner), name, where, module, e.pos);
 			case EConst(CIdent(name)):
 				constant(null, name, where, module, e.pos);
 			case _:
-				Context.error('RPC $where: a bound is a number, a constant, or + - * / of them.', e.pos);
+				Context.error('RPC $where: $what is a number, a constant, or + - * / of them.', e.pos);
 		}
 	}
 

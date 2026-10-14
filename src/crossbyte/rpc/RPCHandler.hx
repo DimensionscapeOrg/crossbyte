@@ -40,9 +40,32 @@ import crossbyte.io.ByteArrayInput;
 	limits how many calls may wait at once; see `RPCSession.maxCallsWaiting`.
 
 	Override `beforeCall` to decide on each call before it runs (to
-	authorize it, rate limit it, or refuse one too large) and `afterCall` to
-	see how it went, in one place rather than in every method. A handler that
-	overrides neither pays nothing for them.
+	authorize it, or refuse it for reasons of the application's own) and
+	`afterCall` to see how it went, in one place rather than in every method.
+	A handler that overrides neither pays nothing for them.
+
+	`@:rpcLimit` on a method limits how often each session may call it and
+	how many bytes its arguments may take, checked before `beforeCall` and
+	before the arguments are read; on the handler class, it is the limit of
+	every method without one of its own. A call over its rate is refused
+	`RPCFailure.Busy`, and one over its size `RPCFailure.TooLarge`:
+
+	```haxe
+	class ShoutHandler extends RPCHandler {
+		public function new() {}
+
+		// Ten a second from each client, of 2 KiB at most.
+		@:rpcLimit(calls = 10, seconds = 1, bytes = 2048)
+		@:rpc public function say(text:String):Void {}
+	}
+	```
+
+	`byAddress = field` names a `crossbyte.net.RateLimiter` of the handler's
+	that each call also spends from, by the session's remote address. The
+	numbers are literals or static inline constants, and `@:rpcLimit()`
+	takes a method out of its class's limit. A handler with none pays
+	nothing for them, and a limited call allocates nothing. The RPC guide's
+	"Limits per method" has the rest.
 
 	A handler can extend another. The subclass answers its parent's methods
 	as well as its own, a contract method can be implemented by an ancestor,
@@ -169,7 +192,8 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 		whose ancestor does; one that does not pays nothing for it. One that
 		does calls it on every inbound call, so keep it cheap. Refusing by
 		returning, not throwing, keeps a flood of refusals from costing an
-		exception each.
+		exception each. A call its method's `@:rpcLimit` refuses never
+		reaches it.
 
 		What it throws counts as the call failing: the caller is answered with
 		`RPCError.INTERNAL_MESSAGE`, and the error goes to
@@ -328,6 +352,21 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 		if (requestId != 0 && this_session != null) {
 			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE,
 				RPCSession.__refusalOf(refusal, refusal.message), RPCWire.idOf(refusal));
+		}
+	}
+
+	/**
+		A call its method's `@:rpcLimit` refused, before its arguments were
+		read: a request is answered `code`, `RPCWire.REFUSED_BUSY` for its rate
+		limit or `REFUSED_TOO_LARGE` for its arguments' size, in the words
+		the caller reads with no string made; a one-way call is dropped. As
+		a `beforeCall` refusal, it is not reported.
+	**/
+	@:noCompletion private function __rpc_limited(op:Int, requestId:Int, code:Int):Void {
+		final session = this_session;
+		if (requestId != 0 && session != null) {
+			session.__sendCompiledError(op, requestId, code == RPCWire.REFUSED_BUSY ? RPCError.RATE_LIMITED_MESSAGE : RPCError.TOO_LARGE_MESSAGE, code,
+				0);
 		}
 	}
 

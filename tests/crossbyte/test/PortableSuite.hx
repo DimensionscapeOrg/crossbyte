@@ -325,6 +325,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		runner.addCase(new crossbyte.rpc.RPCContractTest());
 		runner.addCase(new crossbyte.rpc.RPCCallHookTest());
+		runner.addCase(new crossbyte.rpc.RPCCallLimitTest());
 		runner.addCase(new crossbyte.rpc.RPCAsyncTest());
 		runner.addCase(new crossbyte.rpc.RPCSharedHandlerTest());
 		runner.addCase(new crossbyte.rpc.RPCNullReturnTest());

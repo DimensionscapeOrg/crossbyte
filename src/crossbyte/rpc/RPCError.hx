@@ -31,6 +31,13 @@ class RPCError extends Error {
 	public static inline final BUSY_MESSAGE:String = "Too many calls are waiting on this connection";
 
 	/**
+		What a caller is told when its call is refused because it is over
+		its method's rate limit (`@:rpcLimit`): `RPCFailure.Busy`, as for
+		`BUSY_MESSAGE`, and worth trying again later.
+	**/
+	public static inline final RATE_LIMITED_MESSAGE:String = "Calls to this method are over its rate limit";
+
+	/**
 		What a caller is told when the handler of its call has not answered
 		within the session's `RPCSession.answerTimeout`.
 	**/
@@ -67,7 +74,8 @@ class RPCError extends Error {
 
 	/**
 		What a caller is told, unless more is said, when its call or its
-		answer was larger than the side reading it takes; see
+		answer was larger than the side reading it takes, a call's arguments
+		over its method's limit (`@:rpcLimit(bytes = ...)`) among them; see
 		`RPCFailure.TooLarge`.
 	**/
 	public static inline final TOO_LARGE_MESSAGE:String = "The call or its answer was larger than its reader takes";

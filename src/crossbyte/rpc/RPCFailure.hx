@@ -75,9 +75,12 @@ enum RPCFailure {
 	UnreadableArguments;
 
 	/**
-		The other side had `RPCSession.maxCallsWaiting` calls waiting already,
-		and refused this one before its method ran. Worth trying again later.
-		Its message is `RPCError.BUSY_MESSAGE`.
+		The other side refused the call before its method ran, and it is worth
+		trying again later: it had `RPCSession.maxCallsWaiting` calls waiting
+		already (its message `RPCError.BUSY_MESSAGE`), or the call was over its
+		method's rate limit, `@:rpcLimit` (`RPCError.RATE_LIMITED_MESSAGE`).
+		A handler's `beforeCall` refusing with `RPCError.refusal(Busy)` is
+		told so too.
 	**/
 	Busy;
 
@@ -109,8 +112,10 @@ enum RPCFailure {
 		over that side's `RPCSession.maxFrameSize`, or more than its
 		connection holds to read it whole (a TCP socket's
 		`maxInputBufferSize`), or, for an answer, more than the answering
-		side's connection carries. The connection carries on. Its message
-		says which limit.
+		side's connection carries; or a call whose arguments were over its
+		method's `@:rpcLimit(bytes = ...)`, refused before they were read. The
+		connection carries on. Its message says which limit, or is
+		`RPCError.TOO_LARGE_MESSAGE` for a method's.
 	**/
 	TooLarge;
 

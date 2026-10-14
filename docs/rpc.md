@@ -1177,6 +1177,107 @@ or whose ancestor does. A handler that overrides neither pays nothing for
 them, and one that does pays a call each. What a hook throws counts as the
 call failing, and is reported to `onHandlerError`.
 
+For a limit on how often a method is called, or on the size of its
+arguments, `@:rpcLimit` (below) does it without a hook. Who may call at all
+(signed in, with the roles and scopes a method asks for) is the
+application's, in `beforeCall`.
+
+## Limits per method
+
+A method can say how often each client may call it and how large its
+arguments may be, and every call over either is refused before it runs.
+`@:rpcLimit` on the handler's method says so:
+
+```haxe
+import crossbyte.net.RateLimiter;
+
+class MeteredChatHandler extends RPCHandler implements ChatContract {
+	// Every session this handler serves shares it: a client's calls from all
+	// of its connections, counted together.
+	public var perClient:RateLimiter = new RateLimiter(50, 1.0);
+
+	public function new() {}
+
+	// Each client: ten messages a second, none over 2 KiB, and fifty a second
+	// from its address however many connections it opens.
+	@:rpcLimit(calls = 10, seconds = 1, bytes = 2048, byAddress = perClient)
+	public function say(room:String, text:String):Void {}
+
+	public function join(room:String):Int {
+		return 1;
+	}
+}
+```
+
+- `calls` in `seconds` (1 unless given) is a token bucket for each session,
+  as `RateLimiter` keeps one for each key: `calls` at once, refilling at
+  `calls / seconds` a second. A call over it is refused `RPCFailure.Busy`, its
+  message `RPCError.RATE_LIMITED_MESSAGE`: worth trying again later.
+- `bytes` is the most its arguments may take, counted as `beforeCall`'s
+  `payloadSize` counts them. A call over it is refused `RPCFailure.TooLarge`,
+  its message `RPCError.TOO_LARGE_MESSAGE`, before a byte of the arguments is
+  read.
+- `byAddress` names a field of the handler holding a `RateLimiter`, and each
+  call spends a token from that limiter's bucket for the session's remote
+  address too (keyed by `RateLimiter.addressKey`, so an IPv6 client by its
+  /64): a client opening more connections does not get more calls. The
+  limiter's own numbers are the address's limit, and methods naming one
+  limiter share its budget. The field is read as each call arrives, so it can
+  be set after the handler is made, shared by the handlers of every session
+  when each has its own, or `null` for none. A `RateLimiter` is used from one
+  thread: a server spread over runtimes gives each runtime its own.
+
+A request refused is answered so, and a one-way call refused is dropped.
+Neither is told to `onHandlerError`, and neither reaches `beforeCall` or
+`afterCall`: the limits come first, the size before the rate, so a call
+refused for its size spends none of its rate, and one its address refuses
+spends none of its session's.
+
+The values are numbers, or static inline constants (the handler's own, as
+`BURST`, or another class's, as `ChatRules.BURST`) and `+ - * /` of them, as
+`@:quantize`'s bounds are, fixed when the handler is built. A limit read from
+configuration as the server starts is a `RateLimiter` made from it, given
+through `byAddress`, or checked in `beforeCall`. Who is calling (signed in,
+with which roles) is the application's, in `beforeCall`, which runs once a
+call is within its limits.
+
+It goes on the handler's method, not the contract's or a commands class's: a
+contract is what both sides share, a commands class only makes calls, and the
+build refuses a limit on either. The runtime lane has no methods to mark; its
+`beforeRuntimeCall` can ask a `RateLimiter` of the application's for each op.
+
+On a handler class, `@:rpcLimit` is the limit of each method it answers that
+has none of its own, inherited ones included, each with a bucket of its own.
+A method's own replaces it whole, and `@:rpcLimit()` takes a method out of
+it. A handler extending another answers the other's methods with their
+limits:
+
+```haxe
+@:rpcLimit(calls = 20)
+class CrowdedChatHandler extends ChatHandler {
+	public function new() {
+		super();
+	}
+
+	// Twenty calls a second to each method, but one join every ten seconds.
+	@:rpcLimit(calls = 1, seconds = 10)
+	override public function join(room:String):Int {
+		return super.join(room);
+	}
+}
+```
+
+The buckets run on the runtime's clock, as deadlines do (see Deadlines,
+below), and are made with a session's first limited call; a connection that
+takes another peer (a `LocalConnection` listening again) starts its new peer
+with full ones. A handler with no `@:rpcLimit` is built as it always was, and
+pays nothing for them. A limited call allocates nothing, and pays a
+comparison for its size and, for a rate, a look at the clock and its bucket:
+in the RPC bench a one-way call from a stub to its handler takes 38 ns
+natively and 45 with a rate limit and a size cap (19 and 25 on the jvm), and
+75 limited by address as well (54 on the jvm), most of that the limiter's
+clock and its look-up of the address.
+
 ## Answering later
 
 A handler method can return `Future<T>` instead of `T`, and its caller is

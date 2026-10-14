@@ -27,6 +27,22 @@ class RPCCommandMacro {
 		final sent = new Array<String>();
 		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
+		// The side that answers limits its callers; here one would be read by nothing.
+		final local = Context.getLocalClass();
+		if (local != null && local.get().meta.has(":rpcLimit")) {
+			Context.error("@:rpcLimit goes on the handler: the side that answers a call limits it, and a commands class only makes calls.",
+				local.get().meta.extract(":rpcLimit")[0].pos);
+		}
+		for (field in fields) {
+			if (field.meta != null) {
+				for (entry in field.meta) {
+					if (entry.name == ":rpcLimit") {
+						Context.error("@:rpcLimit goes on the handler's method: the side that answers a call limits it, and a commands class only makes calls.",
+							entry.pos);
+					}
+				}
+			}
+		}
 
 		if (contractMethods != null) {
 			RPCContractMacroTools.requireExtends(":rpcContract", "crossbyte.rpc.RPCCommands");

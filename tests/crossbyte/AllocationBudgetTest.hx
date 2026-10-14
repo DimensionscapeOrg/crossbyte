@@ -214,6 +214,18 @@ class AllocationBudgetTest extends utest.Test {
 	private static final RPC_REUSED_INPUTS = new Budget("a one-way call of the last four inputs, read into what the session keeps", "call", [0, 0, 0],
 		[8, 8, 8]);
 	private static final RPC_TYPED_ONE_WAY =new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
+	// To methods with a call policy (`@:rpcLimit`): a rate limit, a cap on the
+	// arguments' bytes, and a RateLimiter by address. The session's buckets
+	// and its address's key are made with its first such call, and nothing
+	// after it; a refusal is the session's own words, read with no string.
+	// Measured on 2026-10-14 natively on Windows and on the jvm (Oracle 8);
+	// Linux taken as Windows.
+	private static final RPC_LIMITED_ONE_WAY = new Budget("a one-way RPC call to a method with a rate limit and an argument cap", "call", [0, 0, 0],
+		[8, 8, 8]);
+	private static final RPC_LIMITED_RECEIVER = new Budget("an RPC call to a method limited by its rate and its address, answered through an RPCIntReceiver",
+		"call", [0, 0, 0], [8, 8, 8]);
+	private static final RPC_LIMITED_REFUSED = new Budget("an RPC call over its method's rate limit, refused through a receiver", "call", [0, 0, 0],
+		[8, 8, 8]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -985,6 +997,46 @@ class AllocationBudgetTest extends utest.Test {
 		};
 		__warm(op, WARM_CHEAP);
 		__within(RPC_UNKNOWN_REFUSED, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(refused.told > 0);
+	}
+
+	/**
+		A call policy costs a call nothing: the session's token buckets are
+		numbers in one vector it keeps, its address's key is found once, and a
+		refusal is answered and read in the session's own words.
+	**/
+	public function testAnRpcCallToALimitedMethodAllocatesNothing():Void {
+		final fixture = new LimitedBudgetRpc();
+		final oneWay = () -> fixture.commands.move(7, 1.5, -2.25);
+		__warm(oneWay, WARM_CHEAP);
+		__within(RPC_LIMITED_ONE_WAY, AllocationMeter.measure(oneWay, 20000));
+		Assert.isTrue(fixture.handler.moves > 0);
+
+		final receiver = fixture.receiver;
+		final answered = () -> {
+			final told:Int = receiver.told;
+			fixture.commands.addThen(receiver.int, 1, receiver);
+			if (receiver.told != told + 1) {
+				throw "the call was not answered";
+			}
+		};
+		__warm(answered, WARM_CHEAP);
+		__within(RPC_LIMITED_RECEIVER, AllocationMeter.measure(answered, 20000));
+		Assert.isTrue(receiver.int > 0);
+
+		// One call a second, and the runtime's clock stands still: every call
+		// after the first is refused.
+		final refused = new BusyReceiver();
+		final over = () -> {
+			final told:Int = refused.told;
+			fixture.commands.flipThen(true, refused);
+			if (refused.told != told + 1) {
+				throw "the call was not refused";
+			}
+		};
+		fixture.commands.flipThen(true, new BusyReceiver());
+		__warm(over, WARM_CHEAP);
+		__within(RPC_LIMITED_REFUSED, AllocationMeter.measure(over, 20000));
 		Assert.isTrue(refused.told > 0);
 	}
 
@@ -2270,6 +2322,68 @@ private class BudgetRpc {
 	public function new() {
 		client = new RPCSession<BudgetCommands>(link.client, commands);
 		server = new RPCSession(link.server, null, handler);
+	}
+}
+
+/** `BudgetRpc` with a handler whose methods have call policies. **/
+private class LimitedBudgetRpc {
+	public final link = LinkedConnection.pair();
+	public final commands = new BudgetCommands();
+	public final handler = new LimitedBudgetHandler();
+	public final receiver = new BudgetReceiver();
+	public final client:RPCSession<BudgetCommands>;
+	public final server:RPCSession<Dynamic>;
+
+	public function new() {
+		handler.perClient = new crossbyte.net.RateLimiter(0x7FFFFFFF, 3600.0);
+		client = new RPCSession<BudgetCommands>(link.client, commands);
+		server = new RPCSession(link.server, null, handler);
+	}
+}
+
+/**
+	Limits no call reaches (the runtime's clock stands still while a case
+	runs, so a bucket of 2^31 - 1 never runs out), but for `flip`, one a
+	second, which refuses every call after the first.
+**/
+private class LimitedBudgetHandler extends RPCHandler {
+	public var moves:Int = 0;
+	public var perClient:Null<crossbyte.net.RateLimiter> = null;
+
+	public function new() {}
+
+	@:rpcLimit(calls = 0x7FFFFFFF, seconds = 1, bytes = 64)
+	@:rpc public function move(id:Int, x:Float, y:Float):Void {
+		moves++;
+	}
+
+	@:rpcLimit(calls = 0x7FFFFFFF, seconds = 1, bytes = 64, byAddress = perClient)
+	@:rpc public function add(a:Int, b:Int):Int {
+		return a + b;
+	}
+
+	@:rpcLimit(calls = 1, seconds = 1)
+	@:rpc public function flip(on:Bool):Bool {
+		return !on;
+	}
+}
+
+/** Counts the calls refused as Busy; any other failure is the test's. **/
+private class BusyReceiver implements RPCBoolReceiver {
+	public var told:Int = 0;
+	public var answered:Int = 0;
+
+	public function new() {}
+
+	public function onBool(call:Int, value:Bool):Void {
+		answered++;
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		if (failure != Busy) {
+			throw "the call failed as " + failure;
+		}
+		told++;
 	}
 }
 

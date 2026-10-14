@@ -428,6 +428,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__requireKind(handler, __commands);
 		if (handler != __handler) {
 			__reuse = null;
+			__limits = null;
 		}
 		__handler = handler;
 		__syncOnDataBinding();
@@ -1720,6 +1721,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		fields every call reads keep their places.
 	**/
 	@:noCompletion public var __reuse:Any = null;
+
+	/**
+		The token buckets of this session's calls to its handler's rate-limited
+		methods (`@:rpcLimit`): made at the first such call, and let go when
+		the handler changes. Per session, as `__reuse` is. Declared last, with
+		it.
+	**/
+	@:noCompletion public var __limits:Null<crossbyte.rpc._internal.RPCLimits> = null;
 
 	@:noCompletion private function get_onUnreadableFrame():(op:Int, requestId:Int, reason:String) -> Void {
 		return __onUnreadable != null ? __onUnreadable : __noUnreadable;

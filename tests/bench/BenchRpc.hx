@@ -117,8 +117,49 @@ class BenchRpc {
 			});
 		}
 
+		// The same calls to a handler whose every method has a call policy
+		// (`@:rpcLimit`: a rate limit, and a cap on its arguments' bytes) that
+		// lets each through: what checking it costs a call. Last, so the
+		// cases above are timed as they always were.
+		var limitedLink = BenchLink.pair();
+		var limited = new LimitedBenchHandler();
+		var limitedServer = new RPCSession(limitedLink.server, null, limited);
+		var limitedRead = limitedLink.server.onData;
+		Bench.run("dispatch one-way, call policy", function():Void {
+			frame.position = 0;
+			limitedRead(frame);
+		});
+
+		var policedLink = BenchLink.pair();
+		var policedCommands = new BenchCommands();
+		var policedClient = new RPCSession<BenchCommands>(policedLink.client, policedCommands);
+		var policed = new LimitedBenchHandler();
+		var policedServer = new RPCSession(policedLink.server, null, policed);
+		Bench.run("one-way call, stub to handler, call policy", function():Void {
+			policedCommands.move(7, 1.5, -2.5);
+		});
+		Bench.run("request and response, call policy", function():Void {
+			policedCommands.name(7);
+		});
+
+		// And limited by the caller's address as well, through a RateLimiter
+		// the sessions share: a lookup of the address's bucket each call.
+		var addressedLink = BenchLink.pair();
+		var addressedCommands = new BenchCommands();
+		var addressedClient = new RPCSession<BenchCommands>(addressedLink.client, addressedCommands);
+		var addressed = new AddressLimitedBenchHandler();
+		addressed.perClient = new crossbyte.net.RateLimiter(0x7FFFFFFF, 3600.0);
+		var addressedServer = new RPCSession(addressedLink.server, null, addressed);
+		Bench.run("one-way call, stub to handler, policy by address", function():Void {
+			addressedCommands.move(7, 1.5, -2.5);
+		});
+
 		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null || timedServer == null) {
 			Sys.println("  (the handler was never called)");
+		}
+		if (limited.moves == 0 || policed.moves == 0 || addressed.moves == 0 || limitedServer == null || policedClient == null || policedServer == null
+			|| addressedClient == null || addressedServer == null) {
+			Sys.println("  (a handler with a call policy was never called: the cases above timed a refusal)");
 		}
 	}
 
@@ -208,6 +249,29 @@ private class HookedBenchHandler extends BenchHandler {
 	}
 
 	override public function afterCall(method:String, requestId:Int, error:Null<haxe.Exception>):Void {}
+}
+
+/**
+	`BenchHandler` with a call policy on every method that lets every call
+	through: a rate limit no bench reaches (the runtime's clock stands still
+	while a case runs, so it never refills) and a cap its arguments are
+	under.
+**/
+@:rpcLimit(calls = 0x7FFFFFFF, seconds = 1, bytes = 1024)
+private class LimitedBenchHandler extends BenchHandler {
+	public function new() {
+		super();
+	}
+}
+
+/** The same, limited by the caller's address as well. **/
+@:rpcLimit(calls = 0x7FFFFFFF, seconds = 1, bytes = 1024, byAddress = perClient)
+private class AddressLimitedBenchHandler extends BenchHandler {
+	public var perClient:Null<crossbyte.net.RateLimiter> = null;
+
+	public function new() {
+		super();
+	}
 }
 
 /** Two connections joined in memory: what one sends, the other reads at once. **/

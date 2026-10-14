@@ -30,6 +30,12 @@ class RPCHandlerMacro {
 	/** A frame's length, flags and op (`RPCWire.MIN_PAYLOAD_LEN`), and a varint request id at its longest. **/
 	static inline final FRAME_HEAD:Int = 4 + 5 + 5;
 
+	// A method's call policy: its rate limit and the most bytes its
+	// arguments may take, on the method or, for every method without one,
+	// on the handler class. See RPCHandler.
+	static inline final LIMIT_META:String = ":rpcLimit";
+	static inline final LIMIT_USAGE:String = "@:rpcLimit takes named values: @:rpcLimit(calls = 10, seconds = 1, bytes = 4096, byAddress = aRateLimiterField)";
+
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
 		var methods = new Array<MethodInfo>();
@@ -59,6 +65,12 @@ class RPCHandlerMacro {
 				Context.error("Do not mix field-level @:rpc methods with a hand-written dispatch() implementation in the same RPC handler.",
 					manualRpcFields[0].pos);
 			}
+			// Applied by the generated dispatch, which this handler has none of.
+			final limitAt:Null<Position> = limitMetaPos(fields);
+			if (limitAt != null) {
+				Context.error("@:rpcLimit is applied by a generated dispatch(), and this RPC handler writes its own: check the limits in it, or in beforeCall.",
+					limitAt);
+			}
 			if (needsPing) {
 				injectPing(fields);
 			}
@@ -74,6 +86,7 @@ class RPCHandlerMacro {
 			if (manualRpcFields.length > 0) {
 				Context.error("Do not mix @:rpcContract with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
 			}
+			requireNoContractLimits(Context.getLocalClass().get().interfaces[0].t.get());
 
 			for (method in contractMethods) {
 				if (RPCContractMacroTools.isReservedSystemMethod(method.name)) {
@@ -198,6 +211,15 @@ class RPCHandlerMacro {
 						});
 					default:
 				}
+			}
+		}
+
+		// A limit on anything but a method this handler answers would be
+		// ignored.
+		for (field in fields) {
+			if (field.meta != null && field.meta.filter(m -> m.name == LIMIT_META).length > 0 && (field.name == "ping" || !hasMethod(methods, field.name))) {
+				Context.error(field.name == "ping" ? "ping, the heartbeat, takes no @:rpcLimit." : "@:rpcLimit is for a method this RPC handler answers: an @:rpc method, or one of its contract's.",
+					field.pos);
 			}
 		}
 
@@ -343,9 +365,22 @@ class RPCHandlerMacro {
 			});
 		}
 
-		final reused:Array<ReusedArg> = [];
+		// Each method's limits, and a bucket in the session's state for each
+		// one with a rate limit. A method with none is generated as it was.
+		final limits:Array<Null<CallLimit>> = [];
+		var slots:Int = 0;
 		for (method in methods) {
-			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX, reused, reuseAll));
+			final limit:Null<CallLimit> = limitOf(method, fields, ancestors);
+			if (limit != null && limit.calls > 0) {
+				limit.slot = slots++;
+			}
+			limits.push(limit);
+		}
+
+		final reused:Array<ReusedArg> = [];
+		for (i in 0...methods.length) {
+			newFields.push(makeDecoder(methods[i], tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX, reused, reuseAll, limits[i],
+				slots));
 		}
 		if (reused.length > 0) {
 			newFields.push(reuseHolder(tag, reused));
@@ -484,7 +519,8 @@ class RPCHandlerMacro {
 		return "H" + StringTools.hex(crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(tag)), 8) + "_" + (tag.length > 40 ? tag.substr(tag.length - 40) : tag);
 	}
 
-	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool, reused:Array<ReusedArg>, reuseAll:Bool):Field {
+	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool, reused:Array<ReusedArg>, reuseAll:Bool,
+			limit:Null<CallLimit>, slots:Int):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 		final reads:Array<Expr> = [];
@@ -653,6 +689,12 @@ class RPCHandlerMacro {
 					$run;
 				}
 			};
+		}
+
+		// Before beforeCall, and before a byte of the arguments is read: its
+		// size first, so a call refused for it spends none of its rate.
+		if (limit != null) {
+			body = limited(body, limit, slots, macro $v{m.op});
 		}
 
 		final args:Array<FunctionArg> = [
@@ -938,6 +980,235 @@ class RPCHandlerMacro {
 			}),
 			pos: Context.currentPos()
 		};
+	}
+
+	// ---------------------------------------------------------- call limits
+
+	/**
+		`body`, a decoder's, behind its method's limits: the size of its
+		arguments against `bytes`, compared with what is left of the frame
+		and so read nowhere, and then its rate, a token from the session's
+		bucket for it (and one from `byAddress`'s for the session's address)
+		through `RPCLimits.allow`. A call over either is refused as
+		`RPCHandler.__rpc_limited` refuses it. No early return: decoders are
+		inlined into dispatch.
+	**/
+	static function limited(body:Expr, limit:CallLimit, slots:Int, op:Expr):Expr {
+		var guarded:Expr = body;
+		if (limit.calls > 0 || limit.byAddress != null) {
+			// Read as each call arrives, so a handler serving many sessions
+			// can be given the limiter they share after it is made.
+			// Typed where the metadata is, so a field of another type is
+			// refused there.
+			final byAddress:Expr = limit.byAddress != null ? {
+				expr: ECheckType({expr: EField(macro this, limit.byAddress), pos: limit.pos}, macro :Null<crossbyte.net.RateLimiter>),
+				pos: limit.pos
+			} : macro null;
+			final capacity:Float = limit.calls;
+			final perSecond:Float = limit.calls > 0 ? limit.calls / limit.seconds : 0.0;
+			guarded = macro if (crossbyte.rpc._internal.RPCLimits.allow(this.this_session, $v{limit.slot}, $v{slots}, $v{capacity}, $v{perSecond},
+				$byAddress)) {
+				$body;
+			} else {
+				this.__rpc_limited($op, requestId, crossbyte.rpc._internal.RPCWire.REFUSED_BUSY);
+			};
+		}
+		if (limit.bytes > 0) {
+			guarded = macro if (this.this_frameEnd - input.position > $v{limit.bytes}) {
+				this.__rpc_limited($op, requestId, crossbyte.rpc._internal.RPCWire.REFUSED_TOO_LARGE);
+			} else {
+				$guarded;
+			};
+		}
+		return guarded;
+	}
+
+	/**
+		The limits of `method`, or `null` for none: the `@:rpcLimit` on the
+		nearest declaration of it that has one, this class's first, or else
+		the nearest class's own, which is the default for every method that
+		has none. Ancestors' metadata is read, never their types (see
+		`DISPATCHED_META`), and their numbers are found as their own module
+		would find them.
+	**/
+	static function limitOf(method:MethodInfo, fields:Array<Field>, ancestors:Array<ClassType>):Null<CallLimit> {
+		if (method.name == "ping") {
+			return null;
+		}
+		final where:String = "@:rpcLimit of " + method.name;
+		final own:Null<Field> = findField(fields, method.name);
+		if (own != null && own.meta != null) {
+			final entries = own.meta.filter(m -> m.name == LIMIT_META);
+			if (entries.length > 1) {
+				Context.error("A method takes one @:rpcLimit.", entries[1].pos);
+			}
+			if (entries.length == 1) {
+				return parseLimit(entries[0], Context.getLocalModule(), where, fields, ancestors, true);
+			}
+		}
+		for (type in ancestors) {
+			for (field in type.fields.get()) {
+				if (field.name == method.name) {
+					final entries = field.meta.extract(LIMIT_META);
+					if (entries.length > 0) {
+						return parseLimit(entries[0], type.module, where, fields, ancestors, false);
+					}
+				}
+			}
+		}
+		final local:ClassType = Context.getLocalClass().get();
+		final classEntries = local.meta.extract(LIMIT_META);
+		if (classEntries.length > 1) {
+			Context.error("A handler class takes one @:rpcLimit.", classEntries[1].pos);
+		}
+		if (classEntries.length == 1) {
+			return parseLimit(classEntries[0], Context.getLocalModule(), where + ", from " + local.name, fields, ancestors, true);
+		}
+		for (type in ancestors) {
+			final entries = type.meta.extract(LIMIT_META);
+			if (entries.length > 0) {
+				return parseLimit(entries[0], type.module, where + ", from " + type.name, fields, ancestors, false);
+			}
+		}
+		return null;
+	}
+
+	/**
+		`value` with this class's own static inline constants (`MAX`, or
+		`ChatHandler.MAX`) put in place, read from its build fields: being
+		built, the class has no typed statics for `RPCBits.number` to find.
+		Another class's are found there.
+	**/
+	static function ownConstants(value:Expr, fields:Array<Field>):Expr {
+		final className:String = Context.getLocalClass().get().name;
+		function swap(e:Expr):Expr {
+			final name:Null<String> = switch (e.expr) {
+				case EConst(CIdent(id)): id;
+				case EField({expr: EConst(CIdent(owner))}, id) if (owner == className): id;
+				case _: null;
+			};
+			if (name != null) {
+				final field:Null<Field> = findField(fields, name);
+				if (field != null && field.access != null && field.access.indexOf(AStatic) >= 0 && field.access.indexOf(AInline) >= 0) {
+					switch (field.kind) {
+						case FVar(_, constant) if (constant != null):
+							return swap(constant);
+						case _:
+					}
+				}
+			}
+			return haxe.macro.ExprTools.map(e, swap);
+		}
+		return swap(value);
+	}
+
+	/**
+		An `@:rpcLimit`'s named values, checked: `calls` in `seconds` (1 unless
+		given), `bytes`, and `byAddress`, a field of the handler holding a
+		`crossbyte.net.RateLimiter`. A number is a literal or a static inline
+		constant, as `@:quantize`'s bounds are, and `own` when the metadata is
+		this class's, whose own constants are read from its build fields.
+		Nothing given, or only zeros, is no limit, which takes a method out of
+		its class's.
+	**/
+	static function parseLimit(entry:MetadataEntry, module:Null<String>, where:String, fields:Array<Field>, ancestors:Array<ClassType>,
+			own:Bool):Null<CallLimit> {
+		final number = (value:Expr, what:String) -> RPCBits.number(own ? ownConstants(value, fields) : value, where, module, value.pos, what);
+		var calls:Float = 0;
+		var seconds:Float = 1;
+		var bytes:Float = 0;
+		var byAddress:Null<String> = null;
+		var timed:Bool = false;
+		final seen:Array<String> = [];
+		for (param in (entry.params != null ? entry.params : [])) {
+			switch (param.expr) {
+				case EBinop(OpAssign, {expr: EConst(CIdent(name))}, value):
+					if (seen.indexOf(name) >= 0) {
+						Context.error('RPC $where: $name is given twice.', param.pos);
+					}
+					seen.push(name);
+					switch (name) {
+						case "calls":
+							calls = number(value, "calls");
+							if (calls != Math.ffloor(calls) || calls < 0 || calls > 2147483647.0) {
+								Context.error('RPC $where: calls is a whole number, 0 or more, not $calls.', value.pos);
+							}
+						case "seconds":
+							timed = true;
+							seconds = number(value, "seconds");
+							if (!Math.isFinite(seconds) || !(seconds > 0)) {
+								Context.error('RPC $where: seconds is more than 0, not $seconds.', value.pos);
+							}
+						case "bytes":
+							bytes = number(value, "bytes");
+							if (bytes != Math.ffloor(bytes) || bytes < 0 || bytes > 2147483647.0) {
+								Context.error('RPC $where: bytes is a whole number, 0 or more, not $bytes.', value.pos);
+							}
+						case "byAddress":
+							byAddress = switch (value.expr) {
+								case EConst(CIdent(field)): field;
+								case _: Context.error('RPC $where: byAddress names a field of the handler holding a RateLimiter, as byAddress = perClient.', value.pos);
+							}
+							if (findField(fields, byAddress) == null && ancestorField(ancestors, byAddress) == null) {
+								Context.error('RPC $where: byAddress names $byAddress, and this handler has no field of that name.', value.pos);
+							}
+						case _:
+							Context.error('RPC $where: $name is not one of its values. ' + LIMIT_USAGE, param.pos);
+					}
+				case _:
+					Context.error('RPC $where: ' + LIMIT_USAGE, param.pos);
+			}
+		}
+		if (timed && calls == 0) {
+			Context.error('RPC $where: seconds goes with calls, the calls those seconds allow.', entry.pos);
+		}
+		if (calls == 0 && bytes == 0 && byAddress == null) {
+			return null;
+		}
+		return {
+			calls: Std.int(calls),
+			seconds: seconds,
+			bytes: Std.int(bytes),
+			byAddress: byAddress,
+			pos: entry.pos,
+			slot: -1
+		};
+	}
+
+	/**
+		Fails the build for an `@:rpcLimit` on a contract's method, or one
+		of the contracts it extends, which would be read by nothing: a
+		contract is what both sides share, and its limits are the handler's.
+		Only metadata is read.
+	**/
+	static function requireNoContractLimits(contract:ClassType):Void {
+		for (field in contract.fields.get()) {
+			if (field.meta.has(LIMIT_META)) {
+				Context.error("@:rpcLimit goes on the handler's method, not the contract's: a contract is what both sides share, and a limit is the handler's.",
+					field.meta.extract(LIMIT_META)[0].pos);
+			}
+		}
+		for (parent in contract.interfaces) {
+			requireNoContractLimits(parent.t.get());
+		}
+	}
+
+	/** Where the class or one of `fields` carries `@:rpcLimit`, or `null`. **/
+	static function limitMetaPos(fields:Array<Field>):Null<Position> {
+		final local:ClassType = Context.getLocalClass().get();
+		if (local.meta.has(LIMIT_META)) {
+			return local.meta.extract(LIMIT_META)[0].pos;
+		}
+		for (field in fields) {
+			if (field.meta != null) {
+				for (entry in field.meta) {
+					if (entry.name == LIMIT_META) {
+						return entry.pos;
+					}
+				}
+			}
+		}
+		return null;
 	}
 
 	// ---------------------------------------------------------- hierarchies
@@ -1260,6 +1531,21 @@ private typedef ReusedArg = {
 	make:Expr,
 	poison:Null<Expr->Expr>,
 	local:String
+}
+
+/**
+	A method's `@:rpcLimit`, resolved at the build: `calls` in `seconds` (0
+	calls, no rate limit), the most argument `bytes` (0, none), the field
+	holding a `RateLimiter` by address, and the method's bucket among its
+	handler's, -1 for none.
+**/
+private typedef CallLimit = {
+	calls:Int,
+	seconds:Float,
+	bytes:Int,
+	byAddress:Null<String>,
+	pos:Position,
+	slot:Int
 }
 
 /** An op a generated dispatch answers, and the method it calls. **/

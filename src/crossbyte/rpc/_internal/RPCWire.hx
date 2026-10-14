@@ -132,6 +132,19 @@ class RPCWire {
 		if (words == null) {
 			return input.readVarUtf();
 		}
+		if (__reads(input, words)) {
+			return words;
+		}
+		// A busy refusal has two: too many calls waiting, and a method's rate
+		// limit spent.
+		if (code == REFUSED_BUSY && __reads(input, crossbyte.rpc.RPCError.RATE_LIMITED_MESSAGE)) {
+			return crossbyte.rpc.RPCError.RATE_LIMITED_MESSAGE;
+		}
+		return input.readVarUtf();
+	}
+
+	/** Whether the message `input` is at is `words`, ASCII: read past it when it is, and left where it was when not. **/
+	static function __reads(input:ByteArrayInput, words:String):Bool {
 		final start:Int = input.position;
 		final length:Int = input.readVarUInt();
 		var same:Bool = length == words.length && length <= input.bytesAvailable;
@@ -147,10 +160,10 @@ class RPCWire {
 		}
 		if (same) {
 			input.position += length;
-			return words;
+			return true;
 		}
 		input.position = start;
-		return input.readVarUtf();
+		return false;
 	}
 
 	/**
