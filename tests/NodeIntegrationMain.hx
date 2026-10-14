@@ -1175,7 +1175,7 @@ class NodeIntegrationMain extends Application {
 
 		process.addEventListener(NativeProcessEvent.EXIT, function(_):Void {
 			check("NativeProcess wrote to stdin", out.indexOf("[through-stdin]") >= 0, "got " + out);
-			startPhpBackend();
+			placeSubprocess();
 		});
 
 		process.start(new NativeProcessStartupInfo("node", ["-e", echoStdinScript()]));
@@ -1191,6 +1191,46 @@ class NodeIntegrationMain extends Application {
 		}
 
 		process.closeInput();
+	}
+
+	// A working directory, an environment added to and taken from, and the
+	// child's output as lines.
+	private function placeSubprocess():Void {
+		var process = new NativeProcess();
+		var lines:Array<String> = [];
+		var errorLines:Array<String> = [];
+		var directory:String = js.Node.require("os").tmpdir();
+		var expectedDirectory:String = js.Node.require("fs").realpathSync(directory);
+
+		process.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_LINE, function(e:NativeProcessEvent):Void {
+			lines.push(e.text);
+		});
+		process.addEventListener(NativeProcessEvent.STANDARD_ERROR_LINE, function(e:NativeProcessEvent):Void {
+			errorLines.push(e.text);
+		});
+		process.addEventListener(NativeProcessEvent.EXIT, function(e:NativeProcessEvent):Void {
+			check("NativeProcess started the child in its working directory", lines.length > 0 && lines[0] == expectedDirectory,
+				"got " + lines + ", expected " + expectedDirectory);
+			check("NativeProcess gave the child a variable of its own", lines.length > 1 && lines[1] == "[given]", "got " + lines);
+			check("NativeProcess took a variable out of the child's environment", lines.length > 2 && lines[2] == "[gone]", "got " + lines);
+			check("NativeProcess split the child's output into lines", lines.length == 4 && lines[3] == "last, unfinished", "got " + lines);
+			check("NativeProcess split the child's errors into lines", errorLines.join("|") == "e1|e2", "got " + errorLines);
+			startPhpBackend();
+		});
+
+		js.Node.process.env.set("CROSSBYTE_NODE_TAKEN", "present");
+		var info = new NativeProcessStartupInfo("node", ["-e", placeScript()]);
+		info.workingDirectory = directory;
+		info.environment = ["CROSSBYTE_NODE_GIVEN" => "given", "CROSSBYTE_NODE_TAKEN" => null];
+		process.start(info);
+	}
+
+	private static function placeScript():String {
+		var q = String.fromCharCode(39);
+		return "const fs=require(" + q + "fs" + q + ");" + "process.stdout.write(fs.realpathSync(process.cwd())+" + q + "\\r\\n" + q + ");"
+			+ "process.stdout.write(" + q + "[" + q + "+process.env.CROSSBYTE_NODE_GIVEN+" + q + "]\\n" + q + ");"
+			+ "process.stdout.write(" + q + "[" + q + "+(process.env.CROSSBYTE_NODE_TAKEN===undefined?" + q + "gone" + q + ":" + q + "kept" + q + ")+" + q + "]\\n"
+			+ q + ");" + "process.stdout.write(" + q + "last, unfinished" + q + ");" + "process.stderr.write(" + q + "e1\\ne2\\n" + q + ")";
 	}
 
 	// Built rather than written out, because a quote inside a -e argument is

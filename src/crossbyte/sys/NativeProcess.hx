@@ -25,7 +25,11 @@ import crossbyte.sys._internal.NodeProcessOutput;
 import js.node.ChildProcess as ChildProcessModule;
 import js.node.child_process.ChildProcess as ChildProcessObject;
 #elseif (sys && target.threaded && !eval)
+#if (cpp || jvm)
+import crossbyte.sys._internal.ChildProcess as Process;
+#else
 import sys.io.Process;
+#end
 import sys.thread.Deque;
 import sys.thread.Lock;
 import sys.thread.Mutex;
@@ -116,6 +120,24 @@ class NativeProcess extends EventDispatcher {
 	@:noCompletion private static var __afterCompleteForTest:Null<Void->Void> = null;
 	#end
 
+	/** The default `maxLineLength`: 64 Ki characters. **/
+	public static inline var DEFAULT_MAX_LINE_LENGTH:Int = 65536;
+
+	/**
+		The longest line `STANDARD_OUTPUT_LINE` and `STANDARD_ERROR_LINE`
+		carry, in characters (UTF-16 code units, or bytes where a string is
+		bytes), not counting its line break. A longer one arrives as several
+		lines of this length and a last of the rest, as journald and Docker's
+		log drivers split one, so a child that writes without line breaks is
+		held to this much here, not to all it writes. At least 1.
+	**/
+	public var maxLineLength(default, set):Int = DEFAULT_MAX_LINE_LENGTH;
+
+	// What each stream has said since its last line break, while its lines
+	// are listened for.
+	@:noCompletion private var __outPending:String = "";
+	@:noCompletion private var __errPending:String = "";
+
 	@:noCompletion private static inline var OUTPUT_BUFFER_SIZE:Int = 4096;
 	@:noCompletion private static inline var MAX_CHUNKS_AHEAD:Int = 64;
 
@@ -145,8 +167,16 @@ class NativeProcess extends EventDispatcher {
 		changes that there; start children before opening sockets, or prefer
 		another target for a server that starts processes.
 
+		`info.workingDirectory`, `info.environment` and
+		`info.inheritEnvironment` are read here, natively, on the jvm and on
+		Node; see `NativeProcessStartupInfo`.
+
 		@throws IllegalOperationError Where processes cannot be started: the
-				interpreter (see `isSupported`).
+				interpreter (see `isSupported`); and on HashLink and neko when
+				`info` sets a working directory or an environment.
+		@throws ArgumentError When `info` has no executable, its working
+				directory is not a directory, or its environment holds a name
+				or value no environment can.
 	**/
 	public function start(info:NativeProcessStartupInfo):Void {
 		__requireSupported();
@@ -159,19 +189,46 @@ class NativeProcess extends EventDispatcher {
 			throw new ArgumentError("NativeProcess is already running.");
 		}
 
+		var executable:String = info.executable;
+		var directory:Null<String> = info.workingDirectory;
+		var environment:Null<Array<String>> = __environmentFor(info);
+		#if (hl || neko)
+		if (directory != null || environment != null) {
+			throw new IllegalOperationError("NativeProcess cannot give a process a working directory or an environment of its own on "
+				+ #if hl "HashLink" #else "neko" #end + ": its process call has no way to say either. Build for a native target, the jvm or Node.");
+		}
+		#else
+		if (directory != null) {
+			if (directory == "" || !sys.FileSystem.exists(directory) || !sys.FileSystem.isDirectory(directory)) {
+				throw new ArgumentError('NativeProcessStartupInfo.workingDirectory is not a directory: "$directory"');
+			}
+			// A relative path to the program is read from here, as it is
+			// without a working directory, and not from the child's.
+			if (__isRelativePath(executable)) {
+				executable = sys.FileSystem.absolutePath(executable);
+			}
+		}
+		#end
+
 		__exitCode = -1;
 		__pid = -1;
 		__running = true;
 		__stdoutClosed = false;
 		__stderrClosed = false;
+		__outPending = "";
+		__errPending = "";
 
 		#if nodejs
-		__startNode(info);
+		__startNode(info, executable, directory, environment);
 		#else
 		#if (sys && target.threaded && !eval)
 		try {
 			var args = info.arguments == null ? [] : info.arguments;
-			__process = new Process(info.executable, args, false);
+			#if (cpp || jvm)
+			__process = Process.start(executable, args, directory, environment);
+			#else
+			__process = new Process(executable, args, false);
+			#end
 			__pid = __resolvePid();
 		} catch (e:Dynamic) {
 			__process = null;
@@ -196,6 +253,93 @@ class NativeProcess extends EventDispatcher {
 
 		__worker.run(info);
 		#end
+	}
+
+	/**
+		The child's environment as `NAME=value` entries, or null for this
+		program's as it is.
+	**/
+	@:noCompletion private static function __environmentFor(info:NativeProcessStartupInfo):Null<Array<String>> {
+		var overrides:Null<Map<String, String>> = info.environment;
+		if (overrides == null && info.inheritEnvironment) {
+			return null;
+		}
+
+		// Windows matches names in any case, so `path` must replace `Path`
+		// rather than sit beside it.
+		var caseless:Bool = crossbyte.sys.System.isWindows;
+		var order:Array<String> = [];
+		var spelling:Map<String, String> = new Map();
+		var values:Map<String, String> = new Map();
+
+		if (info.inheritEnvironment) {
+			for (name => value in Sys.environment()) {
+				// Windows keeps a hidden variable per drive, named "=C:", which
+				// reads here with an empty name.
+				if (name == null || name == "" || value == null) {
+					continue;
+				}
+				var key:String = caseless ? name.toUpperCase() : name;
+				if (!values.exists(key)) {
+					order.push(key);
+				}
+				spelling.set(key, name);
+				values.set(key, value);
+			}
+		}
+
+		if (overrides != null) {
+			for (name => value in overrides) {
+				if (name == null || name == "" || name.indexOf("=") >= 0 || name.indexOf("\x00") >= 0) {
+					throw new ArgumentError('NativeProcessStartupInfo.environment has a name no environment can hold: "$name"');
+				}
+				if (value != null && value.indexOf("\x00") >= 0) {
+					throw new ArgumentError('NativeProcessStartupInfo.environment has a value for $name holding a NUL, which no environment can hold.');
+				}
+				var key:String = caseless ? name.toUpperCase() : name;
+				if (value == null) {
+					values.remove(key);
+					continue;
+				}
+				if (!values.exists(key)) {
+					order.push(key);
+				}
+				spelling.set(key, name);
+				values.set(key, value);
+			}
+		}
+
+		var entries:Array<String> = [];
+		for (key in order) {
+			if (values.exists(key)) {
+				entries.push(spelling.get(key) + "=" + values.get(key));
+				// Once, however often it was set or taken out.
+				values.remove(key);
+			}
+		}
+		if (caseless) {
+			// The order Windows keeps an environment block in.
+			entries.sort((a, b) -> {
+				var left:String = a.substr(0, a.indexOf("=")).toUpperCase();
+				var right:String = b.substr(0, b.indexOf("=")).toUpperCase();
+				return left < right ? -1 : (left > right ? 1 : 0);
+			});
+		}
+		return entries;
+	}
+
+	// Whether `path` names a file through a directory, relatively: `bin/x`,
+	// not `x`, which is looked for on the PATH, nor `/opt/x`.
+	@:noCompletion private static function __isRelativePath(path:String):Bool {
+		var separated:Bool = path.indexOf("/") >= 0 || (crossbyte.sys.System.isWindows && path.indexOf("\\") >= 0);
+		return separated && !haxe.io.Path.isAbsolute(path);
+	}
+
+	@:noCompletion private function set_maxLineLength(value:Int):Int {
+		if (value < 1) {
+			throw new ArgumentError("NativeProcess.maxLineLength must be at least 1; got " + value + ".");
+		}
+		return maxLineLength = value;
 	}
 
 	public function exit():Void {
@@ -459,7 +603,7 @@ class NativeProcess extends EventDispatcher {
 		// all by now, and on Linux the JDK's destroy() closes the streams, so
 		// after exit() that read would throw "Stream closed" and EXIT never
 		// come.
-		var process:java.lang.Process = @:privateAccess __process.proc;
+		var process:java.lang.Process = __process.javaProcess;
 		process.waitFor();
 		return process.exitValue();
 		#else
@@ -513,7 +657,7 @@ class NativeProcess extends EventDispatcher {
 		try {
 			if (__process != null) {
 				#if (jvm && !macro)
-				var pid:Null<Int> = __jvmPid(@:privateAccess __process.proc);
+				var pid:Null<Int> = __jvmPid(__process.javaProcess);
 				#else
 				var pid:Null<Int> = __process.getPid();
 				#end
@@ -601,17 +745,92 @@ class NativeProcess extends EventDispatcher {
 	@:noCompletion private function __emitData(stream:Null<String>, text:String, isError:Bool):Void {
 		if (stream == null || stream == STREAM_STDOUT || !isError) {
 			dispatchEvent(new NativeProcessEvent(NativeProcessEvent.STANDARD_OUTPUT_DATA, text, __exitCode, __pid));
+			if (hasEventListener(NativeProcessEvent.STANDARD_OUTPUT_LINE)) {
+				__outPending = __splitLines(__outPending, text, NativeProcessEvent.STANDARD_OUTPUT_LINE);
+			}
 		} else if (stream == STREAM_STDERR) {
 			dispatchEvent(new NativeProcessEvent(NativeProcessEvent.STANDARD_ERROR_DATA, text, __exitCode, __pid));
+			if (hasEventListener(NativeProcessEvent.STANDARD_ERROR_LINE)) {
+				__errPending = __splitLines(__errPending, text, NativeProcessEvent.STANDARD_ERROR_LINE);
+			}
+		}
+	}
+
+	/**
+		Dispatches each line `text` completes, `pending` being what the stream
+		said before it since its last line break, and answers what is left
+		after the last break: the start of the next line. A line is cut into
+		pieces of `maxLineLength` as it passes it, so what is held never grows
+		past that, however long a child writes without a break. Each piece is
+		cut from the text as it is, not decoded again, so on a target whose
+		strings are bytes a piece may end inside a character.
+	**/
+	@:noCompletion private function __splitLines(pending:String, text:String, type:crossbyte.events.EventType<NativeProcessEvent>):String {
+		var start:Int = 0;
+		while (true) {
+			var lineFeed:Int = text.indexOf("\n", start);
+			if (lineFeed < 0) {
+				break;
+			}
+			var line:String = text.substring(start, lineFeed);
+			if (pending.length > 0) {
+				line = pending + line;
+				pending = "";
+			}
+			if (StringTools.endsWith(line, "\r")) {
+				line = line.substr(0, line.length - 1);
+			}
+			while (line.length > maxLineLength) {
+				__emitLine(type, line.substr(0, maxLineLength));
+				line = line.substr(maxLineLength);
+			}
+			__emitLine(type, line);
+			start = lineFeed + 1;
+		}
+
+		if (start < text.length) {
+			pending = pending.length > 0 ? pending + text.substr(start) : text.substr(start);
+		}
+		// A carriage return at the end may be the first half of a CRLF, which
+		// is not part of the line, so it does not count against the limit.
+		var held:Int = StringTools.endsWith(pending, "\r") ? pending.length - 1 : pending.length;
+		while (held > maxLineLength) {
+			__emitLine(type, pending.substr(0, maxLineLength));
+			pending = pending.substr(maxLineLength);
+			held -= maxLineLength;
+		}
+		return pending;
+	}
+
+	@:noCompletion private inline function __emitLine(type:crossbyte.events.EventType<NativeProcessEvent>, line:String):Void {
+		dispatchEvent(new NativeProcessEvent(type, line, __exitCode, __pid));
+	}
+
+	/** The last line of a stream that has ended, if it did not end in a break. **/
+	@:noCompletion private function __flushLine(isError:Bool):Void {
+		var pending:String = isError ? __errPending : __outPending;
+		if (pending.length == 0) {
+			return;
+		}
+		if (isError) {
+			__errPending = "";
+		} else {
+			__outPending = "";
+		}
+		var type = isError ? NativeProcessEvent.STANDARD_ERROR_LINE : NativeProcessEvent.STANDARD_OUTPUT_LINE;
+		if (hasEventListener(type)) {
+			__emitLine(type, StringTools.endsWith(pending, "\r") ? pending.substr(0, pending.length - 1) : pending);
 		}
 	}
 
 	@:noCompletion private function __emitClose(stream:Null<String>):Void {
 		if (stream == STREAM_STDOUT && !__stdoutClosed) {
 			__stdoutClosed = true;
+			__flushLine(false);
 			dispatchEvent(new NativeProcessEvent(NativeProcessEvent.STANDARD_OUTPUT_CLOSE, "", __exitCode, __pid));
 		} else if (stream == STREAM_STDERR && !__stderrClosed) {
 			__stderrClosed = true;
+			__flushLine(true);
 			dispatchEvent(new NativeProcessEvent(NativeProcessEvent.STANDARD_ERROR_CLOSE, "", __exitCode, __pid));
 		}
 	}
@@ -643,11 +862,24 @@ class NativeProcess extends EventDispatcher {
 	 * time later, so it arrives here as an EXIT with an exit code of -1, the
 	 * same shape a worker failure takes.
 	 */
-	@:noCompletion private function __startNode(info:NativeProcessStartupInfo):Void {
+	@:noCompletion private function __startNode(info:NativeProcessStartupInfo, executable:String, directory:Null<String>, environment:Null<Array<String>>):Void {
 		var child:ChildProcessObject;
 
 		try {
-			child = ChildProcessModule.spawn(info.executable, info.arguments == null ? [] : info.arguments);
+			var options:js.node.ChildProcess.ChildProcessSpawnOptions = {};
+			if (directory != null) {
+				options.cwd = directory;
+			}
+			if (environment != null) {
+				var variables:haxe.DynamicAccess<String> = {};
+				for (entry in environment) {
+					var equals:Int = entry.indexOf("=", 1);
+					variables.set(entry.substr(0, equals), entry.substr(equals + 1));
+				}
+				options.env = variables;
+			}
+			var args:Array<String> = info.arguments == null ? [] : info.arguments;
+			child = (directory == null && environment == null) ? ChildProcessModule.spawn(executable, args) : ChildProcessModule.spawn(executable, args, options);
 		} catch (e:Dynamic) {
 			__running = false;
 			throw e;

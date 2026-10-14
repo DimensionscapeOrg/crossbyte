@@ -185,6 +185,23 @@ All notable changes to CrossByte will be documented in this file.
   one holds an advisory lock across the run (`SchemaMigrator.lockKey(table)`
   says which), so service instances starting together migrate one at a time.
   Natively and on PHP. `docs/data.md` has a Migrations section.
+- **A child process's directory and environment.**
+  `NativeProcessStartupInfo.workingDirectory` starts the child in another
+  directory (one that is not there is an `ArgumentError`), and
+  `environment` adds variables to this program's, sets over them, or takes
+  one out with a null, so a child need not see a secret its parent holds;
+  `inheritEnvironment = false` gives it those variables alone. A relative
+  path to the program is still read from this program's directory. Natively
+  (through a spawner of CrossByte's own when either is set, as hxcpp's
+  cannot set them), on the jvm and on Node; HashLink and neko throw an
+  `IllegalOperationError` for either.
+- **A child's output by line.** `NativeProcessEvent.STANDARD_OUTPUT_LINE`
+  and `STANDARD_ERROR_LINE` carry each line, without its `\n` or `\r\n`,
+  however the reads cut it, the last as the stream closes. A line longer
+  than `NativeProcess.maxLineLength` (64 Ki characters) arrives in pieces of
+  that length, so a child that never writes a line break is held to that
+  much. Dispatched only while listened for, on every target with
+  `NativeProcess`.
 
 ### Fixed
 

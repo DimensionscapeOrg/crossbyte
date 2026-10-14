@@ -344,6 +344,316 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	/**
+		A child started in another directory writes there; one given a path
+		that is not a directory is refused before anything starts.
+	**/
+	public function testAWorkingDirectoryIsWhereTheChildStarts():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		var directory:String = __temporaryDirectory("cwd");
+		var info = System.isWindows ? __powershell("Set-Content -Path marker.txt -Value here") : new NativeProcessStartupInfo("sh", ["-c", "echo here > marker.txt"]);
+		info.workingDirectory = directory;
+		var result = __run(info);
+
+		Assert.equals(0, result.exitCode, result.errors);
+		Assert.isTrue(sys.FileSystem.exists(haxe.io.Path.join([directory, "marker.txt"])), "the child did not write in " + directory);
+		Assert.isFalse(sys.FileSystem.exists(haxe.io.Path.join([Sys.getCwd(), "marker.txt"])), "the child wrote where this program runs");
+		__remove(directory);
+
+		var missing = getDefaultInfo();
+		missing.workingDirectory = directory + "-absent";
+		Assert.raises(() -> new NativeProcess().start(missing), crossbyte.errors.ArgumentError);
+		var file = getDefaultInfo();
+		file.workingDirectory = __writeFile(__temporaryDirectory("file"), "not-a-directory.txt", "x");
+		Assert.raises(() -> new NativeProcess().start(file), crossbyte.errors.ArgumentError);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A relative path to the program is read from this program's working
+		directory, as it is without a working directory, on every target: not
+		from the child's, as POSIX's exec would read it after the child has
+		changed directory.
+	**/
+	public function testARelativeExecutableIsReadFromHereNotTheChilds():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		var programs:String = __temporaryDirectory("programs", Sys.getCwd());
+		var name:String = haxe.io.Path.withoutDirectory(programs);
+		var program:String;
+		if (System.isWindows) {
+			program = haxe.io.Path.join([programs, "hostname.exe"]);
+			sys.io.File.copy(haxe.io.Path.join([Sys.getEnv("SystemRoot"), "System32", "hostname.exe"]), program);
+		} else {
+			program = haxe.io.Path.join([programs, "echo"]);
+			sys.io.File.copy(sys.FileSystem.exists("/bin/echo") ? "/bin/echo" : "/usr/bin/echo", program);
+			Sys.command("chmod", ["755", program]);
+		}
+		var elsewhere:String = __temporaryDirectory("elsewhere");
+		var info = new NativeProcessStartupInfo(name + "/" + haxe.io.Path.withoutDirectory(program), System.isWindows ? [] : ["relative"]);
+		info.workingDirectory = elsewhere;
+		var result = __run(info);
+
+		Assert.equals(0, result.exitCode, "exit code " + result.exitCode + ": " + result.errors);
+		Assert.isTrue(StringTools.trim(result.output).length > 0, "the program wrote nothing");
+		__remove(programs);
+		__remove(elsewhere);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		Variables given are added to this program's, override one of the same
+		name, and a null takes one out; with `inheritEnvironment` off the child
+		has those alone.
+	**/
+	public function testTheEnvironmentIsAddedToOverriddenAndTakenFrom():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		// A variable this program has on every system, taken out of the child.
+		var taken:String = System.isWindows ? "TEMP" : "HOME";
+		var info = System.isWindows ? __powershell("Write-Output ('[' + $env:CB_CHILD_VAR + '][' + $env:TEMP + '][' + ($env:Path.Length -gt 0) + ']')") : new NativeProcessStartupInfo("sh", [
+			"-c",
+			"echo \"[$CB_CHILD_VAR][${HOME-unset}][${PATH:+path}]\""
+		]);
+		info.environment = ["CB_CHILD_VAR" => "a value with spaces", taken => null];
+		var result = __run(info);
+		Assert.equals(0, result.exitCode, result.errors);
+		Assert.equals(System.isWindows ? "[a value with spaces][][True]" : "[a value with spaces][unset][path]", StringTools.trim(result.output));
+
+		// Set over a variable this program has, in another case on Windows,
+		// which matches names in any case.
+		var over = System.isWindows ? __powershell("Write-Output ('[' + $env:TEMP + ']')") : new NativeProcessStartupInfo("sh", ["-c", "echo \"[$HOME]\""]);
+		over.environment = [(System.isWindows ? "temp" : "HOME") => "replaced"];
+		var replaced = __run(over);
+		Assert.equals("[replaced]", StringTools.trim(replaced.output), replaced.errors);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testWithoutInheritingTheChildHasTheGivenVariablesAlone():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		var info:NativeProcessStartupInfo;
+		if (System.isWindows) {
+			info = __powershell("Write-Output ('[' + $env:CB_ALONE + '][' + $env:USERNAME + '][' + $env:TEMP + ']')");
+			// What PowerShell needs to start at all, and where it keeps its
+			// caches, which without SystemDrive it makes in a folder named
+			// %SystemDrive% where it runs.
+			info.environment = ["CB_ALONE" => "1", "SystemRoot" => Sys.getEnv("SystemRoot"), "SystemDrive" => Sys.getEnv("SystemDrive")];
+		} else {
+			info = new NativeProcessStartupInfo("/bin/sh", ["-c", "echo \"[$CB_ALONE][${HOME-unset}][${USER-unset}]\""]);
+			info.environment = ["CB_ALONE" => "1"];
+		}
+		info.inheritEnvironment = false;
+		var directory:String = __temporaryDirectory("alone");
+		info.workingDirectory = directory;
+		var result = __run(info);
+		__removeTree(directory);
+		Assert.equals(0, result.exitCode, result.errors);
+		Assert.equals(System.isWindows ? "[1][][]" : "[1][unset][unset]", StringTools.trim(result.output));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAnEnvironmentNoSystemCanHoldIsRefused():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		for (bad in [["" => "x"], ["A=B" => "x"], ["A\x00B" => "x"], ["OK" => "a\x00b"]]) {
+			var info = getDefaultInfo();
+			info.environment = bad;
+			var proc = new NativeProcess();
+			Assert.raises(() -> proc.start(info), crossbyte.errors.ArgumentError);
+			Assert.isFalse(proc.running);
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		HashLink and neko cannot give a child a directory or an environment of
+		its own, and say so rather than start it without them.
+	**/
+	public function testHashLinkAndNekoRefuseADirectoryOrAnEnvironment():Void {
+		#if (hl || neko)
+		var withDirectory = getDefaultInfo();
+		withDirectory.workingDirectory = Sys.getCwd();
+		Assert.raises(() -> new NativeProcess().start(withDirectory), crossbyte.errors.IllegalOperationError);
+		var withEnvironment = getDefaultInfo();
+		withEnvironment.environment = ["A" => "1"];
+		Assert.raises(() -> new NativeProcess().start(withEnvironment), crossbyte.errors.IllegalOperationError);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
+		A child started with an environment of its own (natively, through
+		CrossByte's own spawner) is read, written to, ended and waited for as
+		any other is.
+	**/
+	public function testAChildWithAnEnvironmentIsReadWrittenAndEnded():Void {
+		#if (sys && target.threaded && !eval && !hl && !neko)
+		// Its input echoed back with its exit code chosen, through the pipe.
+		var echo = System.isWindows ? __powershell("$t = [Console]::In.ReadToEnd(); [Console]::Out.Write('<' + $t + '>'); [Console]::Error.Write('err'); exit 3") : new NativeProcessStartupInfo("sh", [
+			"-c",
+			"t=$(cat); printf '<%s>' \"$t\"; printf err >&2; exit 3"
+		]);
+		echo.environment = ["CB_SPAWNED" => "1"];
+		var proc = new NativeProcess();
+		var output:String = "";
+		var errors:String = "";
+		var exitCode:Int = -100;
+		var exited:Bool = false;
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_DATA, event -> output += event.text);
+		proc.addEventListener(NativeProcessEvent.STANDARD_ERROR_DATA, event -> errors += event.text);
+		proc.addEventListener(NativeProcessEvent.EXIT, event -> {
+			exited = true;
+			exitCode = event.exitCode;
+		});
+		proc.start(echo);
+		Assert.isTrue(proc.pid > 0 #if jvm || proc.pid == -1 #end, "pid " + proc.pid);
+		proc.standardInput.writeString("through stdin");
+		proc.standardInput.flush();
+		proc.closeInput();
+		pumpUntil(() -> exited, TIMEOUT);
+		Assert.isTrue(exited);
+		Assert.equals(3, exitCode);
+		Assert.equals("<through stdin>", output);
+		Assert.equals("err", errors);
+
+		// One that would run for a minute, ended.
+		var quiet = getQuietInfo(60);
+		quiet.environment = ["CB_SPAWNED" => "1"];
+		var long = new NativeProcess();
+		var ended:Bool = false;
+		long.addEventListener(NativeProcessEvent.EXIT, _ -> ended = true);
+		var started:Float = haxe.Timer.stamp();
+		long.start(quiet);
+		long.exit();
+		pumpUntil(() -> ended, TIMEOUT);
+		Assert.isTrue(ended, "the child was not ended");
+		Assert.isTrue(haxe.Timer.stamp() - started < 30, "ending the child took " + (haxe.Timer.stamp() - started) + " s");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAProgramThatIsNotThereIsRefusedAtStart():Void {
+		#if ((cpp || jvm) && !eval)
+		var info = new NativeProcessStartupInfo("crossbyte-no-such-program-" + Std.random(1000000));
+		info.environment = ["CB_SPAWNED" => "1"];
+		var proc = new NativeProcess();
+		Assert.raises(() -> proc.start(info));
+		Assert.isFalse(proc.running);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/** Lines from a real child, from both of its streams and both spawners. **/
+	public function testAChildsLinesArriveOneAtATime():Void {
+		#if (sys && target.threaded && !eval)
+		for (own in [false, true]) {
+			#if (hl || neko)
+			if (own) {
+				continue;
+			}
+			#end
+			var info = System.isWindows ? __powershell("[Console]::Out.Write('one' + [char]13 + [char]10 + 'two' + [char]10 + 'thr'); [Console]::Out.Flush(); Start-Sleep -Milliseconds 100; [Console]::Out.Write('ee'); [Console]::Error.Write('e1' + [char]10 + 'e2' + [char]10)") : new NativeProcessStartupInfo("sh", [
+				"-c",
+				"printf 'one\\r\\ntwo\\nthr'; sleep 0.1; printf 'ee'; printf 'e1\\ne2\\n' >&2"
+			]);
+			if (own) {
+				info.environment = ["CB_SPAWNED" => "1"];
+			}
+			var proc = new NativeProcess();
+			var lines:Array<String> = [];
+			var errorLines:Array<String> = [];
+			var exited:Bool = false;
+			proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_LINE, event -> lines.push(event.text));
+			proc.addEventListener(NativeProcessEvent.STANDARD_ERROR_LINE, event -> errorLines.push(event.text));
+			proc.addEventListener(NativeProcessEvent.EXIT, _ -> exited = true);
+			proc.start(info);
+			pumpUntil(() -> exited, TIMEOUT);
+			Assert.isTrue(exited);
+			Assert.same(["one", "two", "three"], lines, "own spawner: " + own);
+			Assert.same(["e1", "e2"], errorLines, "own spawner: " + own);
+		}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	private static function __powershell(command:String):NativeProcessStartupInfo {
+		return new NativeProcessStartupInfo("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
+	}
+
+	/** Runs `info` to its end, pumping the runtime, and answers what it said. **/
+	private static function __run(info:NativeProcessStartupInfo):{exitCode:Int, output:String, errors:String} {
+		var proc = new NativeProcess();
+		var output:String = "";
+		var errors:String = "";
+		var exitCode:Int = -100;
+		var exited:Bool = false;
+		proc.addEventListener(NativeProcessEvent.STANDARD_OUTPUT_DATA, event -> output += event.text);
+		proc.addEventListener(NativeProcessEvent.STANDARD_ERROR_DATA, event -> errors += event.text);
+		proc.addEventListener(NativeProcessEvent.EXIT, event -> {
+			exited = true;
+			exitCode = event.exitCode;
+		});
+		proc.start(info);
+		pumpUntil(() -> exited, TIMEOUT);
+		return {exitCode: exited ? exitCode : -101, output: output, errors: errors};
+	}
+
+	private static var __made:Int = 0;
+
+	private static function __temporaryDirectory(label:String, ?under:String):String {
+		var root:String = under;
+		if (root == null) {
+			for (candidate in [Sys.getEnv("TEMP"), Sys.getEnv("TMP"), Sys.getEnv("TMPDIR"), "/tmp"]) {
+				if (candidate != null && candidate != "" && sys.FileSystem.exists(candidate)) {
+					root = candidate;
+					break;
+				}
+			}
+		}
+		var path:String = haxe.io.Path.join([root, 'crossbyte-np-$label-${Std.random(1000000)}-${__made++}']);
+		sys.FileSystem.createDirectory(path);
+		return path;
+	}
+
+	private static function __writeFile(directory:String, name:String, content:String):String {
+		var path:String = haxe.io.Path.join([directory, name]);
+		sys.io.File.saveContent(path, content);
+		return path;
+	}
+
+	private static function __removeTree(path:String):Void {
+		try {
+			if (sys.FileSystem.isDirectory(path)) {
+				for (entry in sys.FileSystem.readDirectory(path)) {
+					__removeTree(haxe.io.Path.join([path, entry]));
+				}
+				sys.FileSystem.deleteDirectory(path);
+			} else {
+				sys.FileSystem.deleteFile(path);
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	private static function __remove(directory:String):Void {
+		try {
+			for (entry in sys.FileSystem.readDirectory(directory)) {
+				sys.FileSystem.deleteFile(haxe.io.Path.join([directory, entry]));
+			}
+			sys.FileSystem.deleteDirectory(directory);
+		} catch (_:Dynamic) {}
+	}
+
 	// Asked of the machine rather than the compiler: hl and neko have no
 	// `windows` define, and their bytecode runs on whichever OS it is given to.
 	//

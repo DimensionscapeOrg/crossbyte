@@ -8,6 +8,16 @@ class NativeProcessEvent extends TextEvent {
 	public static inline var STANDARD_OUTPUT_DATA:EventType<NativeProcessEvent> = "standardOutputData";
 	/** Fired when stderr data is available. */
 	public static inline var STANDARD_ERROR_DATA:EventType<NativeProcessEvent> = "standardErrorData";
+	/**
+		Fired for each line of stdout, after the data it ended in, its text
+		the line without its `\n` or `\r\n`. The last line goes as the stream
+		closes, whether or not it ended in a line break. A line longer than
+		`NativeProcess.maxLineLength` arrives as several. Only dispatched while
+		something listens for it, so add the listener before `start`.
+	**/
+	public static inline var STANDARD_OUTPUT_LINE:EventType<NativeProcessEvent> = "standardOutputLine";
+	/** As `STANDARD_OUTPUT_LINE`, for stderr. */
+	public static inline var STANDARD_ERROR_LINE:EventType<NativeProcessEvent> = "standardErrorLine";
 	/** Fired when the stdout stream closes. */
 	public static inline var STANDARD_OUTPUT_CLOSE:EventType<NativeProcessEvent> = "standardOutputClose";
 	/** Fired when the stderr stream closes. */

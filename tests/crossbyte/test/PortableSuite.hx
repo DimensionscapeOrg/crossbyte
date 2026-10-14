@@ -274,6 +274,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.core.ApplicationTest());
 		// SIGTERM and SIGINT on Node, which run the drain rather than exiting.
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
+		// A child's output into lines, which Node's reads are cut into as
+		// differently as a thread's are.
+		runner.addCase(new crossbyte.sys.NativeProcessLinesTest());
 		// Loop lag and overruns as the JavaScript loop takes its turns, and
 		// the post queue's depth.
 		runner.addCase(new crossbyte.core.RuntimeHealthTest());

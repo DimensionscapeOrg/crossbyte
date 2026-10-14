@@ -347,7 +347,9 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
   getters, so `"80a80"` is refused rather than read as 80. `Config` does the same for flat `key=value` files.
   `Secret.resolve` reads a secret the configuration names (`env:NAME`, `file:/run/secrets/name`) rather than holds.
 - **Processes and workers.** `Worker`, task pools, and `NativeProcess`, which starts a child process and reads its
-  output natively, on the jvm, HashLink, Neko and Node; not on the interpreter or in a browser.
+  output natively, on the jvm, HashLink, Neko and Node; not on the interpreter or in a browser. Its output comes as
+  data or line by line, and natively, on the jvm and on Node a child can be given a working directory and an
+  environment of its own.
 - **Files and bytes.** File APIs, `ByteArray`, `ByteArrayInput` and `ByteArrayOutput`.
 - **Data structures.** `ExpiringMap` for what a server keeps on a peer's behalf, bounded by time (`ttl`) and by
   count (`maxSize`, 100,000 unless set); `ObjectPool`, which keeps 10,000 free objects unless `maxFree` says
