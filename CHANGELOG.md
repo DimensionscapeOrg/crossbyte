@@ -13,6 +13,10 @@ All notable changes to CrossByte will be documented in this file.
   tokens that native servers verify holding only the public key.
   `isSupported` is true on PHP when the extension is loaded, and
   `unsupportedReason` says to load it when it is not.
+- **`Ed25519.keypairFromSeed(seed)`**, the pair a 32-byte seed makes
+  (`SEED_BYTES`): the private key as RFC 8032 writes it and a JWK's `d`
+  carries it, natively and on PHP. A service can keep only the seed as its
+  secret.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.

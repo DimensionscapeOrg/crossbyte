@@ -40,7 +40,13 @@ class Ed25519 {
 	public static inline final PUBLIC_KEY_BYTES:Int = 32;
 
 	/**
-	 * Length in bytes of an Ed25519 secret key.
+	 * Length in bytes of an Ed25519 seed, the private key RFC 8032 and a JWK's
+	 * `d` hold.
+	 */
+	public static inline final SEED_BYTES:Int = 32;
+
+	/**
+	 * Length in bytes of an Ed25519 secret key: the seed, then the public key.
 	 */
 	public static inline final SECRET_KEY_BYTES:Int = 64;
 
@@ -111,6 +117,51 @@ class Ed25519 {
 			publicKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_publickey(pair)),
 			secretKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_secretkey(pair))
 		};
+		#else
+		throw NativeOnly.error("Ed25519 keypair generation");
+		#end
+	}
+
+	/**
+	 * The keypair a 32-byte seed makes: the private key as RFC 8032 writes it,
+	 * and as a JWK's `d` carries it. The same seed makes the same pair on every
+	 * target, so a service can keep only the seed as its secret and derive the
+	 * pair as it starts.
+	 *
+	 * ```haxe
+	 * var pair = Ed25519.keypairFromSeed(haxe.io.Bytes.ofHex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"));
+	 * trace(pair.publicKey.toHex()); // d75a9801..., RFC 8032's first public key
+	 * ```
+	 *
+	 * @param seed The 32-byte seed. Keep it as secret as the secret key, which
+	 *        it is the first half of.
+	 * @return The pair: `secretKey` is the seed followed by `publicKey`.
+	 * @throws ArgumentError For a seed that is not 32 bytes.
+	 * @throws IllegalOperationError Where `isSupported` is false.
+	 */
+	public static function keypairFromSeed(seed:Bytes):SigningKeyPair {
+		#if (cpp || php)
+		if (seed == null || seed.length != SEED_BYTES) {
+			throw new ArgumentError("seed must be " + SEED_BYTES + " bytes");
+		}
+
+		__ensureAvailable();
+
+		#if php
+		var pair:String = PhpSodium.sodium_crypto_sign_seed_keypair(seed.getData());
+		return {
+			publicKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_publickey(pair)),
+			secretKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_secretkey(pair))
+		};
+		#else
+		var publicKey = Bytes.alloc(PUBLIC_KEY_BYTES);
+		var secretKey = Bytes.alloc(SECRET_KEY_BYTES);
+		var rc = NativeSodium.ed25519SeedKeypair(__ptr(publicKey), __ptr(secretKey), __cptr(seed));
+		if (rc != 0) {
+			throw new crossbyte.errors.Error("libsodium crypto_sign_seed_keypair failed: " + rc);
+		}
+		return {publicKey: publicKey, secretKey: secretKey};
+		#end
 		#else
 		throw NativeOnly.error("Ed25519 keypair generation");
 		#end

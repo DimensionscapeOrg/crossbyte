@@ -30,6 +30,7 @@
 extern "C" {
 	int sodium_init(void);
 	int crypto_sign_keypair(unsigned char *pk, unsigned char *sk);
+	int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk, const unsigned char *seed);
 	int crypto_sign_detached(unsigned char *sig, unsigned long long *siglen_p, const unsigned char *m, unsigned long long mlen, const unsigned char *sk);
 	int crypto_sign_verify_detached(const unsigned char *sig, const unsigned char *m, unsigned long long mlen, const unsigned char *pk);
 
@@ -160,6 +161,15 @@ extern "C" int crossbyte_crypto_ed25519_keypair(uint8_t *publicKey, uint8_t *sec
 	}
 
 	return crypto_sign_keypair(publicKey, secretKey);
+}
+
+extern "C" int crossbyte_crypto_ed25519_seed_keypair(uint8_t *publicKey, uint8_t *secretKey, const uint8_t *seed) {
+	SodiumState &sodium = state();
+	if (!sodium.ready || publicKey == nullptr || secretKey == nullptr || seed == nullptr) {
+		return -1;
+	}
+
+	return crypto_sign_seed_keypair(publicKey, secretKey, seed);
 }
 
 extern "C" int crossbyte_crypto_ed25519_sign_detached(
@@ -531,6 +541,13 @@ extern "C" const char *crossbyte_crypto_sodium_status_message() {
 extern "C" int crossbyte_crypto_ed25519_keypair(uint8_t *publicKey, uint8_t *secretKey) {
 	(void) publicKey;
 	(void) secretKey;
+	return -1;
+}
+
+extern "C" int crossbyte_crypto_ed25519_seed_keypair(uint8_t *publicKey, uint8_t *secretKey, const uint8_t *seed) {
+	(void) publicKey;
+	(void) secretKey;
+	(void) seed;
 	return -1;
 }
 

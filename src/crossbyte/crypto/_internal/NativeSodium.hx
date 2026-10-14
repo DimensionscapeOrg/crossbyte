@@ -17,6 +17,9 @@ extern class NativeSodium {
 	@:native("crossbyte_crypto_ed25519_keypair")
 	public static function ed25519Keypair(publicKey:RawPointer<UInt8>, secretKey:RawPointer<UInt8>):Int;
 
+	@:native("crossbyte_crypto_ed25519_seed_keypair")
+	public static function ed25519SeedKeypair(publicKey:RawPointer<UInt8>, secretKey:RawPointer<UInt8>, seed:ConstPointer<UInt8>):Int;
+
 	@:native("crossbyte_crypto_ed25519_sign_detached")
 	public static function ed25519SignDetached(signature:RawPointer<UInt8>, message:ConstPointer<UInt8>, messageLength:Int, secretKey:ConstPointer<UInt8>):Int;
 

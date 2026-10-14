@@ -79,6 +79,21 @@ class Ed25519VectorsTest extends utest.Test {
 		}
 	}
 
+	public function testASeedMakesTheRfcKeyPair():Void {
+		for (vector in VECTORS) {
+			var pair:SigningKeyPair = Ed25519.keypairFromSeed(Bytes.ofHex(vector[0]));
+			Assert.equals(vector[1], pair.publicKey.toHex());
+			Assert.equals(vector[0] + vector[1], pair.secretKey.toHex());
+			Assert.equals(vector[3], Ed25519.signDetached(Bytes.ofHex(vector[2]), pair.secretKey).toHex());
+		}
+	}
+
+	public function testASeedOfTheWrongLengthIsAnArgumentError():Void {
+		Assert.raises(() -> Ed25519.keypairFromSeed(Bytes.alloc(31)), ArgumentError);
+		Assert.raises(() -> Ed25519.keypairFromSeed(Bytes.alloc(64)), ArgumentError);
+		Assert.raises(() -> Ed25519.keypairFromSeed(null), ArgumentError);
+	}
+
 	public function testANullMessageIsTheEmptyOne():Void {
 		var vector:Array<String> = VECTORS[0];
 		Assert.equals(vector[3], Ed25519.signDetached(null, secretKeyOf(vector)).toHex());
@@ -121,6 +136,8 @@ class Ed25519VectorsTest extends utest.Test {
 		Assert.notNull(Ed25519.unsupportedReason);
 		var vector:Array<String> = VECTORS[0];
 		Assert.raises(() -> Ed25519.keypair(), IllegalOperationError);
+		Assert.raises(() -> Ed25519.keypairFromSeed(Bytes.ofHex(vector[0])), IllegalOperationError);
+		Assert.raises(() -> Ed25519.keypairFromSeed(null), IllegalOperationError);
 		Assert.raises(() -> Ed25519.signDetached(Bytes.ofHex(vector[2]), secretKeyOf(vector)), IllegalOperationError);
 		Assert.raises(() -> Ed25519.verifyDetached(Bytes.ofHex(vector[3]), Bytes.ofHex(vector[2]), Bytes.ofHex(vector[1])), IllegalOperationError);
 	}
