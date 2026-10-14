@@ -299,6 +299,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.utils.LoggerTest());
 		// Std.parseInt's four answers past 32 bits include JavaScript's.
 		runner.addCase(new crossbyte.utils.IntParseTest());
+		// Where a secret is read from: an environment and files, which a browser
+		// has neither of, and PHP reads its own way.
+		runner.addCase(new crossbyte.auth.SecretTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.SQLRowTest());

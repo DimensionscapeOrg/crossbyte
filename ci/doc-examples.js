@@ -55,6 +55,7 @@ const STANDALONE = [
   'src/crossbyte/Object.hx',
   'src/crossbyte/PrimitiveValue.hx',
   'src/crossbyte/TypedObject.hx',
+  'src/crossbyte/auth/Secret.hx',
   'src/crossbyte/auth/jwt/JWK.hx',
   'src/crossbyte/auth/jwt/JWKSet.hx',
   'src/crossbyte/auth/jwt/JWT.hx',

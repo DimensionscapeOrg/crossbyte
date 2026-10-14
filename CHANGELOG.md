@@ -137,6 +137,13 @@ All notable changes to CrossByte will be documented in this file.
   local IPC it is ignored. Only the next call takes it, as with `within`,
   and a call given nothing costs nothing more. Such a call must fit one
   datagram: a larger one throws, a request failing `Unsent`.
+- **`Secret.resolve(ref)`** reads a secret that configuration names rather
+  than holds: `env:NAME` from the environment, `file:PATH` from a file (a
+  Docker or Kubernetes secret, its trailing line break taken off), and any
+  other text as itself. A variable that is not set, a file that cannot be
+  read and a secret that is empty all throw an `ArgumentError` naming where
+  it was looked for, never the value, so a service cannot start on an empty
+  key. On PHP too.
 
 ### Fixed
 

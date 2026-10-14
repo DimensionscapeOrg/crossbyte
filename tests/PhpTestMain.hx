@@ -27,6 +27,7 @@ class PhpTestMain {
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTOptionsTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
+		runner.addCase(new crossbyte.auth.SecretTest());
 		utest.ui.Report.create(runner);
 		runner.run();
 	}
