@@ -38,7 +38,7 @@ class TLSChainFixture {
 			}
 
 			if (!sys.FileSystem.exists(haxe.io.Path.join([directory, "complete"]))) {
-				var staging:String = directory + "-" + Std.random(0x7FFFFFFF);
+				var staging:String = directory + "-" + Std.random(0x3FFFFFFF);
 				sys.FileSystem.createDirectory(staging);
 
 				if (!__make(staging)) {
