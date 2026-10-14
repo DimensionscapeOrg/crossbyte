@@ -1370,6 +1370,7 @@ for as long as each connection is backed off, back to its shortest once one
 ends that was not.
 
 ```haxe
+// Given secure:RPCSession<ChatCommands>.
 secure.onHello = () -> {
 	if (secure.peerAnswersFingerprint != secure.callsFingerprint) {
 		secure.backOff();
