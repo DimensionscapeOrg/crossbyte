@@ -176,7 +176,7 @@ final class RPCReceiverCall extends RPCResponse<Dynamic> {
 		if (Std.isOfType(cause, RPCError)) {
 			final passed:Null<RPCRefusal> = Std.downcast(cause, RPCRefusal);
 			if (passed != null) {
-				return refusal(passed.code, message, 0);
+				return refusal(passed.refusalCode, message, 0);
 			}
 			final id:Int = (cast cause : RPCError).errorId;
 			return id != 0 ? Refused(message, id) : Refused(message);

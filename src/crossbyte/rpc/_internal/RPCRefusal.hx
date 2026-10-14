@@ -17,10 +17,10 @@ import crossbyte.rpc.RPCError;
 @:noCompletion
 class RPCRefusal extends RPCError {
 	/** What refused the call: one of `RPCWire.REFUSED_*`. **/
-	public final code:Int;
+	public final refusalCode:Int;
 
 	public function new(message:String, code:Int) {
 		super(message);
-		this.code = code;
+		this.refusalCode = code;
 	}
 }

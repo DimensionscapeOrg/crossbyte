@@ -2069,7 +2069,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/** Whether `error` refuses as `code`: news on this side too, for an answer too large to send. **/
 	@:noCompletion private static function __refusedAs(error:haxe.Exception, code:Int):Bool {
-		return Std.isOfType(error, crossbyte.rpc._internal.RPCRefusal) && (cast error : crossbyte.rpc._internal.RPCRefusal).code == code;
+		return Std.isOfType(error, crossbyte.rpc._internal.RPCRefusal) && (cast error : crossbyte.rpc._internal.RPCRefusal).refusalCode == code;
 	}
 
 	/**
@@ -2470,7 +2470,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (Std.isOfType(error, RPCTimeoutError)) {
 			return RPCWire.REFUSED_HANDLER_TIMEOUT;
 		}
-		return Std.isOfType(error, RPCRefusal) ? (cast error : RPCRefusal).code : RPCWire.REFUSED_BY_HANDLER;
+		return Std.isOfType(error, RPCRefusal) ? (cast error : RPCRefusal).refusalCode : RPCWire.REFUSED_BY_HANDLER;
 	}
 
 	/**
