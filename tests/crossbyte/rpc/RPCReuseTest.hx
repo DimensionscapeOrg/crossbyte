@@ -17,15 +17,15 @@ class RPCReuseTest extends utest.Test {
 		final element = first[2];
 		Assert.equals("1:16384,1:16384,5:16400,1:16420", fixture.handler.lastSeen);
 		fixture.commands.inputs(6, 1001, [input(2, 1, 998), input(3, 2, 999), input(4, 3, 1000), input(5, 4, 1001)]);
-		Assert.isTrue(first == fixture.handler.lastRecent, "the array was made again");
-		Assert.isTrue(element == fixture.handler.lastRecent[2], "an element was made again");
+		InCall.assertKept(first, fixture.handler.lastRecent, "the array was made again");
+		InCall.assertKept(element, fixture.handler.lastRecent[2], "an element was made again");
 		Assert.equals("2:1,3:2,4:3,5:4", fixture.handler.lastSeen);
 		// Fewer, then more, than before.
 		fixture.commands.inputs(7, 1002, [input(9, 9, 1)]);
 		Assert.equals("9:9", fixture.handler.lastSeen);
 		fixture.commands.inputs(8, 1003, [for (i in 0...6) input(i, i, i)]);
 		Assert.equals("0:0,1:1,2:2,3:3,4:4,5:5", fixture.handler.lastSeen);
-		Assert.isTrue(first == fixture.handler.lastRecent);
+		InCall.assertKept(first, fixture.handler.lastRecent, "the array was made again");
 	}
 
 	public function testAStructureIsReadInPlaceItsNestedOnesToo():Void {
@@ -47,9 +47,9 @@ class RPCReuseTest extends utest.Test {
 		state.history = [9];
 		state.tags = ["z" => 26];
 		fixture.commands.update(state);
-		Assert.isTrue(kept == fixture.handler.lastState, "the structure was made again");
-		Assert.isTrue(nested == kept.where, "its nested structure was made again");
-		Assert.isTrue(history == kept.history, "its array was made again");
+		InCall.assertKept(kept, fixture.handler.lastState, "the structure was made again");
+		InCall.assertKept(nested, fixture.handler.lastState.where, "its nested structure was made again");
+		InCall.assertKept(history, fixture.handler.lastState.history, "its array was made again");
 		Assert.equals("4 b -2 9 z=26", fixture.handler.lastSeen);
 	}
 
@@ -62,8 +62,8 @@ class RPCReuseTest extends utest.Test {
 		final recent = everything.lastRecent;
 		fixture.commands.update(new ReuseState());
 		fixture.commands.inputs(2, 2, [input(2, 2, 2)]);
-		Assert.isTrue(state == everything.lastState);
-		Assert.isTrue(recent == everything.lastRecent);
+		InCall.assertKept(state, everything.lastState, "the structure was made again");
+		InCall.assertKept(recent, everything.lastRecent, "the array was made again");
 	}
 
 	public function testAnArgumentNotMarkedIsTheHandlersToKeep():Void {
@@ -83,9 +83,10 @@ class RPCReuseTest extends utest.Test {
 		final fromA = handler.lastRecent;
 		b.commands.inputs(1, 1, [input(2, 2, 2)]);
 		Assert.isFalse(fromA == handler.lastRecent, "two sessions shared what they keep");
-		Assert.equals(1, fromA[0].controls);
+		Assert.equals("2:2", handler.lastSeen);
 		a.commands.inputs(2, 2, [input(3, 3, 3)]);
-		Assert.isTrue(fromA == handler.lastRecent);
+		InCall.assertKept(fromA, handler.lastRecent, "a session's array was made again");
+		Assert.equals("3:3", handler.lastSeen);
 	}
 
 	public function testACallInsideACallReadsIntoItsOwn():Void {

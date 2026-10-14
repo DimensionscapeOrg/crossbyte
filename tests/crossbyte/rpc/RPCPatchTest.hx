@@ -6,6 +6,7 @@ import crossbyte.rpc._internal.RPCOps;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -20,14 +21,14 @@ class RPCPatchTest extends utest.Test {
 		final base = ship(1520, -310, 120, -45, 16000, 5, false, 180);
 		final current = ship(1524, -311.5, 120, -45, 16384, 5, false, 180);
 		final patch = new RPCPatch(RPCCodecs.of(PatchShip));
-		fixture.commands.ship(1, patch.diff(base, current));
+		final into = new PatchShip();
+		fixture.handler.inCall.test(() -> fixture.commands.ship(1, patch.diff(base, current)), () -> {
+			final received = fixture.handler.lastShip;
+			Assert.equals(3, received.changedCount);
+			received.apply(base, into);
+		});
 		Assert.equals(3, patch.changedCount);
 		Assert.isFalse(patch.isFull);
-		final received = fixture.handler.lastShip;
-		Assert.notNull(received);
-		Assert.equals(3, received.changedCount);
-		final into = new PatchShip();
-		received.apply(base, into);
 		Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, into), "the patch applied to its base was not the value sent: " + describe(into));
 		Assert.equals(1524.0, (into.x : Float));
 		Assert.equals(-311.5, (into.y : Float));
@@ -59,15 +60,16 @@ class RPCPatchTest extends utest.Test {
 		Assert.equals(2, patch.changedCount);
 		// Full bit set; mask: engineLocked (3) and y (7).
 		Assert.equals("01" + "1101" + "01" + "0000a040", argumentsOf(commands -> commands.ship(1, patch.diff(null, current))));
-		fixture.commands.ship(1, patch.diff(null, current));
-		final received = fixture.handler.lastShip;
-		Assert.isTrue(received.isFull);
-		// Whatever base the receiver holds, or none.
-		final into = ship(9, 9, 9, 9, 9, 9, false, 9);
-		received.apply(ship(1, 2, 3, 4, 5, 6, false, 7), into);
-		Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, into));
-		final fresh = received.apply(null, new PatchShip());
-		Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, fresh));
+		fixture.handler.inCall.test(() -> fixture.commands.ship(1, patch.diff(null, current)), () -> {
+			final received = fixture.handler.lastShip;
+			Assert.isTrue(received.isFull);
+			// Whatever base the receiver holds, or none.
+			final into = ship(9, 9, 9, 9, 9, 9, false, 9);
+			received.apply(ship(1, 2, 3, 4, 5, 6, false, 7), into);
+			Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, into));
+			final fresh = received.apply(null, new PatchShip());
+			Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, fresh));
+		});
 	}
 
 	public function testAPatchCanBeAppliedInPlace():Void {
@@ -75,8 +77,8 @@ class RPCPatchTest extends utest.Test {
 		final held = ship(1, 2, 3, 4, 5, 6, false, 7);
 		final current = ship(1, 20, 3, 4, 5, 6, true, 7);
 		final patch = new RPCPatch(RPCCodecs.of(PatchShip));
-		fixture.commands.ship(2, patch.diff(ship(1, 2, 3, 4, 5, 6, false, 7), current));
-		Assert.isTrue(fixture.handler.lastShip.apply(held, held) == held);
+		fixture.handler.inCall.test(() -> fixture.commands.ship(2, patch.diff(ship(1, 2, 3, 4, 5, 6, false, 7), current)),
+			() -> Assert.isTrue(fixture.handler.lastShip.apply(held, held) == held));
 		Assert.isTrue(RPCCodecs.of(PatchShip).equals(current, held));
 	}
 
@@ -100,9 +102,8 @@ class RPCPatchTest extends utest.Test {
 		// position, spare and tag, after the full bit; then position's own
 		// patch: its mask, y alone, and y.
 		Assert.equals("4000" + "02" + "0000000000003440", argumentsOf(commands -> commands.player(patch)));
-		fixture.commands.player(patch);
 		final into = new PatchPlayer();
-		fixture.handler.lastPlayer.apply(base, into);
+		fixture.handler.inCall.test(() -> fixture.commands.player(patch), () -> fixture.handler.lastPlayer.apply(base, into));
 		Assert.isTrue(RPCCodecs.of(PatchPlayer).equals(current, into));
 		Assert.equals(20.0, into.position.y);
 		Assert.equals(1.0, into.position.x);
@@ -115,15 +116,14 @@ class RPCPatchTest extends utest.Test {
 		current.labels.set("k", 5);
 		current.spare = Bytes.ofString("hi");
 		current.maybe = 3;
-		fixture.commands.player(patch.diff(base, current));
-		Assert.equals(7, patch.changedCount);
 		final again = new PatchPlayer();
-		fixture.handler.lastPlayer.apply(base, again);
+		fixture.handler.inCall.test(() -> fixture.commands.player(patch.diff(base, current)), () -> fixture.handler.lastPlayer.apply(base, again));
+		Assert.equals(7, patch.changedCount);
 		Assert.isTrue(RPCCodecs.of(PatchPlayer).equals(current, again), "the patch of every kind did not apply");
 		Assert.same([1, 2, 3, 4], again.cells);
 		Assert.equals("bob", again.name);
 		Assert.equals(5, again.labels.get("k"));
-		Assert.equals("hi", again.spare.toString());
+		Assert.equals("hi", Require.notNull(again.spare).toString());
 		Assert.equals(3, again.maybe);
 	}
 
@@ -156,8 +156,8 @@ class RPCPatchTest extends utest.Test {
 		current.f39 = 4;
 		final patch = new RPCPatch(codec).diff(base, current);
 		Assert.equals(4, patch.changedCount);
-		fixture.commands.wide(patch);
-		final into = fixture.handler.lastWide.apply(base, new PatchWide());
+		final into = new PatchWide();
+		fixture.handler.inCall.test(() -> fixture.commands.wide(patch), () -> fixture.handler.lastWide.apply(base, into));
 		Assert.isTrue(codec.equals(current, into));
 		Assert.equals(4, into.f39);
 		Assert.equals(0, into.f20);
@@ -170,7 +170,7 @@ class RPCPatchTest extends utest.Test {
 		fixture.commands.ship(1, patch.diff(base, ship(1, 0, 0, 0, 0, 0, false, 0)));
 		final first = fixture.handler.lastShip;
 		fixture.commands.ship(2, patch.diff(base, ship(2, 0, 0, 0, 0, 0, false, 0)));
-		Assert.isTrue(first == fixture.handler.lastShip, "a patch was made for each call");
+		InCall.assertKept(first, fixture.handler.lastShip, "a patch was made for each call");
 		// Another session has one of its own.
 		final other = new PatchFixture(fixture.handler);
 		other.commands.ship(3, patch.diff(base, ship(3, 0, 0, 0, 0, 0, false, 0)));
@@ -214,17 +214,18 @@ class RPCPatchTest extends utest.Test {
 		final fixture = new PatchFixture();
 		var unknown:Bool = false;
 		fixture.server.onUnreadableFrame = (op, id, reason) -> unknown = true;
-		fixture.link.client.send(frameOf(out -> {
+		fixture.handler.inCall.test(() -> fixture.link.client.send(frameOf(out -> {
 			out.writeByte(0);
 			out.writeInt(RPCOps.opOf("ship(vu,~" + SHIP_TOKEN + ")"));
 			out.writeVarUInt(5);
 			out.writeByte(0x02); // mask: aimSteps
 			out.writeByte(0x00);
 			out.writeShort(77);
-		}));
+		})), () -> {
+			Assert.equals(1, fixture.handler.lastShip.changedCount);
+			Assert.equals(77, (fixture.handler.lastShip.apply(new PatchShip(), new PatchShip()).aimSteps : Int));
+		});
 		Assert.isFalse(unknown);
-		Assert.equals(1, fixture.handler.lastShip.changedCount);
-		Assert.equals(77, (fixture.handler.lastShip.apply(new PatchShip(), new PatchShip()).aimSteps : Int));
 	}
 
 	public function testAPatchCutShortIsUnreadable():Void {
@@ -264,8 +265,8 @@ class RPCPatchTest extends utest.Test {
 
 	public function testApplyingWithoutTheBaseItNamesIsRefused():Void {
 		final fixture = new PatchFixture();
-		fixture.commands.ship(1, new RPCPatch(RPCCodecs.of(PatchShip)).diff(new PatchShip(), ship(1, 0, 0, 0, 0, 0, false, 0)));
-		Assert.raises(() -> fixture.handler.lastShip.apply(null, new PatchShip()), crossbyte.errors.ArgumentError);
+		fixture.handler.inCall.test(() -> fixture.commands.ship(1, new RPCPatch(RPCCodecs.of(PatchShip)).diff(new PatchShip(), ship(1, 0, 0, 0, 0, 0, false, 0))),
+			() -> Assert.raises(() -> fixture.handler.lastShip.apply(null, new PatchShip()), crossbyte.errors.ArgumentError));
 	}
 
 	/**
@@ -526,19 +527,23 @@ private class PatchHandler extends RPCHandler implements PatchContract {
 	public var lastShip:Null<RPCPatch<PatchShip>> = null;
 	public var lastPlayer:Null<RPCPatch<PatchPlayer>> = null;
 	public var lastWide:Null<RPCPatch<PatchWide>> = null;
+	public final inCall = new InCall();
 
 	public function new() {}
 
 	public function ship(tick:VarUInt, state:RPCPatch<PatchShip>):Void {
 		lastShip = state;
+		inCall.run();
 	}
 
 	public function player(state:RPCPatch<PatchPlayer>):Void {
 		lastPlayer = state;
+		inCall.run();
 	}
 
 	public function wide(state:RPCPatch<PatchWide>):Void {
 		lastWide = state;
+		inCall.run();
 	}
 
 	public function echo(state:RPCPatch<PatchShip>):RPCPatch<PatchShip> {

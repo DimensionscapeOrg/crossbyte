@@ -58,8 +58,9 @@ class RPCBitsTest extends utest.Test {
 		final fixture = new BitFixture();
 		final base = remote(0, 0, 0, 0, 0, 0, false, 0);
 		final current = remote(1000.3, -77.7, 3.3, -4.4, 9, 63, true, 399);
-		fixture.commands.ship(new RPCPatch(RPCCodecs.of(BitShip)).diff(base, current));
-		final into = fixture.handler.lastShip.apply(base, new BitShip());
+		final into = new BitShip();
+		fixture.handler.inCall.test(() -> fixture.commands.ship(new RPCPatch(RPCCodecs.of(BitShip)).diff(base, current)),
+			() -> fixture.handler.lastShip.apply(base, into));
 		Assert.floatEquals(1000.3, (into.x : Float), 16384 / 65535 / 2);
 		Assert.floatEquals(-77.7, (into.y : Float), 16384 / 65535 / 2);
 		Assert.floatEquals(3.3, (into.vx : Float), 2048 / 65535 / 2);
@@ -162,8 +163,8 @@ class RPCBitsTest extends utest.Test {
 		final next = codec.copy(value, new BitMaybe());
 		next.a = null;
 		next.name = "x";
-		fixture.commands.maybe(new RPCPatch(codec).diff(value, next));
-		final into = fixture.handler.lastMaybe.apply(value, new BitMaybe());
+		final into = new BitMaybe();
+		fixture.handler.inCall.test(() -> fixture.commands.maybe(new RPCPatch(codec).diff(value, next)), () -> fixture.handler.lastMaybe.apply(value, into));
 		Assert.isTrue(codec.equals(next, into));
 		Assert.isNull(into.a);
 		Assert.equals("x", into.name);
@@ -182,14 +183,14 @@ class RPCBitsTest extends utest.Test {
 		}
 		Assert.equals("a09902" + "e807" + "04" + hexOf(writer.finish()), hex);
 		Assert.equals(17 * 2, hex.length);
-		// Read back, into what the session keeps.
+		// Read back, into what the session keeps; seen by the handler in its call.
 		final fixture = new BitFixture();
 		fixture.commands.inputs(1, 2, inputs);
 		final first = fixture.handler.lastInputs;
-		Assert.equals("16384:5,16384:5,16400:5,16420:1", [for (i in first) i.aimSteps + ":" + i.controls].join(","));
+		Assert.equals("16384:5,16384:5,16400:5,16420:1", fixture.handler.lastSeen);
 		fixture.commands.inputs(1, 2, [stellar(63, 65535), stellar(0, 0)]);
-		Assert.isTrue(first == fixture.handler.lastInputs);
-		Assert.equals("65535:63,0:0", [for (i in first) i.aimSteps + ":" + i.controls].join(","));
+		InCall.assertKept(first, fixture.handler.lastInputs, "the array was made again");
+		Assert.equals("65535:63,0:0", fixture.handler.lastSeen);
 		// A count the frame cannot hold is unreadable.
 		final answers = errorAnswersAt(fixture.link.client);
 		fixture.link.client.send(frameOf(out -> {
@@ -409,15 +410,19 @@ private class BitHandler extends RPCHandler implements BitContract {
 	public var lastShip:Null<RPCPatch<BitShip>> = null;
 	public var lastMaybe:Null<RPCPatch<BitMaybe>> = null;
 	public var lastInputs:Null<Array<BitInput>> = null;
+	public var lastSeen:String = "";
+	public final inCall = new InCall();
 
 	public function new() {}
 
 	public function maybe(value:RPCPatch<BitMaybe>):Void {
 		lastMaybe = value;
+		inCall.run();
 	}
 
 	public function inputs(ack:VarUInt, newest:VarUInt, @:reuse recent:Array<BitInput>):Void {
 		lastInputs = recent;
+		lastSeen = [for (i in recent) i.aimSteps + ":" + i.controls].join(",");
 	}
 
 	public function count(recent:Array<BitInput>):Int {
@@ -426,6 +431,7 @@ private class BitHandler extends RPCHandler implements BitContract {
 
 	public function ship(ship:RPCPatch<BitShip>):Void {
 		lastShip = ship;
+		inCall.run();
 	}
 
 	public function ships(ships:RPCMapPatch<BitShip>):Void {}

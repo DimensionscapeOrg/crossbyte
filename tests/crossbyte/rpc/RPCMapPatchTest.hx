@@ -31,21 +31,21 @@ class RPCMapPatchTest extends utest.Test {
 		Assert.equals(4, patch.addedKey(0));
 		Assert.equals(2, patch.updatedKey(0));
 		Assert.equals(9, patch.updatedKey(1));
-		fixture.commands.ships(1, patch);
-		final received = fixture.handler.lastShips;
-		Assert.equals(1, received.removedCount);
-		Assert.equals(1, received.addedCount);
-		Assert.equals(2, received.updatedCount);
-		// Into another map, as a ring of frames is.
+		// Into another map, as a ring of frames is, and into the base itself.
 		final into = world([7 => ship(70, 7), 2 => ship(0, 0)]);
 		final kept = into.get(2);
-		received.apply(base, into);
+		final held = copyOf(base);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(1, patch), () -> {
+			final received = fixture.handler.lastShips;
+			Assert.equals(1, received.removedCount);
+			Assert.equals(1, received.addedCount);
+			Assert.equals(2, received.updatedCount);
+			received.apply(base, into);
+			received.apply(held, held);
+		});
 		Assert.isTrue(sameMap(current, into), "the patch applied to its base was not the map sent");
 		Assert.isTrue(into.get(2) == kept, "a value into held was not patched in place");
 		Assert.isFalse(into.get(1) == base.get(1), "a value was shared with the base");
-		// Into the base itself.
-		final held = copyOf(base);
-		received.apply(held, held);
 		Assert.isTrue(sameMap(current, held));
 	}
 
@@ -78,20 +78,21 @@ class RPCMapPatchTest extends utest.Test {
 		Assert.equals(5, patch.addedKey(0));
 		Assert.equals(41, patch.addedKey(1));
 		Assert.equals(0, patch.updatedCount);
-		fixture.commands.ships(2, patch);
-		// The client keeps frames as values and keys.
+		// The client keeps frames as values and keys; the second frame, into
+		// one that held an older tick's.
 		final frame1 = world([40 => ship(40, 0), 2 => ship(2, 0), 8 => ship(8, 0)]);
 		final keys1 = ids([2, 8, 40]);
 		final frame2 = new IntMap<MapShip>();
 		final keys2 = new IdList();
-		fixture.handler.lastShips.applyKeys(frame1, keys1, frame2, keys2);
-		Assert.equals("2,5,8,41", keys2.toArray().join(","));
-		Assert.isTrue(sameMap(world([2 => ship(2, 0), 5 => ship(5, 1), 8 => ship(8, 0), 41 => ship(41, 0)]), frame2));
-		// The same into a frame that held an older tick's.
 		final reused = world([1 => ship(0, 0), 8 => ship(0, 0)]);
 		final reusedKeys = ids([1, 8]);
 		final eight = reused.get(8);
-		fixture.handler.lastShips.applyKeys(frame1, keys1, reused, reusedKeys, true);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(2, patch), () -> {
+			fixture.handler.lastShips.applyKeys(frame1, keys1, frame2, keys2);
+			fixture.handler.lastShips.applyKeys(frame1, keys1, reused, reusedKeys, true);
+		});
+		Assert.equals("2,5,8,41", keys2.toArray().join(","));
+		Assert.isTrue(sameMap(world([2 => ship(2, 0), 5 => ship(5, 1), 8 => ship(8, 0), 41 => ship(41, 0)]), frame2));
 		Assert.equals("2,5,8,41", reusedKeys.toArray().join(","));
 		Assert.isTrue(sameMap(frame2, reused));
 		Assert.isTrue(reused.get(8) == eight);
@@ -121,15 +122,16 @@ class RPCMapPatchTest extends utest.Test {
 		final patch = new RPCMapPatch(RPCCodecs.of(MapShip)).diff(null, current);
 		Assert.isTrue(patch.isFull);
 		Assert.equals(2, patch.addedCount);
-		fixture.commands.ships(1, patch);
-		final received = fixture.handler.lastShips;
-		Assert.isTrue(received.isFull);
 		final into = world([9 => ship(9, 9), 3 => ship(0, 0)]);
-		received.apply(null, into);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(1, patch), () -> {
+			final received = fixture.handler.lastShips;
+			Assert.isTrue(received.isFull);
+			received.apply(null, into);
+			// The added values, one by one.
+			Assert.equals(1, received.addedKey(0));
+			Assert.equals(1.0, (received.addedValue(0).y : Float));
+		});
 		Assert.isTrue(sameMap(current, into));
-		// The added values, one by one.
-		Assert.equals(1, received.addedKey(0));
-		Assert.equals(1.0, (received.addedValue(0).y : Float));
 	}
 
 	public function testRecycledValuesServeTheNextAdds():Void {
@@ -137,33 +139,34 @@ class RPCMapPatchTest extends utest.Test {
 		final base = world([1 => ship(1, 0), 2 => ship(2, 0)]);
 		final held = copyOf(base);
 		final dropped = held.get(1);
-		fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([2 => ship(2, 0)])));
-		fixture.handler.lastShips.apply(held, held, true);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([2 => ship(2, 0)]))),
+			() -> fixture.handler.lastShips.apply(held, held, true));
 		Assert.isFalse(held.exists(1));
 		final next = world([2 => ship(2, 0), 5 => ship(5, 5)]);
-		fixture.commands.ships(2, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(world([2 => ship(2, 0)]), next));
-		fixture.handler.lastShips.apply(held, held, true);
-		Assert.isTrue(held.get(5) == dropped, "a dropped value was not used for the next add");
+		fixture.handler.inCall.test(() -> fixture.commands.ships(2, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(world([2 => ship(2, 0)]), next)),
+			() -> fixture.handler.lastShips.apply(held, held, true));
+		InCall.assertKept(dropped, held.get(5), "a dropped value was not used for the next add");
 		Assert.isTrue(sameMap(next, held));
 	}
 
 	public function testUpdatesOneByOne():Void {
 		final fixture = new MapPatchFixture();
 		final base = world([4 => ship(4, 0)]);
-		fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([4 => ship(4, 44)])));
 		final mine = ship(4, 0);
-		Assert.isTrue(fixture.handler.lastShips.applyUpdate(0, mine) == mine);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([4 => ship(4, 44)]))),
+			() -> Assert.isTrue(fixture.handler.lastShips.applyUpdate(0, mine) == mine));
 		Assert.equals(44.0, (mine.y : Float));
 	}
 
 	public function testAWrongBaseIsRefusedNamingTheKey():Void {
 		final fixture = new MapPatchFixture();
 		final base = world([1 => ship(1, 0), 2 => ship(2, 0)]);
-		fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([2 => ship(2, 9)])));
 		final other = world([2 => ship(2, 0)]);
-		Assert.raises(() -> fixture.handler.lastShips.apply(other, other), ArgumentError);
-		Assert.raises(() -> fixture.handler.lastShips.apply(world([1 => ship(1, 0)]), new IntMap()), ArgumentError);
-		Assert.raises(() -> fixture.handler.lastShips.apply(null, new IntMap()), ArgumentError);
+		fixture.handler.inCall.test(() -> fixture.commands.ships(1, new RPCMapPatch(RPCCodecs.of(MapShip)).diff(base, world([2 => ship(2, 9)]))), () -> {
+			Assert.raises(() -> fixture.handler.lastShips.apply(other, other), ArgumentError);
+			Assert.raises(() -> fixture.handler.lastShips.apply(world([1 => ship(1, 0)]), new IntMap()), ArgumentError);
+			Assert.raises(() -> fixture.handler.lastShips.apply(null, new IntMap()), ArgumentError);
+		});
 	}
 
 	public function testHostilePatchesAreUnreadable():Void {
@@ -267,7 +270,7 @@ class RPCMapPatchTest extends utest.Test {
 
 	public function testAMapPatchsKindIsInTheOp():Void {
 		final fixture = new MapPatchFixture();
-		fixture.link.client.send(frameOf(out -> {
+		fixture.handler.inCall.test(() -> fixture.link.client.send(frameOf(out -> {
 			out.writeByte(0);
 			out.writeInt(RPCOps.opOf("ships(vu,~[i32:" + SHIP_TOKEN + "])"));
 			out.writeVarUInt(3);
@@ -276,9 +279,7 @@ class RPCMapPatchTest extends utest.Test {
 			out.writeVarUInt(0);
 			out.writeVarUInt(14); // key 7
 			out.writeByte(0);
-		}));
-		Assert.notNull(fixture.handler.lastShips);
-		Assert.equals(7, fixture.handler.lastShips.addedKey(0));
+		})), () -> Assert.equals(7, fixture.handler.lastShips.addedKey(0)));
 	}
 
 	public function testStringKeys():Void {
@@ -296,9 +297,8 @@ class RPCMapPatchTest extends utest.Test {
 		Assert.same(["ann"], patch.removed);
 		Assert.equals("cy", patch.addedKey(0));
 		Assert.equals("bob", patch.updatedKey(0));
-		fixture.commands.named(patch);
 		final into = new StringMap<MapShip>();
-		fixture.handler.lastNamed.apply(base, into);
+		fixture.handler.inCall.test(() -> fixture.commands.named(patch), () -> fixture.handler.lastNamed.apply(base, into));
 		Assert.equals(3, [for (_ in into.keys()) 1].length);
 		Assert.equals(1.0, (into.get("bob").y : Float));
 		Assert.equals(4.0, (into.get("cy").x : Float));
@@ -535,11 +535,13 @@ private class MapPatchHandler extends RPCHandler implements MapPatchContract {
 	public var lastNamed:Null<RPCStringMapPatch<MapShip>> = null;
 	public var lastRaw:Null<Bytes> = null;
 	public var counted:Int = 0;
+	public final inCall = new InCall();
 
 	public function new() {}
 
 	public function ships(tick:VarUInt, ships:RPCMapPatch<MapShip>):Void {
 		lastShips = ships;
+		inCall.run();
 	}
 
 	public function count(ships:RPCMapPatch<MapShip>):Int {
@@ -551,6 +553,7 @@ private class MapPatchHandler extends RPCHandler implements MapPatchContract {
 
 	public function named(ships:RPCStringMapPatch<MapShip>):Void {
 		lastNamed = ships;
+		inCall.run();
 	}
 
 	public function countNamed(ships:RPCStringMapPatch<MapShip>):Int {
