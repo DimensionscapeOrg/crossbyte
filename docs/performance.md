@@ -315,6 +315,22 @@ fields after, where Quake 3, Source and Unreal write one bit stream. Written by 
 and 1.07 against 0.25 and 0.56; Node 1.23 and 1.51 against 0.59 and 0.84). Two sections stay; a field that should be
 in the bits takes `@:range` or `@:quantize`.
 
+**Within a budget.** The other ships' map patch alone (`ReplicationBench --diffs`: each observer's diffed against the
+tick acknowledged two before and written, with no call around it), medians of three interleaved runs:
+
+| Map patch | Bytes | Native | JVM |
+| --- | --- | --- | --- |
+| `diffKeys` | 374.9 | 0.71 us (0.71-0.73) | 0.39 us (0.39-0.42) |
+| `diffKeysWithin`, a budget that fits everything | 374.9, the same bytes | 0.75 us (0.74-0.76) | 0.42 us (0.42-0.43) |
+| `diffKeysWithin`, 180 bytes | 168.4 | 1.59 us (1.57-1.66) | 0.70 us (0.70-0.71) |
+
+Within the fitting budget the patch is `diffKeys`' to the byte (the same hash over every byte written, natively and
+on the JVM) and the cost is the baseline, filed in a `SequenceRing` each tick. Within 180 bytes, 8.9 of the 16 ships
+wait each message: the bots change most fields every tick, so every ship has something to send. That costs an
+exact weighing of each entry carried, a second write of it, which a size generated with the codec would save. The
+whole message within those budgets (`--systems AW,AD`) is made in 0.93 and 1.80 us natively against A's 0.84, and
+read in 0.82 and 0.72 us against 0.82: the client's side does not change.
+
 ## RPC over local IPC
 
 The same small call, one at a time, natively on Windows between two processes over `local://`: 90 us (p50) and
@@ -428,6 +444,11 @@ node tests/perf/replication/run.js --grpc-node ../grpc-node
 ```
 
 `proto-go/replicationpb` is generated from `replication.proto` by `protoc` with `protoc-gen-go`.
+
+Within a budget: `ReplicationBench --diffs` times the map patch alone, and `--systems AW,AD,BW,BD` the whole message
+within a budget that fits everything (`W`) and within one of about half (`D`). On the JVM, run each system in a
+process of its own, as `run.js` does: one process running several lets the first ones' calls shape how the later ones
+are compiled.
 
 **HTTP over cores.** `tests/scaling`: `ScalingServer <port> <runtimes>` and `ScalingLoad <port> <connections>
 <seconds> <h1|h2>`, pinned apart (on Windows `start /affinity FF` for the server, `start /affinity FFFFFF00` for the

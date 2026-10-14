@@ -5,6 +5,8 @@ import crossbyte.errors.ArgumentError;
 import crossbyte.errors.RangeError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.rpc._internal.RPCBudget;
+import crossbyte.rpc._internal.RPCBudgetDiff;
 import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCKeys;
 import haxe.ds.IntMap;
@@ -52,6 +54,19 @@ import haxe.ds.IntMap;
 	what it holds first. An entry both hold whose value is the same bytes is
 	not sent at all, so values that never change once made (a projectile)
 	are only ever added and removed.
+
+	**Within a budget**, `diffKeysWithin` takes the view in the caller's
+	order of priority and carries entries until the patch is a given size,
+	leaving the rest (`deferred`) for later patches. What the observer then
+	holds is not the view, so the base is an `RPCMapBaseline`, the record of
+	what was sent, which the diff writes for the next:
+
+	```haxe
+	import crossbyte.rpc.RPCMapBaseline;
+
+	// Given patch:RPCMapPatch<OtherShip>, acked:Null<IntMap<OtherShip>>, ackedBaseline:Null<RPCMapBaseline<OtherShip>>, world:IntMap<OtherShip>, nearestFirst:IdList, sent:RPCMapBaseline<OtherShip>.
+	patch.diffKeysWithin(acked, ackedBaseline, world, nearestFirst, 900, sent);
+	```
 
 	**Received**, it is valid only during the call. `apply(base, into)` makes
 	the map the sender had, from the base it named. A value already in
@@ -102,6 +117,20 @@ final class RPCMapPatch<V> {
 
 	/** The keys removed, ascending. **/
 	public var removed(default, null):IdList = new IdList();
+
+	/**
+		Whether the last diff left entries out for its budget
+		(`diffKeysWithin`): the observer is owed what `deferred` lists.
+	**/
+	public var isPartial(get, never):Bool;
+
+	/**
+		The keys the last budgeted diff left out, adds and updates alike, in
+		the order of priority it was given them: owed to the observer, and
+		carried by a later patch. Empty after any other diff, and in a patch
+		that arrived. The patch's own list, reused by its next diff.
+	**/
+	public var deferred(get, never):IdList;
 
 	@:noCompletion public var __added:IdList = new IdList();
 	@:noCompletion public var __updated:IdList = new IdList();
@@ -192,6 +221,9 @@ final class RPCMapPatch<V> {
 		__addedMasksHigh.length = 0;
 		__updatedMasks.length = 0;
 		__updatedMasksHigh.length = 0;
+		if (__budget != null) {
+			__budget.deferred.length = 0;
+		}
 		final cur:IdList = __current.copyFrom(currentKeys);
 		RPCKeys.sortUnique(cur);
 		final old:IdList = __old;
@@ -245,6 +277,63 @@ final class RPCMapPatch<V> {
 				j++;
 			}
 		}
+		return this;
+	}
+
+	/**
+		`diffKeys` within a budget. The entries of `currentKeys` are taken in
+		its order, the first first, and carried while the patch stays within
+		`maxBytes` (its bytes as an argument, which `write` writes); from the
+		first that does not fit on, they wait for a later patch, as Unreal's
+		replication fills a connection's bandwidth in priority order and stops
+		where it is saturated. So an entry never goes ahead of one ranked
+		higher. The order is the caller's: distance, relevance, how long an
+		entry has waited. `deferred` lists those left out, in order, and
+		`isPartial` says there are some.
+
+		Removals always go, and are counted first: a byte or two each, and
+		one left out would leave the observer showing what is gone. A budget
+		they alone pass is passed.
+
+		The base is a baseline, not a list of keys: `base` is what the
+		observer holds as of the tick it acknowledged, and `baseValues` the
+		frame of values that baseline was made against. Into `sent` goes what
+		the observer holds once this patch arrives: the keys it held less
+		those removed, with those added, and for each entry whose update was
+		left out, the value it still has. File `sent` under this tick, for
+		when the observer acknowledges it. So an entry left out is owed until
+		a patch carries it, however many ticks that takes, and one carried is
+		not sent again until it changes.
+
+		With a budget that fits everything, the patch is the bytes `diffKeys`
+		writes, and `sent` holds the view. A budget that fits everything is
+		known from the values' largest patch, measuring nothing; one that
+		binds weighs the entries up to the first that does not fit exactly,
+		each by writing it, so the patch is never more than `maxBytes` and
+		stops only at an entry that would pass it.
+		Allocates nothing once its lists, and the baselines' values, have
+		grown.
+
+		@param baseValues The frame `base` was made against, or `null`: every
+		       entry added, as many as fit.
+		@param base What the observer acknowledged holding, or `null`.
+		@param currentValues This tick's frame of values.
+		@param currentKeys What the observer is to hold, highest priority
+		       first; a key given twice counts where it first is.
+		@param maxBytes The most bytes the patch may take.
+		@param sent The baseline to write: this tick's, a pooled one from the
+		       ring as it turns. It may be `base` itself, where the base is
+		       always the last patch sent (over a reliable connection).
+		@throws ArgumentError For a `null` `currentValues`, `currentKeys` or
+		        `sent`, a negative `maxBytes`, a key a list names that its map
+		        does not hold, or a `base` made against a frame other than
+		        `baseValues`.
+	**/
+	public function diffKeysWithin(baseValues:Null<IntMap<V>>, base:Null<RPCMapBaseline<V>>, currentValues:IntMap<V>, currentKeys:IdList, maxBytes:Int,
+			sent:RPCMapBaseline<V>):RPCMapPatch<V> {
+		// The work is RPCBudgetDiff's, so this class's code, which every patch
+		// read and applied runs, stays as it was.
+		RPCBudgetDiff.diffKeys(this, baseValues, base, currentValues, currentKeys, maxBytes, sent);
 		return this;
 	}
 
@@ -409,6 +498,9 @@ final class RPCMapPatch<V> {
 		removed.length = 0;
 		__added.length = 0;
 		__updated.length = 0;
+		if (__budget != null) {
+			__budget.deferred.length = 0;
+		}
 		if (__addedState == null) {
 			__addedState = codec.__newState();
 		}
@@ -628,4 +720,20 @@ final class RPCMapPatch<V> {
 	private inline function get_isEmpty():Bool {
 		return !isFull && removed.length == 0 && __added.length == 0 && __updated.length == 0;
 	}
+
+	private inline function get_isPartial():Bool {
+		return __budget != null && __budget.deferred.length > 0;
+	}
+
+	private function get_deferred():IdList {
+		var budget:Null<RPCBudget<V>> = __budget;
+		if (budget == null) {
+			budget = __budget = new RPCBudget<V>();
+		}
+		return budget.deferred;
+	}
+
+	// What a budgeted diff works in, made at the first: last, so the fields
+	// every other diff reads keep their places.
+	@:noCompletion private var __budget:Null<RPCBudget<V>> = null;
 }

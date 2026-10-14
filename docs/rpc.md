@@ -827,6 +827,78 @@ arrived. A base that lacks a key the patch removes or updates is refused,
 naming the key: it is not the one the sender used. `sizeBound()` bounds a
 patch's bytes, for a call that must fit one datagram.
 
+### Within a budget
+
+A view can hold more than a datagram carries, or more than an observer's
+share of a server's bandwidth. `diffKeysWithin` takes the view in the
+caller's order of priority (nearest first, say) and carries entries while
+the patch stays within a given size. From the first that does not fit on,
+the rest wait, as Unreal's replication fills a connection in priority order
+and stops where it is saturated, so an entry never goes ahead of one ranked
+higher. `deferred` lists those waiting, in order, and `isPartial` says
+there are some. The patch only follows the order; working it out
+(distance, relevance, how long an entry has waited) is the caller's.
+
+Removals always go, counted first. They are a byte or two each, and one
+left out would leave the observer showing something that is gone.
+
+What the observer holds is then no longer the view, so the base is not a
+list of keys but an `RPCMapBaseline`: the keys it holds, and for each whose
+update was left out, a copy of the older value it still has. The diff
+reads the baseline the observer acknowledged and writes the one it sends,
+to be filed under the tick, so the record of what was sent is always what
+was sent. An entry left out is owed until a patch carries it, however many
+ticks that takes; one carried is not sent again until it changes. The rest
+of what a baseline holds is read from the frame of values it was made
+against, so the world's frames are kept at least as long as the
+baselines:
+
+```haxe
+import crossbyte.rpc.RPCMapBaseline;
+
+class Viewer {
+	// What it was sent, by tick, and the tick its client last acknowledged.
+	public final sent = new SequenceRing<RPCMapBaseline<RemoteShip>>(32);
+	public final patch = new RPCMapPatch(RPCCodecs.of(RemoteShip));
+	public var acked:Int = -1;
+
+	public function new() {}
+}
+```
+
+```haxe
+// Given commands:ViewCommands, viewer:Viewer, frames:SequenceRing<IntMap<RemoteShip>>, nearestFirst:IdList, tick:Int.
+// Against what the client acknowledged, or nothing once that has aged out.
+final base:Null<RPCMapBaseline<RemoteShip>> = viewer.sent.get(viewer.acked);
+final kept:Null<RPCMapBaseline<RemoteShip>> = viewer.sent.get(tick - viewer.sent.capacity); // about to age out: reused
+final sent:RPCMapBaseline<RemoteShip> = kept != null ? kept : new RPCMapBaseline();
+viewer.patch.diffKeysWithin(base == null ? null : frames.get(viewer.acked), base, frames.get(tick), nearestFirst, 1000, sent);
+commands.delivery(crossbyte.net.DeliveryMode.sequenced(0)).ships(tick, viewer.acked, viewer.patch);
+viewer.sent.put(tick, sent);
+```
+
+Over a reliable connection the base is always the last patch sent, so one
+baseline does, written over itself, beside the frame before this one:
+
+```haxe
+// Given commands:ViewCommands, patch:RPCMapPatch<RemoteShip>, held:RPCMapBaseline<RemoteShip>, before:Null<IntMap<RemoteShip>>, world:IntMap<RemoteShip>, nearestFirst:IdList, tick:Int.
+commands.ships(tick, tick - 1, patch.diffKeysWithin(before, before == null ? null : held, world, nearestFirst, 4000, held));
+```
+
+The client applies the patch as any other: what arrives is a smaller
+patch, and its frame comes out as the baseline says. A far entry that
+always loses to nearer ones waits forever unless its priority counts how
+long it has waited, as Unreal's starvation does: each key in `deferred`
+waited a tick more, and those carried (`addedKey`, `updatedKey`) none.
+
+A budget that fits everything (known from the values' largest patch) writes
+the bytes `diffKeys` writes and measures nothing. One that binds weighs the
+entries up to the first that does not fit exactly, its key as its group
+codes it and its patch by writing it, so the patch is never over the budget
+and stops only at an entry that would pass it: one more write of each entry
+carried. Neither allocates once its lists and the baselines' values have
+grown. `RPCStringMapPatch` has the same, with `RPCStringMapBaseline`.
+
 ### Fewer bits
 
 A structure marked `@:rpcBits`, or with a field marked `@:quantize` or

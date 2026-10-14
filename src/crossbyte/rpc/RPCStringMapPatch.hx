@@ -5,6 +5,8 @@ import crossbyte.errors.ArgumentError;
 import crossbyte.errors.RangeError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.rpc._internal.RPCBudget;
+import crossbyte.rpc._internal.RPCBudgetDiff;
 import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCKeys;
 import crossbyte.rpc._internal.RPCMaps;
@@ -58,6 +60,12 @@ final class RPCStringMapPatch<V> {
 
 	/** The keys removed, ascending. Its own, reused for the next patch: copy what is kept. **/
 	public var removed(default, null):Array<String> = [];
+
+	/** As `RPCMapPatch.isPartial`. **/
+	public var isPartial(get, never):Bool;
+
+	/** As `RPCMapPatch.deferred`: the keys the last budgeted diff left out, in the order of priority it was given them. **/
+	public var deferred(get, never):Array<String>;
 
 	@:noCompletion public var __added:Array<String> = [];
 	@:noCompletion public var __updated:Array<String> = [];
@@ -130,6 +138,9 @@ final class RPCStringMapPatch<V> {
 		__addedMasksHigh.length = 0;
 		__updatedMasks.length = 0;
 		__updatedMasksHigh.length = 0;
+		if (__budget != null) {
+			__budget.deferredStrings.resize(0);
+		}
 		final cur:Array<String> = __copy(currentKeys, __current);
 		RPCKeys.sortUniqueStrings(cur);
 		final old:Array<String> = __old;
@@ -183,6 +194,19 @@ final class RPCStringMapPatch<V> {
 				j++;
 			}
 		}
+		return this;
+	}
+
+	/**
+		As `RPCMapPatch.diffKeysWithin`, the keys in `Array<String>`s and the
+		baselines `RPCStringMapBaseline`s: the view's entries in its order of
+		priority until the patch is `maxBytes`, removals always, and into
+		`sent` what the observer holds once it arrives. A key is written whole,
+		so each entry weighs its key and its patch, measured by writing them.
+	**/
+	public function diffKeysWithin(baseValues:Null<StringMap<V>>, base:Null<RPCStringMapBaseline<V>>, currentValues:StringMap<V>,
+			currentKeys:Array<String>, maxBytes:Int, sent:RPCStringMapBaseline<V>):RPCStringMapPatch<V> {
+		RPCBudgetDiff.diffStringKeys(this, baseValues, base, currentValues, currentKeys, maxBytes, sent);
 		return this;
 	}
 
@@ -308,6 +332,9 @@ final class RPCStringMapPatch<V> {
 		removed.resize(0);
 		__added.resize(0);
 		__updated.resize(0);
+		if (__budget != null) {
+			__budget.deferredStrings.resize(0);
+		}
 		if (__addedState == null) {
 			__addedState = codec.__newState();
 		}
@@ -525,4 +552,20 @@ final class RPCStringMapPatch<V> {
 	private inline function get_isEmpty():Bool {
 		return !isFull && removed.length == 0 && __added.length == 0 && __updated.length == 0;
 	}
+
+	private inline function get_isPartial():Bool {
+		return __budget != null && __budget.deferredStrings.length > 0;
+	}
+
+	private function get_deferred():Array<String> {
+		var budget:Null<RPCBudget<V>> = __budget;
+		if (budget == null) {
+			budget = __budget = new RPCBudget<V>();
+		}
+		return budget.deferredStrings;
+	}
+
+	// What a budgeted diff works in, made at the first: last, so the fields
+	// every other diff reads keep their places.
+	@:noCompletion private var __budget:Null<RPCBudget<V>> = null;
 }

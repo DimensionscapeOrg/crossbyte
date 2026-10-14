@@ -11,6 +11,9 @@ import crossbyte.rpc.RPCCodec;
 import crossbyte.rpc.RPCCodecs;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc.RPCHandler;
+#if !no_budget
+import crossbyte.rpc.RPCMapBaseline;
+#end
 import crossbyte.rpc.RPCMapPatch;
 import crossbyte.rpc.RPCPatch;
 import crossbyte.rpc.RPCSession;
@@ -55,6 +58,12 @@ import yggdrasil.state.Snapshot.Snapshots;
 	applied into the client's ring of frames. So what is timed is the codec
 	and RPC, and nothing under them.
 
+	`AW`, `BW`, `AD` and `BD` are A and B with the other ships diffed
+	within a budget (`diffKeysWithin`): one that fits everything, and one of
+	about half; each observer's baselines filed in a `SequenceRing`.
+	`--diffs` times the other ships' map patch alone, diffed and written,
+	with `diffKeys` and within both budgets, and hashes what it writes.
+
 	`--trace <file>` writes the ticks for the protobuf benches
 	(`grpc-go/main.go`, `grpc-js/proto_bench.js`), which build the same
 	messages and time the same halves.
@@ -85,6 +94,12 @@ class ReplicationBench {
 		record(count + 60);
 		if (args.indexOf("--shapes") >= 0) {
 			shapes();
+			return;
+		}
+		if (args.indexOf("--diffs") >= 0) {
+			for (_ in 0...reps) {
+				diffs(count);
+			}
 			return;
 		}
 		final trace:Null<String> = stringArg(args, "--trace", null);
@@ -143,6 +158,106 @@ class ReplicationBench {
 	}
 
 	static var seed:Int = 1;
+
+	// ------------------------------------------------------------ the map diff alone
+
+	/**
+		The map patch of the other ships alone, per observer, with today's
+		field types: diffed against the tick acknowledged two before and
+		written into a buffer, every recorded tick, with no call around it.
+		`diffKeys` (`plain`), and `diffKeysWithin` with a budget that fits
+		everything (`within`) and with one of about half (`within180`). The
+		written bytes are hashed, so two builds can be shown to write the
+		same. Built with `-D no_budget` for a tree from before the budget.
+	**/
+	static function diffs(count:Int):Void {
+		final cases:Array<Int> = #if no_budget [-1] #else [-1, 1 << 20, 180] #end;
+		for (budget in cases) {
+			// Once to hash what is written, once to time it, each from nothing.
+			final hash = new DiffHash();
+			diffPass(count, budget, hash);
+			final ns:Float = diffPass(count, budget, null);
+			println(haxe.Json.stringify({
+				diffs: budget < 0 ? "plain" : (budget > 100000 ? "within" : "within" + budget),
+				target: target(),
+				ns: ns,
+				bytes: hash.bytes / hash.messages,
+				hash: hash.value
+			}));
+		}
+	}
+
+	/** One pass over the recorded ticks: nanoseconds a message, and into `hash` (when given) what was written. **/
+	static function diffPass(count:Int, budget:Int, hash:Null<DiffHash>):Float {
+		{
+			final world:Array<IntMap<OtherShipA>> = [for (_ in 0...WINDOW) new IntMap<OtherShipA>()];
+			final views:Array<IdList> = [];
+			final patches:Array<RPCMapPatch<OtherShipA>> = [];
+			#if !no_budget
+			final sent:Array<SequenceRing<RPCMapBaseline<OtherShipA>>> = [];
+			#end
+			for (o in 0...SHIPS) {
+				final view = new IdList();
+				for (i in 0...SHIPS) {
+					if (i != o) {
+						view.push(i + 1);
+					}
+				}
+				views.push(view);
+				patches.push(new RPCMapPatch(RPCCodecs.of(OtherShipA)));
+				#if !no_budget
+				sent.push(new SequenceRing(WINDOW));
+				#end
+			}
+			final out = new ByteArray();
+			var time:Float = 0.0;
+			var messages:Int = 0;
+			final warm:Int = 60;
+			for (t in 0...count) {
+				final slot:Int = t & (WINDOW - 1);
+				for (i in 0...SHIPS) {
+					var v = world[slot].get(i + 1);
+					if (v == null) {
+						v = new OtherShipA();
+						world[slot].set(i + 1, v);
+					}
+					v.set(state(t, i));
+				}
+				final base:Int = t - LAG;
+				final full:Bool = base < 0;
+				final from:Int = base & (WINDOW - 1);
+				final a:Float = haxe.Timer.stamp();
+				for (o in 0...SHIPS) {
+					final patch = patches[o];
+					if (budget < 0) {
+						patch.diffKeys(full ? null : world[from], views[o], world[slot], views[o]);
+					} else {
+						#if !no_budget
+						final ring = sent[o];
+						final was:Null<RPCMapBaseline<OtherShipA>> = full ? null : ring.get(base);
+						var into:Null<RPCMapBaseline<OtherShipA>> = ring.get(t - ring.capacity);
+						if (into == null) {
+							into = new RPCMapBaseline();
+						}
+						patch.diffKeysWithin(was == null ? null : world[from], was, world[slot], views[o], budget, into);
+						ring.put(t, into);
+						#end
+					}
+					out.position = 0;
+					patch.write(out);
+					if (hash != null && t >= warm) {
+						hash.add(out, out.position);
+					}
+				}
+				final b:Float = haxe.Timer.stamp();
+				if (t >= warm) {
+					time += b - a;
+					messages += SHIPS;
+				}
+			}
+			return time / messages * 1e9;
+		}
+	}
 
 	/** A number below `bound`, the same on every target. **/
 	static function next(bound:Int):Int {
@@ -306,6 +421,14 @@ class ReplicationBench {
 		final bench:System = switch (system) {
 			case "A": new TypedSystem(false);
 			case "B": new TypedSystem(true);
+			#if !no_budget
+			// Within a budget: one that fits everything (W), and one of about
+			// half of what the others take (D).
+			case "AW": new TypedSystem(false, 1 << 20);
+			case "BW": new TypedSystem(true, 1 << 20);
+			case "AD": new TypedSystem(false, 180);
+			case "BD": new TypedSystem(true, 110);
+			#end
 			case "S": new StreamSystem();
 			case "Y": new YggdrasilSystem();
 			case other: throw 'no system $other';
@@ -339,12 +462,15 @@ class ReplicationBench {
 		final inputTimes = bench.inputs(count);
 		var allocated:Float = -1;
 		#if (cpp || jvm)
-		final cursor:Array<Int> = [warm];
+		// Ticks again from one a whole number of windows before the last, so
+		// every ring's slots go on as they were.
+		final first:Int = warm + ((count - warm) & (WINDOW - 1));
+		final cursor = new Cursor();
 		try {
 			final reading = crossbyte.test.AllocationMeter.measure(() -> {
-				final at:Int = cursor[0];
-				cursor[0] = at + 1;
-				bench.tick(warm + (at % (count - warm)));
+				final at:Int = cursor.at;
+				cursor.at = at + 1;
+				bench.tick(first + (at % (count - first)));
 			}, 300);
 			allocated = reading.perOperation / SHIPS;
 		} catch (_:Dynamic) {
@@ -412,6 +538,33 @@ class ReplicationBench {
 		final at:Int = args.indexOf(name);
 		return at >= 0 && at + 1 < args.length ? args[at + 1] : fallback;
 	}
+}
+
+/** FNV-1a over every byte written, and how many. **/
+class DiffHash {
+	public var value:Int = 0x811c9dc5;
+	public var bytes:Float = 0.0;
+	public var messages:Int = 0;
+
+	public function new() {}
+
+	public function add(data:ByteArray, length:Int):Void {
+		final raw:Bytes = (data : Bytes);
+		var h:Int = value;
+		for (i in 0...length) {
+			h = crossbyte.utils.Hash.mul32(h ^ raw.get(i), 0x01000193);
+		}
+		value = h;
+		bytes += length;
+		messages++;
+	}
+}
+
+/** Where the allocation pass is: a field, since an `Array<Int>` boxes on the jvm. **/
+class Cursor {
+	public var at:Int = 0;
+
+	public function new() {}
 }
 
 // ---------------------------------------------------------------- systems
@@ -803,9 +956,21 @@ class TypedSystem extends System {
 	final ownPatch:Array<RPCPatch<OwnShip>> = [];
 	final patchA:Array<RPCMapPatch<OtherShipA>> = [];
 	final patchB:Array<RPCMapPatch<OtherShipB>> = [];
+	// Within a budget (-1 for none): what each observer was sent, by tick.
+	final budget:Int;
+	#if !no_budget
+	final sentA:Array<SequenceRing<RPCMapBaseline<OtherShipA>>> = [];
+	final sentB:Array<SequenceRing<RPCMapBaseline<OtherShipB>>> = [];
+	#end
+	var partial:Float = 0.0;
+	var deferred:Float = 0.0;
+	// The baselines' numbers: one a send, rising, as a server's ticks do
+	// (the allocation pass plays recorded ticks again).
+	var serial:Int = 0;
 
-	public function new(quantized:Bool) {
+	public function new(quantized:Bool, budget:Int = -1) {
 		this.quantized = quantized;
+		this.budget = budget;
 		for (o in 0...ReplicationBench.SHIPS) {
 			final view = new IdList();
 			for (i in 0...ReplicationBench.SHIPS) {
@@ -816,6 +981,10 @@ class TypedSystem extends System {
 			views.push(view);
 			own.push([for (_ in 0...ReplicationBench.WINDOW) new OwnShip()]);
 			ownPatch.push(new RPCPatch(RPCCodecs.of(OwnShip)));
+			#if !no_budget
+			sentA.push(new SequenceRing(ReplicationBench.WINDOW));
+			sentB.push(new SequenceRing(ReplicationBench.WINDOW));
+			#end
 			if (quantized) {
 				final client = new ClientB();
 				clientsB.push(client);
@@ -861,9 +1030,16 @@ class TypedSystem extends System {
 		final from:Int = base & (ReplicationBench.WINDOW - 1);
 		argumentBytes = 0;
 		frameBytes = 0;
+		serial++;
 		for (o in 0...ReplicationBench.SHIPS) {
 			final mine = own[o][slot].set(ReplicationBench.state(t, o));
 			final ownP = ownPatch[o].diff(full ? null : own[o][from], mine);
+			#if !no_budget
+			if (budget >= 0) {
+				sendWithin(o, t, full, base, from, slot, ownP);
+				continue;
+			}
+			#end
 			if (quantized) {
 				final p = patchB[o].diffKeys(full ? null : worldB[from], views[o], worldB[slot], views[o]);
 				pairsB[o].server.commands.matchState(t, base, ownP, p);
@@ -876,6 +1052,57 @@ class TypedSystem extends System {
 				frameBytes += pairsA[o].out.keptLength;
 			}
 		}
+	}
+
+	#if !no_budget
+	/** The others within the budget, against the baseline of the tick acknowledged, and this tick's filed. **/
+	function sendWithin(o:Int, t:Int, full:Bool, base:Int, from:Int, slot:Int, ownP:RPCPatch<OwnShip>):Void {
+		final key:Int = serial;
+		final baseKey:Int = serial - ReplicationBench.LAG;
+		if (quantized) {
+			final ring = sentB[o];
+			final was:Null<RPCMapBaseline<OtherShipB>> = full ? null : ring.get(baseKey);
+			var into:Null<RPCMapBaseline<OtherShipB>> = ring.get(key - ring.capacity);
+			if (into == null) {
+				into = new RPCMapBaseline();
+			}
+			final p = patchB[o].diffKeysWithin(was == null ? null : worldB[from], was, worldB[slot], views[o], budget, into);
+			ring.put(key, into);
+			pairsB[o].server.commands.matchState(t, base, ownP, p);
+			argumentBytes += pairsB[o].argumentBytes();
+			frameBytes += pairsB[o].out.keptLength;
+			if (p.isPartial) {
+				partial += 1;
+				deferred += p.deferred.length;
+			}
+		} else {
+			final ring = sentA[o];
+			final was:Null<RPCMapBaseline<OtherShipA>> = full ? null : ring.get(baseKey);
+			var into:Null<RPCMapBaseline<OtherShipA>> = ring.get(key - ring.capacity);
+			if (into == null) {
+				into = new RPCMapBaseline();
+			}
+			final p = patchA[o].diffKeysWithin(was == null ? null : worldA[from], was, worldA[slot], views[o], budget, into);
+			ring.put(key, into);
+			pairsA[o].server.commands.matchState(t, base, ownP, p);
+			argumentBytes += pairsA[o].argumentBytes();
+			frameBytes += pairsA[o].out.keptLength;
+			if (p.isPartial) {
+				partial += 1;
+				deferred += p.deferred.length;
+			}
+		}
+	}
+
+	#end
+
+	override public function begin():Void {
+		partial = 0.0;
+		deferred = 0.0;
+	}
+
+	override public function extra(messages:Int):Dynamic {
+		return budget < 0 ? null : {budget: budget, partialShare: partial / messages, deferredPerMessage: deferred / messages};
 	}
 
 	override public function read(t:Int):Void {
