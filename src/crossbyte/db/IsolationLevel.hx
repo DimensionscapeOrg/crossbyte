@@ -21,7 +21,7 @@ enum abstract IsolationLevel(String) to String {
 		put into a `SET ... ISOLATION LEVEL <v>` statement. A `String` is not
 		taken as a level without it.
 	**/
-	public static function ofString(value:String):IsolationLevel {
+	public static function fromString(value:String):IsolationLevel {
 		if (value == null) {
 			throw new ArgumentError("Invalid isolation level: null");
 		}

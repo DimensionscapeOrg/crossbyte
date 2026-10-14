@@ -251,16 +251,16 @@ class DBParameterBindingTest extends utest.Test {
 	}
 
 	public function testIsolationWhitelistAcceptsCanonicalValues():Void {
-		Assert.equals("READ COMMITTED", IsolationLevel.ofString("read committed"));
-		Assert.equals("SERIALIZABLE", IsolationLevel.ofString("SERIALIZABLE"));
+		Assert.equals("READ COMMITTED", IsolationLevel.fromString("read committed"));
+		Assert.equals("SERIALIZABLE", IsolationLevel.fromString("SERIALIZABLE"));
 		// Server-reported form with a hyphen still normalizes.
-		Assert.equals("REPEATABLE READ", IsolationLevel.ofString("REPEATABLE-READ"));
-		Assert.equals("READ UNCOMMITTED", IsolationLevel.ofString("read_uncommitted"));
+		Assert.equals("REPEATABLE READ", IsolationLevel.fromString("REPEATABLE-READ"));
+		Assert.equals("READ UNCOMMITTED", IsolationLevel.fromString("read_uncommitted"));
 	}
 
 	public function testIsolationWhitelistRejectsUnknownString():Void {
-		Assert.raises(() -> IsolationLevel.ofString("SERIALIZABLE; DROP TABLE users"), ArgumentError);
-		Assert.raises(() -> IsolationLevel.ofString("garbage"), ArgumentError);
+		Assert.raises(() -> IsolationLevel.fromString("SERIALIZABLE; DROP TABLE users"), ArgumentError);
+		Assert.raises(() -> IsolationLevel.fromString("garbage"), ArgumentError);
 	}
 
 	public function testMongoUriPercentEncodesUserinfo():Void {

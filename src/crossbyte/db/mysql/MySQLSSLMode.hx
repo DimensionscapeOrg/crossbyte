@@ -55,11 +55,6 @@ enum abstract MySQLSSLMode(String) to String {
 		}
 	}
 
-	/** `fromString` under its 1.0 name, kept so 1.0 code compiles. **/
-	public static inline function ofString(value:String):MySQLSSLMode {
-		return fromString(value);
-	}
-
 	/** The native client's number for the mode. **/
 	@:noCompletion public function toCode():Int {
 		return switch (cast this : MySQLSSLMode) {

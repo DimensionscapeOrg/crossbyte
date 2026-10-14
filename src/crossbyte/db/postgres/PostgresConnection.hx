@@ -674,7 +674,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 			var raw = Reflect.field(row, "transaction_isolation");
 			var value:String = raw != null ? Std.string(raw) : "";
-			return value != "" ? IsolationLevel.ofString(value) : __isolationLevel;
+			return value != "" ? IsolationLevel.fromString(value) : __isolationLevel;
 		} catch (_:Dynamic) {}
 
 		return __isolationLevel;

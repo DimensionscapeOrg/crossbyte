@@ -1025,8 +1025,7 @@ The caller's `RPCResponse` then fails with `"A room needs a name."`, and its
 carries it across as a code, so a caller can switch on it rather than on the
 words: `throw new RPCError("No such room.", 3)` arrives as
 `Refused("No such room.", 3)`, and the `RPCError` the caller's future fails
-with has 3 as its `errorId`. An id of 0, the default, is no code, and a peer
-of 1.0 reads the message alone.
+with has 3 as its `errorId`. An id of 0, the default, is no code.
 
 ```haxe
 // Given commands:ChatCommands.
@@ -1832,9 +1831,9 @@ arguments that did not read (`UnreadableArguments`), `4` too many calls
 waiting (`Busy`), `5` nothing to answer calls (`NoHandler`), `6` its handler
 out of time (`HandlerTimedOut`), `7` larger than its reader takes (`TooLarge`). A code a reader does not know is the
 handler's refusal, with its message. A handler's refusal whose `RPCError` has
-an id (since 1.1) writes its code `0` out and then the id, a varuint of its
-32 bits: a reader of 1.0 takes the `0` for the handler's refusal and passes
-over the rest with the frame, and one of 1.1 reads the id as
+an id writes its code `0` out and then the id, a varuint of its 32 bits: a
+reader that does not know ids takes the `0` for the handler's refusal and
+passes over the rest with the frame, and one that does reads the id as
 `Refused(message, code)`. With no id, nothing follows the message.
 
 A ping is a one-way call to op `0x165DF089` with no arguments, answered with

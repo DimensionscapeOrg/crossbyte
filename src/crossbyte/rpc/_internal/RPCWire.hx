@@ -73,9 +73,9 @@ class RPCWire {
 	// out for REFUSED_BY_HANDLER, so a handler's refusal is framed as before.
 	// A reader takes an answer with none, as one from before 1.0 has, and one
 	// it does not know, as a later version's could be, as the handler's own.
-	// A handler's refusal whose RPCError has an id (1.1) is REFUSED_BY_HANDLER
-	// written out, then the id: a 1.0 reader reads the 0, which is the
-	// handler's refusal, and passes over the rest with the frame.
+	// A handler's refusal whose RPCError has an id is REFUSED_BY_HANDLER
+	// written out, then the id: a reader that does not know ids reads the 0,
+	// which is the handler's refusal, and passes over the rest with the frame.
 	//
 	//   varuint request id
 	//   varuint length, UTF-8   the message
@@ -176,7 +176,7 @@ class RPCWire {
 	/**
 		The id a handler's refusal carries, `input` at its message, in a frame
 		ending at `end`: the varuint after an explicit code of 0, or 0 when
-		there is none (a refusal with no id, or one from a 1.0 peer). `input`
+		there is none (a refusal with no id, or one from a peer that writes none). `input`
 		is left at the message. Asked only of a refusal `refusalCode` found
 		the handler's.
 	**/

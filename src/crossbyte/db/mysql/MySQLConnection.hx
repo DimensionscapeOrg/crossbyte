@@ -1115,7 +1115,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		if (rs != null && rs.hasNext()) {
-			return IsolationLevel.ofString(Std.string(Reflect.field(rs.next(), "lvl")));
+			return IsolationLevel.fromString(Std.string(Reflect.field(rs.next(), "lvl")));
 		}
 
 		return IsolationLevel.REPEATABLE_READ;
