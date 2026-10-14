@@ -345,7 +345,7 @@ final call:Int = commands.joinThen("lobby", lobby);
 
 | answer | receiver | told with |
 |---|---|---|
-| `Int`, `Int8`, `UInt8`, `Int16`, `UInt16`, `UInt` | `RPCIntReceiver` | `onInt` |
+| `Int`, `Int8`, `UInt8`, `Int16`, `UInt16`, `VarUInt`, `VarInt`, `UInt` | `RPCIntReceiver` | `onInt` |
 | `Float`, `Float32` | `RPCFloatReceiver` | `onFloat` |
 | `Bool` | `RPCBoolReceiver` | `onBool` |
 | `String` | `RPCStringReceiver` | `onString` |
@@ -448,6 +448,7 @@ on the wire:
 | `crossbyte.rpc.Float32` (or `Single`) | 4 bytes, single precision |
 | `crossbyte.rpc.Int8`, `UInt8` | 1 byte |
 | `crossbyte.rpc.Int16`, `UInt16` | 2 bytes |
+| `crossbyte.rpc.VarUInt`, `VarInt` | 1 to 5 bytes, a varint (`VarInt` zigzagged first) |
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
 | `Map<String, T>`, `Map<Int, T>` (or `StringMap<T>`, `IntMap<T>`), `T` any of these | a count, then each key and its value, in the keys' order |
 | a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
@@ -500,7 +501,11 @@ interface RealmContract {
 An `Int` is always four bytes and a `Float` eight. Where a value needs less, a
 signature says so with a compact type: `Float32` for a position or a speed,
 seven significant digits; `UInt8` for a level, a set of flags; `Int16` for a
-small signed delta; `UInt16` for a count. Each is an `Int` (or a `Float`)
+small signed delta; `UInt16` for a count; `VarUInt` for a tick, an
+acknowledgement or an input sequence, numbers that grow without bound but stay
+small for a long time (one byte to 127, two to 16,383, three to 2,097,151, five
+at most, as protobuf's `uint32`), and `VarInt` for a signed one (zigzagged
+first, as `sint32`: -64 to 63 in a byte). Each is an `Int` (or a `Float`)
 wherever one is wanted, so arithmetic on them is `Int` arithmetic, and
 comparisons compare the `Int` it holds. An `Int` assigned to one keeps its low
 bits, as a cast to a byte or a short does in C (`var level:UInt8 = 300` holds
@@ -1052,7 +1057,7 @@ answer.
 ```
 signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
-                     | "f32" | "i8" | "u8" | "i16" | "u16"
+                     | "f32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi"
                      | "[" kind "]"
                      | "[" ( "utf8" | "i32" ) ":" kind "]"
                      | "{" field ("," field)* "}"
@@ -1062,8 +1067,8 @@ ctor      := name [ "(" kind ("," kind)* ")" ]
 ```
 
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
-`bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16` and `u16` are `Float32`,
-`Int8`, `UInt8`, `Int16` and `UInt16`; an array is its element's kind in
+`bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16`, `u16`, `vu` and `vi` are
+`Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`, `VarUInt` and `VarInt`; an array is its element's kind in
 brackets, a map its key's kind and its value's in brackets with a colon
 between (`Map<String, Int>` is `[utf8:i32]`), a structure its fields in braces, in their order on the wire, each
 with its pinned id if it has one, an enum its constructors in angle brackets,

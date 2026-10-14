@@ -202,6 +202,13 @@ All notable changes to CrossByte will be documented in this file.
   that length, so a child that never writes a line break is held to that
   much. Dispatched only while listened for, on every target with
   `NativeProcess`.
+- **`VarUInt` and `VarInt`**, compact `Int`s for the compiled RPC lane: an
+  unsigned LEB128 varint (protobuf's `uint32`), or zigzagged first
+  (`sint32`), one byte up to 127 (or -64 to 63), at most five, where an
+  `Int` always takes four. For ticks, acknowledgements and input sequences.
+  All 32 bits arrive, so a tick that has wrapped past 2^31 - 1 (as
+  `SequenceRing` orders them) carries on, in five bytes. Each is an `Int`
+  wherever one is wanted. Kinds `vu` and `vi` in a signature.
 
 ### Fixed
 

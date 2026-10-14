@@ -483,7 +483,7 @@ class RPCCommandMacro {
 			return RValue;
 		}
 		return switch (kind.token) {
-			case "i32" | "i8" | "u8" | "i16" | "u16": RInt;
+			case "i32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi": RInt;
 			case "i64": RInt64;
 			case "f64" | "f32": RFloat;
 			case "bool": RBool;

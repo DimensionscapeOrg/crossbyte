@@ -13,7 +13,7 @@ import haxe.io.Bytes;
 	```
 	signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 	kind      := [ "?" ] ( "i32" | "i64" | "bool" | "f64" | "utf8" | "bytes"
-	                     | "f32" | "i8" | "u8" | "i16" | "u16"
+	                     | "f32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi"
 	                     | "[" kind "]"
 	                     | "[" ( "utf8" | "i32" ) ":" kind "]"
 	                     | "{" field ("," field)* "}"
@@ -25,8 +25,9 @@ import haxe.io.Bytes;
 	The kinds are the method's arguments in order, and after the colon its
 	answer's; a one-way method has none. A `?` is a value that may be
 	absent (an optional argument, a `Null<T>`), which a byte before it
-	says. `f32`, `i8`, `u8`, `i16` and `u16` are the compact numbers
-	(`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`); an
+	says. `f32`, `i8`, `u8`, `i16`, `u16`, `vu` and `vi` are the compact
+	numbers (`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`,
+	`VarUInt`, `VarInt`); an
 	abstract is the kind of what it abstracts. An array is its element's
 	kind in brackets, a map its key's and its value's kinds in brackets
 	with a colon between (`[utf8:i32]` for `Map<String, Int>`), and a structure (`RPCStructs`) its fields in braces,

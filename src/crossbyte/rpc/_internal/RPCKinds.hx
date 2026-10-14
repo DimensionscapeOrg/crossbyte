@@ -80,6 +80,10 @@ class RPCKinds {
 		is framed.
 	**/
 	public static function room(kind:RPCKind, optional:Bool, value:Expr):Expr {
+		if (kind.most != null) {
+			// A number of a varying size, never null: the most it takes.
+			return macro $v{kind.most + (optional ? 1 : 0)};
+		}
 		final present:Expr = kind.roomOf(value);
 		if (optional) {
 			return macro 1 + ($value == null ? 0 : $present);
@@ -267,6 +271,38 @@ class RPCKinds {
 	};
 
 	/**
+		`crossbyte.rpc.VarUInt`: an unsigned LEB128 varint of the `Int`'s 32
+		bits, one to five bytes, as protobuf's `uint32`.
+	**/
+	static final VARUINT:RPCKind = {
+		name: "VarUInt",
+		token: "vu",
+		size: -1,
+		most: 5,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putVarUInt($value),
+		read: (input, end) -> macro(cast $input.readVarUInt() : crossbyte.rpc.VarUInt)
+	};
+
+	/**
+		`crossbyte.rpc.VarInt`: zigzagged, then a varint, one to five bytes,
+		as protobuf's `sint32`.
+	**/
+	static final VARINT:RPCKind = {
+		name: "VarInt",
+		token: "vi",
+		size: -1,
+		most: 5,
+		roomOf: null,
+		zero: macro 0,
+		compound: false,
+		write: (frame, value) -> macro $frame.putVarInt($value),
+		read: (input, end) -> macro(cast $input.readVarInt() : crossbyte.rpc.VarInt)
+	};
+
+	/**
 		An abstract the table does not name (an `enum abstract` over `Int`,
 		an abstract over `String`, `UInt`) is the kind of the type it
 		abstracts, with the same token: it is those bytes. Written as that
@@ -283,6 +319,7 @@ class RPCKinds {
 			name: name,
 			token: inner.token,
 			size: inner.size,
+			most: inner.most,
 			roomOf: roomOf == null ? null : value -> roomOf(asInner(value)),
 			zero: macro cast ${inner.zero},
 			compound: inner.compound,
@@ -551,6 +588,8 @@ class RPCKinds {
 					case "crossbyte.rpc.UInt8": UINT8;
 					case "crossbyte.rpc.Int16": INT16;
 					case "crossbyte.rpc.UInt16": UINT16;
+					case "crossbyte.rpc.VarUInt": VARUINT;
+					case "crossbyte.rpc.VarInt": VARINT;
 					case "Null" if (params.length == 1): ofType(params[0], pos);
 					case "haxe.Int64": INT64;
 					case "haxe.ds.Map" if (params.length == 2): mapOf(params[0], params[1], pos);
@@ -701,6 +740,8 @@ class RPCKinds {
 	  `Bool`: writes a value at a place in a `Bytes`, or reads one, with no
 	  check: an array of them makes room for, or checks it has, all of
 	  them at once, then puts or gets each where it goes.
+	- `most`, for a number of varying size (a varint), which is never null:
+	  the most bytes a value takes, which a frame is begun with room for.
 **/
 typedef RPCKind = {
 	final name:String;
@@ -713,5 +754,6 @@ typedef RPCKind = {
 	final read:(Expr, Expr) -> Expr;
 	@:optional final put:(Expr, Expr, Expr) -> Expr;
 	@:optional final get:(Expr, Expr) -> Expr;
+	@:optional final most:Int;
 }
 #end

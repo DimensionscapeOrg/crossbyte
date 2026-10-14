@@ -248,6 +248,11 @@ class RPCFrame extends ByteArrayData {
 		set(position++, v);
 	}
 
+	/** `value` zigzagged, then as a varint: small magnitudes of either sign in a byte, as `ByteArrayInput.readVarInt` reads it. **/
+	public inline function putVarInt(value:Int):Void {
+		putVarUInt((value << 1) ^ (value >> 31));
+	}
+
 	/**
 		`value` as its UTF-8 bytes after their count, as a varint: what
 		`ByteArrayOutput.writeVarUtf` writes, with no `Bytes` made of the
