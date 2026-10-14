@@ -33,7 +33,7 @@ class EdDSAJwtTest extends utest.Test {
 		return keys;
 	}
 
-	#if cpp
+	#if (cpp || php)
 	public function testRfc8037KnownAnswerVector():Void {
 		var signer = new Ed25519Signer(rfcPublicKeys(), rfcSecretKey());
 

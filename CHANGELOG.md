@@ -6,6 +6,13 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Added
 
+- **Ed25519 and EdDSA tokens on PHP.** `Ed25519` signs and verifies through
+  PHP's sodium extension, which is libsodium as the native builds are, so
+  keys and signatures are the same bytes on both and RFC 8032's vectors
+  hold on each. `JWTSigner.EdDSA` works there too: a PHP service can mint
+  tokens that native servers verify holding only the public key.
+  `isSupported` is true on PHP when the extension is loaded, and
+  `unsupportedReason` says to load it when it is not.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.

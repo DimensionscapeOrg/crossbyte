@@ -19,6 +19,7 @@ class TestSuites {
 	public static function addCrypto(runner:Runner):Void {
 		runner.addCase(new crossbyte.crypto.CryptoTest());
 		runner.addCase(new crossbyte.crypto.SodiumExpansionTest());
+		runner.addCase(new crossbyte.crypto.Ed25519VectorsTest());
 		runner.addCase(new crossbyte.crypto.SignatureKeyTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());

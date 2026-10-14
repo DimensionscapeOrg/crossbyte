@@ -8,9 +8,6 @@ import crossbyte.crypto.ConstantTime;
 import crossbyte.crypto.Ed25519;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
-#if !cpp
-import crossbyte.crypto._internal.NativeOnly;
-#end
 
 /**
  * EdDSA (Ed25519) JWT signer per RFC 8037.
@@ -20,9 +17,9 @@ import crossbyte.crypto._internal.NativeOnly;
  * (seed || public key); holders of a bare 32-byte seed can concatenate the
  * matching public key. A signer without a private key is verify-only.
  *
- * Requires the native Ed25519 backend; construction throws on targets where
- * `Ed25519.isSupported` is false: an `IllegalOperationError` naming the
- * target off native cpp.
+ * Requires `Ed25519` (native, or PHP with the sodium extension);
+ * construction throws an `IllegalOperationError` saying why where
+ * `Ed25519.isSupported` is false.
  */
 class Ed25519Signer implements IJWTSigner {
 	public var algorithm(get, never):JWTAlgorithm;
@@ -42,11 +39,7 @@ class Ed25519Signer implements IJWTSigner {
 
 	public function new(publicKeys:StringMap<Bytes>, ?privateKey:Bytes, ?signKeyId:String) {
 		if (!Ed25519.isSupported) {
-			#if cpp
-			throw new IllegalOperationError("Ed25519Signer requires the native Ed25519 backend: " + Ed25519.unsupportedReason);
-			#else
-			throw NativeOnly.error("EdDSA JWT signing and verification");
-			#end
+			throw new IllegalOperationError("EdDSA JWT signing and verification needs Ed25519: " + Ed25519.unsupportedReason);
 		}
 		if (publicKeys == null) {
 			throw new ArgumentError("Ed25519Signer: publicKeys must not be null");

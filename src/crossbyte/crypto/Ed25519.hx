@@ -2,8 +2,11 @@ package crossbyte.crypto;
 
 import crossbyte.errors.ArgumentError;
 import haxe.io.Bytes;
-#if !cpp
+#if !(cpp || php)
 import crossbyte.crypto._internal.NativeOnly;
+#end
+#if php
+import crossbyte.crypto._internal.PhpSodium;
 #end
 #if cpp
 import cpp.ConstPointer;
@@ -14,15 +17,17 @@ import crossbyte.crypto._internal.NativeSodium;
 #end
 
 /**
- * Native Ed25519 signing and verification helpers.
+ * Ed25519 signing and verification (RFC 8032), natively and on PHP.
  *
- * This API is intentionally small and native-focused. It is suitable for
- * signed control messages, release manifests, trust records, and other
- * application-layer authenticity checks.
+ * This API is intentionally small. It is suitable for signed control
+ * messages, release manifests, trust records, connect tokens
+ * (`JWTSigner.EdDSA`), and other application-layer authenticity checks.
  *
- * On supported native `cpp` targets the implementation uses a statically
- * linked libsodium backend, so applications do not need to ship a separate
- * runtime DLL in order to use Ed25519.
+ * Natively it uses the statically linked libsodium, so applications do not
+ * need to ship a separate runtime DLL. On PHP it uses the sodium extension,
+ * which is libsodium too (`extension=sodium` in `php.ini`; it ships with PHP
+ * 7.2 and later): keys and signatures are the same bytes on both, so a PHP
+ * service can sign what a native server verifies.
  *
  * Every other target has no backend, and there `keypair`, `signDetached` and
  * `verifyDetached` throw an `IllegalOperationError` naming it; check
@@ -50,16 +55,17 @@ class Ed25519 {
 	#end
 
 	/**
-	 * Whether the native Ed25519 backend is available on the current
-	 * process and target.
-	 *
-	 * On unsupported targets it is `false`.
+	 * Whether Ed25519 is available here: natively when libsodium started,
+	 * on PHP when the sodium extension is loaded. `false` on every other
+	 * target.
 	 */
 	public static var isSupported(get, never):Bool;
 
 	@:noCompletion private static function get_isSupported():Bool {
 		#if cpp
 		return NativeSodium.isAvailable();
+		#elseif php
+		return PhpSodiumStatus.loaded();
 		#else
 		return false;
 		#end
@@ -74,6 +80,8 @@ class Ed25519 {
 	@:noCompletion private static function get_unsupportedReason():Null<String> {
 		#if cpp
 		return crossbyte.crypto._internal.NativeSodium.isAvailable() ? null : crossbyte.crypto._internal.SodiumGlue.availabilityMessage();
+		#elseif php
+		return PhpSodiumStatus.loaded() ? null : PhpSodiumStatus.reason("Ed25519");
 		#else
 		return crossbyte.crypto._internal.NativeOnly.reason("Ed25519");
 		#end
@@ -83,7 +91,7 @@ class Ed25519 {
 	 * Generates a fresh Ed25519 keypair.
 	 *
 	 * @return A signing keypair containing `publicKey` and `secretKey`.
-	 * @throws IllegalOperationError On a target other than native cpp.
+	 * @throws IllegalOperationError Where `isSupported` is false.
 	 */
 	public static function keypair():SigningKeyPair {
 		#if cpp
@@ -96,6 +104,13 @@ class Ed25519 {
 			throw new crossbyte.errors.Error("libsodium crypto_sign_keypair failed: " + rc);
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
+		#elseif php
+		__ensureAvailable();
+		var pair:String = PhpSodium.sodium_crypto_sign_keypair();
+		return {
+			publicKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_publickey(pair)),
+			secretKey: Bytes.ofData(PhpSodium.sodium_crypto_sign_secretkey(pair))
+		};
 		#else
 		throw NativeOnly.error("Ed25519 keypair generation");
 		#end
@@ -105,24 +120,30 @@ class Ed25519 {
 	 * Produces a detached Ed25519 signature for the provided message bytes.
 	 *
 	 * @param message The message bytes to sign.
-	 * @param secretKey The 64-byte Ed25519 secret key.
+	 * @param secretKey The 64-byte Ed25519 secret key: the 32-byte seed
+	 *        followed by the 32-byte public key, as libsodium has it.
 	 * @return A 64-byte detached signature.
-	 * @throws IllegalOperationError On a target other than native cpp.
+	 * @throws ArgumentError For a secret key that is not 64 bytes.
+	 * @throws IllegalOperationError Where `isSupported` is false.
 	 */
 	public static function signDetached(message:Bytes, secretKey:Bytes):Bytes {
-		#if cpp
+		#if (cpp || php)
 		if (secretKey == null || secretKey.length != SECRET_KEY_BYTES) {
 			throw new ArgumentError("secretKey must be " + SECRET_KEY_BYTES + " bytes");
 		}
 
 		__ensureAvailable();
 
+		#if php
+		return Bytes.ofData(PhpSodium.sodium_crypto_sign_detached(message == null ? "" : message.getData(), secretKey.getData()));
+		#else
 		var signature = Bytes.alloc(SIGNATURE_BYTES);
 		var rc = NativeSodium.ed25519SignDetached(__ptr(signature), __cptrOrNull(message), __length(message), __cptr(secretKey));
 		if (rc != 0) {
 			throw new crossbyte.errors.Error("libsodium crypto_sign_detached failed: " + rc);
 		}
 		return signature;
+		#end
 		#else
 		throw NativeOnly.error("Ed25519 signing");
 		#end
@@ -137,13 +158,14 @@ class Ed25519 {
 	 * @return `true` if the signature is valid for the given message and public
 	 * key, otherwise `false`, including for a signature or key of the wrong
 	 * length.
-	 * @throws IllegalOperationError On a target other than native cpp, whatever
-	 *         it is handed, rather than answering `false`, the answer for a
-	 *         forged signature.
-	 * @throws IllegalOperationError When libsodium could not be started, as signing does.
+	 * @throws IllegalOperationError Where `isSupported` is false, whatever it
+	 *         is handed, rather than answering `false`, the answer for a
+	 *         forged signature: on a target with no backend, natively when
+	 *         libsodium could not be started, and on PHP without the sodium
+	 *         extension.
 	 */
 	public static function verifyDetached(signature:Bytes, message:Bytes, publicKey:Bytes):Bool {
-		#if cpp
+		#if (cpp || php)
 		__ensureAvailable();
 		if (signature == null || signature.length != SIGNATURE_BYTES) {
 			return false;
@@ -151,7 +173,11 @@ class Ed25519 {
 		if (publicKey == null || publicKey.length != PUBLIC_KEY_BYTES) {
 			return false;
 		}
+		#if php
+		return PhpSodium.sodium_crypto_sign_verify_detached(signature.getData(), message == null ? "" : message.getData(), publicKey.getData());
+		#else
 		return NativeSodium.ed25519VerifyDetached(__cptr(signature), __cptrOrNull(message), __length(message), __cptr(publicKey)) == 0;
+		#end
 		#else
 		throw NativeOnly.error("Ed25519 verification");
 		#end
@@ -182,6 +208,15 @@ class Ed25519 {
 	private static inline function __ensureAvailable():Void {
 		if (!NativeSodium.isAvailable()) {
 			throw new crossbyte.errors.IllegalOperationError(unsupportedReason);
+		}
+	}
+	#end
+
+	#if php
+	@:noCompletion
+	private static inline function __ensureAvailable():Void {
+		if (!PhpSodiumStatus.loaded()) {
+			throw PhpSodiumStatus.error("Ed25519");
 		}
 	}
 	#end

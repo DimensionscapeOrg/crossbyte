@@ -110,8 +110,9 @@ class CryptoTest extends utest.Test {
 
 		// Every cpp target, not only Windows: libsodium is compiled from the
 		// vendored sources wherever hxcpp builds, and the POSIX crypto suite
-		// runs this on Linux and macOS to hold that to account.
-		#if cpp
+		// runs this on Linux and macOS to hold that to account. On PHP, the
+		// sodium extension.
+		#if (cpp || php)
 		Assert.isTrue(Ed25519.isSupported);
 		Assert.isNull(Ed25519.unsupportedReason);
 		// Malformed signatures and keys are refused, not thrown for.
@@ -149,7 +150,7 @@ class CryptoTest extends utest.Test {
 	**/
 	public function testEd25519VerifyingWhereNothingCanVerifyThrows():Void {
 		var message = Bytes.ofString("hello");
-		#if cpp
+		#if (cpp || php)
 		var keyPair = Ed25519.keypair();
 		Assert.isTrue(Ed25519.verifyDetached(Ed25519.signDetached(message, keyPair.secretKey), message, keyPair.publicKey));
 		#else
