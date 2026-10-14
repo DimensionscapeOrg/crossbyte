@@ -63,15 +63,18 @@ abstract class RPCCommands {
 	// Where the frame whose response is being read ends; the generated
 	// readers read no further.
 	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
-	// The deadline `within` gave the next call, or -1 for none given;
-	// and the one the request being made waits under, read as it is framed.
+	// The deadline `within` gave the next call, or -1 for nothing given:
+	// what a call's usual way reads, so `delivery` given alone sets it to
+	// SESSION_TIMEOUT, the session's deadline; and the one the request being
+	// made waits under, read as it is framed.
 	@:noCompletion private var __nextTimeout:Int = -1;
 	@:noCompletion private var __callTimeout:Int = 0;
 	@:noCompletion private var __callTimeoutSent:Bool = false;
-	// The delivery `delivery` gave the next call; and whether anything was
-	// given the next call at all, the one thing a call's usual way reads.
+	// The delivery `delivery` gave the next call.
 	@:noCompletion private var __nextDelivery:DeliveryMode = DeliveryMode.RELIABLE;
-	@:noCompletion private var __nextGiven:Bool = false;
+
+	/** `__nextTimeout` for a call given a delivery and no deadline of its own: its session's. **/
+	@:noCompletion private static inline final SESSION_TIMEOUT:Int = 0x7FFFFFFF;
 
 	/**
 		Sends the next call made through these commands in `mode` over a
@@ -99,7 +102,9 @@ abstract class RPCCommands {
 	**/
 	public function delivery(mode:DeliveryMode):RPCCommands {
 		__nextDelivery = mode;
-		__nextGiven = true;
+		if (__nextTimeout < 0) {
+			__nextTimeout = SESSION_TIMEOUT;
+		}
 		return this;
 	}
 
@@ -126,7 +131,6 @@ abstract class RPCCommands {
 	**/
 	public function within(seconds:Float):RPCCommands {
 		__nextTimeout = crossbyte._internal.Millis.of(seconds);
-		__nextGiven = true;
 		return this;
 	}
 
@@ -242,7 +246,8 @@ abstract class RPCCommands {
 		// here; anything more (a request, a deadline given, no session) is a
 		// call, which keeps a large commands class's methods small on the jvm.
 		final session = __session;
-		return requestId == 0 && session != null && !__nextGiven ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op, requestId);
+		return requestId == 0 && session != null && __nextTimeout < 0 ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op,
+			requestId);
 	}
 
 	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `within` or `delivery`; commands with no session. **/
@@ -251,12 +256,14 @@ abstract class RPCCommands {
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
 		// The deadline `within` gave, and the delivery `delivery` gave, taken
 		// by this call, one-way or not.
-		final timeout:Int = __nextTimeout;
+		var timeout:Int = __nextTimeout;
 		final delivery:DeliveryMode = __nextDelivery;
-		if (__nextGiven) {
-			__nextGiven = false;
+		if (timeout >= 0) {
 			__nextTimeout = -1;
 			__nextDelivery = DeliveryMode.RELIABLE;
+			if (timeout == SESSION_TIMEOUT) {
+				timeout = -1;
+			}
 		}
 		if (session != null) {
 			final framed:RPCFrame = if (requestId != 0) {

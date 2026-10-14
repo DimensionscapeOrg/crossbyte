@@ -183,7 +183,6 @@ class RPCCommandMacro {
 				ret: self,
 				expr: macro {
 					this.__nextTimeout = crossbyte._internal.Millis.of(seconds);
-					this.__nextGiven = true;
 					return this;
 				}
 			}),
@@ -207,8 +206,7 @@ class RPCCommandMacro {
 				args: [{name: "mode", type: macro :crossbyte.net.DeliveryMode}],
 				ret: self,
 				expr: macro {
-					this.__nextDelivery = mode;
-					this.__nextGiven = true;
+					super.delivery(mode);
 					return this;
 				}
 			}),
