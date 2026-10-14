@@ -101,6 +101,12 @@ final class RPCMapPatch<V> {
 	@:noCompletion public var __baseValues:Null<IntMap<V>> = null;
 	@:noCompletion public var __currentValues:Null<IntMap<V>> = null;
 	@:noCompletion public var __sending:Bool = false;
+	// Sending: each added and updated entry's values, as the diff found
+	// them, so writing looks nothing up again.
+	@:noCompletion public var __sentAdded:Array<V> = [];
+	@:noCompletion public var __sentBase:Array<V> = [];
+	@:noCompletion public var __sentCurrent:Array<V> = [];
+	@:noCompletion private var __wide:Bool;
 	@:noCompletion public var __received:Bool = false;
 	// Received: each added entry's value, and each updated one's state, in
 	// pools grown to the most a patch has held.
@@ -125,6 +131,7 @@ final class RPCMapPatch<V> {
 			throw new ArgumentError("An RPCMapPatch needs its values' codec: RPCCodecs.of(Type).");
 		}
 		this.codec = codec;
+		__wide = codec.fieldCount > 32;
 	}
 
 	/**
@@ -182,7 +189,7 @@ final class RPCMapPatch<V> {
 			old.copyFrom(baseKeys);
 			RPCKeys.sortUnique(old);
 		}
-		final wide:Bool = codec.fieldCount > 32;
+		final wide:Bool = __wide;
 		final initial:V = codec.__default();
 		var i:Int = 0;
 		var j:Int = 0;
@@ -196,6 +203,7 @@ final class RPCMapPatch<V> {
 				if (value == null) {
 					throw new ArgumentError('RPCMapPatch: key $c is in the current keys and not in the current values.');
 				}
+				__keepSent(__sentAdded, __added.length, value);
 				__added.push(c);
 				__addedMasks.push(codec.__mask(initial, value));
 				if (wide) {
@@ -214,6 +222,8 @@ final class RPCMapPatch<V> {
 				final mask:Int = codec.__mask(was, value);
 				final high:Int = wide ? codec.__maskHigh(was, value) : 0;
 				if (mask != 0 || high != 0) {
+					__keepSent(__sentBase, __updated.length, was);
+					__keepSent(__sentCurrent, __updated.length, value);
 					__updated.push(c);
 					__updatedMasks.push(mask);
 					if (wide) {
@@ -556,6 +566,14 @@ final class RPCMapPatch<V> {
 
 	function __missing(key:Int, what:String):Void {
 		throw new ArgumentError('This map patch $what key $key, which its base does not hold: the base is not the one the sender used.');
+	}
+
+	static inline function __keepSent<V>(list:Array<V>, at:Int, value:V):Void {
+		if (at < list.length) {
+			list[at] = value;
+		} else {
+			list.push(value);
+		}
 	}
 
 	inline function __keep(value:V):Void {

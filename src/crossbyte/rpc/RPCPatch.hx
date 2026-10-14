@@ -94,6 +94,7 @@ final class RPCPatch<T> {
 	@:noCompletion public var __state:Any = null;
 	@:noCompletion public var __received:Bool = false;
 	@:noCompletion private var __frame:Null<RPCFrame> = null;
+	@:noCompletion private var __wide:Bool;
 
 	/**
 		@param codec The structure's codec: `RPCCodecs.of(Hero)`.
@@ -104,6 +105,7 @@ final class RPCPatch<T> {
 			throw new ArgumentError("An RPCPatch needs its structure's codec: RPCCodecs.of(Type).");
 		}
 		this.codec = codec;
+		__wide = codec.fieldCount > 32;
 	}
 
 	/**
@@ -127,7 +129,7 @@ final class RPCPatch<T> {
 		isFull = base == null;
 		final from:T = base == null ? codec.__default() : base;
 		__mask = codec.__mask(from, current);
-		__maskHigh = codec.fieldCount > 32 ? codec.__maskHigh(from, current) : 0;
+		__maskHigh = __wide ? codec.__maskHigh(from, current) : 0;
 		changedCount = RPCKeys.bitCount(__mask) + RPCKeys.bitCount(__maskHigh);
 		return this;
 	}

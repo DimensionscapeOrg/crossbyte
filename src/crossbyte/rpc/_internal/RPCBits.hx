@@ -90,17 +90,24 @@ class RPCBits {
 		// A Float32 is held at single precision natively; elsewhere it is
 		// rounded first, so every target quantizes the same value.
 		final rounded = (value:Expr) -> single ? macro crossbyte.rpc._internal.RPCBits.single($value) : value;
+		// The step of a value: floor((v - min) * (steps / span) + 0.5), its
+		// ends exact. One multiplication where BitWriter divides by the span
+		// and multiplies by the steps: a patch compares and writes many of
+		// them, and a division is most of their cost. The same arithmetic
+		// on every target; a value at an exact half step may round to the
+		// other neighbour than BitWriter's would, within half a step either way.
+		final scale:Float = steps / span;
+		final topStep:Int = width == 31 ? 2147483647 : (1 << width) - 1;
+		final stepOf = (v:String) -> macro $i{v} <= $v{min} ? 0 : ($i{v} >= $v{max} ? $v{topStep} : Std.int(($i{v} - $v{min}) * $v{scale} + 0.5));
 		final step = (value:Expr) -> {
 			final v:String = RPCKinds.local();
-			final t:String = RPCKinds.local();
 			final held:Expr = rounded(macro(cast $value : Float));
 			macro {
 				final $v:Float = $held;
 				if ($i{v} != $i{v}) {
 					throw new crossbyte.errors.ArgumentError("A quantized value cannot be NaN: " + $whereExpr);
 				}
-				final $t:Float = $i{v} <= $v{min} ? 0.0 : ($i{v} >= $v{max} ? 1.0 : ($i{v} - $v{min}) / $v{span});
-				Std.int($i{t} * $v{steps} + 0.5);
+				${stepOf(v)};
 			};
 		};
 		// For comparing: NaN as a step of its own, which a write refuses.
@@ -109,7 +116,7 @@ class RPCBits {
 			final held:Expr = rounded(macro(cast $value : Float));
 			macro {
 				final $v:Float = $held;
-				$i{v} != $i{v} ? -1 : Std.int(($i{v} <= $v{min} ? 0.0 : ($i{v} >= $v{max} ? 1.0 : ($i{v} - $v{min}) / $v{span})) * $v{steps} + 0.5);
+				$i{v} != $i{v} ? -1 : ${stepOf(v)};
 			};
 		};
 		return {
@@ -124,6 +131,7 @@ class RPCBits {
 			bits: {
 				width: width,
 				put: step,
+				// As BitReader.readQuantized reads it: the ends exact.
 				get: raw -> {
 					final t:String = RPCKinds.local();
 					macro {
@@ -132,7 +140,9 @@ class RPCBits {
 					};
 				}
 			},
-			same: (a, b) -> macro ${stepOrNaN(a)} == ${stepOrNaN(b)}
+			// The same value is the same step, which most fields that did not
+			// change are: quantized only when they differ.
+			same: (a, b) -> macro(cast $a : Float) == (cast $b : Float) || ${stepOrNaN(a)} == ${stepOrNaN(b)}
 		};
 	}
 

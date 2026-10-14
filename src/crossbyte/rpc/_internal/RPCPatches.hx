@@ -792,20 +792,18 @@ class RPCPatches {
 				frame.putVarUInt(added.length);
 				frame.putVarUInt(updated.length);
 				$putRemoved;
-				final current = patch.__currentValues;
 				final initial:$type = defaultValue();
 				var previous:Int = 0;
 				for (i in 0...added.length) {
 					final key:$keyType = $addedKey;
 					$putKey;
-					writePatch(frame, initial, current.get(key), crossbyte.rpc._internal.RPCKeys.at(patch.__addedMasks, i), $addedHigh, -1);
+					writePatch(frame, initial, patch.__sentAdded[i], crossbyte.rpc._internal.RPCKeys.at(patch.__addedMasks, i), $addedHigh, -1);
 				}
-				final base = patch.__baseValues;
 				previous = 0;
 				for (i in 0...updated.length) {
 					final key:$keyType = $updatedKey;
 					$putKey;
-					writePatch(frame, base.get(key), current.get(key), crossbyte.rpc._internal.RPCKeys.at(patch.__updatedMasks, i), $updatedHigh, -1);
+					writePatch(frame, patch.__sentBase[i], patch.__sentCurrent[i], crossbyte.rpc._internal.RPCKeys.at(patch.__updatedMasks, i), $updatedHigh, -1);
 				}
 			}, pos),
 			fn("read" + suffix + "Arg", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", patchType)], patchType, macro {
