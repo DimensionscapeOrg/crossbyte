@@ -560,8 +560,10 @@ abstract class RPCCommands {
 			// 0x7FFFFFFF + 1 is 2147483648: positive, past the guard, and
 			// past the width of the field this id is written to on the wire.
 			// The id and the pending-response key would then stop agreeing,
-			// and the call would wait for a reply it could not match.
-			__requestIdSeed = (__requestIdSeed + 1) | 0;
+			// and the call would wait for a reply it could not match. On PHP
+			// an Int is 64 bits, which `| 0` leaves as they are: wrap32 is
+			// what wraps it there, and nothing anywhere else.
+			__requestIdSeed = crossbyte.utils.Hash.wrap32((__requestIdSeed + 1) | 0);
 
 			if (__requestIdSeed <= 0) {
 				__requestIdSeed = 1;

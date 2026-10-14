@@ -931,8 +931,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		peerCapabilities = 0;
 		peerCallsFingerprint = 0;
 		peerAnswersFingerprint = 0;
-		// `| 0` so it wraps on JavaScript as it does elsewhere.
-		__epoch = (__epoch + 1) | 0;
+		// `| 0` so it wraps on JavaScript as it does elsewhere, and wrap32 on
+		// PHP (see RPCCommands.__nextRequestId).
+		__epoch = crossbyte.utils.Hash.wrap32((__epoch + 1) | 0);
 		// Stopped, not forgotten: `start()` still stands, for a connection
 		// that becomes ready again.
 		__stopHeartbeat();
@@ -2825,9 +2826,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private function __nextRuntimeRequestId():Int {
 		do {
-			// `| 0` so the increment wraps on JavaScript too; see
-			// RPCCommands.__nextRequestId.
-			__runtimeRequestIdSeed = (__runtimeRequestIdSeed + 1) | 0;
+			// `| 0` so the increment wraps on JavaScript too, and wrap32 on
+			// PHP; see RPCCommands.__nextRequestId.
+			__runtimeRequestIdSeed = crossbyte.utils.Hash.wrap32((__runtimeRequestIdSeed + 1) | 0);
 			if (__runtimeRequestIdSeed <= 0) {
 				__runtimeRequestIdSeed = 1;
 			}
@@ -3161,7 +3162,9 @@ private class RPCCallDeadlines {
 	public function add(call:RPCCall, due:Float, now:Float):Void {
 		call.__due = due;
 		call.__order = added;
-		added = (added + 1) | 0;
+		// Wrapping, on PHP too (see RPCCommands.__nextRequestId): `before`
+		// tells the older of two by the sign of their difference.
+		added = crossbyte.utils.Hash.wrap32((added + 1) | 0);
 		final at:Int = count++;
 		calls[at] = call;
 		call.__place = at;
@@ -3230,7 +3233,7 @@ private class RPCCallDeadlines {
 	}
 
 	static inline function before(a:RPCCall, b:RPCCall):Bool {
-		return a.__due < b.__due || (a.__due == b.__due && ((a.__order - b.__order) | 0) < 0);
+		return a.__due < b.__due || (a.__due == b.__due && crossbyte.utils.Hash.wrap32((a.__order - b.__order) | 0) < 0);
 	}
 
 	function up(at:Int):Void {

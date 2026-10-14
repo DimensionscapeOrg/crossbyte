@@ -81,7 +81,9 @@ final class RPCDeadlines {
 		__due[at] = due;
 		__milliseconds[at] = milliseconds;
 		__order[at] = __added;
-		__added = (__added + 1) | 0;
+		// Wrapping, on PHP too (see RPCCommands.__nextRequestId): `__before`
+		// tells the older of two by the sign of their difference.
+		__added = crossbyte.utils.Hash.wrap32((__added + 1) | 0);
 		response.__deadline = deadlineOf(at);
 		__up(at);
 		if (!__firing && (__timer == TimerHandle.INVALID || due < __timerDue)) {
@@ -192,11 +194,11 @@ final class RPCDeadlines {
 
 	/** Whether the call at `a` falls due before the one at `b`: sooner, or as soon and added first. **/
 	inline function __before(a:Int, b:Int):Bool {
-		return __due[a] < __due[b] || (__due[a] == __due[b] && ((__order[a] - __order[b]) | 0) < 0);
+		return __due[a] < __due[b] || (__due[a] == __due[b] && crossbyte.utils.Hash.wrap32((__order[a] - __order[b]) | 0) < 0);
 	}
 
 	inline function __sooner(due:Float, order:Int, at:Int):Bool {
-		return due < __due[at] || (due == __due[at] && ((order - __order[at]) | 0) < 0);
+		return due < __due[at] || (due == __due[at] && crossbyte.utils.Hash.wrap32((order - __order[at]) | 0) < 0);
 	}
 
 	function __up(at:Int):Void {
