@@ -69,4 +69,12 @@ enum abstract JWTRejection(String) to String {
 	 * where the verifier expects none.
 	 */
 	var WRONG_AUDIENCE = "wrong-audience";
+
+	/**
+	 * Its `jti` is on `JWT.revocations`: the token was revoked before its
+	 * `exp`, or the list, full, refuses it with the tokens nearest their
+	 * own expiry (see `JWTRevocationList`). Checked last, so a token that
+	 * fails another check says that one.
+	 */
+	var REVOKED = "revoked";
 }

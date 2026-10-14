@@ -59,6 +59,7 @@ const STANDALONE = [
   'src/crossbyte/auth/jwt/JWK.hx',
   'src/crossbyte/auth/jwt/JWKSet.hx',
   'src/crossbyte/auth/jwt/JWT.hx',
+  'src/crossbyte/auth/jwt/JWTRevocationList.hx',
   'src/crossbyte/cluster/SnowflakeId.hx',
   'src/crossbyte/core/Config.hx',
   'src/crossbyte/core/ConfigTree.hx',

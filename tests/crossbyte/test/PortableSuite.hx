@@ -236,6 +236,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.auth.jwt.JWTOptionsTest());
 		// Times past 2038 and a 32-bit Int are where the targets would disagree.
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTRevocationTest());
 		// PKCE everywhere; the token exchange itself against Node's own http
 		// server, where a provider that never answers must still end the
 		// exchange. The browser has no server to run it against and skips that part.

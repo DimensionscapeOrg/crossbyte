@@ -36,6 +36,28 @@ using StringTools;
  * listed as `{key: "default", secret: ...}` for its tokens to verify. For keys
  * an issuer publishes, `JWKSet.signer` turns a fetched key set into the
  * argument, and `UNKNOWN_KEY` is the cue to fetch it again.
+ *
+ * ## Revoking tokens
+ *
+ * A token is good until its `exp` wherever it is shown, so a service that
+ * signs a user out, or closes an account, before then keeps a list of the
+ * tokens it no longer takes: `revocations`, by their `jti`, each held until
+ * its token would have expired anyway. `revoke` checks a token is one of
+ * this verifier's and lists it, and `verify` refuses it from then on as
+ * `REVOKED`:
+ *
+ * ```haxe
+ * // Given jwt:JWT, token:String.
+ * jwt.revocations = new JWTRevocationList();
+ * jwt.revoke(token); // signed out
+ * trace(jwt.verify(token).rejection); // revoked
+ * ```
+ *
+ * A token is revoked by its `jti`, so give each one an id of its own as it
+ * is issued; one without is never refused by the list. Rotating the key
+ * (`updateKeys`) ends every token it signed at once. The list is in memory
+ * and bounded: `JWTRevocationList` says what happens when it is full, and
+ * how to keep it across restarts and share it between processes.
  */
 class JWT {
 	@:noCompletion private var __keys:JWTKeys;
@@ -108,6 +130,18 @@ class JWT {
 	 * since several major issuers send none.
 	 */
 	public var requireType:Bool = false;
+
+	/**
+	 * Tokens refused before their time, by `jti`: a token on the list is
+	 * `REVOKED`, checked last, so a revoked token past its `exp` reads as
+	 * `EXPIRED` and one with a bad signature as `BAD_SIGNATURE`. `null`, as
+	 * it starts, checks nothing and costs a verification nothing. `revoke`
+	 * lists a token. One list can serve several verifiers (one for access
+	 * tokens and one for refresh tokens, say); keep its `leeway` at least
+	 * each one's, or let `revoke` do it, which holds each entry for this
+	 * verifier's `leeway` when that is the longer. See `JWTRevocationList`.
+	 */
+	public var revocations:Null<JWTRevocationList> = null;
 
 	/**
 	 * Creates a JWT helper from signer configuration and optional verification expectations.
@@ -237,6 +271,66 @@ class JWT {
 	}
 
 	/**
+	 * Lists `token` on `revocations`, so that `verify` refuses it as
+	 * `REVOKED` until it would have expired anyway: its `exp` and the longer
+	 * of this verifier's `leeway` and the list's. The token is checked first
+	 * as `verifySignature` checks it, so only a token this verifier would
+	 * take, but for its times, is listed, and a stream of made-up ones fills
+	 * nothing. What has passed is judged by the wall clock.
+	 *
+	 * `revoke(token)` and `revoke(token, now)` are two functions, as
+	 * `verify`'s are.
+	 *
+	 * @return Whether the token is refused as revoked from now on: `true`
+	 *         once listed, or when it was already; `false` for a token this
+	 *         verifier does not take (its signature, its issuer, its
+	 *         audience), one without a `jti` or an `exp`, and one past its
+	 *         time, which `verify` refuses as `EXPIRED` anyway.
+	 * @throws IllegalOperationError When `revocations` is `null`.
+	 */
+	public overload extern inline function revoke(token:String):Bool {
+		return __revoke(token, 0.0, true);
+	}
+
+	/**
+	 * The same, judging what has passed by `now`, in seconds since the epoch.
+	 *
+	 * @throws ArgumentError For a `now` of NaN.
+	 */
+	public overload extern inline function revoke(token:String, now:Float):Bool {
+		return __revoke(token, now, false);
+	}
+
+	@:noCompletion private function __revoke(token:String, now:Float, clock:Bool):Bool {
+		final list:Null<JWTRevocationList> = revocations;
+		if (list == null) {
+			throw new crossbyte.errors.IllegalOperationError("JWT.revoke lists a token on revocations, and this JWT has none: set revocations to a JWTRevocationList first.");
+		}
+		#if !static
+		// A time given as null asks the wall clock, as in `__verify`.
+		if (!clock && (now : Null<Float>) == null) {
+			clock = true;
+		}
+		#end
+		if (!clock && Math.isNaN(now)) {
+			throw new ArgumentError("JWT.revoke was given a time of NaN.");
+		}
+		final checked:JWTVerification = __verify(token, 0.0, true, false);
+		if (!checked.valid) {
+			return checked.rejection == REVOKED;
+		}
+		final tokenId:Null<String> = checked.payload.tokenId;
+		final expiresAt:Null<Float> = checked.payload.expiresAt;
+		if (tokenId == null || expiresAt == null) {
+			return false;
+		}
+		// Held as long as this verifier takes a token past its exp, where
+		// that is longer than the list's own leeway.
+		final until:Float = expiresAt + (leeway > list.leeway ? leeway - list.leeway : 0);
+		return clock ? list.revoke(tokenId, until) : list.revoke(tokenId, until, now);
+	}
+
+	/**
 		`verify`, the time `now` or, with `clock`, the wall clock's; with
 		`times` false, `verifySignature`.
 	**/
@@ -357,8 +451,9 @@ class JWT {
 		// with a cast exception), and read the field with no check of their
 		// own. A missing or non-numeric `exp` is MISSING_EXPIRY.
 		var issuerValue:Dynamic = Reflect.field(claims, "iss");
+		var tokenIdValue:Dynamic = Reflect.field(claims, "jti");
 		if (!__isTextOrNull(Reflect.field(claims, "sub")) || !__isTextOrNull(Reflect.field(claims, "name")) || !__isTextOrNull(issuerValue)
-			|| !__isTextOrNull(Reflect.field(claims, "jti"))) {
+			|| !__isTextOrNull(tokenIdValue)) {
 			return JWTVerification.refused(MALFORMED);
 		}
 		var issuedAtValue:Dynamic = Reflect.field(claims, "iat");
@@ -414,6 +509,12 @@ class JWT {
 			// value in `aud` must reject the token, so one minted for another
 			// service the issuer and key serve is refused here.
 			return JWTVerification.refused(WRONG_AUDIENCE);
+		}
+
+		// Last: only a token taken but for it is refused as revoked.
+		var revoked:Null<JWTRevocationList> = revocations;
+		if (revoked != null && tokenIdValue != null && revoked.isRevoked(tokenIdValue, expiresAt)) {
+			return JWTVerification.refused(REVOKED);
 		}
 
 		return JWTVerification.accepted(JWTPayload.ofData(claims));
