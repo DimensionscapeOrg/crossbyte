@@ -6,6 +6,7 @@
 //
 //   node tests/perf/rpc/run.js --grpc-node <dir holding node_modules> [--reps 3]
 //        [--systems crossbyte,grpc-go,grpc-go-1,grpc-js] [--warmup 2] [--seconds 5]
+//        [--kinds small,4KB,intmap8,intmap256,strmap8,strmap256]
 //        [--out export/rpc-bench/results.jsonl]
 //   node tests/perf/rpc/run.js --summary export/rpc-bench/results.jsonl
 //
@@ -43,14 +44,27 @@ const crossbyteNode = path.join(root, "export/rpc-bench/node/bench.js");
 const grpcJs = path.join(root, "tests/perf/rpc/grpc-js/grpc_bench.js");
 
 const SHAPES = [[1, 1], [8, 32]];
-const KINDS = ["small", "4KB"];
+// small, 4KB, and maps of string to int32 or string, of a number of entries:
+// intmap8, intmap256, strmap8, strmap256.
+const KINDS = opt("kinds", "small,4KB").split(",");
+
+// The bench kind each system calls a cell's kind, and the entries of a map.
+function benchKind(kind, grpc) {
+	if (kind === "small") return {kind: grpc ? "num" : "int", entries: 0};
+	if (kind === "4KB") return {kind: "blob", entries: 0};
+	const map = /^(intmap|strmap)(\d+)$/.exec(kind);
+	if (map) return {kind: map[1], entries: Number(map[2])};
+	throw new Error("unknown kind " + kind);
+}
 
 // What each system runs, as [command, args, env] for a server and a client.
 function commands(system, kind, port, connections, inflight, warm, secs) {
 	const node = process.execPath;
-	const crossbyteKind = kind === "small" ? "int" : "blob";
-	const grpcKind = kind === "small" ? "num" : "blob";
-	const window = ["--warmup", String(warm), "--seconds", String(secs)];
+	const ours = benchKind(kind, false);
+	const theirs = benchKind(kind, true);
+	const crossbyteKind = ours.kind;
+	const grpcKind = theirs.kind;
+	const window = ["--warmup", String(warm), "--seconds", String(secs), "--entries", String(ours.entries)];
 	const shape = ["--connections", String(connections), "--inflight", String(inflight)];
 	switch (system) {
 		case "crossbyte":
@@ -308,7 +322,7 @@ function summary(file) {
 		if (!line.trim()) continue;
 		const r = JSON.parse(line);
 		if (r.failed) continue;
-		const kind = r.kind === "blob" || r.kind === "4KB" ? "4 KB" : "small";
+		const kind = r.kind === "blob" || r.kind === "4KB" ? "4 KB" : (r.kind === "small" || r.kind === "int" || r.kind === "num" ? "small" : r.kind);
 		const key = [r.system, kind, r.connections, r.inflight].join("|");
 		if (!cells.has(key)) cells.set(key, []);
 		cells.get(key).push(r);

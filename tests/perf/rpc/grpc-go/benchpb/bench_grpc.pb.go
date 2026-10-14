@@ -19,19 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Bench_Num_FullMethodName  = "/bench.Bench/Num"
-	Bench_Blob_FullMethodName = "/bench.Bench/Blob"
+	Bench_Num_FullMethodName    = "/bench.Bench/Num"
+	Bench_Blob_FullMethodName   = "/bench.Bench/Blob"
+	Bench_IntMap_FullMethodName = "/bench.Bench/IntMap"
+	Bench_StrMap_FullMethodName = "/bench.Bench/StrMap"
 )
 
 // BenchClient is the client API for Bench service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// The two calls measured: a small one (an int each way) and one of 4 KB
-// each way, as RpcCallBench measures its num and blob calls.
+// The calls measured: a small one (an int each way), one of 4 KB each way,
+// and a map each way (string to int32, and string to string), as
+// RpcCallBench measures its num, blob, intmap and strmap calls.
 type BenchClient interface {
 	Num(ctx context.Context, in *NumMessage, opts ...grpc.CallOption) (*NumMessage, error)
 	Blob(ctx context.Context, in *BlobMessage, opts ...grpc.CallOption) (*BlobMessage, error)
+	IntMap(ctx context.Context, in *IntMapMessage, opts ...grpc.CallOption) (*IntMapMessage, error)
+	StrMap(ctx context.Context, in *StrMapMessage, opts ...grpc.CallOption) (*StrMapMessage, error)
 }
 
 type benchClient struct {
@@ -62,15 +67,38 @@ func (c *benchClient) Blob(ctx context.Context, in *BlobMessage, opts ...grpc.Ca
 	return out, nil
 }
 
+func (c *benchClient) IntMap(ctx context.Context, in *IntMapMessage, opts ...grpc.CallOption) (*IntMapMessage, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntMapMessage)
+	err := c.cc.Invoke(ctx, Bench_IntMap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *benchClient) StrMap(ctx context.Context, in *StrMapMessage, opts ...grpc.CallOption) (*StrMapMessage, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StrMapMessage)
+	err := c.cc.Invoke(ctx, Bench_StrMap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BenchServer is the server API for Bench service.
 // All implementations must embed UnimplementedBenchServer
 // for forward compatibility.
 //
-// The two calls measured: a small one (an int each way) and one of 4 KB
-// each way, as RpcCallBench measures its num and blob calls.
+// The calls measured: a small one (an int each way), one of 4 KB each way,
+// and a map each way (string to int32, and string to string), as
+// RpcCallBench measures its num, blob, intmap and strmap calls.
 type BenchServer interface {
 	Num(context.Context, *NumMessage) (*NumMessage, error)
 	Blob(context.Context, *BlobMessage) (*BlobMessage, error)
+	IntMap(context.Context, *IntMapMessage) (*IntMapMessage, error)
+	StrMap(context.Context, *StrMapMessage) (*StrMapMessage, error)
 	mustEmbedUnimplementedBenchServer()
 }
 
@@ -86,6 +114,12 @@ func (UnimplementedBenchServer) Num(context.Context, *NumMessage) (*NumMessage, 
 }
 func (UnimplementedBenchServer) Blob(context.Context, *BlobMessage) (*BlobMessage, error) {
 	return nil, status.Error(codes.Unimplemented, "method Blob not implemented")
+}
+func (UnimplementedBenchServer) IntMap(context.Context, *IntMapMessage) (*IntMapMessage, error) {
+	return nil, status.Error(codes.Unimplemented, "method IntMap not implemented")
+}
+func (UnimplementedBenchServer) StrMap(context.Context, *StrMapMessage) (*StrMapMessage, error) {
+	return nil, status.Error(codes.Unimplemented, "method StrMap not implemented")
 }
 func (UnimplementedBenchServer) mustEmbedUnimplementedBenchServer() {}
 func (UnimplementedBenchServer) testEmbeddedByValue()               {}
@@ -144,6 +178,42 @@ func _Bench_Blob_Handler(srv interface{}, ctx context.Context, dec func(interfac
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Bench_IntMap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IntMapMessage)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BenchServer).IntMap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Bench_IntMap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BenchServer).IntMap(ctx, req.(*IntMapMessage))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Bench_StrMap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StrMapMessage)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BenchServer).StrMap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Bench_StrMap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BenchServer).StrMap(ctx, req.(*StrMapMessage))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Bench_ServiceDesc is the grpc.ServiceDesc for Bench service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -158,6 +228,14 @@ var Bench_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Blob",
 			Handler:    _Bench_Blob_Handler,
+		},
+		{
+			MethodName: "IntMap",
+			Handler:    _Bench_IntMap_Handler,
+		},
+		{
+			MethodName: "StrMap",
+			Handler:    _Bench_StrMap_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

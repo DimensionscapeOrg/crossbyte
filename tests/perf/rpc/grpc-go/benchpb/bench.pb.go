@@ -21,6 +21,94 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type IntMapMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	M             map[string]int32       `protobuf:"bytes,1,rep,name=m,proto3" json:"m,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntMapMessage) Reset() {
+	*x = IntMapMessage{}
+	mi := &file_bench_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntMapMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntMapMessage) ProtoMessage() {}
+
+func (x *IntMapMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_bench_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntMapMessage.ProtoReflect.Descriptor instead.
+func (*IntMapMessage) Descriptor() ([]byte, []int) {
+	return file_bench_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *IntMapMessage) GetM() map[string]int32 {
+	if x != nil {
+		return x.M
+	}
+	return nil
+}
+
+type StrMapMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	M             map[string]string      `protobuf:"bytes,1,rep,name=m,proto3" json:"m,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StrMapMessage) Reset() {
+	*x = StrMapMessage{}
+	mi := &file_bench_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StrMapMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StrMapMessage) ProtoMessage() {}
+
+func (x *StrMapMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_bench_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StrMapMessage.ProtoReflect.Descriptor instead.
+func (*StrMapMessage) Descriptor() ([]byte, []int) {
+	return file_bench_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *StrMapMessage) GetM() map[string]string {
+	if x != nil {
+		return x.M
+	}
+	return nil
+}
+
 type NumMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	V             int32                  `protobuf:"varint,1,opt,name=v,proto3" json:"v,omitempty"`
@@ -30,7 +118,7 @@ type NumMessage struct {
 
 func (x *NumMessage) Reset() {
 	*x = NumMessage{}
-	mi := &file_bench_proto_msgTypes[0]
+	mi := &file_bench_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +130,7 @@ func (x *NumMessage) String() string {
 func (*NumMessage) ProtoMessage() {}
 
 func (x *NumMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bench_proto_msgTypes[0]
+	mi := &file_bench_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +143,7 @@ func (x *NumMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NumMessage.ProtoReflect.Descriptor instead.
 func (*NumMessage) Descriptor() ([]byte, []int) {
-	return file_bench_proto_rawDescGZIP(), []int{0}
+	return file_bench_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *NumMessage) GetV() int32 {
@@ -74,7 +162,7 @@ type BlobMessage struct {
 
 func (x *BlobMessage) Reset() {
 	*x = BlobMessage{}
-	mi := &file_bench_proto_msgTypes[1]
+	mi := &file_bench_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -86,7 +174,7 @@ func (x *BlobMessage) String() string {
 func (*BlobMessage) ProtoMessage() {}
 
 func (x *BlobMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bench_proto_msgTypes[1]
+	mi := &file_bench_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -99,7 +187,7 @@ func (x *BlobMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlobMessage.ProtoReflect.Descriptor instead.
 func (*BlobMessage) Descriptor() ([]byte, []int) {
-	return file_bench_proto_rawDescGZIP(), []int{1}
+	return file_bench_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BlobMessage) GetData() []byte {
@@ -113,15 +201,27 @@ var File_bench_proto protoreflect.FileDescriptor
 
 const file_bench_proto_rawDesc = "" +
 	"\n" +
-	"\vbench.proto\x12\x05bench\"\x1a\n" +
+	"\vbench.proto\x12\x05bench\"p\n" +
+	"\rIntMapMessage\x12)\n" +
+	"\x01m\x18\x01 \x03(\v2\x1b.bench.IntMapMessage.MEntryR\x01m\x1a4\n" +
+	"\x06MEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"p\n" +
+	"\rStrMapMessage\x12)\n" +
+	"\x01m\x18\x01 \x03(\v2\x1b.bench.StrMapMessage.MEntryR\x01m\x1a4\n" +
+	"\x06MEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1a\n" +
 	"\n" +
 	"NumMessage\x12\f\n" +
 	"\x01v\x18\x01 \x01(\x05R\x01v\"!\n" +
 	"\vBlobMessage\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data2d\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data2\xd0\x01\n" +
 	"\x05Bench\x12+\n" +
 	"\x03Num\x12\x11.bench.NumMessage\x1a\x11.bench.NumMessage\x12.\n" +
-	"\x04Blob\x12\x12.bench.BlobMessage\x1a\x12.bench.BlobMessageB\x12Z\x10rpcbench/benchpbb\x06proto3"
+	"\x04Blob\x12\x12.bench.BlobMessage\x1a\x12.bench.BlobMessage\x124\n" +
+	"\x06IntMap\x12\x14.bench.IntMapMessage\x1a\x14.bench.IntMapMessage\x124\n" +
+	"\x06StrMap\x12\x14.bench.StrMapMessage\x1a\x14.bench.StrMapMessageB\x12Z\x10rpcbench/benchpbb\x06proto3"
 
 var (
 	file_bench_proto_rawDescOnce sync.Once
@@ -135,21 +235,31 @@ func file_bench_proto_rawDescGZIP() []byte {
 	return file_bench_proto_rawDescData
 }
 
-var file_bench_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_bench_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_bench_proto_goTypes = []any{
-	(*NumMessage)(nil),  // 0: bench.NumMessage
-	(*BlobMessage)(nil), // 1: bench.BlobMessage
+	(*IntMapMessage)(nil), // 0: bench.IntMapMessage
+	(*StrMapMessage)(nil), // 1: bench.StrMapMessage
+	(*NumMessage)(nil),    // 2: bench.NumMessage
+	(*BlobMessage)(nil),   // 3: bench.BlobMessage
+	nil,                   // 4: bench.IntMapMessage.MEntry
+	nil,                   // 5: bench.StrMapMessage.MEntry
 }
 var file_bench_proto_depIdxs = []int32{
-	0, // 0: bench.Bench.Num:input_type -> bench.NumMessage
-	1, // 1: bench.Bench.Blob:input_type -> bench.BlobMessage
-	0, // 2: bench.Bench.Num:output_type -> bench.NumMessage
-	1, // 3: bench.Bench.Blob:output_type -> bench.BlobMessage
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	4, // 0: bench.IntMapMessage.m:type_name -> bench.IntMapMessage.MEntry
+	5, // 1: bench.StrMapMessage.m:type_name -> bench.StrMapMessage.MEntry
+	2, // 2: bench.Bench.Num:input_type -> bench.NumMessage
+	3, // 3: bench.Bench.Blob:input_type -> bench.BlobMessage
+	0, // 4: bench.Bench.IntMap:input_type -> bench.IntMapMessage
+	1, // 5: bench.Bench.StrMap:input_type -> bench.StrMapMessage
+	2, // 6: bench.Bench.Num:output_type -> bench.NumMessage
+	3, // 7: bench.Bench.Blob:output_type -> bench.BlobMessage
+	0, // 8: bench.Bench.IntMap:output_type -> bench.IntMapMessage
+	1, // 9: bench.Bench.StrMap:output_type -> bench.StrMapMessage
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_bench_proto_init() }
@@ -163,7 +273,7 @@ func file_bench_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bench_proto_rawDesc), len(file_bench_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

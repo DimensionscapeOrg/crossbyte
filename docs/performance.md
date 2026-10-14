@@ -159,6 +159,81 @@ Reading it:
   between them is the request id, a varuint, which takes a third byte from a session's 16,384th call); gRPC's are
   76 with grpc-go when many calls share a connection, 166 one call at a time, and 90 to 92 with grpc-js.
 
+## Maps beside gRPC
+
+The same benches, the same way (2026-10-13), with a map each way: CrossByte's `Map<String, Int>` and
+`Map<String, String>` against protobuf's `map<string, int32>` and `map<string, string>`, of 8 entries and of 256. The
+keys are `"key0"` up, the values their number, or `"value"` and their number. Each server answers with the map that
+arrived, so it reads a map and writes one again, and each client sends one map made once and reads the map that comes
+back. CrossByte writes a map's entries in the order of their keys, which it sorts each time; grpc-go and grpc-js write
+them in their maps' own order, with no sort.
+
+| System | Map | Connections x in flight | Calls/s | p50 | p99 | Server CPU a call | Client CPU a call | Bytes a call, out + back |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CrossByte, native, TCP | `String` to `Int`, 8 | 1 x 1 | 14,683 (13,384-15,189) | 52 us | 143 us | 37 us | 37 us | 84 + 84 |
+| CrossByte, native, TCP | `String` to `Int`, 8 | 8 x 32 | 958,614 (842,527-1,034,266) | 181 us | 1,910 us | 0.88 us | 0.91 us | 85 + 85 |
+| CrossByte, native, TCP | `String` to `Int`, 256 | 1 x 1 | 7,504 (7,144-8,152) | 106 us | 1,419 us | 66 us | 67 us | 2,719 + 2,719 |
+| CrossByte, native, TCP | `String` to `Int`, 256 | 8 x 32 | 41,641 (37,951-44,187) | 6,022 us | 12,285 us | 23 us | 25 us | 2,729 + 2,728 |
+| CrossByte, native, TCP | `String` to `String`, 8 | 1 x 1 | 13,943 (13,029-15,084) | 54 us | 196 us | 39 us | 39 us | 108 + 108 |
+| CrossByte, native, TCP | `String` to `String`, 8 | 8 x 32 | 637,211 (576,675-771,900) | 291 us | 2,151 us | 1.2 us | 1.3 us | 109 + 109 |
+| CrossByte, native, TCP | `String` to `String`, 256 | 1 x 1 | 6,977 (6,718-7,652) | 110 us | 1,447 us | 70 us | 72 us | 3,890 + 3,890 |
+| CrossByte, native, TCP | `String` to `String`, 256 | 8 x 32 | 33,567 (32,086-37,585) | 7,341 us | 15,275 us | 29 us | 31 us | 3,906 + 3,905 |
+| CrossByte, Node, TCP | `String` to `Int`, 8 | 1 x 1 | 10,122 (9,733-10,983) | 92 us | 164 us | 59 us | 61 us | 84 + 84 |
+| CrossByte, Node, TCP | `String` to `Int`, 8 | 8 x 32 | 429,561 (405,455-492,741) | 559 us | 974 us | 2.2 us | 2.3 us | 85 + 85 |
+| CrossByte, Node, TCP | `String` to `Int`, 256 | 1 x 1 | 4,758 (4,494-5,062) | 200 us | 334 us | 118 us | 125 us | 2,720 + 2,720 |
+| CrossByte, Node, TCP | `String` to `Int`, 256 | 8 x 32 | 17,857 (17,072-20,578) | 13,835 us | 19,372 us | 52 us | 57 us | 2,737 + 2,737 |
+| CrossByte, Node, TCP | `String` to `String`, 8 | 1 x 1 | 9,915 (9,735-10,679) | 96 us | 167 us | 61 us | 63 us | 108 + 108 |
+| CrossByte, Node, TCP | `String` to `String`, 8 | 8 x 32 | 343,760 (325,315-384,890) | 696 us | 1,187 us | 2.8 us | 2.9 us | 109 + 109 |
+| CrossByte, Node, TCP | `String` to `String`, 256 | 1 x 1 | 3,959 (3,736-4,137) | 244 us | 408 us | 143 us | 148 us | 3,890 + 3,890 |
+| CrossByte, Node, TCP | `String` to `String`, 256 | 8 x 32 | 14,168 (11,580-14,292) | 17,897 us | 24,569 us | 68 us | 72 us | 3,925 + 3,924 |
+| grpc-go | `string` to `int32`, 8 | 1 x 1 | 3,185 (2,038-3,423) | 124 us | 9,128 us | 160 us | 162 us | 157 + 163 |
+| grpc-go | `string` to `int32`, 8 | 8 x 32 | 173,291 (156,185-192,210) | 1,211 us | 4,301 us | 43 us | 51 us | 112 + 118 |
+| grpc-go | `string` to `int32`, 256 | 1 x 1 | 3,459 (3,142-3,817) | 253 us | 655 us | 335 us | 357 us | 3,167 + 3,173 |
+| grpc-go | `string` to `int32`, 256 | 8 x 32 | 28,606 (28,229-31,653) | 8,268 us | 23,152 us | 316 us | 291 us | 3,124 + 3,130 |
+| grpc-go | `string` to `string`, 8 | 1 x 1 | 2,737 (2,548-2,778) | 122 us | 9,128 us | 159 us | 160 us | 205 + 211 |
+| grpc-go | `string` to `string`, 8 | 8 x 32 | 174,236 (167,308-182,473) | 1,211 us | 4,134 us | 46 us | 52 us | 160 + 166 |
+| grpc-go | `string` to `string`, 256 | 1 x 1 | 3,017 (3,010-3,377) | 280 us | 768 us | 386 us | 400 us | 4,977 + 4,983 |
+| grpc-go | `string` to `string`, 256 | 8 x 32 | 27,911 (24,816-29,164) | 8,433 us | 25,060 us | 360 us | 322 us | 4,934 + 4,940 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `int32`, 8 | 1 x 1 | 7,640 (7,598-7,880) | 127 us | 221 us | 78 us | 77 us | 157 + 163 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `int32`, 8 | 8 x 32 | 73,940 (73,029-82,582) | 3,325 us | 7,056 us | 10 us | 13 us | 112 + 118 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `int32`, 256 | 1 x 1 | 3,771 (3,682-3,885) | 248 us | 582 us | 148 us | 148 us | 3,167 + 3,173 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `int32`, 256 | 8 x 32 | 9,610 (9,071-10,207) | 25,060 us | 57,570 us | 94 us | 105 us | 3,122 + 3,128 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `string`, 8 | 1 x 1 | 7,828 (7,551-8,078) | 122 us | 225 us | 76 us | 75 us | 205 + 211 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `string`, 8 | 8 x 32 | 75,370 (63,304-81,221) | 3,260 us | 6,918 us | 9.7 us | 12 us | 160 + 166 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `string`, 256 | 1 x 1 | 3,507 (3,303-3,665) | 264 us | 618 us | 159 us | 158 us | 4,977 + 4,983 |
+| grpc-go, `GOMAXPROCS=1` | `string` to `string`, 256 | 8 x 32 | 8,793 (7,320-9,245) | 27,669 us | 67,452 us | 106 us | 115 us | 4,932 + 4,938 |
+| grpc-js, Node | `string` to `int32`, 8 | 1 x 1 | 3,685 (3,616-3,785) | 253 us | 441 us | 157 us | 209 us | 127 + 119 |
+| grpc-js, Node | `string` to `int32`, 8 | 8 x 32 | 20,830 (19,914-23,452) | 10,695 us | 20,969 us | 33 us | 68 us | 128 + 120 |
+| grpc-js, Node | `string` to `int32`, 256 | 1 x 1 | 2,106 (1,962-2,156) | 450 us | 768 us | 265 us | 345 us | 3,139 + 3,131 |
+| grpc-js, Node | `string` to `int32`, 256 | 8 x 32 | 6,829 (6,056-7,417) | 36,508 us | 55,334 us | 147 us | 185 us | 3,154 + 3,145 |
+| grpc-js, Node | `string` to `string`, 8 | 1 x 1 | 3,733 (3,600-3,899) | 253 us | 441 us | 154 us | 213 us | 175 + 167 |
+| grpc-js, Node | `string` to `string`, 8 | 8 x 32 | 22,597 (19,369-23,855) | 10,078 us | 19,760 us | 32 us | 63 us | 176 + 168 |
+| grpc-js, Node | `string` to `string`, 256 | 1 x 1 | 2,021 (1,915-2,135) | 468 us | 738 us | 275 us | 366 us | 4,950 + 4,942 |
+| grpc-js, Node | `string` to `string`, 256 | 8 x 32 | 5,923 (5,199-6,281) | 43,631 us | 63,562 us | 187 us | 224 us | 4,972 + 4,961 |
+
+Reading it:
+
+- **Bytes on the wire.** A map of 8 `String` to `Int` entries and its answer took 168 to 170 bytes over TCP, where
+  grpc-go took 229 to 230 with calls sharing a connection (320 one at a time) and grpc-js 246 to 247; of 256 entries, 5,439 to
+  5,458 against 6,250 to 6,340 and 6,270 to 6,299. `String` to `String`: 216 to 218 against 325 to 416 and 342 to
+  344 for 8 entries, and 7,779 to 7,850 against 9,870 to 9,960 and 9,892 to 9,933 for 256. An entry is its key's
+  length, its UTF-8 and its value (an `Int` four bytes); protobuf's carries a tag and a length for the entry and a
+  tag for each of its key and value too.
+- **Processor time a call,** many calls in flight: natively the server spent 0.88 us on a call of 8 `String` to
+  `Int` entries and 23 us on one of 256, against grpc-go's 10 and 94 us on one thread (43 and 316 us on all 32) and
+  grpc-js's 33 and 147 us; with `String` values 1.2 and 29 us against 9.7 and 106 (46 and 360) and 32 and 187. On
+  Node, CrossByte's server spent 2.2 and 52 us, and 2.8 and 68 us. One call at a time, where a process's time
+  includes what it spends between calls, natively 37 to 70 us against grpc-go's 76 to 159 on one thread and
+  grpc-js's 154 to 275; on Node 59 to 143 us.
+- **Allocation.** Natively a call of 8 `String` to `Int` entries and its answer, both ends in one process, allocates
+  1,776 bytes, on the JVM 1,760: each side's map as it is read, with its keys, and each side's sorted copy of the
+  keys it writes; no value is boxed natively. Of 256 entries, 63,648 bytes on the JVM (natively too many for the
+  allocation meter to read by its method); `AllocationBudgetTest` holds both.
+- **Sorting** is what the canonical order costs. In `tests/bench`, natively the keys of a map of 256 are copied and
+  sorted in 11 us, and a call of 256 entries and its answer, both ends in one process, takes 43 us, two sorts of it
+  (each side sorts what it writes): half; on the JVM 5.8 us of 29. A map of 8 is sorted in 81 ns, and its call and
+  answer take 0.87 us natively.
+
 ## RPC over local IPC
 
 The same small call, one at a time, natively on Windows between two processes over `local://`: 90 us (p50) and
@@ -243,6 +318,12 @@ haxe tests/perf/rpc/rpc-bench.hxml
 cd tests/perf/rpc/grpc-go && go build -o ../../../../export/rpc-bench/grpcbench.exe . && cd ../../../..
 npm install --prefix ../grpc-node @grpc/grpc-js@1.14.6 @grpc/proto-loader@0.8.1
 node tests/perf/rpc/run.js --grpc-node ../grpc-node --systems crossbyte,crossbyte-ws,crossbyte-node,grpc-go,grpc-go-1,grpc-js
+```
+
+The map calls are kinds of their own, `--kinds intmap8,intmap256,strmap8,strmap256` (the default is `small,4KB`):
+
+```sh
+node tests/perf/rpc/run.js --grpc-node ../grpc-node --systems crossbyte,crossbyte-node,grpc-go,grpc-go-1,grpc-js --kinds intmap8,intmap256,strmap8,strmap256
 ```
 
 (Off Windows, name it `grpcbench`, without `.exe`.) Every cell is kept in `export/rpc-bench/results.jsonl`, and

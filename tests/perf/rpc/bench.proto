@@ -4,11 +4,22 @@ package bench;
 
 option go_package = "rpcbench/benchpb";
 
-// The two calls measured: a small one (an int each way) and one of 4 KB
-// each way, as RpcCallBench measures its num and blob calls.
+// The calls measured: a small one (an int each way), one of 4 KB each way,
+// and a map each way (string to int32, and string to string), as
+// RpcCallBench measures its num, blob, intmap and strmap calls.
 service Bench {
   rpc Num (NumMessage) returns (NumMessage);
   rpc Blob (BlobMessage) returns (BlobMessage);
+  rpc IntMap (IntMapMessage) returns (IntMapMessage);
+  rpc StrMap (StrMapMessage) returns (StrMapMessage);
+}
+
+message IntMapMessage {
+  map<string, int32> m = 1;
+}
+
+message StrMapMessage {
+  map<string, string> m = 1;
 }
 
 message NumMessage {

@@ -3,7 +3,7 @@
 //
 //   RpcCallBench server --transport tcp|tls|ws|wss|rudp|rudpenc|local --port 4900
 //   RpcCallBench client --transport tcp --port 4900 --connections 1 --inflight 1
-//                       --kind int|string|struct|blob|oneway --warmup 2 --seconds 5
+//                       --kind int|string|struct|blob|intmap|strmap|oneway --entries 8 --warmup 2 --seconds 5
 //
 // The client keeps `inflight` calls waiting on each connection, making the
 // next as each is answered, through receivers (nothing allocated for a call),
@@ -70,6 +70,8 @@ interface CallContract {
 	function text(v:Int):String;
 	function state(v:Int):BenchState;
 	function blob(v:Bytes):Bytes;
+	function intMap(v:Map<String, Int>):Map<String, Int>;
+	function strMap(v:Map<String, String>):Map<String, String>;
 	function note(v:Int):Void;
 	function mark():Int;
 	function report():String;
@@ -112,6 +114,18 @@ class CallHandler extends RPCHandler implements CallContract {
 	}
 
 	public function blob(v:Bytes):Bytes {
+		calls++;
+		return v;
+	}
+
+	// The map that arrived, answered: read into a map, and written again, as
+	// gRPC's benches answer theirs.
+	public function intMap(v:Map<String, Int>):Map<String, Int> {
+		calls++;
+		return v;
+	}
+
+	public function strMap(v:Map<String, String>):Map<String, String> {
 		calls++;
 		return v;
 	}
@@ -305,8 +319,22 @@ class Link implements RPCIntReceiver implements RPCStringReceiver implements RPC
 		b;
 	};
 
+	// The maps a map call sends, made once, as the blob is: keys "key0" up,
+	// values their number, or "value" and their number.
+	public static var intEntries:Map<String, Int> = new Map();
+	public static var strEntries:Map<String, String> = new Map();
+
+	public static function makeMaps(entries:Int):Void {
+		for (i in 0...entries) {
+			intEntries.set("key" + i, i);
+			strEntries.set("key" + i, "value" + i);
+		}
+	}
+
 	public var session:RPCSession<CallCommands, Dynamic>;
 	public var up:Bool = false;
+	final intAnswers:IntMapAnswers;
+	final strAnswers:StrMapAnswers;
 
 	final client:Client;
 	final sentAt:Array<Float> = [for (_ in 0...4096) 0.0];
@@ -314,6 +342,8 @@ class Link implements RPCIntReceiver implements RPCStringReceiver implements RPC
 
 	public function new(client:Client) {
 		this.client = client;
+		intAnswers = new IntMapAnswers(this);
+		strAnswers = new StrMapAnswers(this);
 	}
 
 	public function connect(transport:String, port:Int):Void {
@@ -361,12 +391,16 @@ class Link implements RPCIntReceiver implements RPCStringReceiver implements RPC
 				sentAt[commands.textThen(seq++, this) & 4095] = now;
 			case "blob":
 				sentAt[commands.blobThen(BLOB, this) & 4095] = now;
+			case "intmap":
+				sentAt[commands.intMapThen(intEntries, intAnswers) & 4095] = now;
+			case "strmap":
+				sentAt[commands.strMapThen(strEntries, strAnswers) & 4095] = now;
 			default:
 				commands.note(seq++);
 		}
 	}
 
-	inline function answered(call:Int):Void {
+	public inline function answered(call:Int):Void {
 		client.answered(this, Timer.stamp() - sentAt[call & 4095]);
 	}
 
@@ -384,6 +418,39 @@ class Link implements RPCIntReceiver implements RPCStringReceiver implements RPC
 
 	public function onFailure(call:Int, failure:RPCFailure):Void {
 		client.failures++;
+	}
+}
+
+/** A map call's answer, handed to the link that made it. **/
+class IntMapAnswers implements RPCValueReceiver<Map<String, Int>> {
+	final link:Link;
+
+	public function new(link:Link) {
+		this.link = link;
+	}
+
+	public function onValue(call:Int, value:Map<String, Int>):Void {
+		link.answered(call);
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		link.onFailure(call, failure);
+	}
+}
+
+class StrMapAnswers implements RPCValueReceiver<Map<String, String>> {
+	final link:Link;
+
+	public function new(link:Link) {
+		this.link = link;
+	}
+
+	public function onValue(call:Int, value:Map<String, String>):Void {
+		link.answered(call);
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		link.onFailure(call, failure);
 	}
 }
 
@@ -407,6 +474,7 @@ class Client {
 	public function start():Void {
 		kind = opts.str("kind", "int");
 		inflight = opts.int("inflight", 1);
+		Link.makeMaps(opts.int("entries", 8));
 		final count = opts.int("connections", 1);
 		for (i in 0...count) {
 			final link = new Link(this);
@@ -471,6 +539,7 @@ class Client {
 				system: "crossbyte",
 				transport: opts.str("transport", "tcp"),
 				kind: kind,
+				entries: opts.int("entries", 8),
 				connections: links.length,
 				inflight: inflight,
 				target: #if cpp "native" #elseif jvm "jvm" #elseif js "node" #else "other" #end,

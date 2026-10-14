@@ -2,7 +2,7 @@
 // RpcCallBench, and samples other processes' processor time for run.js.
 //
 //	grpcbench server --port 5200
-//	grpcbench client --port 5200 --kind num|blob --connections 1 --inflight 1 --warmup 2 --seconds 5
+//	grpcbench client --port 5200 --kind num|blob|intmap|strmap --entries 8 --connections 1 --inflight 1 --warmup 2 --seconds 5
 //	grpcbench cpu
 //
 // The client keeps `inflight` calls waiting on each connection (each its own
@@ -97,6 +97,16 @@ func (benchServer) Num(_ context.Context, in *benchpb.NumMessage) (*benchpb.NumM
 
 func (benchServer) Blob(_ context.Context, in *benchpb.BlobMessage) (*benchpb.BlobMessage, error) {
 	return &benchpb.BlobMessage{Data: in.Data}, nil
+}
+
+// The map calls answer with the map that arrived, as RpcCallBench's handler
+// does: decoded into a map, and encoded again.
+func (benchServer) IntMap(_ context.Context, in *benchpb.IntMapMessage) (*benchpb.IntMapMessage, error) {
+	return &benchpb.IntMapMessage{M: in.M}, nil
+}
+
+func (benchServer) StrMap(_ context.Context, in *benchpb.StrMapMessage) (*benchpb.StrMapMessage, error) {
+	return &benchpb.StrMapMessage{M: in.M}, nil
 }
 
 func serve(o opts) {
@@ -196,6 +206,16 @@ func runClient(o opts) {
 		blob[i] = byte((i*31 + 7) & 0xff)
 	}
 
+	// The maps the map calls send, made once, as RpcCallBench makes its own:
+	// keys "key0" up, values their number, or "value" and their number.
+	entries := int(o.num("entries", 8))
+	intMap := make(map[string]int32, entries)
+	strMap := make(map[string]string, entries)
+	for i := 0; i < entries; i++ {
+		intMap["key"+strconv.Itoa(i)] = int32(i)
+		strMap["key"+strconv.Itoa(i)] = "value" + strconv.Itoa(i)
+	}
+
 	clients := make([]benchpb.BenchClient, connections)
 	ready, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -234,9 +254,14 @@ func runClient(o opts) {
 					}
 					sent := nanos()
 					var err error
-					if kind == "blob" {
+					switch kind {
+					case "blob":
 						_, err = client.Blob(ctx, &benchpb.BlobMessage{Data: blob})
-					} else {
+					case "intmap":
+						_, err = client.IntMap(ctx, &benchpb.IntMapMessage{M: intMap})
+					case "strmap":
+						_, err = client.StrMap(ctx, &benchpb.StrMapMessage{M: strMap})
+					default:
 						_, err = client.Num(ctx, &benchpb.NumMessage{V: v & 0xffff})
 						v++
 					}
@@ -276,6 +301,7 @@ func runClient(o opts) {
 	record := map[string]any{
 		"system":       "grpc-go",
 		"kind":         kind,
+		"entries":      entries,
 		"connections":  connections,
 		"inflight":     inflight,
 		"callsPerSec":  math.Round(float64(answers) / elapsed),

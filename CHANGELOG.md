@@ -72,7 +72,11 @@ All notable changes to CrossByte will be documented in this file.
   so one map is the same bytes however it was built. The count is checked
   against what the frame holds before a map is made. Natively a map of
   numbers or strings boxes nothing for them. Its kind in a signature is
-  `[utf8:i32]`.
+  `[utf8:i32]`. Against protobuf's `map<string, int32>` and
+  `map<string, string>` of 8 and 256 entries, measured as the README's gRPC
+  figures were, a call is fewer bytes on the wire and less processor time
+  than grpc-go's and grpc-js's, natively and on Node (`docs/performance.md`,
+  "Maps beside gRPC"); the RPC bench has the map calls (`--kinds`).
 - **RPC error codes cross the wire.** An `RPCError` thrown, returned from
   `beforeCall` or failing a future with an id (`new RPCError("No such
   room.", 3)`) reaches its caller as `RPCFailure.Refused(message, code)`,

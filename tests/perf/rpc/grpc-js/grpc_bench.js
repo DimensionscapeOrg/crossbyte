@@ -1,7 +1,7 @@
 // gRPC unary calls with @grpc/grpc-js, in the shape of RpcCallBench:
 //
 //   node grpc_bench.js <dir holding node_modules> server --port 5200
-//   node grpc_bench.js <dir holding node_modules> client --port 5200 --kind num|blob
+//   node grpc_bench.js <dir holding node_modules> client --port 5200 --kind num|blob|intmap|strmap --entries 8
 //                      --connections 1 --inflight 1 --warmup 2 --seconds 5
 //
 // The modules are @grpc/grpc-js and @grpc/proto-loader, installed wherever
@@ -60,7 +60,10 @@ if (role === "server") {
 	const server = new grpc.Server();
 	server.addService(bench.Bench.service, {
 		Num: (call, callback) => callback(null, {v: call.request.v}),
-		Blob: (call, callback) => callback(null, {data: call.request.data})
+		Blob: (call, callback) => callback(null, {data: call.request.data}),
+		// The map that arrived, decoded and encoded again, as the other benches answer.
+		IntMap: (call, callback) => callback(null, {m: call.request.m}),
+		StrMap: (call, callback) => callback(null, {m: call.request.m})
 	});
 	server.bindAsync("127.0.0.1:" + port, grpc.ServerCredentials.createInsecure(), (error) => {
 		if (error) {
@@ -71,6 +74,7 @@ if (role === "server") {
 	});
 } else {
 	const kind = opt("kind", "num");
+	const entries = Number(opt("entries", "8"));
 	const connections = Number(opt("connections", "1"));
 	const inflight = Number(opt("inflight", "1"));
 	const warmup = Number(opt("warmup", "2"));
@@ -78,6 +82,14 @@ if (role === "server") {
 	const target = opt("target", "127.0.0.1:" + port);
 	const blob = Buffer.alloc(4096);
 	for (let i = 0; i < 4096; i++) blob[i] = (i * 31 + 7) & 0xff;
+	// The maps the map calls send, made once: keys "key0" up, values their
+	// number, or "value" and their number.
+	const intMap = {};
+	const strMap = {};
+	for (let i = 0; i < entries; i++) {
+		intMap["key" + i] = i;
+		strMap["key" + i] = "value" + i;
+	}
 
 	let measuring = false;
 	let answers = 0;
@@ -107,6 +119,10 @@ if (role === "server") {
 		};
 		if (kind === "blob") {
 			client.Blob({data: blob}, done);
+		} else if (kind === "intmap") {
+			client.IntMap({m: intMap}, done);
+		} else if (kind === "strmap") {
+			client.StrMap({m: strMap}, done);
 		} else {
 			client.Num({v: total & 0xffff}, done);
 		}
@@ -134,7 +150,7 @@ if (role === "server") {
 						const elapsed = Number(process.hrtime.bigint() - started) / 1e9;
 						console.log("WINDOW_END");
 						console.log("RESULT " + JSON.stringify({
-							system: "grpc-js", kind, connections, inflight,
+							system: "grpc-js", kind, entries, connections, inflight,
 							callsPerSec: Math.round(answers / elapsed),
 							rttP50us: Math.round(rtt.percentile(0.5) * 1000),
 							rttP99us: Math.round(rtt.percentile(0.99) * 1000),

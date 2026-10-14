@@ -1551,9 +1551,14 @@ trailers: with grpc-js 48 bytes out and 42 back; with grpc-go 35 and 41 when
 many calls share a connection, and 80 and 86 one call at a time. A call of
 4 KB each way is 13 bytes past its payload each way over TCP, at the same id
 size, where gRPC's is 51 out and 44 back with grpc-js, and with grpc-go the
-same as its small call: 35 and 41, or 80 and 86.
+same as its small call: 35 and 41, or 80 and 86. A `Map<String, Int>` of 8
+entries each way is 168 to 170 bytes a call and its answer, where protobuf's
+`map<string, int32>` of the same is 229 to 320 with grpc-go and 246 to 247
+with grpc-js; of 256 entries 5,439 to 5,458 against 6,250 to 6,340 and 6,270
+to 6,299; with many calls in flight the server spends 0.88 and 23 us of
+processor time on one, where grpc-go on one thread spends 10 and 94.
 [performance.md](performance.md#rpc-beside-grpc) has how these were counted,
-and what each call costs in time.
+and what each call costs in time, maps included.
 
 A piece of an answer:
 
