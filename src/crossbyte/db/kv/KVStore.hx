@@ -11,7 +11,8 @@ import haxe.io.Bytes;
 	`MemoryKVStore` keeps its records in memory, on every target;
 	`SQLiteKVStore` in an SQLite database, natively and on PHP; and
 	`PostgresKVStore` in PostgreSQL, natively. `KVRepo` reads and writes
-	typed values in any of them through a `KVCodec`.
+	typed values in any of them through a `KVCodec`, and `AsyncKVStore` and
+	`AsyncKVRepo` run them on worker threads, answering with `Future`s.
 
 	```haxe
 	import crossbyte.db.kv.KVStore;
@@ -42,7 +43,8 @@ import haxe.io.Bytes;
 
 	**Threading.** `MemoryKVStore` may be used from any thread. An SQL store
 	is used by one thread at a time, as its connection is; a
-	`ConnectionPool` of them is how several threads share a database.
+	`ConnectionPool` of them, behind an `AsyncKVStore`, is how several
+	threads, and a runtime that must not wait for a database, share one.
 
 	It is an `ITransactionalConnection`, so a `ConnectionPool` rolls back a
 	transaction a borrower left open.

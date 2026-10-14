@@ -38,7 +38,8 @@ TLS alone would not keep out a man in the middle.
 
 ## Keeping blocking drivers off the runtime
 
-`ConnectionPool` and `AsyncDatabase` keep the blocking drivers off the runtime's thread, and bound the wait.
+`ConnectionPool` and `AsyncDatabase` keep the blocking drivers off the runtime's thread, and bound the wait; the
+key/value store's `AsyncKVStore` stands on them.
 `AsyncDatabase` fails a job still queued after `queueTimeout` (30 s), at the deadline even though every worker is
 busy, and refuses one past `maxQueued` (100,000). For both of these, and for the pool's `acquireTimeout` (10 s), 0 is
 no limit.
@@ -173,6 +174,38 @@ with the revision check in its `WHERE`. At READ COMMITTED, the server's default,
 connection's write overtook waits for it and answers null; inside a REPEATABLE READ or SERIALIZABLE transaction the
 server fails it instead, with an `SQLError` to retry the transaction on. PHP's PDO driver binds nothing, so the store
 is native only.
+
+### Off the runtime's thread
+
+A server's runtime that reads SQLite or PostgreSQL directly stops for every statement. `AsyncKVStore` runs each call
+on a worker with a store from a `ConnectionPool`, through `AsyncDatabase`, and answers with a `Future` whose callbacks
+run on the runtime that made the call:
+
+```haxe
+import crossbyte.db.ConnectionPool;
+import crossbyte.db.kv.AsyncKVStore;
+import crossbyte.db.kv.KVStore;
+import crossbyte.db.kv.SQLiteKVStore;
+import haxe.io.Bytes;
+
+var pool = new ConnectionPool<KVStore>({
+	factory: () -> SQLiteKVStore.open("data/game.db"),
+	close: store -> store.close(),
+	maxSize: 4
+});
+var kv = AsyncKVStore.of(pool);
+kv.get("users/alice").then(record -> trace(record == null ? "none" : record.value.toString()));
+kv.transaction(store -> {
+	store.put("users/alice", Bytes.ofString("{}"));
+	store.put("index/alice", Bytes.ofString("users/alice"));
+}).then(_ -> trace("both written"));
+```
+
+Each place in the pool is its own connection. Calls one after another may land on different stores, so writes that
+belong together go in one `transaction`, whose body runs on one worker inside `begin()` and `commit()`. A value is
+copied as the call is made, and what a store refuses fails the future with the store's error as its `cause`.
+`AsyncKVRepo` is the same for a `KVRepo`'s typed values, encoded on the calling thread and decoded on the worker.
+Neither is built for JavaScript, which has no threads to run a store on.
 
 ### Typed values
 

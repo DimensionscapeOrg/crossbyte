@@ -66,6 +66,8 @@ const STANDALONE = [
   'src/crossbyte/crypto/Ed25519.hx',
   'src/crossbyte/db/AsyncDatabase.hx',
   'src/crossbyte/db/SchemaMigrator.hx',
+  'src/crossbyte/db/kv/AsyncKVRepo.hx',
+  'src/crossbyte/db/kv/AsyncKVStore.hx',
   'src/crossbyte/db/kv/KVCodecs.hx',
   'src/crossbyte/db/kv/KVPage.hx',
   'src/crossbyte/db/kv/KVRepo.hx',

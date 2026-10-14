@@ -216,6 +216,8 @@ class TestSuites {
 		// Where the worker pool has threads, and so a queue to bound: every
 		// target but JavaScript.
 		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
+		// The key/value store on those workers, answering with futures.
+		runner.addCase(new crossbyte.db.kv.AsyncKVStoreTest());
 		#end
 		#if cpp
 		// Against a libpq stand-in built beside the test binary, so the
