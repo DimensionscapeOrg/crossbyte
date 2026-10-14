@@ -791,6 +791,8 @@ typedef RPCKind = {
 	@:optional final isEnum:Bool;
 	@:optional final patch:Bool;
 	@:optional final reuse:RPCReuse;
+	@:optional final bits:RPCBits.RPCBitField;
+	@:optional final same:(Expr, Expr) -> Expr;
 }
 
 /**

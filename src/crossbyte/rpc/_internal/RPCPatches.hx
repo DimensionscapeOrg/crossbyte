@@ -112,8 +112,8 @@ class RPCPatches {
 		final kind:Null<RPCKind> = RPCKinds.ofType(type, pos);
 		final info:Null<StructInfo> = kind == null ? null : kind.struct;
 		if (info == null || !info.isClass) {
-			Context.error('$what takes a class that implements crossbyte.rpc.RPCStruct, and ' + TypeTools.toString(type)
-				+ ' is not one. An anonymous structure has no codec: it cannot be made, copied in place or patched. Declare a class.', pos);
+			Context.error('$what takes a class that implements crossbyte.rpc.RPCStruct, and ' + TypeTools.toString(type) + ' is not one.'
+				+ (info != null ? ' An anonymous structure has no codec: it cannot be made, copied in place or patched. Declare a class.' : ''), pos);
 		}
 		if (info.fields.length > MAX_FIELDS) {
 			Context.error('$what: ${info.name} has ${info.fields.length} fields, and a patch carries at most $MAX_FIELDS. Group some of them into a structure of their own, which is patched as one field.',
@@ -262,6 +262,14 @@ class RPCPatches {
 				writeBits.push(e);
 			}
 		}
+		for (i in 0...n) {
+			final field = info.fields[i];
+			final bits = field.kind.bits;
+			if (bits != null) {
+				final fname:String = field.name;
+				writeBits.push(macro if (${bitTest(i)}) $b{putBits(bits.put(macro current.$fname), bits.width)});
+			}
+		}
 		writeBits.push(macro if (__fill > 0) frame.putByte(__acc & 0xFF));
 		final writeBytes:Array<Expr> = [];
 		final readBits:Array<Expr> = [(macro var __acc:Int = 0), (macro var __have:Int = 0), (macro var __full:Bool = false)];
@@ -273,6 +281,7 @@ class RPCPatches {
 			readBits.push(macro $i{target} |= ${takeBits(chunk.bits)} << $v{chunk.shift});
 		}
 		final readBytes:Array<Expr> = [];
+		final readBitFields:Array<Expr> = [];
 		final applies:Array<Expr> = [];
 		for (i in 0...n) {
 			final field = info.fields[i];
@@ -307,6 +316,10 @@ class RPCPatches {
 						into.$fname = __f == null ? $cr.copy($cr.defaultValue(), __t) : $cr.copy(__f, __t);
 					}
 				});
+			} else if (field.kind.bits != null) {
+				final bits = field.kind.bits;
+				readBitFields.push(macro if ($set) state.values.$fname = ${bits.get(takeBits(bits.width))});
+				applies.push(macro if ($set) into.$fname = state.values.$fname else if (other) into.$fname = from.$fname);
 			} else {
 				writeBytes.push(macro if ($set) ${RPCKinds.write(field.kind, field.optional, macro frame, macro current.$fname)});
 				readBytes.push(macro if ($set) state.values.$fname = ${RPCKinds.read(field.kind, field.optional, macro input, macro end)});
@@ -320,9 +333,19 @@ class RPCPatches {
 		}
 
 		// readInto: a whole value, as the codec reads one, into `into`.
-		final readsInto:Array<Expr> = [];
+		final readsInto:Array<Expr> = [(macro var __acc:Int = 0), (macro var __have:Int = 0)];
+		for (field in info.fields) {
+			final bits = field.kind.bits;
+			if (bits != null) {
+				final fname:String = field.name;
+				readsInto.push(macro into.$fname = ${bits.get(takeBits(bits.width))});
+			}
+		}
 		for (field in info.fields) {
 			final fname:String = field.name;
+			if (field.kind.bits != null) {
+				continue;
+			}
 			if (nested(field)) {
 				final cr:Expr = replicationOf(field.kind.struct, pos).r;
 				readsInto.push(macro {
@@ -409,7 +432,7 @@ class RPCPatches {
 				macro state.full = __full,
 				(macro final mask:Int = __mask),
 				(macro final maskHigh:Int = __maskHigh)
-			]).concat(readBytes)}, pos),
+			]).concat(readBitFields).concat(readBytes)}, pos),
 			fn("apply", [arg("state", sType), arg("base", TPath({pack: [], name: "Null", params: [TPType(type)]})), arg("into", type)], type, macro {
 				final from:$type = state.full || base == null ? defaultValue() : base;
 				final mask:Int = state.mask;
@@ -418,10 +441,8 @@ class RPCPatches {
 				$b{applies};
 				return into;
 			}, pos),
-			fn("readInto", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("into", type)], type, macro {
-				$b{readsInto};
-				return into;
-			}, pos),
+			fn("readInto", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("into", type)], type,
+				macro $b{readsInto.concat([macro return into])}, pos),
 			fn("newPatch", [], patchType, macro {
 				final patch = new $patchPath(${rep.i}.instance);
 				patch.__state = new $sPath();
@@ -705,6 +726,9 @@ class RPCPatches {
 	// Of an optional value, known not to be null: numbers compared as what
 	// they are, never as boxes.
 	static function sameValue(kind:RPCKind, rawA:Expr, rawB:Expr, optional:Bool):Expr {
+		if (kind.same != null) {
+			return kind.same(rawA, rawB);
+		}
 		if (kind.struct != null) {
 			if (kind.struct.isClass) {
 				final r:Expr = replicationOf(kind.struct, kind.struct.pos).r;

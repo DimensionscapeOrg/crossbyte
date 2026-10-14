@@ -240,6 +240,19 @@ All notable changes to CrossByte will be documented in this file.
   the frame, keys out of order and keys past 2^31 - 1 are unreadable.
   `sizeBound()` bounds the bytes, for a call that must fit a datagram.
   Kinds `~[i32:{...}]` and `~[utf8:{...}]`.
+- **`@:quantize(min, max, bits)` and `@:range(min, max)` on structure
+  fields.** A quantized `Float` or `Float32` goes as one of 2^bits evenly
+  spaced points from `min` to `max` (clamped; NaN refused), a ranged
+  integer in the bits its range needs (outside it refused, and a read past
+  it unreadable), in a bit section before the structure's other fields:
+  `BitWriter`'s arithmetic and layout, so a section reads back with a
+  `BitReader`. Stellar's remote ship is 13 bytes whole, where its `Float32`
+  form is 24, and 7 as a patch of three fields. Patches compare quantized
+  fields by their step, so jitter below one sends nothing. Bounds are
+  literals or static inline constants of a class (`ShipRules.MAX_HEAT`),
+  and `+ - * /` of those. The bounds and widths are in the structure's
+  layout, `b{...}` in a signature: a peer built with others finds no
+  method.
 - **`RPCCodec<T>` and `RPCCodecs.of(Type)`**, the generated code of a
   structure as an interface generic code can hold: `make`, `copy` (nested
   structures and arrays into those held, so nothing is shared), `equals`
