@@ -209,6 +209,13 @@ class SchemaMigratorTest extends utest.Test {
 		Assert.notEquals(Migration.ofStatements(1, "x", ["A", "B"]).checksum, Migration.ofStatements(1, "x", ["B", "A"]).checksum);
 	}
 
+	public function testThePostgresLockKeyIsTheSameOnEveryTarget():Void {
+		// FNV-1a over the bytes, in 32 bits: what Python's
+		// h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF gives, read signed.
+		Assert.equals(1189231686, SchemaMigrator.lockKey("schema_migrations"));
+		Assert.equals(-172285093, SchemaMigrator.lockKey("accounts_migrations"));
+	}
+
 	public function testRejectsMalformedConfiguration():Void {
 		var connection = new FakeConnection();
 

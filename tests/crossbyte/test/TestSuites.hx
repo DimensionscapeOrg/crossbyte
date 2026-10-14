@@ -178,6 +178,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.ConnectionPoolTest());
 		runner.addCase(new crossbyte.db.ConnectionPoolMetricsTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
+		runner.addCase(new crossbyte.db.StorageModesTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		// MongoDB: the codec, Extended JSON, SCRAM and connection strings need
@@ -222,6 +223,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeHostileTest());
 		// SQLite opens natively and on PHP, where PhpTestMain runs this too.
 		runner.addCase(new crossbyte.db.SQLiteStatementTest());
+		// SchemaMigrator.sqlite() on a real database; on PHP too.
+		runner.addCase(new crossbyte.db.SchemaMigratorPresetTest());
 		// What only the native driver has: the worker, cancel(), bound values.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		// Red team: a datagram stored as a blob from its listener.

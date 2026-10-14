@@ -120,24 +120,38 @@ final class MigrationReport {
  * Driver-agnostic: it never builds SQL for your data and never parses your
  * statements. It needs three things it cannot do itself (run a statement,
  * read the bookkeeping table, write a row to it), and everything else is ordering,
- * bookkeeping and refusing to do the unsafe thing.
+ * bookkeeping and refusing to do the unsafe thing. For SQLite and PostgreSQL,
+ * `sqlite()` and `postgres()` make one with all of that filled in.
  *
  * ```haxe
- * var migrator = new SchemaMigrator<MyConnection>({
- * 	execute: (c, sql) -> c.execute(sql),
- * 	readApplied: readAppliedRows,
- * 	recordApplied: insertAppliedRow,
- * 	begin: c -> c.execute("BEGIN"),
- * 	commit: c -> c.execute("COMMIT"),
- * 	rollback: c -> c.execute("ROLLBACK")
- * });
+ * import crossbyte.db.sql.sqlite.SQLiteConnection;
  *
+ * // Given connection:SQLiteConnection.
+ * var migrator:SchemaMigrator<SQLiteConnection> = SchemaMigrator.sqlite();
  * migrator.addAll([
  * 	Migration.ofSql(1, "create accounts", "CREATE TABLE accounts (id INTEGER PRIMARY KEY)"),
  * 	Migration.ofSql(2, "create devices", "CREATE TABLE devices (id INTEGER PRIMARY KEY)")
  * ]);
  *
  * var report = migrator.migrate(connection);
+ * ```
+ *
+ * Another driver supplies them itself. MySQL, which cannot roll back DDL, is
+ * given a lock instead of a transaction:
+ *
+ * ```haxe
+ * import crossbyte.db.SchemaMigrator.AppliedMigration;
+ * import crossbyte.db.mysql.MySQLConnection;
+ *
+ * // Given connection:MySQLConnection, readAppliedRows:MySQLConnection->Array<AppliedMigration>, insertAppliedRow:MySQLConnection->AppliedMigration->Void.
+ * var migrator = new SchemaMigrator<MySQLConnection>({
+ * 	execute: (c, sql) -> c.request(sql),
+ * 	readApplied: readAppliedRows,
+ * 	recordApplied: insertAppliedRow,
+ * 	lock: c -> c.request("SELECT GET_LOCK('schema_migrations', 60)"),
+ * 	unlock: c -> c.request("SELECT RELEASE_LOCK('schema_migrations')")
+ * });
+ * migrator.migrate(connection);
  * ```
  *
  * Running it twice is a no-op; running it against a database that is ahead of
@@ -194,6 +208,151 @@ class SchemaMigrator<T> {
 			// of value that arrives from configuration.
 			throw new ArgumentError('Invalid bookkeeping table name "$tableName": expected a plain identifier.');
 		}
+	}
+
+	#if !js
+	/**
+	 * A migrator for SQLite, with every seam filled in: for an
+	 * `SQLiteConnection`, or a class of your own that extends it, opened with
+	 * `open()` (not `openAsync()`, whose statements run on its worker).
+	 *
+	 * ```haxe
+	 * var connection = new SQLiteConnection();
+	 * connection.open(new crossbyte.io.File("data/app.db"));
+	 * var migrator:SchemaMigrator<SQLiteConnection> = SchemaMigrator.sqlite();
+	 * migrator.addAll([Migration.ofSql(1, "create accounts", "CREATE TABLE accounts (id INTEGER PRIMARY KEY)")]);
+	 * migrator.migrate(connection);
+	 * ```
+	 *
+	 * Statements run with `request()`; the bookkeeping table is
+	 * `defaultTableSql`'s; a migration is recorded through a statement whose
+	 * values are bound, with `applied_at` SQLite's UTC time in ISO-8601
+	 * (`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`). Each migration runs inside
+	 * `BEGIN IMMEDIATE`, which takes the write lock as it starts, so a
+	 * migration cannot fail with SQLITE_BUSY part way through, and is rolled
+	 * back if it fails. There is no lock across the run: a database file is
+	 * not shared between hosts, and processes on one host should not migrate
+	 * it at the same time. Natively and on PHP, where `SQLiteConnection`
+	 * opens a database.
+	 *
+	 * @param tableName The bookkeeping table; `DEFAULT_TABLE_NAME` unless
+	 *        given.
+	 * @param allowOutOfOrder As `SchemaMigratorOptions.allowOutOfOrder`.
+	 */
+	public static function sqlite<C:crossbyte.db.sql.sqlite.SQLiteConnection>(?tableName:String, allowOutOfOrder:Bool = false):SchemaMigrator<C> {
+		var table:String = tableName == null ? DEFAULT_TABLE_NAME : tableName;
+		return new SchemaMigrator<C>({
+			execute: (c, sql) -> c.request(sql),
+			readApplied: c -> __appliedRows(c.request('SELECT version, name, checksum FROM $table')),
+			recordApplied: (c, row) -> {
+				var statement = new crossbyte.db.sql.sqlite.SQLiteStatement();
+				statement.sqlConnection = c;
+				statement.text = 'INSERT INTO $table (version, name, checksum, applied_at) VALUES (:version, :name, :checksum, strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\'))';
+				statement.parameters["version"] = row.version;
+				statement.parameters["name"] = row.name;
+				statement.parameters["checksum"] = row.checksum;
+				statement.execute();
+			},
+			begin: c -> c.begin("IMMEDIATE"),
+			commit: c -> c.commit(),
+			rollback: c -> c.rollback(),
+			tableName: table,
+			allowOutOfOrder: allowOutOfOrder
+		});
+	}
+	#end
+
+	#if !(js && !nodejs)
+	/**
+	 * A migrator for PostgreSQL, with every seam filled in: for a
+	 * `PostgresConnection`, or a class of your own that extends it.
+	 *
+	 * ```haxe
+	 * // Given connection:crossbyte.db.postgres.PostgresConnection.
+	 * var migrator:SchemaMigrator<crossbyte.db.postgres.PostgresConnection> = SchemaMigrator.postgres();
+	 * migrator.add(Migration.ofSql(1, "create accounts", "CREATE TABLE accounts (id BIGSERIAL PRIMARY KEY)"));
+	 * migrator.migrate(connection);
+	 * ```
+	 *
+	 * Statements run with `request()`; the bookkeeping table is
+	 * `defaultTableSql`'s; a migration is recorded with its values bound
+	 * natively (`requestParams`) and escaped by the driver on PHP, with
+	 * `applied_at` the server's UTC time in ISO-8601. Each migration runs in
+	 * a transaction, which PostgreSQL extends to DDL, and is rolled back if it
+	 * fails.
+	 *
+	 * The whole run holds a session advisory lock (`pg_advisory_lock`), so
+	 * instances of a service starting together migrate one at a time and the
+	 * others then find nothing to do. Its key is fixed by the table name, so
+	 * migrators of different tables do not wait for each other. A session lock
+	 * needs the same server session from the lock to the unlock: through a
+	 * pooler in transaction mode (PgBouncer's `pool_mode = transaction`),
+	 * connect to the server directly to migrate. Natively and on PHP, where
+	 * `PostgresConnection` has a driver.
+	 *
+	 * @param tableName The bookkeeping table; `DEFAULT_TABLE_NAME` unless
+	 *        given.
+	 * @param allowOutOfOrder As `SchemaMigratorOptions.allowOutOfOrder`.
+	 */
+	public static function postgres<C:crossbyte.db.postgres.PostgresConnection>(?tableName:String, allowOutOfOrder:Bool = false):SchemaMigrator<C> {
+		var table:String = tableName == null ? DEFAULT_TABLE_NAME : tableName;
+		var key:String = Std.string(lockKey(table));
+		var now:String = "to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')";
+		return new SchemaMigrator<C>({
+			execute: (c, sql) -> c.request(sql),
+			readApplied: c -> __appliedRows(c.request('SELECT version, name, checksum FROM $table')),
+			recordApplied: (c, row) -> {
+				#if cpp
+				c.requestParams('INSERT INTO $table (version, name, checksum, applied_at) VALUES ($$1, $$2, $$3, $now)',
+					[Text(Std.string(row.version)), Text(row.name), row.checksum == null ? Null : Text(row.checksum)]);
+				#else
+				c.request('INSERT INTO $table (version, name, checksum, applied_at) VALUES (${row.version}, ${c.quote(row.name)}, '
+					+ (row.checksum == null ? "NULL" : c.quote(row.checksum)) + ', $now)');
+				#end
+			},
+			begin: c -> c.begin(),
+			commit: c -> c.commit(),
+			rollback: c -> c.rollback(),
+			lock: c -> c.request('SELECT pg_advisory_lock($key)'),
+			unlock: c -> c.request('SELECT pg_advisory_unlock($key)'),
+			tableName: table,
+			allowOutOfOrder: allowOutOfOrder
+		});
+	}
+	#end
+
+	/**
+	 * The advisory lock key `postgres()` holds while it migrates against
+	 * `tableName`: a 32-bit FNV-1a hash of `crossbyte.SchemaMigrator.` and the
+	 * name, the same on every target, so a tool of your own can take the same
+	 * lock.
+	 */
+	public static function lockKey(tableName:String):Int {
+		var text:String = "crossbyte.SchemaMigrator." + tableName;
+		var bytes:haxe.io.Bytes = haxe.io.Bytes.ofString(text);
+		// Int32, which wraps at 32 bits where an Int does not: a double's 53
+		// bits on JavaScript, PHP's 64.
+		var hash:haxe.Int32 = 0x811C9DC5;
+		for (i in 0...bytes.length) {
+			hash = hash ^ bytes.get(i);
+			hash = hash * 0x01000193;
+		}
+		return hash;
+	}
+
+	// The bookkeeping table's rows as a driver gives them: numbers or text.
+	@:noCompletion private static function __appliedRows(rows:Iterator<Dynamic>):Array<AppliedMigration> {
+		var out:Array<AppliedMigration> = [];
+		for (row in rows) {
+			var version:Dynamic = Reflect.field(row, "version");
+			var checksum:Dynamic = Reflect.field(row, "checksum");
+			out.push({
+				version: Std.isOfType(version, Int) ? (version : Int) : Std.parseInt(Std.string(version)),
+				name: Std.string(Reflect.field(row, "name")),
+				checksum: checksum == null ? null : Std.string(checksum)
+			});
+		}
+		return out;
 	}
 
 	/**

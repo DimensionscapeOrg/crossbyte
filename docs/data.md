@@ -41,6 +41,28 @@ TLS alone would not keep out a man in the middle.
 busy, and refuses one past `maxQueued` (100,000). For both of these, and for the pool's `acquireTimeout` (10 s), 0 is
 no limit.
 
+## Migrations
+
+`SchemaMigrator` applies numbered migrations once each, in order, and records them. It takes the few things that
+differ by driver as functions, and `SchemaMigrator.sqlite()` and `SchemaMigrator.postgres()` supply them for SQLite
+and PostgreSQL: each migration in a transaction, the record written with its values bound, and for PostgreSQL an
+advisory lock held across the run, so instances starting together migrate one at a time.
+
+```haxe
+import crossbyte.db.Migration;
+import crossbyte.db.SchemaMigrator;
+import crossbyte.db.sql.sqlite.SQLiteConnection;
+
+// Given connection:SQLiteConnection.
+var migrator:SchemaMigrator<SQLiteConnection> = SchemaMigrator.sqlite();
+migrator.add(Migration.ofSql(1, "create accounts", "CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT)"));
+migrator.migrate(connection);
+```
+
+Settings read from a configuration file go through `fromString` on the modes (`JournalMode`, `SynchronousMode`,
+`TempStoreMode`, `PostgresSSLMode`, and `MySQLSSLMode.ofString`), which refuse a value they do not know, except
+`JournalMode`'s, which reads one as `DELETE`.
+
 ## A database host gone silent
 
 Natively, the MySQL, PostgreSQL and MongoDB clients keep TCP keepalive on with MySQL's timings: a probe after 60

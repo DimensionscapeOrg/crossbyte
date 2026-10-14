@@ -1,5 +1,7 @@
 package crossbyte.db.postgres;
 
+import crossbyte.errors.ArgumentError;
+
 /**
 	How much TLS a PostgreSQL connection insists on: libpq's `sslmode`, each
 	value spelt as libpq takes it.
@@ -26,4 +28,28 @@ enum abstract PostgresSSLMode(String) to String {
 	var REQUIRE = "require";
 	var VERIFY_CA = "verify-ca";
 	var VERIFY_FULL = "verify-full";
+
+	/**
+		The mode a string names, for a value from a configuration file: libpq's
+		spelling in any case, with `_` for `-` (`VERIFY_FULL`), spaces around
+		it ignored. A `String` is not taken as a mode without it.
+
+		```haxe
+		var mode:PostgresSSLMode = PostgresSSLMode.fromString("verify-full");
+		```
+
+		@throws ArgumentError For anything else, null included, rather than
+		        reading a mistyped mode as a weaker one.
+	**/
+	public static function fromString(value:String):PostgresSSLMode {
+		return switch (value == null ? null : StringTools.replace(StringTools.trim(value), "_", "-").toLowerCase()) {
+			case "disable": DISABLE;
+			case "allow": ALLOW;
+			case "prefer": PREFER;
+			case "require": REQUIRE;
+			case "verify-ca": VERIFY_CA;
+			case "verify-full": VERIFY_FULL;
+			default: throw new ArgumentError('Invalid PostgreSQL sslmode: $value (expected disable, allow, prefer, require, verify-ca or verify-full)');
+		}
+	}
 }

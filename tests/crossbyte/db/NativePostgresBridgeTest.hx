@@ -456,6 +456,25 @@ class NativePostgresBridgeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testThePostgresPresetRunsAMigrationInsideATransaction():Void {
+		// The stand-in keeps no tables, so the bookkeeping reads as empty and
+		// every statement succeeds: what this shows is the preset's calls
+		// going through the driver and the transaction ending either way.
+		var connection = __open(__config("localhost"));
+		var migrator:SchemaMigrator<PostgresConnection> = SchemaMigrator.postgres();
+		migrator.add(Migration.ofSql(1, "accounts", "CREATE TABLE accounts (id BIGSERIAL PRIMARY KEY)"));
+
+		Assert.same([1], migrator.migrate(connection).applied);
+		Assert.isFalse(connection.inTransaction);
+
+		var failing:SchemaMigrator<PostgresConnection> = SchemaMigrator.postgres();
+		failing.add(Migration.ofSql(1, "broken", "fake:fail"));
+		Assert.raises(() -> failing.migrate(connection));
+		Assert.isFalse(connection.inTransaction);
+		Assert.equals("idle", Std.string(Reflect.field(connection.request("fake:transaction").next(), "transaction")));
+		connection.close();
+	}
+
 	public function testATransactionBegunAsTextIsReported():Void {
 		// inTransaction follows the server, not only begin(), commit() and
 		// rollback(), so a transaction opened with request("BEGIN;") reads as

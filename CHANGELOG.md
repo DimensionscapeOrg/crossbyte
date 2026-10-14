@@ -172,6 +172,19 @@ All notable changes to CrossByte will be documented in this file.
   the time's top bit becomes the sign bit (69.7 years after the epoch)
   included. `parse` takes exactly 16 hex digits, in either case, and throws
   an `ArgumentError` for anything else.
+- **`fromString` on `SynchronousMode`, `TempStoreMode` and
+  `PostgresSSLMode`**, for modes read from configuration: the names in any
+  case (`normal`, `verify-full`, or `VERIFY_FULL`), and for the SQLite modes
+  the numbers their pragmas take. Anything else throws an `ArgumentError`
+  rather than becoming another mode.
+- **`SchemaMigrator.sqlite()` and `SchemaMigrator.postgres()`**, migrators
+  with every seam filled in, for those connections or classes extending
+  them: statements through `request()`, the default bookkeeping table, the
+  record written with bound values and the server's UTC time, and each
+  migration in a transaction (`BEGIN IMMEDIATE` on SQLite). The PostgreSQL
+  one holds an advisory lock across the run (`SchemaMigrator.lockKey(table)`
+  says which), so service instances starting together migrate one at a time.
+  Natively and on PHP. `docs/data.md` has a Migrations section.
 
 ### Fixed
 

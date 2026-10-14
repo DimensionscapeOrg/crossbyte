@@ -139,6 +139,55 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
+	public function testThePostgresPresetMigratesOnceAndRecordsWhatItDid():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var bookkeeping:String = table + "_migrations";
+		var made:String = table + "_made";
+		var migrations:Array<Migration<PostgresConnection>> = [
+			Migration.ofSql(1, "a table", 'CREATE TABLE $made (id BIGSERIAL PRIMARY KEY, name TEXT)'),
+			Migration.ofStatements(2, "it's seeded", ['INSERT INTO $made (name) VALUES (\'first\')'])
+		];
+		try {
+			var migrator:SchemaMigrator<PostgresConnection> = SchemaMigrator.postgres(bookkeeping);
+			migrator.addAll(migrations);
+			Assert.same([1, 2], migrator.migrate(connection).applied);
+			Assert.isFalse(connection.inTransaction);
+
+			var rows = [for (row in connection.request('SELECT version, name, checksum, applied_at FROM $bookkeeping ORDER BY version')) row];
+			Assert.equals(2, rows.length);
+			Assert.equals("it's seeded", Std.string(rows[1].name));
+			Assert.equals(migrations[0].checksum, Std.string(rows[0].checksum));
+			Assert.isTrue(~/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.match(Std.string(rows[0].applied_at)), Std.string(rows[0].applied_at));
+
+			var again:SchemaMigrator<PostgresConnection> = SchemaMigrator.postgres(bookkeeping);
+			again.addAll(migrations);
+			Assert.same([], again.migrate(connection).applied);
+
+			// A failing migration leaves nothing of itself, and the lock is let go:
+			// a run after it takes the lock again rather than waiting for good.
+			var failing:SchemaMigrator<PostgresConnection> = SchemaMigrator.postgres(bookkeeping);
+			failing.addAll(migrations.concat([Migration.ofSql(3, "broken", 'INSERT INTO $made (nope) VALUES (1)')]));
+			Assert.raises(() -> failing.migrate(connection));
+			Assert.isFalse(connection.inTransaction);
+			Assert.same([], again.migrate(connection).applied);
+			var held = connection.request('SELECT count(*) AS n FROM pg_locks WHERE locktype = \'advisory\' AND pid = pg_backend_pid()');
+			Assert.equals(0, held.getIntResult(0));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		try {
+			connection.request('DROP TABLE IF EXISTS $made');
+			connection.request('DROP TABLE IF EXISTS $bookkeeping');
+		} catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAPooledConnectionComesBackWithoutTheTransactionItWasLeftIn():Void {
 		#if cpp
 		if (__skip()) {

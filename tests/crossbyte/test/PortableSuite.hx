@@ -310,6 +310,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.SQLRowTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
+		// Modes read from configuration text, which PHP reads its own way.
+		runner.addCase(new crossbyte.db.StorageModesTest());
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		runner.addCase(new crossbyte.rpc.RPCContractTest());
