@@ -17,6 +17,12 @@ All notable changes to CrossByte will be documented in this file.
   (`SEED_BYTES`): the private key as RFC 8032 writes it and a JWK's `d`
   carries it, natively and on PHP. A service can keep only the seed as its
   secret.
+- **Argon2id on PHP**, through the sodium extension: `hash`, `verify`,
+  `needsRehash` and `derive` write and accept the same `$argon2id$` strings
+  and tags as the native builds and Node, so a password set through a PHP
+  service verifies on a native server. `isSupported` and
+  `unsupportedReason` as for `Ed25519`; the async forms run in the call
+  there, as PHP has no threads.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.

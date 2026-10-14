@@ -25,6 +25,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
+		runner.addCase(new crossbyte.crypto.password.Argon2idVectorsTest());
 		runner.addCase(new crossbyte.crypto.SecureRandomTest());
 		runner.addCase(new crossbyte.crypto.HmacSha256Test());
 	}

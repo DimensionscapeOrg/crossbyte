@@ -335,8 +335,8 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
 - **Crypto.** Natively, from libsodium and BLAKE3 compiled in: `AEAD` (XChaCha20-Poly1305), `KeyExchange` and
   `X25519`, `GenericHash` (BLAKE2b), `HKDF`, `Ed25519` and `Blake3`; from mbedTLS, RSA and ECDSA signatures
   (`PublicKeySignature`, `SignatureKey`). `Ed25519` on PHP too, through its sodium extension. Elsewhere
-  `isSupported` is false and they throw. `Argon2id` natively
-  and on Node 24.7 or later; `BCrypt` everywhere, in Haxe, though hashing needs a secure random source. Secure
+  `isSupported` is false and they throw. `Argon2id` natively, on PHP and on Node 24.7 or later; `BCrypt`
+  everywhere, in Haxe, though hashing needs a secure random source. Secure
   random bytes natively, on the jvm, on Node, in a browser and on PHP; not on the interpreter, neko or HashLink.
 - **Compression.** DEFLATE, GZIP, LZ4 and Brotli. LZ4 and Brotli are written in Haxe, and can use native backends
   instead (see Extensions).

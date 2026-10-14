@@ -6,8 +6,11 @@ import crossbyte.Future;
 import crossbyte.crypto.password._internal.PasswordWork;
 import crossbyte.sys.TaskPool;
 import crossbyte.errors.IllegalOperationError;
-#if !(cpp || nodejs)
+#if !(cpp || nodejs || php)
 import crossbyte.crypto._internal.NativeOnly;
+#end
+#if php
+import crossbyte.crypto._internal.PhpSodium;
 #end
 #if cpp
 import crossbyte.crypto._internal.NativeSodium;
@@ -30,10 +33,13 @@ import crossbyte.utils.IntParse;
  * produces raw key material for a caller-managed salt.
  *
  * Prefer this over `BCrypt` for new designs. Available on native `cpp` targets
- * through the statically linked libsodium, and on Node 24.7 and later through
- * Node's own `crypto.argon2`, with hashes interchangeable between the two. Every
- * method throws an `IllegalOperationError` where neither exists, naming the
- * target, or on Node the version; check `isSupported` first.
+ * through the statically linked libsodium, on PHP through its sodium extension
+ * (libsodium too; `extension=sodium` in `php.ini`), and on Node 24.7 and later
+ * through Node's own `crypto.argon2`, with hashes interchangeable among the
+ * three: a password set through a PHP account service verifies on a native game
+ * server. Every method throws an `IllegalOperationError` where none exists,
+ * naming the target, on Node the version, and on PHP the missing extension;
+ * check `isSupported` first.
  *
  * A hash at the interactive limits holds 64 MiB and a core for tens of
  * milliseconds, and the moderate and sensitive limits for far longer. On a
@@ -102,8 +108,11 @@ class Argon2id {
 		return new IllegalOperationError("Argon2id on Node needs crypto.argon2, which arrived in Node 24.7; this is " + js.Node.process.version + ".");
 		#elseif cpp
 		return new IllegalOperationError("Argon2id needs libsodium, which could not be started.");
+		#elseif php
+		return PhpSodiumStatus.error("Argon2id");
 		#else
-		return new IllegalOperationError("Argon2id is only available natively (cpp) and on Node 24.7 or later, not on " + NativeOnly.TARGET + ".");
+		return new IllegalOperationError("Argon2id is only available natively (cpp), on PHP with its sodium extension and on Node 24.7 or later, not on "
+			+ NativeOnly.TARGET + ".");
 		#end
 	}
 
@@ -113,7 +122,7 @@ class Argon2id {
 
 	/**
 	 * Whether an Argon2id backend is available: libsodium on native
-	 * targets, `crypto.argon2` on Node.
+	 * targets, the sodium extension on PHP, `crypto.argon2` on Node.
 	 */
 	public static var isSupported(get, never):Bool;
 
@@ -122,6 +131,8 @@ class Argon2id {
 		return NativeSodium.isAvailable();
 		#elseif nodejs
 		return __nodeHasArgon2();
+		#elseif php
+		return PhpSodiumStatus.loaded();
 		#else
 		return false;
 		#end
@@ -165,6 +176,15 @@ class Argon2id {
 			terminator++;
 		}
 		return out.getString(0, terminator);
+		#elseif php
+		__requirePhp();
+		var made:Null<String> = null;
+		try {
+			made = PhpSodium.sodium_crypto_pwhash_str(password, opslimit, memlimit);
+		} catch (error:Dynamic) {
+			throw new crossbyte.errors.Error("sodium_crypto_pwhash_str failed (out of memory?): " + error);
+		}
+		return made;
 		#elseif nodejs
 		__requireNode();
 		var salt:Bytes = SecureRandom.getSecureRandomBytes(SALT_BYTES);
@@ -198,6 +218,17 @@ class Argon2id {
 			passwordBytes.length) == 0;
 		passwordBytes.fill(0, passwordBytes.length, 0);
 		return matched;
+		#elseif php
+		__requirePhp();
+		if (hashStr == null || password == null || hashStr.length >= STR_BYTES) {
+			return false;
+		}
+		try {
+			return PhpSodium.sodium_crypto_pwhash_str_verify(hashStr, password);
+		} catch (_:Dynamic) {
+			// What libsodium refuses to verify, such as memory it cannot have.
+			return false;
+		}
 		#elseif nodejs
 		__requireNode();
 		if (hashStr == null || password == null || hashStr.length >= STR_BYTES) {
@@ -238,6 +269,13 @@ class Argon2id {
 		SodiumGlue.ensureAvailable();
 
 		return NativeSodium.pwhashStrNeedsRehash(SodiumGlue.cptr(__nulTerminated(hashStr)), opslimit, memlimit) != 0;
+		#elseif php
+		__requirePhp();
+		try {
+			return PhpSodium.sodium_crypto_pwhash_str_needs_rehash(hashStr, opslimit, memlimit);
+		} catch (_:Dynamic) {
+			return true;
+		}
 		#elseif nodejs
 		__requireNode();
 		// What libsodium compares: the passes and the memory in KiB.
@@ -276,6 +314,15 @@ class Argon2id {
 			throw new crossbyte.errors.Error("libsodium crypto_pwhash failed (out of memory?): " + rc);
 		}
 		return out;
+		#elseif php
+		__requirePhp();
+		var derived:Null<String> = null;
+		try {
+			derived = PhpSodium.sodium_crypto_pwhash(length, password, salt.getData(), opslimit, memlimit, PhpSodium.SODIUM_CRYPTO_PWHASH_ALG_ARGON2ID13);
+		} catch (error:Dynamic) {
+			throw new crossbyte.errors.Error("sodium_crypto_pwhash failed (out of memory?): " + error);
+		}
+		return Bytes.ofData(derived);
 		#elseif nodejs
 		__requireNode();
 		var passwordBytes = Bytes.ofString(password);
@@ -294,8 +341,9 @@ class Argon2id {
 	 * small one the password hashers share), and the future completes on the
 	 * calling runtime's thread at its next tick (on the worker when the caller runs
 	 * no runtime). On Node it runs on libuv's thread pool through
-	 * `crypto.argon2`, and `pool` is not used. Anywhere else the future fails as
-	 * `hash` throws.
+	 * `crypto.argon2`, and `pool` is not used. PHP has no threads, so there it
+	 * runs in the call, and the future is complete when it returns. Anywhere
+	 * else the future fails as `hash` throws.
 	 */
 	public static function hashAsync(password:String, opslimit:Int = OPSLIMIT_INTERACTIVE, memlimit:Int = MEMLIMIT_INTERACTIVE,
 			?pool:TaskPool):Future<String> {
@@ -385,6 +433,14 @@ class Argon2id {
 			throw new ArgumentError("memlimit must be at least " + MEMLIMIT_MIN + " bytes");
 		}
 	}
+
+	#if php
+	@:noCompletion private static function __requirePhp():Void {
+		if (!PhpSodiumStatus.loaded()) {
+			throw __unavailable();
+		}
+	}
+	#end
 
 	#if cpp
 	@:noCompletion

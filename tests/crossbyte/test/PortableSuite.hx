@@ -227,6 +227,9 @@ class PortableSuite {
 		// Argon2id runs on Node through its own crypto.argon2; the browser has
 		// none and has to say so.
 		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
+		// The same Argon2id hashes verify through OpenSSL's on Node as through
+		// libsodium natively and on PHP.
+		runner.addCase(new crossbyte.crypto.password.Argon2idVectorsTest());
 		// HS256 is pure Haxe, so tokens verify alike on every target.
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
