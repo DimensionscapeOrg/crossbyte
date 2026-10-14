@@ -627,11 +627,11 @@ class DatagramSocketTest extends utest.Test {
 			Assert.isTrue(socket.receiving);
 
 			// Every other way a listener comes and goes, too.
-			var subscription = socket.on(DatagramSocketDataEvent.DATA, listener);
+			var subscription = socket.events.on(DatagramSocketDataEvent.DATA, listener);
 			Assert.isTrue(socket.__registered, "a listener added with on left the socket unregistered");
 			subscription.cancel();
 			Assert.isFalse(socket.__registered, "a cancelled subscription left the socket registered");
-			socket.once(DatagramSocketDataEvent.DATA, listener);
+			socket.events.once(DatagramSocketDataEvent.DATA, listener);
 			Assert.isTrue(socket.__registered, "a listener added with once left the socket unregistered");
 			socket.addEventListener(DatagramSocketDataEvent.DATA, (_:DatagramSocketDataEvent) -> {});
 			socket.removeAllListeners();

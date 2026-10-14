@@ -6,8 +6,8 @@ package crossbyte.events;
 	(a `Future`) implements. An event's `target` and `currentTarget` are
 	typed by it.
 
-	It declares `dispatch` alone. Listening goes through the dispatcher's
-	own methods (`addEventListener` and the rest), which a class holding a
-	dispatcher offers as its own.
+	It declares `events`, the emitter's verbs (`events.dispatch(event)`
+	and the rest): a class holding a dispatcher answers with that
+	dispatcher's, and offers the ActionScript names as its own.
 **/
 typedef IEventDispatcher = emitter.IEmitter;

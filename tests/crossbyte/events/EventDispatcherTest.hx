@@ -73,7 +73,7 @@ class EventDispatcherTest extends utest.Test {
 			seenCurrentTarget = received.currentTarget;
 		});
 
-		owner.dispatch(event);
+		owner.events.dispatch(event);
 
 		Assert.equals(owner, seenTarget);
 		Assert.equals(owner, seenCurrentTarget);
@@ -377,32 +377,36 @@ class EventDispatcherTest extends utest.Test {
 
 	/**
 		The ActionScript names are Emitter's own words: what one adds the
-		other finds and removes, and a dispatch through either name takes
-		the one path a class overrides.
+		other finds and removes, and either name dispatches. A dispatcher
+		keeps `clear`, `has` and `dispatch` free for members of its own: the
+		words are reached through `events`.
 	**/
 	public function testTheActionScriptNamesAreEmittersWords():Void {
-		var dispatcher = new Overriding();
+		var dispatcher = new OwnNames();
 		var calls:Array<String> = [];
 		var listener = (_:Event) -> calls.push("listener");
 
-		var subscription = dispatcher.on(Event.COMPLETE, listener);
+		var subscription = dispatcher.events.on(Event.COMPLETE, listener);
 		Assert.isTrue(dispatcher.hasEventListener(Event.COMPLETE));
 		dispatcher.removeEventListener(Event.COMPLETE, listener);
 		Assert.isFalse(subscription.active, "removeEventListener did not take out what on added");
-		Assert.isFalse(dispatcher.has(Event.COMPLETE));
+		Assert.isFalse(dispatcher.events.has(Event.COMPLETE));
 
 		dispatcher.addEventListener(Event.COMPLETE, listener);
-		Assert.isTrue(dispatcher.has(Event.COMPLETE, listener));
+		Assert.isTrue(dispatcher.events.has(Event.COMPLETE, listener));
 		Assert.isTrue(dispatcher.dispatchEvent(new Event(Event.COMPLETE)));
-		Assert.isTrue(dispatcher.dispatch(new Event(Event.COMPLETE)));
-		Assert.equals("listener,listener", calls.join(","));
-		Assert.equals(2, dispatcher.dispatched, "a dispatch through one of the names went around the override");
+		Assert.isTrue(dispatcher.events.dispatch(new Event(Event.COMPLETE)));
+		Assert.isTrue(dispatcher.dispatch(Event.COMPLETE));
+		Assert.equals("listener,listener,listener", calls.join(","));
+		dispatcher.clear();
+		Assert.equals(1, dispatcher.cleared);
+		Assert.isTrue(dispatcher.hasEventListener(Event.COMPLETE), "the dispatcher's own clear took its listeners");
 
-		dispatcher.off(Event.COMPLETE, listener);
+		dispatcher.events.off(Event.COMPLETE, listener);
 		Assert.isFalse(dispatcher.hasEventListener(Event.COMPLETE));
 
 		dispatcher.addEventListener(Event.COMPLETE, listener);
-		dispatcher.once(Event.CANCEL, (_:Event) -> calls.push("once"));
+		dispatcher.events.once(Event.CANCEL, (_:Event) -> calls.push("once"));
 		dispatcher.removeAllListeners();
 		Assert.isFalse(dispatcher.hasEventListener(Event.COMPLETE));
 		Assert.isFalse(dispatcher.hasEventListener(Event.CANCEL));
@@ -602,12 +606,14 @@ private class DispatcherOwner implements IEventDispatcher {
 		dispatcher = new EventDispatcher(this);
 	}
 
+	public var events(get, never):emitter.Events;
+
 	public function addEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		dispatcher.addEventListener(type, listener, priority);
 	}
 
-	public function dispatch(event:emitter.Event):Bool {
-		return dispatcher.dispatchEvent(event);
+	function get_events():emitter.Events {
+		return dispatcher.events;
 	}
 }
 
@@ -623,16 +629,19 @@ private class FailureRecorder extends EventDispatcher {
 	}
 }
 
-/** Counts what goes through `dispatch`, the one path a class overrides. **/
-private class Overriding extends EventDispatcher {
-	public var dispatched:Int = 0;
+/** A dispatcher with members of its own named as Emitter's words are. **/
+private class OwnNames extends EventDispatcher {
+	public var cleared:Int = 0;
 
 	public function new() {
 		super();
 	}
 
-	override public function dispatch(event:emitter.Event):Bool {
-		dispatched++;
-		return super.dispatch(event);
+	public function dispatch(type:String):Bool {
+		return dispatchEvent(new Event(type));
+	}
+
+	public function clear():Void {
+		cleared++;
 	}
 }

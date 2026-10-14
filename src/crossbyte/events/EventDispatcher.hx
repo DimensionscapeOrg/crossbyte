@@ -20,12 +20,13 @@ import emitter.Emitter;
 	```
 
 	`addEventListener`, `removeEventListener`, `hasEventListener`,
-	`removeAllListeners` and `dispatchEvent` are Emitter's `on`, `off`,
-	`has`, `clear` and `dispatch` by their ActionScript names: each is the
-	other, inlined, so the two can be mixed freely. Emitter's own names do
-	more: `on` and `once` answer with a `Subscription`, which removes that
-	listener, a lambda included, with `cancel()`; `once` listens for the next
-	event only; `has(type, listener)` asks about one listener.
+	`removeAllListeners` and `dispatchEvent` are Emitter's `events.on`,
+	`events.off`, `events.has`, `events.clear` and `events.dispatch` by their
+	ActionScript names: each is the other, inlined, so the two can be mixed
+	freely. Emitter's own do more: `events.on` and `events.once` answer with
+	a `Subscription`, which removes that listener, a lambda included, with
+	`cancel()`; `events.once` listens for the next event only;
+	`events.has(type, listener)` asks about one listener.
 
 	## The rules
 
@@ -69,8 +70,8 @@ class EventDispatcher extends Emitter {
 	}
 
 	/**
-		Adds `listener` for events of `type`: Emitter's `on`, without the
-		subscription it answers with.
+		Adds `listener` for events of `type`: Emitter's `events.on`, without
+		the subscription it answers with.
 
 		Listeners run in order of their priority, the highest first, and
 		those of one priority in the order they were added; any `Int` is a
@@ -85,35 +86,37 @@ class EventDispatcher extends Emitter {
 		@throws haxe.exceptions.ArgumentException If `type` or `listener` is null.
 	**/
 	public inline function addEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		on(type, listener, priority);
+		events.on(type, listener, priority);
 	}
 
 	/**
-		Removes `listener` for events of `type`: Emitter's `off`. A method is
+		Removes `listener` for events of `type`: Emitter's `events.off`. A method is
 		found when it is read again (`removeEventListener(type, this.onData)`);
 		a lambda is removed by passing the same function, or by the
-		`Subscription` that `on` answers with. Nothing happens if it is not
+		`Subscription` that `events.on` answers with. Nothing happens if it is not
 		there.
 	**/
 	public inline function removeEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void):Void {
-		off(type, listener);
+		events.off(type, listener);
 	}
 
 	/**
-		Whether anything listens for events of `type`, now: Emitter's `has`.
+		Whether anything listens for events of `type`, now: Emitter's
+		`events.has`.
 		A listener removed during a dispatch is gone from here at once.
 	**/
 	public inline function hasEventListener(type:String):Bool {
-		return has(type);
+		return events.has(type);
 	}
 
-	/** Removes every listener, for every type: Emitter's `clear`. **/
+	/** Removes every listener, for every type: Emitter's `events.clear`. **/
 	public inline function removeAllListeners():Void {
-		clear();
+		events.clear();
 	}
 
 	/**
-		Sends `event` to the listeners for its type: Emitter's `dispatch`.
+		Sends `event` to the listeners for its type: Emitter's
+		`events.dispatch`.
 
 		Sets the event's `target` to this dispatcher (or its delegate target)
 		when it has none, and its `currentTarget` to the same. An event a
@@ -121,13 +124,10 @@ class EventDispatcher extends Emitter {
 		gets its `currentTarget` back once this dispatch is done. The
 		listeners are handed this very object, not a copy.
 
-		A class that changes how its events are dispatched overrides
-		`dispatch`, which this calls.
-
 		@return Whether any listener heard it.
 	**/
 	public inline function dispatchEvent(event:emitter.Event):Bool {
-		return dispatch(event);
+		return events.dispatch(event);
 	}
 
 	/**

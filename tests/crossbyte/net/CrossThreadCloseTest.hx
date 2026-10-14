@@ -611,7 +611,7 @@ class CrossThreadCloseTest extends utest.Test {
 
 	/** Whether `listener` is among `runtime`'s tick listeners. **/
 	private static function __listening(runtime:CrossByte, listener:Dynamic):Bool {
-		return listener != null && runtime.has(crossbyte.events.TickEvent.TICK, cast listener);
+		return listener != null && runtime.events.has(crossbyte.events.TickEvent.TICK, cast listener);
 	}
 
 	/**

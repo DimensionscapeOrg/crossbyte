@@ -429,15 +429,18 @@ class Future<T> implements IEventDispatcher {
 	}
 
 	public inline function dispatchEvent(event:emitter.Event):Bool {
-		return dispatch(event);
+		return __more != null && __more.dispatcher != null && __more.dispatcher.dispatchEvent(event);
 	}
 
 	/**
-		Sends `event` to the listeners added here for its type, if any:
-		`dispatchEvent` by Emitter's name, which every event target has.
+		The verbs of the dispatcher this future keeps for its events, as every
+		event target has them (`events.on`, `events.dispatch` and the rest).
+		Made the first time anything asks.
 	**/
-	public function dispatch(event:emitter.Event):Bool {
-		return __more != null && __more.dispatcher != null && __more.dispatcher.dispatch(event);
+	public var events(get, never):emitter.Events;
+
+	@:noCompletion private function get_events():emitter.Events {
+		return __ensureDispatcher().events;
 	}
 
 	/** Completes with `value`; `false`, changing nothing, if this had already completed. **/

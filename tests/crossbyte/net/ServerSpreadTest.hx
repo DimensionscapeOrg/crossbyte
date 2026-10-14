@@ -143,7 +143,7 @@ class ServerSpreadTest extends utest.Test {
 			server.runtimes = [worker];
 			// Last, so every other listener has run by the time a connection arrives here.
 			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> arrived.add(Arrival.of(e.socket)), -10);
-			first = server.on(ServerSocketConnectEvent.CONNECT, _ -> heard.add("first"));
+			first = server.events.on(ServerSocketConnectEvent.CONNECT, _ -> heard.add("first"));
 			server.bind(0, "127.0.0.1");
 			server.listen();
 			return server;
@@ -176,7 +176,7 @@ class ServerSpreadTest extends utest.Test {
 		SpreadSupport.on(acceptor, () -> first.cancel());
 		Assert.equals("second", connectAndHear(), "a subscription cancelled while listening");
 
-		var once:emitter.Subscription = SpreadSupport.on(acceptor, () -> server.once(ServerSocketConnectEvent.CONNECT, _ -> heard.add("once")));
+		var once:emitter.Subscription = SpreadSupport.on(acceptor, () -> server.events.once(ServerSocketConnectEvent.CONNECT, _ -> heard.add("once")));
 		Assert.equals("second,once", connectAndHear(), "a once listener added while listening");
 		Assert.equals("second", connectAndHear(), "a once listener heard a second connection");
 		Assert.isFalse(SpreadSupport.on(acceptor, () -> once.active), "a once listener that heard one stayed on the server");

@@ -1189,7 +1189,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			// listener that threw would end the process, every connection
 			// the server held with it, for a fault in handling one.
 			try {
-				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+				__announce(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 			} catch (e:Dynamic) {
 				CrossByte.__socketListenerThrew(e, socket, 'A "connect" listener threw, and the connection it was handling was closed');
 				try {
@@ -1989,7 +1989,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	**/
 	@:noCompletion private function __announceHere(socket:CBSocket):Void {
 		try {
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+			__announce(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		} catch (error:Dynamic) {
 			if (__cbInstance != null) {
 				__cbInstance.__uncaught(error, crossbyte.events.UncaughtErrorEvent.SOCKET, socket);
@@ -2418,24 +2418,24 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		replica rather than among the application's.
 	**/
 	@:noCompletion private function __addOwnConnectListener(listener:ServerSocketConnectEvent->Void):Void {
-		__ownConnect = on(ServerSocketConnectEvent.CONNECT, listener);
+		__ownConnect = events.on(ServerSocketConnectEvent.CONNECT, listener);
 		// Published as it was added, before it was known to be the class's.
 		__refreshSharedConnect();
 	}
 
 	/**
-		A replica's `connect` goes to its own listener (the class's) and
-		then to those the application added to the front. Every other event,
-		and every event on a server that is not a replica, is dispatched as
-		usual.
+		Dispatches a connection's `connect`, as every place that announces one
+		does: to this server's listeners, and on a replica, then to those the
+		application added to the front (a replica's own listener is the
+		class's).
 	**/
-	override public function dispatch(event:emitter.Event):Bool {
+	@:noCompletion public function __announce(event:ServerSocketConnectEvent):Bool {
+		var handled:Bool = dispatchEvent(event);
 		var front:ServerSocket = __front;
-		if (front != null && event != null && event.type == ServerSocketConnectEvent.CONNECT) {
-			var handled:Bool = super.dispatch(event);
-			return front.__dispatchShared(cast event) || handled;
+		if (front != null) {
+			return front.__dispatchShared(event) || handled;
 		}
-		return super.dispatch(event);
+		return handled;
 	}
 
 	@:noCompletion private function get_acceptFailures():Float {
@@ -2681,7 +2681,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			if (!__countOpen(socket)) {
 				return true;
 			}
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+			__announce(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 			return true;
 		} catch (e:Error) {
 			if (!__isBlockedError(e)) {
@@ -3241,7 +3241,7 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			if (!__countOpen(cbSocket)) {
 				return;
 			}
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
+			__announce(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
 		} catch (_:Dynamic) {
 			__closeHandshake(pending);
 		}

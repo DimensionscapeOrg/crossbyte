@@ -250,7 +250,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			throw new MySQLConnectionError(cause.message, cause.code, cause.sqlState);
 		}
 
-		__dispatch(SQLEvent.OPEN);
+		__dispatchSQL(SQLEvent.OPEN);
 	}
 
 	/**
@@ -334,7 +334,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		if (__connection != null) {
 			try {
 				__connection.close();
-				__dispatch(SQLEvent.CLOSE);
+				__dispatchSQL(SQLEvent.CLOSE);
 			} catch (e:Dynamic) {
 				__dispatchError(SQLEvent.CLOSE, "Close failed", e);
 			}
@@ -452,7 +452,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 		__inTransaction = true;
 		__savepoints = [];
-		__dispatch(SQLEvent.BEGIN);
+		__dispatchSQL(SQLEvent.BEGIN);
 	}
 
 	/**
@@ -474,7 +474,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 		__inTransaction = false;
 		__savepoints = [];
-		__dispatch(SQLEvent.COMMIT);
+		__dispatchSQL(SQLEvent.COMMIT);
 	}
 
 	public function rollback():Void {
@@ -495,7 +495,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
 		}
 
-		__dispatch(SQLEvent.ROLLBACK);
+		__dispatchSQL(SQLEvent.ROLLBACK);
 	}
 
 	/**
@@ -515,7 +515,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		// Recorded only once the server has it, so a savepoint that failed is
 		// not the one a nameless release or rollback reaches for next.
 		__savepoints.push(sp);
-		__dispatch(SQLEvent.SET_SAVEPOINT);
+		__dispatchSQL(SQLEvent.SET_SAVEPOINT);
 		return sp;
 	}
 
@@ -538,7 +538,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
 
-		__dispatch(SQLEvent.ROLLBACK_TO_SAVEPOINT);
+		__dispatchSQL(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 	}
 
 	/**
@@ -554,7 +554,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
 
-		__dispatch(SQLEvent.RELEASE_SAVEPOINT);
+		__dispatchSQL(SQLEvent.RELEASE_SAVEPOINT);
 	}
 
 	/**
@@ -1142,7 +1142,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return ~/[^\w]/g.replace(n, "_");
 	}
 
-	@:noCompletion private inline function __dispatch(t:String):Void {
+	@:noCompletion private inline function __dispatchSQL(t:String):Void {
 		dispatchEvent(new SQLEvent(t));
 	}
 

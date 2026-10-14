@@ -1355,7 +1355,7 @@ class WebSocket extends Socket {
 			// not taken for an upgrade that failed.
 			var server:ServerWebSocket = __server;
 			__server = null;
-			server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
+			server.__announce(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 		}
 	}
 
