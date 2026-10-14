@@ -5,6 +5,7 @@
 # registered as development haxelibs:
 #   haxe tests/perf/replication/replication.hxml
 -cp src
+-lib emitter
 -cp tests
 -cp tests/perf/replication
 -lib yggdrasil

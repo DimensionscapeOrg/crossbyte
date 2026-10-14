@@ -767,21 +767,26 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	// spread.
 	@:noCompletion private var __front:ServerSocket = null;
 
-	// The listener the class itself attaches for `connect` (HTTPServer's,
-	// ServerWebSocket's), which on a spread server runs on each replica
-	// rather than on this one; and the `connect` listeners the application
-	// added, as an array no one changes once it is published, which the
-	// replicas walk from their own threads. See __dispatchShared.
-	@:noCompletion private var __ownConnect:Dynamic = null;
-	// Which entry in the dispatcher's list that listener is, by the order
-	// it was added in. On hl the list holds the listener wrapped for
-	// addEventListener's generic signature, and neither == nor
-	// Reflect.compareMethods matches a wrapper to the function the class
-	// passed in, so the front would run its own listener for every
-	// replica's connection too: a session counted twice, and two handlers on
-	// two threads reading one socket.
-	@:noCompletion private var __ownConnectOrder:Int = -1;
-	@:noCompletion private var __sharedConnect:Array<Dynamic> = null;
+	// The subscription of the listener the class itself attaches for
+	// `connect` (HTTPServer's, ServerWebSocket's), which on a spread server
+	// runs on each replica rather than on this one; and the `connect`
+	// listeners the application added, as an array no one changes once it is
+	// published, which the replicas walk from their own threads. See
+	// __dispatchShared. The class's own is told from the application's by its
+	// subscription, not by comparing functions: on hl the dispatcher keeps a
+	// listener wrapped for the generic signature it was added through, and
+	// neither == nor Reflect.compareMethods matches the wrapper to the
+	// function the class passed in, so the front would run its own listener
+	// for every replica's connection too: a session counted twice, and two
+	// handlers on two threads reading one socket.
+	@:noCompletion private var __ownConnect:Null<emitter.Subscription> = null;
+	@:noCompletion private var __sharedConnect:Null<Array<ServerSocketConnectEvent->Void>> = null;
+	#if (target.threaded && !js)
+	// The `once` listeners among them, as the replicas call them: each kept
+	// from one publishing to the next, so it is called for one connection
+	// however often the list is published again before it is taken out.
+	@:noCompletion private var __sharedOnces:Null<Array<SharedOnce>> = null;
+	#end
 	#if (target.threaded && !js)
 	// On the front of a spread server: the runtimes and their replicas.
 	@:noCompletion private var __spread:ServerSpread = null;
@@ -2345,14 +2350,11 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		the dispatcher's own lists, which this thread does not own.
 	**/
 	@:noCompletion private function __dispatchShared(event:ServerSocketConnectEvent):Bool {
-		var listeners:Array<Dynamic> = __sharedConnect;
+		var listeners:Null<Array<ServerSocketConnectEvent->Void>> = __sharedConnect;
 		if (listeners == null || listeners.length == 0) {
 			return false;
 		}
-		@:privateAccess {
-			event.target = this;
-			event.currentTarget = this;
-		}
+		@:privateAccess event.__targetAt(this);
 		for (listener in listeners) {
 			listener(event);
 		}
@@ -2361,29 +2363,54 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Publishes the `connect` listeners the application has added, in the
-		order they run, leaving out the one this class attached for itself.
+		order they run, leaving out the one this class attached for itself:
+		read again whenever one is added or taken out, by whatever path.
 	**/
 	@:noCompletion private function __refreshSharedConnect():Void {
-		var listed = __listenersOf(ServerSocketConnectEvent.CONNECT);
-		if (listed == null || listed.length == 0) {
-			__sharedConnect = null;
-			return;
-		}
-		var published:Array<Dynamic> = [];
-		for (entry in listed) {
-			var listener:Dynamic = entry == null ? null : entry.listener;
-			if (listener == null || entry.order == __ownConnectOrder || __isOwnConnect(listener)) {
+		var published:Null<Array<ServerSocketConnectEvent->Void>> = null;
+		#if (target.threaded && !js)
+		var onces:Null<Array<SharedOnce>> = null;
+		#end
+		for (subscription in listenersOf(ServerSocketConnectEvent.CONNECT)) {
+			if (subscription == __ownConnect) {
 				continue;
 			}
+			if (published == null) {
+				published = [];
+			}
+			var listener:ServerSocketConnectEvent->Void = cast subscription.listener;
+			#if (target.threaded && !js)
+			if (subscription.once) {
+				var shared:SharedOnce = __sharedOnceOf(subscription, listener);
+				if (onces == null) {
+					onces = [];
+				}
+				onces.push(shared);
+				listener = shared.call;
+			}
+			#end
 			published.push(listener);
 		}
+		#if (target.threaded && !js)
+		__sharedOnces = onces;
+		#end
 		__sharedConnect = published;
 	}
 
-	@:noCompletion private function __isOwnConnect(listener:Dynamic):Bool {
-		var own:Dynamic = __ownConnect;
-		return own != null && (listener == own || Reflect.compareMethods(listener, own));
+	#if (target.threaded && !js)
+	/** The `once` listener's replica-side form: the one published before, or a new one. **/
+	@:noCompletion private function __sharedOnceOf(subscription:emitter.Subscription, listener:ServerSocketConnectEvent->Void):SharedOnce {
+		var onces:Null<Array<SharedOnce>> = __sharedOnces;
+		if (onces != null) {
+			for (shared in onces) {
+				if (shared.subscription == subscription) {
+					return shared;
+				}
+			}
+		}
+		return new SharedOnce(this, subscription, listener);
 	}
+	#end
 
 	/**
 		How a server built on this one attaches its own `connect` listener:
@@ -2391,9 +2418,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		replica rather than among the application's.
 	**/
 	@:noCompletion private function __addOwnConnectListener(listener:ServerSocketConnectEvent->Void):Void {
-		__ownConnect = listener;
-		__ownConnectOrder = __nextListenerOrder;
-		addEventListener(ServerSocketConnectEvent.CONNECT, listener);
+		__ownConnect = on(ServerSocketConnectEvent.CONNECT, listener);
+		// Published as it was added, before it was known to be the class's.
+		__refreshSharedConnect();
 	}
 
 	/**
@@ -2402,13 +2429,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		and every event on a server that is not a replica, is dispatched as
 		usual.
 	**/
-	override public function dispatchEvent<T:Event>(event:T):Bool {
+	override public function dispatch(event:emitter.Event):Bool {
 		var front:ServerSocket = __front;
 		if (front != null && event != null && event.type == ServerSocketConnectEvent.CONNECT) {
-			var handled:Bool = super.dispatchEvent(event);
+			var handled:Bool = super.dispatch(event);
 			return front.__dispatchShared(cast event) || handled;
 		}
-		return super.dispatchEvent(event);
+		return super.dispatch(event);
 	}
 
 	@:noCompletion private function get_acceptFailures():Float {
@@ -2824,35 +2851,36 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 	#end
 
-	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		super.addEventListener(type, listener, priority);
+	/**
+		Accepts while anyone listens for `connect`, and not otherwise: from
+		the first listener, however it was added, to the last, however it
+		went. Only once the last one goes, so one part of an application
+		unsubscribing does not silence the server for the rest still
+		listening for what it accepts.
+	**/
+	@:noCompletion override private function listenersChanged(type:String, present:Bool):Void {
+		if (type != Event.CONNECT) {
+			return;
+		}
+		__hasListener = present;
+		#if !nodejs
+		if (!present) {
+			__detachAcceptTick();
+		} else if (listening) {
+			__attachAcceptTick();
+		}
+		#end
+	}
 
+	@:noCompletion override private function listenerAdded(type:String, listener:emitter.Subscription):Void {
 		if (type == Event.CONNECT) {
-			__hasListener = true;
 			__refreshSharedConnect();
-			#if !nodejs
-			if (listening) {
-				__attachAcceptTick();
-			}
-			#end
 		}
 	}
 
-	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
-		super.removeEventListener(type, listener);
-
+	@:noCompletion override private function listenerRemoved(type:String, listener:emitter.Subscription):Void {
 		if (type == Event.CONNECT) {
 			__refreshSharedConnect();
-		}
-
-		// Only once the last one goes, so one part of an application
-		// unsubscribing does not silence the server for the rest still
-		// listening for what it accepts.
-		if (type == Event.CONNECT && !hasEventListener(Event.CONNECT)) {
-			__hasListener = false;
-			#if !nodejs
-			__detachAcceptTick();
-			#end
 		}
 	}
 
@@ -3375,4 +3403,44 @@ private final class ListenerPoll implements IPollableSocket {
 	}
 }
 #end
+#end
+
+#if (target.threaded && !js)
+/**
+	A `once` `connect` listener as a spread server's replicas call it: for
+	the first connection any of them announces, and then taken off the
+	server on the server's own runtime, where its listeners are kept, as a
+	dispatch there takes one out before it calls it.
+**/
+@:noCompletion
+private final class SharedOnce {
+	public final subscription:emitter.Subscription;
+
+	final server:ServerSocket;
+	final listener:ServerSocketConnectEvent->Void;
+	final lock:sys.thread.Mutex = new sys.thread.Mutex();
+	var taken:Bool = false;
+
+	public function new(server:ServerSocket, subscription:emitter.Subscription, listener:ServerSocketConnectEvent->Void) {
+		this.server = server;
+		this.subscription = subscription;
+		this.listener = listener;
+	}
+
+	public function call(event:ServerSocketConnectEvent):Void {
+		lock.acquire();
+		var first:Bool = !taken;
+		taken = true;
+		lock.release();
+		if (!first) {
+			return;
+		}
+		var runtime:Null<CrossByte> = @:privateAccess server.__cbInstance;
+		var subscription:emitter.Subscription = this.subscription;
+		if (runtime != null) {
+			runtime.post(() -> subscription.cancel());
+		}
+		listener(event);
+	}
+}
 #end

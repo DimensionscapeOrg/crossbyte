@@ -85,7 +85,7 @@ class DatagramSocketDataEvent extends Event {
 
 	/** Filled again for the next arrival; see `Arrivals`. **/
 	@:noCompletion public function __refill(srcAddress:String, srcPort:Int, dstAddress:String, dstPort:Int, data:ByteArray):Void {
-		__retarget();
+		reuse();
 		this.srcAddress = srcAddress;
 		this.srcPort = srcPort;
 		this.dstAddress = dstAddress;

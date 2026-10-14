@@ -196,9 +196,8 @@ class ObjectTest extends utest.Test {
 
 	/**
 		An `Object` converts on its own to the type it is assigned to, as
-		ActionScript's and OpenFL's do, so `var socket:Socket = event.target`
-		compiles: for a while it converted only to `Dynamic`, and that line,
-		ActionScript's way to type an event's target, did not.
+		ActionScript's and OpenFL's do, so `var socket:Socket = held`
+		compiles: for a while it converted only to `Dynamic`, and it did not.
 	**/
 	public function testAnObjectConvertsToTheTypeItIsAssignedTo():Void {
 		var target:Object = new Socket();
@@ -221,21 +220,21 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
-		The idiom itself, in a listener: the target assigned to its type is
-		the dispatcher, read through its type, on every target, and
-		`cast(event.target, T)` checks.
+		An event's target, an `emitter.IEmitter`, cast to its type in a
+		listener is the dispatcher, read through its type, on every target,
+		and `cast(event.target, T)` checks.
 	**/
-	public function testAnEventsTargetIsAssignedToItsType():Void {
+	public function testAnEventsTargetIsCastToItsType():Void {
 		var socket:Socket = new Socket();
 		var seen:Socket = null;
 		var current:Socket = null;
 		var checked:Socket = null;
 		var connected:Null<Bool> = null;
 		socket.addEventListener("probe", (event:Event) -> {
-			var target:Socket = event.target;
+			var target:Socket = cast event.target;
 			seen = target;
 			connected = target.connected;
-			current = event.currentTarget;
+			current = cast event.currentTarget;
 			checked = cast(event.target, Socket);
 		});
 		socket.dispatchEvent(new Event("probe"));

@@ -9,5 +9,6 @@
 --jvm export/perf-core-jvm/a.jar
 --next
 -cp src
+-lib emitter
 -D perf_new
 --jvm export/perf-core-jvm/b.jar

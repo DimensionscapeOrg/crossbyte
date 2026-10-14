@@ -2523,12 +2523,12 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 				// A CONNECT from before 1.0 is too short to be answered with
 				// more than it brought: dropped.
 				if (extended) {
-					__refuse(connectionId, ReliableDatagramProtocol.REFUSE_ENCRYPTION_REQUIRED, address, port, via);
+					__refuseJoin(connectionId, ReliableDatagramProtocol.REFUSE_ENCRYPTION_REQUIRED, address, port, via);
 				}
 				return;
 			}
 			if (key == null || !ReliableDatagramSocket.isEncryptionSupported) {
-				__refuse(connectionId, ReliableDatagramProtocol.REFUSE_NO_KEY, address, port, via);
+				__refuseJoin(connectionId, ReliableDatagramProtocol.REFUSE_NO_KEY, address, port, via);
 				return;
 			}
 			cipher = new SessionCipher(key);
@@ -2921,7 +2921,7 @@ class ReliableDatagramServerSocket extends EventDispatcher implements crossbyte.
 		(`maxResetsPerSecond`), and never larger than the 1.0 CONNECT it
 		answers.
 	**/
-	@:noCompletion private function __refuse(connectionId:Int, reason:Int, address:String, port:Int, via:Null<TurnClient>):Void {
+	@:noCompletion private function __refuseJoin(connectionId:Int, reason:Int, address:String, port:Int, via:Null<TurnClient>):Void {
 		if (!ResetBudget.take(maxResetsPerSecond, haxe.Timer.stamp())) {
 			return;
 		}

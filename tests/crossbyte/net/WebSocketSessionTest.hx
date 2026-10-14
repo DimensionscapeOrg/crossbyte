@@ -1072,8 +1072,7 @@ class WebSocketSessionTest extends utest.Test {
 
 	private static function __tickListeners():Int {
 		var runtime:CrossByte = CrossByte.current();
-		var listeners:Array<Dynamic> = cast runtime.__listenersOf(TickEvent.TICK);
-		return listeners == null ? 0 : listeners.length;
+		return @:privateAccess runtime.listenersOf(TickEvent.TICK).length;
 	}
 	#end
 

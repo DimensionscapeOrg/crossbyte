@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/sharedchannel
 -main SharedChannelSample
 --cpp export/sharedchannel

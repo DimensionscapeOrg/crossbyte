@@ -2,6 +2,7 @@
 # Run export/mongo-bench/MongoBenchMain.exe once built; see
 # tests/crossbyte/db/mongodb/MongoBenchMain.hx for what each case measures.
 -cp src
+-lib emitter
 -cp tests
 -cp tests/bench
 -lib utest

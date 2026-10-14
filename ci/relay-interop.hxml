@@ -8,6 +8,7 @@
 #
 # Run it with `node ci/relay/run.js` once built.
 -cp src
+-lib emitter
 -cp tests
 -cp tests/relay
 -D windows

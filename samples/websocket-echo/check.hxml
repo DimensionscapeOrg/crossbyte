@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/websocket-echo
 -main WebSocketEchoSample
 --cpp export/sample-websocket-echo-check

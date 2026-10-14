@@ -661,7 +661,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	**/
 	@:noCompletion private function __fail(operation:String, e:Dynamic):Void {
 		var error:SQLError = __asSQLError(operation, e);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 
@@ -1478,7 +1478,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		}
 
 		if (Std.isOfType(message, Event)) {
-			__dispatchEvent(message);
+			dispatchEvent(message);
 		}
 	}
 
@@ -1581,7 +1581,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				#end
 
 				if (verdict == JOB_CANCELLED) {
-					__refuse(job, CANCELLED_REASON, false, worker);
+					__refuseJob(job, CANCELLED_REASON, false, worker);
 				}
 
 				continue;
@@ -1617,7 +1617,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				if (left.keep) {
 					left.run();
 				} else {
-					__refuse(left, "The connection is closed.", true, worker);
+					__refuseJob(left, "The connection is closed.", true, worker);
 				}
 
 				left = queue.jobs.pop(false);
@@ -1647,7 +1647,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		why. A caller waiting on it is told as for a call made on a
 		connection that is not open, when the connection has `closed`.
 	**/
-	@:noCompletion private function __refuse(job:SQLiteJob, reason:String, closed:Bool, worker:Worker):Void {
+	@:noCompletion private function __refuseJob(job:SQLiteJob, reason:String, closed:Bool, worker:Worker):Void {
 		var error:SQLError = new SQLError(job.operation, reason, reason);
 
 		#if !php
@@ -2123,7 +2123,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function __dispatchSQLEvent(type:String):Void {
-		__dispatchEvent(new SQLEvent(type));
+		dispatchEvent(new SQLEvent(type));
 	}
 
 	private function __getTables():Array<String> {

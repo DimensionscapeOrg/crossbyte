@@ -7,6 +7,7 @@
 # macOS too, so a Linux-only fault in the code servers run on most, such as
 # datagram port sharing, does not pass CI without being looked at.
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -D HXCPP_M64

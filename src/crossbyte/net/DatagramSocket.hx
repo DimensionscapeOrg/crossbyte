@@ -1337,21 +1337,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__syncPolling();
 	}
 
-	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		var shouldSync:Bool = type == DatagramSocketDataEvent.DATA && !hasEventListener(DatagramSocketDataEvent.DATA);
-		super.addEventListener(type, listener, priority);
+	/**
+		Polls for datagrams while anyone listens for DATA, and not otherwise,
+		whichever way the first listener came or the last went.
+	**/
+	@:noCompletion override private function listenersChanged(type:String, present:Bool):Void {
 		if (type == DatagramSocketDataEvent.DATA) {
-			__hasDataListener = true;
-		}
-		if (shouldSync) {
-			__syncPolling();
-		}
-	}
-
-	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
-		super.removeEventListener(type, listener);
-		if (type == DatagramSocketDataEvent.DATA && !hasEventListener(DatagramSocketDataEvent.DATA)) {
-			__hasDataListener = false;
+			__hasDataListener = present;
 			__syncPolling();
 		}
 	}

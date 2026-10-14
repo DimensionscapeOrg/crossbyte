@@ -1,12 +1,27 @@
 package crossbyte.events;
 
-/** Strongly typed event-name wrapper used by CrossByte listener APIs. */
-abstract EventType<T>(String) from String to String {
-	@:op(A == B) private static inline function equals<T>(a:EventType<T>, b:String):Bool {
-		return (a : String) == b;
-	}
+/**
+	The name of an event, typed by the event it names: a listener added for
+	an `EventType<T>` is a `T->Void`, checked when it is added. Emitter's
+	`emitter.EventType`, the one type for event names CrossByte and every
+	other user of Emitter share.
 
-	@:op(A != B) private static inline function notEquals<T>(a:EventType<T>, b:String):Bool {
-		return (a : String) != b;
+	```haxe
+	import crossbyte.events.Event;
+	import crossbyte.events.EventType;
+
+	class ScoreEvent extends Event {
+		public static inline var SCORED:EventType<ScoreEvent> = "scored";
+
+		public var points:Int;
+
+		public function new(points:Int) {
+			super(SCORED);
+			this.points = points;
+		}
 	}
-}
+	```
+
+	At run time it is the `String` it was made from.
+**/
+typedef EventType<T:emitter.Event> = emitter.EventType<T>;

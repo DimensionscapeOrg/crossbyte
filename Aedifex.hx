@@ -2,6 +2,7 @@ package;
 
 import aedifex.build.Project;
 import aedifex.build.ProjectSpec;
+import aedifex.build.ProjectSpec.LibrarySpec;
 
 class Aedifex {
 	public static final project:ProjectSpec = Project
@@ -15,6 +16,7 @@ class Aedifex {
 		.contributor("Dimensionscape")
 		.classPath("src")
 		.source("src")
+		.dependency(LibrarySpec.haxelib("emitter", null, "2.0.0"))
 		.task("interp-tests", "haxe", ["ci/interp-tests.hxml"], null, "Run the fast interpreted CrossByte test suite.")
 		.task("native-tests", "haxe", ["ci/native-tests.hxml"], null, "Build the native CrossByte smoke test executable.")
 		.task("jvm-smoke-tests", "haxe", ["ci/jvm-smoke.hxml"], null, "Build the jvm smoke test jar (core non-networking suites). Run with: java -jar export/jvm/CrossByteJvmSmoke.jar")

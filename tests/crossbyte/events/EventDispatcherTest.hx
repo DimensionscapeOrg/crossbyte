@@ -2,7 +2,11 @@ package crossbyte.events;
 
 import utest.Assert;
 
-@:access(crossbyte.events.EventDispatcher)
+/**
+	CrossByte's dispatcher: Emitter's, with ActionScript's names. What Emitter
+	does itself (its lists, their copies during a dispatch) is tested in
+	Emitter; these hold what CrossByte relies on and adds.
+**/
 class EventDispatcherTest extends utest.Test {
 	public function testAContainedDispatchRunsEveryListenerPastOneThatThrows():Void {
 		var dispatcher = new FailureRecorder();
@@ -15,7 +19,7 @@ class EventDispatcherTest extends utest.Test {
 		});
 		dispatcher.addEventListener("demo", (_:Event) -> order.push("third"));
 
-		Assert.isTrue(dispatcher.__dispatchContained(new Event("demo")));
+		Assert.isTrue(dispatcher.dispatchContained(new Event("demo")));
 		Assert.same(["first", "second", "third"], order);
 		Assert.same(["listener bug"], dispatcher.failures);
 
@@ -111,28 +115,6 @@ class EventDispatcherTest extends utest.Test {
 		Assert.same(["first", "second", "first"], calls);
 	}
 
-	public function testOutsideADispatchTheListIsChangedWhereItIs():Void {
-		// Only a list a dispatch is walking needs replacing. Copying the whole
-		// list on every add and every remove, dispatching or not, would make n
-		// connections or tasks each attaching a listener cost n^2 to attach and
-		// again to detach.
-		var dispatcher = new EventDispatcher();
-		var first = (_:Event) -> {};
-		var second = (_:Event) -> {};
-		var third = (_:Event) -> {};
-		dispatcher.addEventListener("demo", first);
-		dispatcher.addEventListener("demo", second);
-		var list = dispatcher.__listenersOf("demo");
-
-		dispatcher.addEventListener("demo", third);
-		Assert.equals(list, dispatcher.__listenersOf("demo"), "adding copied the list");
-		dispatcher.addEventListener("demo", (_:Event) -> {}, 5);
-		Assert.equals(list, dispatcher.__listenersOf("demo"), "adding ahead of the others copied the list");
-		dispatcher.removeEventListener("demo", second);
-		Assert.equals(list, dispatcher.__listenersOf("demo"), "removing copied the list");
-		Assert.equals(3, list.length);
-	}
-
 	public function testChangesMadeDuringAWalkLeaveTheWalkAlone():Void {
 		// With the list changed in place outside a dispatch, the walk is what
 		// must not see it change: a listener removed further down still runs
@@ -181,14 +163,15 @@ class EventDispatcherTest extends utest.Test {
 
 		dispatcher.dispatchEvent(new Event("outer"));
 		Assert.same(["outer first", "inner", "outer last"], calls);
-		Assert.equals(0, dispatcher.__walking);
+		calls = [];
+		dispatcher.dispatchEvent(new Event("outer"));
+		Assert.same(["outer first", "inner"], calls, "the listener the nested dispatch removed was called again");
 	}
 
 	public function testAListenerThatThrowsOutOfADispatchLeavesTheDispatcherCorrect():Void {
-		// A listener's failure leaves dispatchEvent with the walk over and the
-		// walk count lowered. Left raised, it would make every later add and
-		// remove copy the dispatcher's listener array: still right, but each
-		// change paying for every listener, forever, after one throw.
+		// A listener's failure ends dispatchEvent, reaches the caller, and
+		// leaves the dispatcher as it was: the next dispatch, and every add and
+		// remove after it, behave as if nothing had thrown.
 		var dispatcher = new EventDispatcher();
 		var calls:Array<String> = [];
 		var failing = true;
@@ -204,12 +187,9 @@ class EventDispatcherTest extends utest.Test {
 		dispatcher.addEventListener("demo", (_:Event) -> calls.push("second"));
 
 		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")), String);
-		Assert.equals(0, dispatcher.__walking, "the walk was left counted after a listener threw");
-		var walked = dispatcher.__listenersOf("demo");
-		var other:Event->Void = (_:Event) -> {};
+		var other:Event->Void = (_:Event) -> calls.push("other");
 		dispatcher.addEventListener("demo", other);
 		dispatcher.removeEventListener("demo", other);
-		Assert.isTrue(walked == dispatcher.__listenersOf("demo"), "a change after the throw copied the listeners");
 		failing = false;
 
 		calls = [];
@@ -268,7 +248,7 @@ class EventDispatcherTest extends utest.Test {
 		seenAfter = [];
 		contained.addEventListener("demo", (event:Event) -> outer.dispatchEvent(event));
 		contained.addEventListener("demo", (event:Event) -> seenAfter.push(event.currentTarget));
-		contained.__dispatchContained(new Event("demo"));
+		contained.dispatchContained(new Event("demo"));
 		Assert.equals(contained, seenAfter[0]);
 	}
 
@@ -351,9 +331,34 @@ class EventDispatcherTest extends utest.Test {
 		Assert.equals(0, calls.length, "an event of a null type reached another type's listeners");
 	}
 
-	public function testAListenerAddedTwiceRunsTwiceAndIsRemovedOnceAtATime():Void {
-		// Unlike ActionScript, and documented: adding is not a search.
+	public function testAListenerAddedAgainIsNotAddedAgain():Void {
+		// As in ActionScript: it keeps its place and its priority, runs once,
+		// and one removal takes it out.
 		var dispatcher = new EventDispatcher();
+		var calls:Array<String> = [];
+		var listener = (_:Event) -> calls.push("listener");
+		dispatcher.addEventListener("demo", listener);
+		dispatcher.addEventListener("demo", (_:Event) -> calls.push("other"));
+		dispatcher.addEventListener("demo", listener);
+		dispatcher.addEventListener("demo", listener, 10);
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals("listener,other", calls.join(","));
+
+		dispatcher.removeEventListener("demo", listener);
+		calls = [];
+		dispatcher.dispatchEvent(new Event("demo"));
+		Assert.equals("other", calls.join(","), "one removal did not take the listener out");
+	}
+
+	public function testTheRuntimeKeepsAListenerAddedTwice():Void {
+		// The runtime holds a tick listener per connection, timer and task:
+		// adding one is not a search there, so each add is kept, and each
+		// removal takes one. A dispatcher may opt out the same way.
+		Assert.isTrue(crossbyte.core.CrossByte.current().allowDuplicates, "the runtime searches its listeners on every add");
+		Assert.isFalse(new EventDispatcher().allowDuplicates);
+
+		var dispatcher = new EventDispatcher();
+		dispatcher.allowDuplicates = true;
 		var calls = 0;
 		var listener = (_:Event) -> calls++;
 		dispatcher.addEventListener("demo", listener);
@@ -368,6 +373,59 @@ class EventDispatcherTest extends utest.Test {
 
 		dispatcher.removeEventListener("demo", listener);
 		Assert.isFalse(dispatcher.hasEventListener("demo"));
+	}
+
+	/**
+		The ActionScript names are Emitter's own words: what one adds the
+		other finds and removes, and a dispatch through either name takes
+		the one path a class overrides.
+	**/
+	public function testTheActionScriptNamesAreEmittersWords():Void {
+		var dispatcher = new Overriding();
+		var calls:Array<String> = [];
+		var listener = (_:Event) -> calls.push("listener");
+
+		var subscription = dispatcher.on(Event.COMPLETE, listener);
+		Assert.isTrue(dispatcher.hasEventListener(Event.COMPLETE));
+		dispatcher.removeEventListener(Event.COMPLETE, listener);
+		Assert.isFalse(subscription.active, "removeEventListener did not take out what on added");
+		Assert.isFalse(dispatcher.has(Event.COMPLETE));
+
+		dispatcher.addEventListener(Event.COMPLETE, listener);
+		Assert.isTrue(dispatcher.has(Event.COMPLETE, listener));
+		Assert.isTrue(dispatcher.dispatchEvent(new Event(Event.COMPLETE)));
+		Assert.isTrue(dispatcher.dispatch(new Event(Event.COMPLETE)));
+		Assert.equals("listener,listener", calls.join(","));
+		Assert.equals(2, dispatcher.dispatched, "a dispatch through one of the names went around the override");
+
+		dispatcher.off(Event.COMPLETE, listener);
+		Assert.isFalse(dispatcher.hasEventListener(Event.COMPLETE));
+
+		dispatcher.addEventListener(Event.COMPLETE, listener);
+		dispatcher.once(Event.CANCEL, (_:Event) -> calls.push("once"));
+		dispatcher.removeAllListeners();
+		Assert.isFalse(dispatcher.hasEventListener(Event.COMPLETE));
+		Assert.isFalse(dispatcher.hasEventListener(Event.CANCEL));
+	}
+
+	/**
+		One kind of event: a listener written for Emitter's events takes
+		CrossByte's, and a CrossByte dispatcher sends Emitter's.
+	**/
+	public function testCrossBytesEventsAreEmittersEvents():Void {
+		var dispatcher = new EventDispatcher();
+		var heard:Array<String> = [];
+		dispatcher.addEventListener(Event.COMPLETE, (event:emitter.Event) -> heard.push("emitter:" + event.type));
+		dispatcher.addEventListener(emitter.Event.CHANGE, (event:emitter.Event) -> heard.push("change"));
+		dispatcher.dispatchEvent(new Event(Event.COMPLETE));
+		dispatcher.dispatchEvent(new emitter.Event(emitter.Event.CHANGE));
+		Assert.equals("emitter:complete,change", heard.join(","));
+
+		var event:emitter.Event = new TickEvent(TickEvent.TICK, 0.5);
+		Assert.isTrue(Std.isOfType(event, emitter.Event));
+		Assert.equals("tick", event.toString());
+		Assert.isFalse(event.bubbles);
+		Assert.isFalse(event.cancelable);
 	}
 
 	/**
@@ -470,7 +528,7 @@ class EventDispatcherTest extends utest.Test {
 				var event = new Event(type);
 				var missed:Int = 0;
 				for (_ in 0...rounds) {
-					@:privateAccess event.target = null;
+					event.reuse();
 					if (!dispatcher.dispatchEvent(event)) {
 						missed++;
 					}
@@ -544,15 +602,11 @@ private class DispatcherOwner implements IEventDispatcher {
 		dispatcher = new EventDispatcher(this);
 	}
 
-	public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
+	public function addEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		dispatcher.addEventListener(type, listener, priority);
 	}
 
-	public function dispatchEvent<T:Event>(event:T):Bool {
-		return dispatcher.dispatchEvent(event);
-	}
-
-	public function dispatch(event:Event):Bool {
+	public function dispatch(event:emitter.Event):Bool {
 		return dispatcher.dispatchEvent(event);
 	}
 }
@@ -564,7 +618,21 @@ private class FailureRecorder extends EventDispatcher {
 		super();
 	}
 
-	override private function __listenerThrew(error:Dynamic, event:Event):Void {
-		failures.push(error);
+	override private function listenerThrew(error:haxe.Exception, event:emitter.Event):Void {
+		failures.push(@:privateAccess error.unwrap());
+	}
+}
+
+/** Counts what goes through `dispatch`, the one path a class overrides. **/
+private class Overriding extends EventDispatcher {
+	public var dispatched:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	override public function dispatch(event:emitter.Event):Bool {
+		dispatched++;
+		return super.dispatch(event);
 	}
 }

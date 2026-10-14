@@ -4,6 +4,7 @@
 # Sys.cpuTime is wall time there.
 -cp tests/perf/http
 -cp src
+-lib emitter
 -lib hxjava
 -main PerfHttpServer
 --jvm export/perf-http/jvm/PerfHttpServer.jar

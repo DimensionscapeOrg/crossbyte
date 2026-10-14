@@ -10,6 +10,7 @@
 # browser build is skipped rather than failing, which is what makes the pass
 # meaningful: everything not excluded has to compile.
 -cp src
+-lib emitter
 --macro include('crossbyte')
 --js export/js/crossbyte.js
 -D js-flatten

@@ -2,6 +2,7 @@
 # haxe tests/perf/http/perf-http-prof.hxml --cpp export/perf-http/prof
 -cp tests/perf/http
 -cp src
+-lib emitter
 -D windows
 -D HXCPP_M64
 -D HXCPP_STACK_TRACE

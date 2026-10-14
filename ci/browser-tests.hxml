@@ -9,6 +9,7 @@
 #
 # Run it with `node ci/browser/run.js`.
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -main BrowserTestMain

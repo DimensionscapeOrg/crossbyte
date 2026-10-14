@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/localconnection
 -main LocalConnectionSample
 --cpp export/localconnection

@@ -141,7 +141,7 @@ class MySQLStatement extends EventDispatcher {
 
 		// Outside the try: a RESULT listener that throws has not made the
 		// statement fail, and must not be reported as though it had.
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/**
@@ -164,7 +164,7 @@ class MySQLStatement extends EventDispatcher {
 		}
 
 		var error:MySQLError = new MySQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail, code, state);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 
@@ -281,7 +281,7 @@ class MySQLStatement extends EventDispatcher {
 			__prefetch = 0;
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT)); // the final one empty
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT)); // the final one empty
 	}
 
 	/**

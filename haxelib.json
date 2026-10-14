@@ -22,5 +22,7 @@
 	"releasenote": "First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.",
 	"version": "1.0.0-rc.1",
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
-	"dependencies": {}
+	"dependencies": {
+		"emitter": "2.0.0"
+	}
 }

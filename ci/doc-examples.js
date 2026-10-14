@@ -305,7 +305,7 @@ fs.writeFileSync(path.join(tmp, 'DocExamplesMain.hx'), main, 'utf8');
 
 const haxe = spawnSync(
   'haxe',
-  ['-cp', 'src', '-cp', tmp, '-main', 'DocExamplesMain', '--cpp', path.join(tmp, 'out'), '-D', 'no-compilation'],
+  ['-cp', 'src', '-lib', 'emitter', '-cp', tmp, '-main', 'DocExamplesMain', '--cpp', path.join(tmp, 'out'), '-D', 'no-compilation'],
   { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32' }
 );
 

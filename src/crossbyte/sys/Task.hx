@@ -445,14 +445,14 @@ class Task<T> extends EventDispatcher {
 		would take it for the job's failure, which a finished task ignores.
 	**/
 	@:noCompletion private function __deliver(event:TaskDispatch<T>, waiting:Array<TaskDispatch<T>->Void>):Void {
-		// Each listener's failure to __listenerThrew, below.
+		// Each listener's failure to listenerThrew, below.
 		switch (event) {
 			case Complete(value):
-				__dispatchContained(new TaskEvent(TaskEvent.COMPLETE, this, value));
+				dispatchContained(new TaskEvent(TaskEvent.COMPLETE, this, value));
 			case Fail(errorValue):
-				__dispatchContained(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
+				dispatchContained(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
 			case Cancel:
-				__dispatchContained(new TaskEvent(TaskEvent.CANCEL, this));
+				dispatchContained(new TaskEvent(TaskEvent.CANCEL, this));
 		}
 		if (waiting != null) {
 			for (waiter in waiting) {
@@ -472,8 +472,8 @@ class Task<T> extends EventDispatcher {
 		delivering, which is the task's own when it has one; logged alone on a
 		pool thread.
 	**/
-	@:noCompletion override private function __listenerThrew(error:Dynamic, event:crossbyte.events.Event):Void {
-		__handlerThrew(error);
+	@:noCompletion override private function listenerThrew(error:haxe.Exception, event:emitter.Event):Void {
+		__handlerThrew(@:privateAccess error.unwrap());
 	}
 
 	@:noCompletion private function __handlerThrew(error:Dynamic):Void {

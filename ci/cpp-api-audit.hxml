@@ -1,4 +1,5 @@
 -cp src
+-lib emitter
 --macro include('crossbyte')
 --cpp export/audit-full
 --no-output

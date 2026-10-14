@@ -4,6 +4,7 @@
 # -cp tests/perf/core/shadow LAST: Haxe searches the most recently added
 # class path first, so a shadow listed before src is silently ignored.
 -cp src
+-lib emitter
 -cp tests/perf/core
 -D windows
 -D HXCPP_M64

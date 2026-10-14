@@ -125,7 +125,7 @@ class SystemTest extends utest.Test {
 		var root:String = haxe.io.Path.directory(haxe.io.Path.directory(Sys.programPath()));
 
 		function build(defines:Array<String>):{code:Int, output:String} {
-			var args:Array<String> = ["--cwd", root, "-cp", "src", "-cp", "tests/fixtures/appid", "-main", "ProgramMain", "--interp"].concat(defines);
+			var args:Array<String> = ["--cwd", root, "-cp", "src", "-lib", "emitter", "-cp", "tests/fixtures/appid", "-main", "ProgramMain", "--interp"].concat(defines);
 			var process = new sys.io.Process("haxe", args);
 			var output:String = process.stdout.readAll().toString() + process.stderr.readAll().toString();
 			var code:Int = process.exitCode();

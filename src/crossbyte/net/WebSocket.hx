@@ -1413,15 +1413,7 @@ class WebSocket extends Socket {
 		}
 	}
 
-	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		super.addEventListener(type, listener, priority);
-		if (type == OutputProgressEvent.OUTPUT_PROGRESS) {
-			__syncProgressHook();
-		}
-	}
-
-	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
-		super.removeEventListener(type, listener);
+	@:noCompletion override private function listenersChanged(type:String, present:Bool):Void {
 		if (type == OutputProgressEvent.OUTPUT_PROGRESS) {
 			__syncProgressHook();
 		}

@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/multicore
 -main MulticoreSample
 --cpp export/sample-multicore-check

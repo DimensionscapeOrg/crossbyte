@@ -9,6 +9,7 @@
 #
 # Run it with `python export/python-support/flagprobe.py` once built.
 -cp src
+-lib emitter
 -cp tests/support
 -main FlagProbe
 -python export/python-support/flagprobe.py

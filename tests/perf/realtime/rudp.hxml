@@ -6,6 +6,7 @@
 #        run-rudp.ps1 run builds interleaved.
 -cp tests/perf/realtime
 -cp src
+-lib emitter
 -D windows
 -D HXCPP_M64
 -main RudpLoad

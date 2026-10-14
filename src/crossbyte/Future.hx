@@ -404,7 +404,7 @@ class Future<T> implements IEventDispatcher {
 		return future;
 	}
 
-	public inline function addEventListener<U>(type:EventType<U>, listener:U->Void, priority:Int = 0):Void {
+	public inline function addEventListener<U:emitter.Event>(type:EventType<U>, listener:U->Void, priority:Int = 0):Void {
 		if (type == ERROR) {
 			__failureObserved = true;
 		}
@@ -412,7 +412,7 @@ class Future<T> implements IEventDispatcher {
 		__ensureDispatcher().addEventListener(type, listener, priority);
 	}
 
-	public inline function removeEventListener<U>(type:EventType<U>, listener:U->Void):Void {
+	public inline function removeEventListener<U:emitter.Event>(type:EventType<U>, listener:U->Void):Void {
 		if (__more != null && __more.dispatcher != null) {
 			__more.dispatcher.removeEventListener(type, listener);
 		}
@@ -428,8 +428,16 @@ class Future<T> implements IEventDispatcher {
 		}
 	}
 
-	public inline function dispatchEvent<E:Event>(event:E):Bool {
-		return __more != null && __more.dispatcher != null && __more.dispatcher.dispatchEvent(event);
+	public inline function dispatchEvent(event:emitter.Event):Bool {
+		return dispatch(event);
+	}
+
+	/**
+		Sends `event` to the listeners added here for its type, if any:
+		`dispatchEvent` by Emitter's name, which every event target has.
+	**/
+	public function dispatch(event:emitter.Event):Bool {
+		return __more != null && __more.dispatcher != null && __more.dispatcher.dispatch(event);
 	}
 
 	/** Completes with `value`; `false`, changing nothing, if this had already completed. **/

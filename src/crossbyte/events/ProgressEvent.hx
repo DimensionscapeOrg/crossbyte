@@ -48,7 +48,7 @@ class ProgressEvent extends Event {
 
 	/** Filled again for the next arrival; see `Arrivals`. **/
 	@:noCompletion public function __refill(bytesLoaded:UInt, bytesTotal:UInt):Void {
-		__retarget();
+		reuse();
 		this.bytesLoaded = bytesLoaded;
 		this.bytesTotal = bytesTotal;
 	}

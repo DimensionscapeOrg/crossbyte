@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/windows-service
 -main WindowsServiceSample
 --cpp export/sample-windows-service-check

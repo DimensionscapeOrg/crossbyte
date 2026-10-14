@@ -11,6 +11,7 @@
 # The exit status is the result. CI does not run this: it is a long
 # experiment, not a gate.
 -cp src
+-lib emitter
 -cp tests/soak
 -D windows
 -D HXCPP_M64

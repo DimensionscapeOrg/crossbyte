@@ -1,9 +1,31 @@
 package crossbyte.events;
 
-import crossbyte.Object;
-
 /**
-	Base event payload for CrossByte dispatchers and typed event subclasses.
+	CrossByte's events: an `emitter.Event`, from Emitter, the event library
+	CrossByte is built on, with CrossByte's own event types on it (`TICK`,
+	`CONNECT`, `CLOSE`, `EXIT` and the rest). Every event class here extends
+	it, and so is an `emitter.Event`: a listener written for Emitter's events
+	takes CrossByte's, and the other way round, so an application that uses
+	Emitter itself, or a framework built on it, has one kind of event.
+
+	`target` is the dispatcher the event was dispatched on, and
+	`currentTarget` the one whose listeners are running: each an
+	`emitter.IEmitter`. Cast either to the class it is to use it as one:
+
+	```haxe
+	// Given server:crossbyte.net.ServerSocket.
+	import crossbyte.events.Event;
+	import crossbyte.net.ServerSocket;
+
+	server.addEventListener(Event.CLOSE, function(event:Event):Void {
+		var closed:ServerSocket = cast event.target;
+		trace("closed: " + closed.localPort);
+	});
+	```
+
+	`cast(event.target, ServerSocket)` checks what it is, and throws on
+	every target if it is not one. CrossByte's events do not bubble and are
+	not cancelable: each is dispatched on the object it is about.
 
 	## Copy it to keep it
 
@@ -72,8 +94,11 @@ import crossbyte.Object;
 	  poison, or reads nothing and throws, at the line that reads it: the
 	  way to find the line that kept one.
 **/
-class Event {
+class Event extends emitter.Event {
+	/** A runtime's tick: see `TickEvent`, which it is dispatched as. **/
 	public static inline var TICK:EventType<Event> = "tick";
+
+	/** Something closed: a socket, a server, a connection, a file. **/
 	public static inline var CLOSE:EventType<Event> = "close";
 
 	/**
@@ -84,47 +109,41 @@ class Event {
 		socket is actually closed.
 	**/
 	public static inline var PEER_CLOSE:EventType<Event> = "peerClose";
+	/** Connected: a socket to its peer. A server's `connect` is a `ServerSocketConnectEvent`. **/
 	public static inline var CONNECT:EventType<Event> = "connect";
+
+	/** Something finished: a load, a transfer, a task. **/
 	public static inline var COMPLETE:EventType<Event> = "complete";
+
+	/** Something was cancelled. **/
 	public static inline var CANCEL:EventType<Event> = "cancel";
+
+	/** A runtime is exiting: dispatched once, after its last tick. **/
 	public static inline var EXIT:EventType<Event> = "exit";
+
+	/** A runtime is starting: dispatched once, before its first tick. **/
 	public static inline var INIT:EventType<Event> = "init";
 
 	/**
-		The dispatcher the event is passing through now; see `target`.
+		@param type What happened: the name listeners are added for.
 	**/
-	public var currentTarget(default, null):Object;
-
-	/**
-		The dispatcher the event was dispatched on: always an
-		`IEventDispatcher`, typed `Object` so it can be assigned to its own
-		type.
-
-		Assign it to the type it is for typed access
-		(`var socket:Socket = event.target;`): the object is the same one, and
-		the assignment tells the compiler what it is. Nothing checks it, so it
-		is for a listener that knows what it listens to: given another type,
-		the variable holds that object on JavaScript, eval and Neko, is null
-		natively, and the assignment throws on the jvm and HashLink.
-		`cast(event.target, Socket)` checks, and throws on every target if it
-		is not one. Reading fields through `Object` instead looks each one up
-		by its name.
-	**/
-	public var target(default, null):Object;
-	public var type(default, null):String;
-
 	public function new(type:String) {
-		this.type = type;
+		super(type);
 	}
 
-	public function clone():Event {
+	/**
+		A copy to keep: the same `type`, `target` and `currentTarget`. Each
+		event class copies what it carries too, its payload included.
+	**/
+	override public function clone():Event {
 		var event = new Event(type);
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;
 	}
 
-	public function toString():String {
+	/** The event's type. **/
+	override public function toString():String {
 		return '$type';
 	}
 
@@ -139,9 +158,14 @@ class Event {
 		currentTarget = null;
 	}
 
-	/** Ready to be handed out again: dispatched afresh, as a new event is. **/
-	@:noCompletion private inline function __retarget():Void {
-		target = null;
-		currentTarget = null;
+	/**
+		Sets `target` and `currentTarget` to `dispatcher`, for an event
+		CrossByte hands to listeners it calls itself rather than through a
+		dispatch: a spread server's replicas calling the `connect` listeners
+		added to it, a request handler telling a listener added late.
+	**/
+	@:noCompletion private inline function __targetAt(dispatcher:emitter.IEmitter):Void {
+		target = dispatcher;
+		currentTarget = dispatcher;
 	}
 }

@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force $bin | Out-Null
 foreach ($main in $mains.Split(",")) {
 	$exe = "$out/$main.exe"
 	if (Test-Path $exe) { Remove-Item $exe }
-	$a = @("-cp", "src", "-cp", "tests/perf/realtime")
+	$a = @("-cp", "src", "-lib", "emitter", "-cp", "tests/perf/realtime")
 	if ($before -ne "") { $a += @("-cp", $before) }
 	$a += @("-D", "windows", "-D", "HXCPP_M64", "-main", $main, "--cpp", $out)
 	foreach ($d in ($defines.Split(",") | Where-Object { $_ -ne "" })) { $a += @("-D", $d) }

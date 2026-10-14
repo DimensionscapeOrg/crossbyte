@@ -5,8 +5,8 @@
 # nothing from lib.haxe.org. The registry is a second source, asked only if
 # GitHub cannot supply a commit. RELEASING.md has more.
 #
-# Every job that needs one of them installs all four, so the jobs share one
-# cache. Dependencies are not followed, and none of the four has any: a
+# Every job that needs one of them installs all five, so the jobs share one
+# cache. Dependencies are not followed, and none of the five has any: a
 # library that needs another lists both here.
 #
 # Each commit was checked, file by file by git blob hash, against the
@@ -24,7 +24,11 @@
 #   release was zipped with CR LF). The release's run.js, a Node build, is
 #   not in the repository, and nothing runs it. Building dox would need
 #   hxargs, hxparse, hxtemplo and markdown; running it needs none of them.
+# - emitter 2.0.0: CrossByte's events. The commit 2.0.0 is released from, on
+#   its v2 branch; check it against the registry's release as above once
+#   2.0.0 is published.
 utest     1.13.2  https://github.com/haxe-utest/utest         6fcfec9964d4e876308f3d335a86034c39ff330d
 hxjava    4.2.0   https://github.com/HaxeFoundation/hxjava    f8c7dc6c56f4bf8f5912b4844a1b55ab094ee0cf
 hxnodejs  12.2.0  https://github.com/HaxeFoundation/hxnodejs  c9450595b2337587bcdaeacf159019531925f25d
 dox       1.6.0   https://github.com/HaxeFoundation/dox       aeb7f9dff43772a7c61ae9b190d3648edaf29f77
+emitter   2.0.0   https://github.com/dimensionscape/emitter   7c5b080bf66593d948a670b4aa441e8a765b008b

@@ -1,4 +1,5 @@
 -cp src
+-lib emitter
 -cp tests/integration
 -D windows
 -main crossbyte.integration.LocalConnectionIntegrationMain

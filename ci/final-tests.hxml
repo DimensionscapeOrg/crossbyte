@@ -2,6 +2,7 @@
 # with -D final, which Lime's release builds define. Run it with
 #   export/ci-final-tests/FinalBuildMain
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -D final

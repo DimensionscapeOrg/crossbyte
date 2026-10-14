@@ -605,28 +605,13 @@ class CrossThreadCloseTest extends utest.Test {
 		});
 	}
 
-	@:access(crossbyte.events.EventDispatcher)
 	private static function __tickListeners(runtime:CrossByte):Int {
-		var list:Array<Dynamic> = cast runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
-		return list == null ? 0 : list.length;
+		return @:privateAccess runtime.listenersOf(crossbyte.events.TickEvent.TICK).length;
 	}
 
 	/** Whether `listener` is among `runtime`'s tick listeners. **/
-	@:access(crossbyte.events.EventDispatcher)
 	private static function __listening(runtime:CrossByte, listener:Dynamic):Bool {
-		if (listener == null) {
-			return false;
-		}
-		var listeners:Array<Dynamic> = cast runtime.__listenersOf(crossbyte.events.TickEvent.TICK);
-		if (listeners == null) {
-			return false;
-		}
-		for (entry in listeners) {
-			if (Reflect.compareMethods(entry.listener, listener)) {
-				return true;
-			}
-		}
-		return false;
+		return listener != null && runtime.has(crossbyte.events.TickEvent.TICK, cast listener);
 	}
 
 	/**

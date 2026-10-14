@@ -8,6 +8,7 @@
 # Only cases needing no threads, no listening socket and no database are here;
 # the rest of the suite still runs on cpp, interp and jvm.
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -lib hxnodejs

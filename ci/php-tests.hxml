@@ -1,6 +1,7 @@
 # The suite classes that claim PHP, run on PHP 8 with sqlite3 and sodium enabled:
 #   php export/php-tests/index.php
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -main PhpTestMain

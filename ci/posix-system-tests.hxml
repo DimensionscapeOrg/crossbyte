@@ -7,6 +7,7 @@
 #
 # Paired with ci/posix-crypto-tests.hxml, which runs on the same two runners.
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -main PosixSystemMain

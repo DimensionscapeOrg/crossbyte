@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/http2
 -main Http2Sample
 --cpp export/http2

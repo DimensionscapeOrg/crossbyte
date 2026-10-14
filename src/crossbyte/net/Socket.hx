@@ -3728,10 +3728,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				default:
 			}
 		} else {
-			@:privateAccess {
-				pooledEvent.target = null;
-				pooledEvent.currentTarget = null;
-			}
+			pooledEvent.reuse();
 		}
 
 		switch (type) {
@@ -3792,10 +3789,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		} else {
 			__pooledSocketDataEvent.bytesLoaded = bytesLoaded;
 			__pooledSocketDataEvent.bytesTotal = bytesTotal;
-			@:privateAccess {
-				__pooledSocketDataEvent.target = null;
-				__pooledSocketDataEvent.currentTarget = null;
-			}
+			__pooledSocketDataEvent.reuse();
 		}
 
 		__pooledSocketDataEventInUse = true;
@@ -3828,9 +3822,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			@:privateAccess {
 				__pooledIOErrorEvent.text = text;
 				__pooledIOErrorEvent.errorId = id;
-				__pooledIOErrorEvent.target = null;
-				__pooledIOErrorEvent.currentTarget = null;
 			}
+			__pooledIOErrorEvent.reuse();
 		}
 
 		__pooledIOErrorEventInUse = true;
@@ -3842,10 +3835,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		__pooledIOErrorEventInUse = false;
 		#end
-	}
-
-	override public function dispatchEvent(event:Event):Bool {
-		return super.dispatchEvent(event);
 	}
 
 	// Get & Set Methods

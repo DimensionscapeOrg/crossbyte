@@ -11,5 +11,6 @@
 --js export/perf-core-node/a.js
 --next
 -cp src
+-lib emitter
 -D perf_new
 --js export/perf-core-node/b.js

@@ -8,6 +8,7 @@
 # Run from the repository root, where the suite's resources are found:
 #   hl export/hl/CrossByteTests.hl
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 -D hl-ver=1.13.0

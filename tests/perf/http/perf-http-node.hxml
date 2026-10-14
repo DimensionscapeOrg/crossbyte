@@ -4,6 +4,7 @@
 # time there.
 -cp tests/perf/http
 -cp src
+-lib emitter
 -lib hxnodejs
 -main PerfHttpServer
 --js export/perf-http/node/PerfHttpServer.js

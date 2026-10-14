@@ -1530,8 +1530,7 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	private static function tickListeners(runtime:CrossByte):Int {
-		var listeners:Array<Dynamic> = cast @:privateAccess runtime.__listenersOf(TickEvent.TICK);
-		return listeners == null ? 0 : listeners.length;
+		return @:privateAccess runtime.listenersOf(TickEvent.TICK).length;
 	}
 
 	private static function closeQuietly(connection:LocalConnection):Void {

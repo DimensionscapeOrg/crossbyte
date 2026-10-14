@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/simple-application
 -main SimpleApplicationSample
 --cpp export/sample-simple-application-check

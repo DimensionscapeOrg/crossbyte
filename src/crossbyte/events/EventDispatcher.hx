@@ -1,718 +1,141 @@
 package crossbyte.events;
 
-import crossbyte.errors.ArgumentError;
-import haxe.ds.StringMap;
-import crossbyte.Function;
-import crossbyte.Object;
-
- /**
- * A basic event dispatcher that implements `IEventDispatcher` for managing listeners and dispatching events.
- *
- * `EventDispatcher` provides a lightweight system for registering typed event listeners, dispatching
- * events, and optionally proxying `target` references via delegation. It supports priority-ordered
- * listener insertion, automatic event target resolution, and listener snapshotting during dispatch.
- *
- * ## Features
- * - Generic `EventType<T>` support for strongly-typed listener registration.
- * - Priority-based listener ordering with deterministic dispatch behavior.
- * - Automatic `target` and `currentTarget` assignment during `dispatchEvent()`.
- * - Safe listener snapshotting to avoid issues when mutating listeners during dispatch.
- * - Optional delegation model (via `target:IEventDispatcher`) for composed event targets.
- *
- * ## Usage Example
- * ```haxe
- * final dispatcher = new EventDispatcher();
- * dispatcher.addEventListener(MyEvent.TYPE, function(e:MyEvent) {
- *     trace('Handled: ' + e.data);
- * });
- * dispatcher.dispatchEvent(new MyEvent(MyEvent.TYPE, "Hello"));
- * ```
- *
- * ## Target Delegation
- * If a dispatcher is constructed with a non-null `target:IEventDispatcher`, then any event dispatched
- * through it will have its `event.target` set to that instance (unless explicitly pre-set on the event).
- * This enables `EventDispatcher` to act as an internal helper for classes that expose their own event target.
- *
- * @see EventType
- * @see Event
- * @see IEventDispatcher
- */
-@:access(crossbyte.events.Event)
-class EventDispatcher implements IEventDispatcher {
-	/**
-		Natively and on JavaScript, the types listened for while there have
-		been no more than `LISTED_TYPES` at once, each with its listeners,
-		chained in the order each type was first added; null when nothing
-		listens or `__eventMap` holds them. Walking a few links finds a type
-		sooner than a map's lookup does (natively by which string it is
-		before what it says), and takes less memory than a map.
-	**/
-	#if (cpp || js)
-	@:noCompletion private var __types:Null<ListenerSlot>;
-	#end
-
-	/**
-		The types listened for and their listeners, by type: on the other
-		targets all of them, natively and on JavaScript once there have been
-		more than `LISTED_TYPES` at once, and from then on. Past a handful a
-		lookup by hash beats the walk, above all for a type nothing listens
-		for, which the walk can only answer at its end.
-
-		Neither is written by a lookup, so threads asking about different
-		types at once cannot disturb each other's answers.
-	**/
-	@:noCompletion private var __eventMap:Null<StringMap<Array<ListenerEntry>>>;
-
-	@:noCompletion private var __targetDispatcher:IEventDispatcher;
-
-	/**
-		The next listener's place in the order of additions. Dispatch does not
-		read it (a list is kept in priority order as listeners are added),
-		but a listener's entry keeps it, so a subclass can tell one entry from
-		another without comparing functions: on HashLink a listener is stored
-		wrapped, and compares equal to nothing it was added as.
-	**/
-	@:noCompletion private var __nextListenerOrder:Int;
-
-	/**
-		How many dispatches on this dispatcher are walking a listener list
-		right now. While one is, adding or removing a listener replaces the
-		list rather than changing it, so the walk goes on over the list it
-		started with; otherwise the list is changed where it is.
-
-		A listener that throws out of `dispatchEvent` has the count lowered
-		on its way out, so the dispatcher does not go on copying its list on
-		every change.
-	**/
-	@:noCompletion private var __walking:Int;
-
-	/**
-		How many types are chained before they all go into a map: as many as
-		a walk was measured to find no later than the map would, a type
-		nothing listens for included. Elsewhere a map's lookup is about as
-		cheap as one compare (the jvm's HashMap), and no type is chained.
-	**/
-	#if (cpp || js)
-	@:noCompletion private static inline var LISTED_TYPES:Int = #if cpp 8 #else 4 #end;
-	#end
-
-	/**
-	 * Creates a new `EventDispatcher`, optionally bound to a target dispatcher.
-	 *
-	 * This class provides basic event listener management and event propagation.
-	 * It can be used standalone or as a delegate to another dispatcher.
-	 *
-	 * @param target Optional `IEventDispatcher` that acts as the `target` of events dispatched from this instance.
-	 */
-	public function new(target:IEventDispatcher = null) {
-		__targetDispatcher = target;
-		#if (cpp || js)
-		__types = null;
-		#end
-		__eventMap = null;
-		__nextListenerOrder = 0;
-		__walking = 0;
-	}
-
-	/**
-	 * Adds an event listener for the specified event `type`.
-	 *
-	 * Listeners are invoked in order of their priority, the highest first.
-	 * Listeners of equal priority are invoked in the order they were added,
-	 * so with every priority left at `0` the order is simply the order of
-	 * the calls. Any `Int` is a priority, negative ones included, which run
-	 * after those at `0`.
-	 *
-	 * Unlike ActionScript's, a listener already added for `type` is added
-	 * again: it runs once a dispatch for each add, and each
-	 * `removeEventListener` removes one of them. Adding is not a search, so
-	 * a dispatcher holding a listener per connection costs nothing more to
-	 * build as it grows. Remove a listener before adding it again where it
-	 * could be there already.
-	 *
-	 * @param type The `EventType<T>` representing the string type of the event (e.g. `EventType.create<T>("my_event")`)
-	 * @param listener A callback of type `T -> Void` to be invoked when the event is dispatched.
-	 * @param priority Where the listener runs among the others for `type`:
-	 *        higher runs earlier. Defaults to `0`.
-	 * @throws ArgumentError If `listener` is null.
-	 *
-	 * @example
-	 * ```haxe
-	 * dispatcher.addEventListener(MyEvent.TYPE, function(e:MyEvent) {
-	 *     trace('Got event: ' + e.data);
-	 * });
-	 * ```
-	 */
-	public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		if (listener == null) {
-			throw new ArgumentError("listener must not be null");
-		}
-
-		var entry:ListenerEntry = new ListenerEntry(cast listener, priority, __nextListenerOrder++);
-
-		var eventMap = __eventMap;
-		#if (cpp || js)
-		var slot:Null<ListenerSlot> = null;
-		var list:Null<Array<ListenerEntry>>;
-		if (eventMap != null) {
-			list = eventMap.get(type);
-		} else {
-			slot = __slotOf(type);
-			list = slot == null ? null : slot.list;
-		}
-		if (list == null) {
-			__addType(type, [entry]);
-			return;
-		}
-		#else
-		if (eventMap == null) {
-			eventMap = new StringMap();
-			__eventMap = eventMap;
-		}
-		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
-		if (list == null) {
-			eventMap.set(type, [entry]);
-			return;
-		}
-		#end
-
-		var length:Int = list.length;
-		var idx:Int = length;
-		// Listeners mostly share a priority, and then each goes after the
-		// last: that is checked first, so adding one does not walk the list
-		// to find its end.
-		if (length > 0 && list[length - 1].priority < priority) {
-			for (i in 0...length) {
-				var current = list[i];
-				if (priority > current.priority) {
-					idx = i;
-					break;
-				}
-			}
-		}
-
-		if (__walking > 0) {
-			// Replaced rather than inserted into: a dispatch walks the array
-			// that was current when it began, without copying it, so that
-			// array must not change underneath it.
-			var next:Array<ListenerEntry> = list.copy();
-			next.insert(idx, entry);
-			#if (cpp || js)
-			if (slot != null) {
-				slot.list = next;
-				return;
-			}
-			#end
-			eventMap.set(type, next);
-			return;
-		}
-
-		// Nothing is walking it, so it is changed where it is. Copied on
-		// every add and remove instead, a list of n listeners would cost n^2
-		// to build and to empty, and every connection or task that attached a
-		// listener of its own would pay for all the others.
-		if (idx == length) {
-			list.push(entry);
-		} else {
-			list.insert(idx, entry);
-		}
-	}
-
-	/**
-	 * Removes a previously registered event listener for the given `type`.
-	 *
-	 * If the listener does not exist or has already been removed, this is a no-op.
-	 *
-	 * @param type The `EventType<T>` to remove the listener from.
-	 * @param listener The callback to remove. Must match the original reference.
-	 */
-	public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
-		if (listener == null) {
-			return;
-		}
-
-		var eventMap = __eventMap;
-		#if (cpp || js)
-		var slot:Null<ListenerSlot> = null;
-		var list:Null<Array<ListenerEntry>>;
-		if (eventMap != null) {
-			list = eventMap.get(type);
-		} else {
-			slot = __slotOf(type);
-			list = slot == null ? null : slot.list;
-		}
-		#else
-		if (eventMap == null) {
-			return;
-		}
-		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
-		#end
-		if (list == null) {
-			return;
-		}
-
-		for (i in 0...list.length) {
-			final registered:Function = list[i].listener;
-			var same:Bool = registered == (cast listener);
-			#if !(cpp || js)
-			// `removeEventListener(type, this.handler)` reads the method again.
-			// hxcpp compares two reads of one bound method equal and JavaScript
-			// caches the binding, but on eval and the jvm each read is a new
-			// closure `==` never matches, so the listener would never be removed.
-			if (!same) {
-				same = Reflect.compareMethods(registered, listener);
-			}
-			#end
-			if (same) {
-				if (list.length == 1) {
-					#if (cpp || js)
-					__removeType(type, slot);
-					#else
-					eventMap.remove(type);
-					#end
-					return;
-				}
-
-				if (__walking > 0) {
-					// Replaced rather than spliced, for the reason given in
-					// addEventListener: a dispatch already walking this list
-					// keeps the array it started with, so a listener removed
-					// from inside a handler still runs for the event in
-					// flight.
-					var next:Array<ListenerEntry> = list.copy();
-					next.splice(i, 1);
-					#if (cpp || js)
-					if (slot != null) {
-						slot.list = next;
-						return;
-					}
-					#end
-					eventMap.set(type, next);
-					return;
-				}
-
-				list.splice(i, 1);
-				return;
-			}
-		}
-	}
-
-	/**
-	 * Dispatches an event to all listeners registered for its type.
-	 *
-	 * Automatically sets the `target` (if not already set) and `currentTarget` to this dispatcher.
-	 * Listeners are invoked highest `priority` first, and those of equal priority in the
-	 * order they were added.
-	 *
-	 * An event a listener of another dispatcher hands on here keeps its `target`, and gets
-	 * its `currentTarget` back once this dispatch is done, so the listeners after that one
-	 * still see the dispatcher they listen to. Unlike ActionScript's, the event is not
-	 * cloned: the listeners here are handed the same object.
-	 *
-	 * @param event The event to dispatch. Must be a subclass of `Event`.
-	 * @return `true` if the event was handled by one or more listeners, `false` otherwise.
-	 *
-	 * @example
-	 * ```haxe
-	 * final event = new MyEvent(MyEvent.TYPE);
-	 * dispatcher.dispatchEvent(event);
-	 * ```
-	 */
-	public function dispatchEvent<T:Event>(event:T):Bool {
-		if (event == null) {
-			return false;
-		}
-
-		var owner:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
-		var passingThrough:Object = null;
-		if (event.target == null) {
-			event.target = owner;
-		} else {
-			passingThrough = event.currentTarget;
-		}
-		event.currentTarget = owner;
-
-		if (passingThrough != null) {
-			return __dispatchOnward(event, passingThrough, false);
-		}
-		return __dispatchEvent(event);
-	}
-
-	/**
-		Dispatches an event a listener of another dispatcher handed on here,
-		and gives it back its `currentTarget` when the dispatch is done, by
-		returning or by throwing: the dispatch it came from goes on to its
-		next listener, which is listening there, not here.
-	**/
-	@:noCompletion private function __dispatchOnward(event:Event, passingThrough:Object, contained:Bool):Bool {
-		var handled:Bool;
-		try {
-			handled = contained ? __walkContained(event) : __dispatchEvent(event);
-		} catch (error:Dynamic) {
-			event.currentTarget = passingThrough;
-			crossbyte.events._internal.Arrivals.rethrow(error);
-			return false;
-		}
-		event.currentTarget = passingThrough;
-		return handled;
-	}
-
-	/**
-	 * Checks whether any listeners are registered for the given event `type`.
-	 *
-	 * @param type The string identifier of the event.
-	 * @return `true` if there are listeners for the given type, `false` otherwise.
-	 */
-	public function hasEventListener(type:String):Bool {
-		return __listenersOf(type) != null;
-	}
-
-	/**
-	 * Removes **all** event listeners from this dispatcher.
-	 *
-	 * Use with caution: this clears the entire internal event map.
-	 */
-	public function removeAllListeners():Void {
-		#if (cpp || js)
-		__types = null;
-		#end
-		if (__eventMap != null) {
-			__eventMap.clear();
-		}
-	}
-
-	private inline function __dispatchEvent(event:Event):Bool {
-		var list:Null<Array<ListenerEntry>> = __listenersOf(event.type);
-		if (list == null) {
-			return false;
-		}
-
-		var len:Int = list.length;
-		if (len == 0) {
-			return false;
-		}
-
-		if (len == 1) {
-			var only = list[0];
-			if (only == null || only.listener == null) {
-				__compactListeners(event.type, list);
-				return false;
-			}
-			only.listener(event);
-			return true;
-		}
-
-		// The list captured above *is* the snapshot: while `__walking` is
-		// raised, `addEventListener` and `removeEventListener` replace the
-		// array rather than change it, so nothing can change the one being
-		// walked here. Listeners added during dispatch are still not invoked
-		// until the next dispatch, and a listener removed during dispatch is
-		// still invoked for this one: the same contract a per-dispatch copy
-		// would give, without allocating an array every time an event is sent.
-		// One listener is not walked, so the count is left alone for it.
-		//
-		// A listener that throws ends the walk too, and the count is lowered
-		// again, so the dispatcher does not go on copying its listeners for
-		// every add and remove. A try costs nothing natively or on the jvm
-		// until something throws.
-		__walking++;
-		try {
-			for (i in 0...len) {
-				var entry = list[i];
-				if (entry == null || entry.listener == null) {
-					continue;
-				}
-				entry.listener(event);
-			}
-		} catch (error:Dynamic) {
-			__walking--;
-			// Natively with the stack it was thrown from. Never returns.
-			crossbyte.events._internal.Arrivals.rethrow(error);
-		}
-		__walking--;
-		return true;
-	}
-
-	/**
-		Dispatches `event` as `dispatchEvent` does, except that a listener
-		that throws does not stop the ones after it: what it threw goes to
-		`__listenerThrew`, and the dispatch carries on.
-
-		For events whose listeners belong to unrelated components (a
-		runtime's tick, its INIT and EXIT), where one's bug is not the
-		others' business and must not end the loop that dispatched it.
-		Everything else still propagates: a component dispatching its own
-		events to its own listeners may rely on hearing that one failed.
-
-		A separate method rather than a flag on the ordinary one, so the
-		dispatch every other event takes pays nothing for it.
-	**/
-	@:noCompletion private function __dispatchContained(event:Event):Bool {
-		if (event == null) {
-			return false;
-		}
-
-		var owner:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
-		var passingThrough:Object = null;
-		if (event.target == null) {
-			event.target = owner;
-		} else {
-			passingThrough = event.currentTarget;
-		}
-		event.currentTarget = owner;
-
-		if (passingThrough != null) {
-			return __dispatchOnward(event, passingThrough, true);
-		}
-		return __walkContained(event);
-	}
-
-	/** `__dispatchContained`'s walk, its event's targets set. **/
-	@:noCompletion private function __walkContained(event:Event):Bool {
-		var list:Null<Array<ListenerEntry>> = __listenersOf(event.type);
-		if (list == null) {
-			return false;
-		}
-
-		// The same snapshot `__dispatchEvent` walks: while it is walked, add
-		// and remove replace the array rather than change it.
-		var len:Int = list.length;
-		__walking++;
-		for (i in 0...len) {
-			var entry = list[i];
-			if (entry == null || entry.listener == null) {
-				continue;
-			}
-			try {
-				entry.listener(event);
-			} catch (error:Dynamic) {
-				__listenerThrew(error, event);
-			}
-		}
-		__walking--;
-		return len > 0;
-	}
-
-	/**
-		What `__dispatchContained` does with a listener's failure. Logged
-		here; a runtime overrides it to report the failure as its own.
-	**/
-	@:noCompletion private function __listenerThrew(error:Dynamic, event:Event):Void {
-		crossbyte.utils.Logger.error("A " + event.type + " listener threw: " + Std.string(error));
-	}
-
-	/**
-		The listeners for `type`, in the order they run, or null for none.
-		The array is the one dispatch walks: read it, do not change it.
-	**/
-	@:noCompletion private inline function __listenersOf(type:String):Null<Array<ListenerEntry>> {
-		var list:Null<Array<ListenerEntry>> = null;
-		#if (cpp || js)
-		var first:Null<ListenerSlot> = __types;
-		if (first != null) {
-			if (__sameString(first.type, type)) {
-				list = first.list;
-			} else {
-				var slot:Null<ListenerSlot> = __findSlot(first, type);
-				if (slot != null) {
-					list = slot.list;
-				}
-			}
-			return list;
-		}
-		#end
-		var eventMap = __eventMap;
-		if (eventMap != null) {
-			list = eventMap.get(type);
-		}
-		return list;
-	}
-
-	#if (cpp || js)
-
-	/** The chained slot for `type`, or null. **/
-	@:noCompletion private inline function __slotOf(type:String):Null<ListenerSlot> {
-		var first:Null<ListenerSlot> = __types;
-		return first == null ? null : (__sameString(first.type, type) ? first : __findSlot(first, type));
-	}
-
-	/**
-		The chained slot for `type`, or null, looking from `first`. A
-		dispatcher is mostly asked about the very strings it was given, so
-		natively the walk compares which string each is first, which costs
-		nothing, and only then their text; on JavaScript one walk by `===`
-		is as cheap.
-	**/
-	@:noCompletion private function __findSlot(first:ListenerSlot, type:String):Null<ListenerSlot> {
-		var slot:Null<ListenerSlot> = first.next;
-		while (slot != null) {
-			if (__sameString(slot.type, type)) {
-				return slot;
-			}
-			slot = slot.next;
-		}
-		#if (cpp && !cppia && !macro)
-		if (type == null) {
-			return null;
-		}
-		var length:Int = type.length;
-		slot = first;
-		while (slot != null) {
-			var other:Null<String> = slot.type;
-			if (other != null && other.length == length && other == type) {
-				return slot;
-			}
-			slot = slot.next;
-		}
-		#end
-		return null;
-	}
-
-	/** A new type and its listeners: chained, or mapped once there are many. **/
-	@:noCompletion private function __addType(type:String, list:Array<ListenerEntry>):Void {
-		var eventMap = __eventMap;
-		if (eventMap != null) {
-			eventMap.set(type, list);
-			return;
-		}
-		var last:Null<ListenerSlot> = __types;
-		if (last == null) {
-			__types = new ListenerSlot(type, list);
-			return;
-		}
-		var count:Int = 1;
-		while (last.next != null) {
-			last = last.next;
-			count++;
-		}
-		if (count < LISTED_TYPES) {
-			last.next = new ListenerSlot(type, list);
-			return;
-		}
-		// One more than the chain keeps: all of them go into a map.
-		eventMap = new StringMap();
-		var slot:Null<ListenerSlot> = __types;
-		while (slot != null) {
-			eventMap.set(slot.type, slot.list);
-			slot = slot.next;
-		}
-		eventMap.set(type, list);
-		__eventMap = eventMap;
-		__types = null;
-	}
-
-	/**
-		Forgets a type, its last listener gone; `slot` is its slot if chained.
-		A map stays one: it went past the chain once, and may again.
-	**/
-	@:noCompletion private function __removeType(type:String, slot:Null<ListenerSlot>):Void {
-		var eventMap = __eventMap;
-		if (eventMap != null) {
-			eventMap.remove(type);
-			return;
-		}
-		if (slot == null) {
-			return;
-		}
-		var at:Null<ListenerSlot> = __types;
-		if (at == slot) {
-			__types = slot.next;
-			return;
-		}
-		while (at != null && at.next != slot) {
-			at = at.next;
-		}
-		if (at != null) {
-			at.next = slot.next;
-		}
-	}
-
-	/**
-		Whether two types are the one string: natively by where their text
-		is, which costs nothing where hxcpp's `==` is a call; on JavaScript
-		by `===`, as cheap there.
-	**/
-	private static inline function __sameString(a:Null<String>, b:Null<String>):Bool {
-		#if (cpp && !cppia && !macro)
-		return untyped __cpp__("({0}.raw_ptr() == {1}.raw_ptr())", a, b);
-		#else
-		return a == b;
-		#end
-	}
-	#end
-
-	@:noCompletion private function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
-		// Built fresh rather than spliced, for the same reason add and remove
-		// build fresh: a dispatch may be walking this array right now, and
-		// removing from underneath it would make it skip entries.
-		var kept:Array<ListenerEntry> = [];
-		for (i in 0...list.length) {
-			var entry = list[i];
-			if (entry != null && entry.listener != null) {
-				kept.push(entry);
-			}
-		}
-
-		#if (cpp || js)
-		var slot:Null<ListenerSlot> = __slotOf(type);
-		if (slot != null) {
-			if (kept.length == 0) {
-				__removeType(type, slot);
-			} else {
-				slot.list = kept;
-			}
-			return;
-		}
-		#end
-		var eventMap = __eventMap;
-		if (eventMap == null) {
-			return;
-		}
-		if (kept.length == 0) {
-			eventMap.remove(type);
-		} else {
-			eventMap.set(type, kept);
-		}
-	}
-}
-
-#if (cpp || js)
-/**
-	A chained type and its listeners: a lookup finds both in one object, so
-	nothing can pair one type with another's listeners.
-**/
-private final class ListenerSlot {
-	public final type:String;
-
-	/** Its listeners, in the order they run; never empty while chained. **/
-	public var list:Array<ListenerEntry>;
-
-	public var next:Null<ListenerSlot>;
-
-	public inline function new(type:String, list:Array<ListenerEntry>) {
-		this.type = type;
-		this.list = list;
-		this.next = null;
-	}
-}
-#end
+import emitter.Emitter;
 
 /**
-	One registered listener. A class rather than an anonymous structure: on
-	hxcpp a read of an anonymous object's field is a lookup by its name, and
-	a dispatch reads `listener` twice per listener: 8.0 ns a listener
-	against 3.7 ns as a class.
+	What every CrossByte object that dispatches events is (a socket, a
+	server, a runtime, a loader): an `emitter.Emitter`, from Emitter, the
+	event library CrossByte is built on, with the names CrossByte's API has
+	always used for it.
+
+	```haxe
+	import crossbyte.events.Event;
+	import crossbyte.events.EventDispatcher;
+
+	var dispatcher = new EventDispatcher();
+	dispatcher.addEventListener(Event.COMPLETE, function(event:Event):Void {
+		trace("done: " + event.type);
+	});
+	dispatcher.dispatchEvent(new Event(Event.COMPLETE));
+	```
+
+	`addEventListener`, `removeEventListener`, `hasEventListener`,
+	`removeAllListeners` and `dispatchEvent` are Emitter's `on`, `off`,
+	`has`, `clear` and `dispatch` by their ActionScript names: each is the
+	other, inlined, so the two can be mixed freely. Emitter's own names do
+	more: `on` and `once` answer with a `Subscription`, which removes that
+	listener, a lambda included, with `cancel()`; `once` listens for the next
+	event only; `has(type, listener)` asks about one listener.
+
+	## The rules
+
+	- **Order**: listeners of a type run highest `priority` first, and those
+	  of one priority in the order they were added.
+	- **A listener added again** for a type it already listens for is not
+	  added again, as in ActionScript: it keeps its place, and runs once. The
+	  runtime (`CrossByte`) is the exception: it holds a `TICK` listener per
+	  connection, timer and task, and adding is not a search there, so one
+	  added twice runs twice, and each removal takes one.
+	- **Changes during a dispatch**: the listeners for a type are taken as
+	  they are when a dispatch begins. One removed during it still runs for
+	  it; one added waits for the next.
+	- **Removal** finds a method read again (`removeEventListener(type,
+	  this.onData)`) on every target.
+	- **A listener that throws** stops the dispatch and reaches the caller,
+	  as it was thrown. The runtime's own events (`TICK`, `INIT`, `EXIT`) and
+	  a `Task`'s are contained instead: one listener's failure is reported,
+	  and the others still run.
+	- **Copy to keep**: an event is valid only during the listener call it
+	  is handed to; see `Event`.
+
+	## Target delegation
+
+	A dispatcher made with a `target` (`new EventDispatcher(owner)`) sets
+	the events dispatched through it to say `owner` is their `target` and
+	`currentTarget`: for a class that keeps a dispatcher inside rather than
+	extending one, and hands its calls on.
+
+	@see Event
+	@see EventType
 **/
-private final class ListenerEntry {
-	public final listener:Function;
-	public final priority:Int;
+class EventDispatcher extends Emitter {
+	/**
+		@param target What events dispatched here say they were dispatched
+		on: the object that holds this dispatcher and hands its calls on.
+		This dispatcher itself when null.
+	**/
+	public function new(?target:IEventDispatcher) {
+		super(target);
+	}
 
-	/** Its place in the order of additions, from `__nextListenerOrder`. **/
-	public final order:Int;
+	/**
+		Adds `listener` for events of `type`: Emitter's `on`, without the
+		subscription it answers with.
 
-	public inline function new(listener:Function, priority:Int, order:Int) {
-		this.listener = listener;
-		this.priority = priority;
-		this.order = order;
+		Listeners run in order of their priority, the highest first, and
+		those of one priority in the order they were added; any `Int` is a
+		priority, negative ones run after those at `0`. A listener already
+		added for `type` is not added again (but on the runtime; see the
+		class).
+
+		@param type The type of event, which types the listener.
+		@param listener Called with each event of `type`.
+		@param priority Where the listener runs among the others for `type`:
+			higher runs earlier. Defaults to `0`.
+		@throws haxe.exceptions.ArgumentException If `type` or `listener` is null.
+	**/
+	public inline function addEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
+		on(type, listener, priority);
+	}
+
+	/**
+		Removes `listener` for events of `type`: Emitter's `off`. A method is
+		found when it is read again (`removeEventListener(type, this.onData)`);
+		a lambda is removed by passing the same function, or by the
+		`Subscription` that `on` answers with. Nothing happens if it is not
+		there.
+	**/
+	public inline function removeEventListener<T:emitter.Event>(type:EventType<T>, listener:T->Void):Void {
+		off(type, listener);
+	}
+
+	/**
+		Whether anything listens for events of `type`, now: Emitter's `has`.
+		A listener removed during a dispatch is gone from here at once.
+	**/
+	public inline function hasEventListener(type:String):Bool {
+		return has(type);
+	}
+
+	/** Removes every listener, for every type: Emitter's `clear`. **/
+	public inline function removeAllListeners():Void {
+		clear();
+	}
+
+	/**
+		Sends `event` to the listeners for its type: Emitter's `dispatch`.
+
+		Sets the event's `target` to this dispatcher (or its delegate target)
+		when it has none, and its `currentTarget` to the same. An event a
+		listener of another dispatcher hands on here keeps its `target`, and
+		gets its `currentTarget` back once this dispatch is done. The
+		listeners are handed this very object, not a copy.
+
+		A class that changes how its events are dispatched overrides
+		`dispatch`, which this calls.
+
+		@return Whether any listener heard it.
+	**/
+	public inline function dispatchEvent(event:emitter.Event):Bool {
+		return dispatch(event);
+	}
+
+	/**
+		What a contained dispatch (the runtime's and a `Task`'s events) does
+		with a listener's failure: logged here; the runtime reports it as
+		its own.
+	**/
+	override private function listenerThrew(error:haxe.Exception, event:emitter.Event):Void {
+		crossbyte.utils.Logger.error("A " + event.type + " listener threw: " + Std.string(@:privateAccess error.unwrap()));
 	}
 }

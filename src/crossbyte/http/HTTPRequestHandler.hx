@@ -2599,17 +2599,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * it here, so a handler nobody asks costs no listener on its socket.
 	 *
 	 * A listener added once the client has gone (`connected` false) is told
-	 * too, once, in a later turn rather than before this returns, so a
+	 * too, once, in a later turn rather than before it is added, so a
 	 * route that looked something up before listening, or a producer that
-	 * stops on CLOSE, does not run on for a client that has left.
+	 * stops on CLOSE, does not run on for a client that has left. Every way
+	 * of adding one comes here: `addEventListener`, `on` and `once`.
 	 */
-	override public function addEventListener<T>(type:crossbyte.events.EventType<T>, listener:T->Void, priority:Int = 0):Void {
-		super.addEventListener(type, listener, priority);
-		if ((type : String) == Event.CLOSE) {
+	@:noCompletion override private function listenerAdded(type:String, listener:emitter.Subscription):Void {
+		if (type == Event.CLOSE) {
 			if (connected) {
 				__watchClient();
 			} else {
-				__tellLate(cast listener);
+				__tellLate(listener);
 			}
 		}
 	}
@@ -2620,7 +2620,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * it alone when the others heard it already, so each listener hears it
 	 * once. Not if it has been removed by then.
 	 */
-	@:noCompletion private function __tellLate(listener:Event->Void):Void {
+	@:noCompletion private function __tellLate(listener:emitter.Subscription):Void {
 		var dispatched:Bool = __clientLeft;
 		var tell = function():Void {
 			if (!dispatched) {
@@ -2630,11 +2630,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 				}
 				return;
 			}
-			if (__listensForClose(listener)) {
+			if (listener.active) {
+				if (listener.once) {
+					// Taken out as it is called, as a dispatch takes one out.
+					listener.cancel();
+				}
 				var event:Event = new Event(Event.CLOSE);
-				@:privateAccess event.target = this;
-				@:privateAccess event.currentTarget = this;
-				listener(event);
+				@:privateAccess event.__targetAt(this);
+				var call:Event->Void = cast listener.listener;
+				call(event);
 			}
 		};
 
@@ -2646,22 +2650,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// No turn will come: now is the only time it can be told.
 			tell();
 		}
-	}
-
-	@:noCompletion private function __listensForClose(listener:Event->Void):Bool {
-		var listeners = __listenersOf(Event.CLOSE);
-		if (listeners == null) {
-			return false;
-		}
-		for (entry in listeners) {
-			var registered:Dynamic = entry.listener;
-			// As removeEventListener compares: two reads of a bound method are
-			// not == on eval and the jvm.
-			if (registered == (cast listener) #if !(cpp || js) || Reflect.compareMethods(registered, listener) #end) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	@:noCompletion private function __watchClient():Void {

@@ -2,6 +2,7 @@
 # ...`. Only the game scenario is meant to run here; pass `--bots` the native
 # LoadMain so the clients are native and only the server is the jvm's.
 -cp src
+-lib emitter
 -cp tests/load
 -main LoadMain
 --jvm export/load-jvm/LoadMain.jar

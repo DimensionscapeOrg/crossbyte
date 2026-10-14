@@ -252,16 +252,7 @@ class BrowserSocketTest extends utest.Test {
 
 	/** Whether `socket`'s own tick listener, which flushes it, is on the runtime's tick. **/
 	private static function __ticking(socket:Socket):Bool {
-		var listeners:Array<Dynamic> = cast CrossByte.current().__listenersOf(TickEvent.TICK);
-		if (listeners == null) {
-			return false;
-		}
-		for (entry in listeners) {
-			if (Reflect.compareMethods(entry.listener, socket.this_onTick)) {
-				return true;
-			}
-		}
-		return false;
+		return CrossByte.current().has(TickEvent.TICK, socket.this_onTick);
 	}
 	#end
 }

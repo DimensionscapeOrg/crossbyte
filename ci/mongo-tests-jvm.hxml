@@ -1,4 +1,5 @@
 -cp src
+-lib emitter
 -cp tests
 -lib utest
 # CrossByte's fix to std IntMap, which extraParams.hxml applies for -lib crossbyte.

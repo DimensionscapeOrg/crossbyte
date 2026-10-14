@@ -8,6 +8,7 @@
 # Paired with ci/js-build.hxml. The two differ only in -lib hxnodejs, which is
 # what defines `nodejs` and so decides every `js && !nodejs` gate in the tree.
 -cp src
+-lib emitter
 -lib hxnodejs
 --macro include('crossbyte')
 --js export/node/crossbyte.js

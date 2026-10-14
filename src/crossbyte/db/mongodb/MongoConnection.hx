@@ -232,7 +232,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			}
 
 			if (verdict == null) {
-				__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
+				dispatchEvent(new SQLEvent(SQLEvent.OPEN));
 				return;
 			}
 
@@ -277,7 +277,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__drop();
-		__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
+		dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 	}
 
 	/** Whether the server answers a `ping`; `false` rather than a throw when it does not. **/
@@ -825,7 +825,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		__txnNumber = __txnNumber + Int64.ofInt(1);
 		__txnState = TXN_STARTING;
-		__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
+		dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 	}
 
 	/**
@@ -846,7 +846,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 		if (__txnState == TXN_STARTING) {
 			__txnState = TXN_NONE;
-			__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
+			dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 			return;
 		}
 
@@ -862,7 +862,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		}
 
 		__txnState = TXN_NONE;
-		__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
+		dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 	}
 
 	/**
@@ -873,13 +873,13 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	**/
 	public function rollback():Void {
 		if (__txnState == TXN_NONE) {
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
+			dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 			return;
 		}
 
 		if (__txnState == TXN_STARTING) {
 			__txnState = TXN_NONE;
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
+			dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 			return;
 		}
 
@@ -899,7 +899,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 			__failWith(SQLEvent.ROLLBACK, "Rollback failed", failure);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
+		dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 	}
 
 	private function get_connected():Bool {
@@ -2132,7 +2132,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	**/
 	@:noCompletion private function __fail(operation:String, message:String, reason:String):Void {
 		var error:SQLError = new SQLError(operation, reason, message + ": " + reason);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 
@@ -2140,7 +2140,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 	@:noCompletion private function __failWith(operation:String, message:String, cause:Dynamic):Void {
 		if (Std.isOfType(cause, SQLError)) {
 			var error:SQLError = cause;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+			dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 			__rethrow(error);
 			return;
 		}

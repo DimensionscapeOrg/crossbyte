@@ -11,6 +11,7 @@
 # drives itself cannot be tested from inside a harness already driving a
 # runtime of its own.
 -cp src
+-lib emitter
 -cp tests
 -lib hxnodejs
 -main NodeIntegrationMain

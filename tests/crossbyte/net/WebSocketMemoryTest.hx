@@ -216,10 +216,11 @@ class WebSocketMemoryTest extends utest.Test {
 	public function testTheServerHangsNoListenerOnItsSessions(async:Async):Void {
 		__openSession(async, null, null, function(server, session, peer, done) {
 			Assert.isFalse(session.hasEventListener(Event.CLOSE), "the server listens for its session's close");
-			Assert.isNull(@:privateAccess session.__eventMap, "the session holds listeners nobody added");
-			#if (cpp || js)
-			Assert.isNull(@:privateAccess session.__types, "the session holds listeners nobody added");
-			#end
+			var dispatched:Array<String> = [Event.CONNECT, Event.PEER_CLOSE, WebSocketMessageEvent.MESSAGE, crossbyte.events.IOErrorEvent.IO_ERROR,
+				crossbyte.events.ProgressEvent.SOCKET_DATA, crossbyte.events.OutputProgressEvent.OUTPUT_PROGRESS];
+			for (type in dispatched) {
+				Assert.isFalse(session.hasEventListener(type), "the session holds a " + type + " listener nobody added");
+			}
 			var closed:Bool = false;
 			session.addEventListener(Event.CLOSE, function(_) {
 				closed = true;

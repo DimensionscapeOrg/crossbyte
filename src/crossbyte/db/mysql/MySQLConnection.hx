@@ -1143,12 +1143,12 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	@:noCompletion private inline function __dispatch(t:String):Void {
-		__dispatchEvent(new SQLEvent(t));
+		dispatchEvent(new SQLEvent(t));
 	}
 
 	@:noCompletion private function __dispatchError(op:String, msg:String, e:Dynamic):Void {
 		var cause:MySQLError = __error(op, e);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new MySQLError(op, cause.details(), msg, cause.code, cause.sqlState)));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new MySQLError(op, cause.details(), msg, cause.code, cause.sqlState)));
 	}
 
 	/**
@@ -1160,7 +1160,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		var cause:MySQLError = __error(op, e);
 		var detail:String = cause.details();
 		var error:MySQLError = new MySQLError(op, detail, msg + ": " + detail, cause.code, cause.sqlState);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 }

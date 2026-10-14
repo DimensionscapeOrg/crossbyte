@@ -134,7 +134,7 @@ class MongoStatement extends EventDispatcher {
 
 		// Outside the try: a RESULT listener that throws has not made the
 		// command fail, and must not be reported as though it had.
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/** Fetches the next `prefetch` documents, or all that remain with -1. **/
@@ -158,7 +158,7 @@ class MongoStatement extends EventDispatcher {
 			__fail(e);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/**
@@ -168,7 +168,7 @@ class MongoStatement extends EventDispatcher {
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var error:SQLError = __asSQLError(e);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 

@@ -150,7 +150,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			}
 
 			__nativeHandle = handle;
-			__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
+			dispatchEvent(new SQLEvent(SQLEvent.OPEN));
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
@@ -182,7 +182,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 			__connection = Syntax.code("new \\PDO({0}, {1}, {2})", dsn.toString(), user, pass);
 
-			__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
+			dispatchEvent(new SQLEvent(SQLEvent.OPEN));
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
@@ -207,7 +207,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__inTransaction = false;
 			// The session it belonged to is gone; the next starts with it on.
 			__autocommit = true;
-			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
+			dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 		#end
 
@@ -215,7 +215,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__connection = null;
 			__inTransaction = false;
 			__autocommit = true;
-			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
+			dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 	}
 
@@ -248,7 +248,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		__inTransaction = true;
 		__savepoints = [];
-		__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
+		dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 	}
 
 	/**
@@ -285,7 +285,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__fail(SQLEvent.COMMIT, "Commit failed", failure);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
+		dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 	}
 
 	public function rollback():Void {
@@ -306,7 +306,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
+		dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 	}
 
 	/**
@@ -325,7 +325,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		// Recorded only once the server has it, so a savepoint that failed is
 		// not the one a nameless release or rollback reaches for next.
 		__savepoints.push(sp);
-		__dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
+		dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
 		return sp;
 	}
 
@@ -347,7 +347,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
+		dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
 	}
 
 	/**
@@ -363,7 +363,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
+		dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 	}
 
 	/**
@@ -815,7 +815,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
 		var detail:String = Std.string(e);
 		var error:SQLError = new SQLError(op, detail, msg + ": " + detail);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 

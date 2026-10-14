@@ -650,7 +650,11 @@ final class CrossByte extends EventDispatcher {
 	// ==== Constructor ====
 	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT, hostDriven:Bool = false, timers:TimerStrategy = HEAP) {
 		__timerStrategy = timers;
-		super(this);
+		super();
+		// A listener per connection, timer and task: adding one is not a
+		// search for it among the others, or building the list would cost
+		// the square of its length.
+		allowDuplicates = true;
 		#if cpp
 		crossbyte.core._internal.Sigpipe.ignoreIfDefault();
 		#end
@@ -1075,10 +1079,10 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
-		// A listener for this that throws is logged by `__listenerThrew` and
+		// A listener for this that throws is logged by `listenerThrew` and
 		// not reported again, so a broken reporter cannot recurse.
 		__reportingUncaught = true;
-		__dispatchContained(new UncaughtErrorEvent(UncaughtErrorEvent.UNCAUGHT_ERROR, error, source, origin));
+		dispatchContained(new UncaughtErrorEvent(UncaughtErrorEvent.UNCAUGHT_ERROR, error, source, origin));
 		__reportingUncaught = false;
 	}
 
@@ -1166,16 +1170,18 @@ final class CrossByte extends EventDispatcher {
 	}
 	#end
 
-	@:noCompletion override private function __listenerThrew(error:Dynamic, event:Event):Void {
+	@:noCompletion override private function listenerThrew(error:haxe.Exception, event:emitter.Event):Void {
 		if (__reportingUncaught) {
 			// An UNCAUGHT_ERROR listener: logged, never reported again.
 			try {
-				Logger.log(LogLevel.ERROR, "An uncaughtError listener threw: " + Std.string(error), null, LOG_CATEGORY);
+				Logger.log(LogLevel.ERROR, "An uncaughtError listener threw: " + Std.string(@:privateAccess error.unwrap()), null, LOG_CATEGORY);
 			} catch (_:Dynamic) {}
 			return;
 		}
 
-		__uncaught(error, event.type == TickEvent.TICK ? UncaughtErrorEvent.TICK : UncaughtErrorEvent.LIFECYCLE);
+		// What was thrown, as it was thrown: the exception a listener threw,
+		// or the value, not a wrapper made for it.
+		__uncaught(@:privateAccess error.unwrap(), event.type == TickEvent.TICK ? UncaughtErrorEvent.TICK : UncaughtErrorEvent.LIFECYCLE);
 	}
 
 	/**
@@ -1833,7 +1839,7 @@ final class CrossByte extends EventDispatcher {
 		if (!__didInit) {
 			__didInit = true;
 			if (hasEventListener(Event.INIT)) {
-				__dispatchContained(new Event(Event.INIT));
+				dispatchContained(new Event(Event.INIT));
 			}
 		}
 	}
@@ -1851,7 +1857,7 @@ final class CrossByte extends EventDispatcher {
 		// unrelated components, and one's failure must not skip every listener
 		// after it and end the loop.
 		if (__pooledTickEventInUse) {
-			__dispatchContained(new TickEvent(TickEvent.TICK, delta));
+			dispatchContained(new TickEvent(TickEvent.TICK, delta));
 			return;
 		}
 
@@ -1859,14 +1865,11 @@ final class CrossByte extends EventDispatcher {
 			__pooledTickEvent = new TickEvent(TickEvent.TICK, delta);
 		} else {
 			__pooledTickEvent.delta = delta;
-			@:privateAccess {
-				__pooledTickEvent.target = null;
-				__pooledTickEvent.currentTarget = null;
-			}
+			__pooledTickEvent.reuse();
 		}
 
 		__pooledTickEventInUse = true;
-		__dispatchContained(__pooledTickEvent);
+		dispatchContained(__pooledTickEvent);
 		__pooledTickEventInUse = false;
 	}
 
@@ -1918,7 +1921,7 @@ final class CrossByte extends EventDispatcher {
 			__runPosted();
 		}
 		if (hasEventListener(Event.EXIT)) {
-			__dispatchContained(new Event(Event.EXIT));
+			dispatchContained(new Event(Event.EXIT));
 		}
 		#if target.threaded
 		__postLock.acquire();

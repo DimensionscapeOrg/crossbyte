@@ -201,15 +201,24 @@ class HTTPResponseStreamTest extends utest.Test {
 				client.close();
 				client.until(() -> !held.connected, () -> {
 					var heard:Int = 0;
+					var heardOn:Int = 0;
+					var heardOnce:Int = 0;
 					var events = held.beginResponse(200, "text/event-stream");
 					held.addEventListener(Event.CLOSE, _ -> heard++);
-					var heardInsideTheCall:Int = heard;
-					client.until(() -> heard > 0, () -> {
+					// However it is added: Emitter's words are told the same.
+					held.on(Event.CLOSE, _ -> heardOn++);
+					var onceListener:Event->Void = _ -> heardOnce++;
+					held.once(Event.CLOSE, onceListener);
+					var heardInsideTheCall:Int = heard + heardOn + heardOnce;
+					client.until(() -> heard > 0 && heardOn > 0 && heardOnce > 0, () -> {
 						HTTPTestSupport.pumpMoreAsync(5, () -> {
 							server.close();
 							Assert.isFalse(events.connected);
 							Assert.equals(0, heardInsideTheCall, "CLOSE was dispatched from inside addEventListener");
 							Assert.equals(1, heard, "a listener added after its client left heard CLOSE " + heard + " times");
+							Assert.equals(1, heardOn, "a listener added with on after its client left heard CLOSE " + heardOn + " times");
+							Assert.equals(1, heardOnce, "a listener added with once after its client left heard CLOSE " + heardOnce + " times");
+							Assert.isFalse(held.has(Event.CLOSE, onceListener), "a once listener told late stayed on the handler");
 							async.done();
 						});
 					}, 2.0);

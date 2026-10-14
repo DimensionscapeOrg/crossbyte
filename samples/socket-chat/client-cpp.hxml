@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/socket-chat
 -main SocketChatClientSample
 --cpp export/socket-chat-client

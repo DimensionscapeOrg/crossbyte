@@ -12,6 +12,7 @@
 # with GetProcessTimes.
 -cp tests/perf/http
 -cp src
+-lib emitter
 -D windows
 -D HXCPP_M64
 -main PerfHttpServer

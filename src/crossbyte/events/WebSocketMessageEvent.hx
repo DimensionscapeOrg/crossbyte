@@ -83,7 +83,7 @@ class WebSocketMessageEvent extends Event {
 
 	/** Filled again for the next message; see `Arrivals`. **/
 	@:noCompletion public function __refill(data:ByteArray, isText:Bool):Void {
-		__retarget();
+		reuse();
 		this.data = data;
 		this.isText = isText;
 		__text = null;

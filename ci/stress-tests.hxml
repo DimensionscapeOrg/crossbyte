@@ -1,4 +1,5 @@
 -cp src
+-lib emitter
 -cp tests
 -main StressMain
 --cpp export/ci-stress-tests

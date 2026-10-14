@@ -10,6 +10,7 @@
 # CI does not run this: like ci/soak.hxml it is a long measurement, not a
 # gate. For the crossbyte-libuv backend, add its defines (README).
 -cp src
+-lib emitter
 -cp tests/load
 -D HXCPP_M64
 -main LoadMain

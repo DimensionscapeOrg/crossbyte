@@ -4,6 +4,7 @@
 #   haxe tests/perf/rpc/rpc-bench.hxml
 # Natively: export/rpc-bench/native/RpcCallBench.exe; Node: export/rpc-bench/node/bench.js.
 -cp src
+-lib emitter
 -cp tests
 -cp tests/load
 -cp tests/perf/rpc

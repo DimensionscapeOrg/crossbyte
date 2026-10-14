@@ -125,6 +125,72 @@ class ServerSpreadTest extends utest.Test {
 	}
 
 	/**
+		The `connect` listeners a spread server's runtimes call are the ones
+		it has now, however they came or went: added or removed after
+		`listen()`, by `addEventListener` or by Emitter's words, and a `once`
+		listener for one connection only.
+	**/
+	@:timeout(30000)
+	public function testConnectListenersChangedWhileListeningReachTheRuntimes():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var worker:CrossByte = SpreadSupport.runtime();
+		var arrived:Deque<Arrival> = new Deque();
+		var heard:Deque<String> = new Deque();
+		var first:Null<emitter.Subscription> = null;
+
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket();
+			server.runtimes = [worker];
+			// Last, so every other listener has run by the time a connection arrives here.
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> arrived.add(Arrival.of(e.socket)), -10);
+			first = server.on(ServerSocketConnectEvent.CONNECT, _ -> heard.add("first"));
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var clients:Array<sys.net.Socket> = [];
+		var landed:Array<Arrival> = [];
+		function connectAndHear():String {
+			clients.push(SpreadSupport.connect(server.localPort));
+			var arrival:Null<Arrival> = SpreadSupport.pop(arrived, WAIT);
+			if (arrival == null) {
+				return "nothing arrived";
+			}
+			landed.push(arrival);
+			var names:Array<String> = [];
+			var name:Null<String> = heard.pop(false);
+			while (name != null) {
+				names.push(name);
+				name = heard.pop(false);
+			}
+			return names.join(",");
+		}
+
+		Assert.equals("first", connectAndHear());
+
+		var second = (_:ServerSocketConnectEvent) -> heard.add("second");
+		SpreadSupport.on(acceptor, () -> server.addEventListener(ServerSocketConnectEvent.CONNECT, second));
+		Assert.equals("first,second", connectAndHear(), "a listener added while listening");
+
+		SpreadSupport.on(acceptor, () -> first.cancel());
+		Assert.equals("second", connectAndHear(), "a subscription cancelled while listening");
+
+		var once:emitter.Subscription = SpreadSupport.on(acceptor, () -> server.once(ServerSocketConnectEvent.CONNECT, _ -> heard.add("once")));
+		Assert.equals("second,once", connectAndHear(), "a once listener added while listening");
+		Assert.equals("second", connectAndHear(), "a once listener heard a second connection");
+		Assert.isFalse(SpreadSupport.on(acceptor, () -> once.active), "a once listener that heard one stayed on the server");
+
+		SpreadSupport.on(acceptor, () -> server.removeEventListener(ServerSocketConnectEvent.CONNECT, second));
+		Assert.equals("", connectAndHear(), "a listener removed while listening");
+
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.closeArrivals(landed);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, worker]);
+	}
+
+	/**
 		Data, a close from the runtime, a close from another thread: every
 		event a connection has is dispatched on the runtime it landed on.
 	**/

@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/arena
 -main ArenaSample
 --cpp export/sample-arena-check

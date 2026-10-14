@@ -640,15 +640,14 @@ class WebSocketTest extends utest.Test {
 		ws.onclose = _ -> {};
 
 		child.addEventListener("tick", ws.__tickConnectListener);
-		var listenersBefore:Array<Dynamic> = cast @:privateAccess child.__listenersOf("tick");
-		Require.notNull(listenersBefore);
+		var listenersBefore = @:privateAccess child.listenersOf("tick");
 		Assert.isTrue(listenersBefore.length > 0);
 
 		primordial.pump(0, 0);
 		ws.__close(1000);
 
-		var listenersAfter:Array<Dynamic> = cast @:privateAccess child.__listenersOf("tick");
-		Assert.isTrue(listenersAfter == null || listenersAfter.length < listenersBefore.length);
+		var listenersAfter = @:privateAccess child.listenersOf("tick");
+		Assert.isTrue(listenersAfter.length < listenersBefore.length);
 		child.exit();
 	}
 

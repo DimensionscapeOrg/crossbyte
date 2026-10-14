@@ -1,5 +1,6 @@
 --cwd ../..
 -cp src
+-lib emitter
 -cp samples/worker
 -main WorkerSample
 --cpp export/worker

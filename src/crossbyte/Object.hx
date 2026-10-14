@@ -3,9 +3,8 @@ package crossbyte;
 import crossbyte.ds.ListedMap.KeyValuePair;
 
 /**
- * A loosely structured value: parsed JSON, a `SharedObject`'s data, an
- * event's target. From ActionScript: it is `Object` there, and keeps that
- * one's methods.
+ * A loosely structured value: parsed JSON, a `SharedObject`'s data. From
+ * ActionScript: it is `Object` there, and keeps that one's methods.
  *
  * Its fields are read and written with a dot or with brackets. A field read
  * is `Dynamic`, so it converts, adds and compares as the value it holds
@@ -42,7 +41,7 @@ import crossbyte.ds.ListedMap.KeyValuePair;
  * through the class.
  *
  * **Conversions.** An `Object` takes any value and converts on its own to
- * any type: `var socket:Socket = event.target`.
+ * any type: `var hits:Int = payload.hits`.
  * Nothing checks that conversion. An object of another class is kept as it
  * is on JavaScript, eval and Neko, becomes null natively, and throws on the
  * jvm and HashLink; `cast(object, Socket)` checks, and throws on every

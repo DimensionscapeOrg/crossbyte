@@ -235,7 +235,7 @@ class SQLiteStatement extends EventDispatcher {
 		__running = false;
 		// Outside the try: a RESULT listener that throws has not made the
 		// statement fail, and must not be reported as though it had.
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/**
@@ -245,7 +245,7 @@ class SQLiteStatement extends EventDispatcher {
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var error:SQLError = SQLiteConnection.__asSQLError(SQLEvent.RESULT, e);
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 
@@ -512,7 +512,7 @@ class SQLiteStatement extends EventDispatcher {
 			__rowId = message.rowId;
 		}
 
-		__dispatchEvent(message.event);
+		dispatchEvent(message.event);
 	}
 
 	/**
@@ -571,7 +571,7 @@ class SQLiteStatement extends EventDispatcher {
 		}
 
 		__running = false;
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/** The work `next()` queues on an asynchronous connection: the next page, read on the worker. **/

@@ -48,7 +48,7 @@ class Application extends EventDispatcher {
 	 * @param listener The callback to invoke when the event is dispatched.
 	 * @param priority The listener priority. Higher values run first.
 	 */
-	public static function addGlobalListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
+	public static function addGlobalListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		if (__application != null) {
 			__application.addEventListener(type, listener, priority);
 		} else {
@@ -64,7 +64,7 @@ class Application extends EventDispatcher {
 	 * @param priority Not used: a listener is removed whatever priority it
 	 *        was added with.
 	 */
-	public static function removeGlobalListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
+	public static function removeGlobalListener<T:emitter.Event>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		if (__application != null) {
 			__application.removeEventListener(type, listener);
 		} else {

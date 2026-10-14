@@ -113,7 +113,7 @@ class PostgresStatement extends EventDispatcher {
 
 		// Outside the try: a RESULT listener that throws has not made the
 		// statement fail, and must not be reported as though it had.
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/**
@@ -131,7 +131,7 @@ class PostgresStatement extends EventDispatcher {
 			var detail:String = Std.string(e);
 			error = new SQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail);
 		}
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}
 
@@ -174,7 +174,7 @@ class PostgresStatement extends EventDispatcher {
 			__fail(e);
 		}
 
-		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	// Bound results arrive as fields and rows of bytes; the statement API hands
@@ -216,11 +216,11 @@ class PostgresStatement extends EventDispatcher {
 
 		if (__resultSet.hasNext()) {
 			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+			dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} else {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+			dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		}
 	}
 
