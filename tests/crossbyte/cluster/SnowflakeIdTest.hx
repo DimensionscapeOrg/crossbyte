@@ -271,7 +271,12 @@ class SnowflakeIdTest extends utest.Test {
 		}
 
 		var byNumber:Array<Int64> = ids.copy();
-		byNumber.sort((a, b) -> Int64.ucompare(a, b));
+		// ucompare answers with a difference of up to 2^31, which neko's native
+		// merge sort misreads past its 31-bit Int; sort on the sign alone.
+		byNumber.sort((a, b) -> {
+			var order:Int = Int64.ucompare(a, b);
+			order < 0 ? -1 : (order > 0 ? 1 : 0);
+		});
 		var byText:Array<String> = [for (id in ids) SnowflakeId.format(id)];
 		byText.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
 
