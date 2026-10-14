@@ -195,6 +195,7 @@ class RPCStructs {
 								Context.error('RPC cannot carry $path: argument ${arg.name} of ${ctorName} is ' + TypeTools.toString(arg.t)
 									+ ', not a kind RPC carries.', ctor.pos);
 							}
+							RPCKinds.requireNoPatch(kind, 'argument ${arg.name} of ${ctorName} of $path');
 							args.push({
 								name: arg.name,
 								pinned: -1,
@@ -351,7 +352,9 @@ class RPCStructs {
 			write: (frame, value) -> macro $ref.write($frame, $value),
 			read: (input, end) -> macro $ref.read($input, $end),
 			put: simple ? (data, at, value) -> macro $ref.put($data, $at, $value) : null,
-			get: simple ? (data, at) -> macro $ref.get($data, $at) : null
+			get: simple ? (data, at) -> macro $ref.get($data, $at) : null,
+			isEnum: true,
+			valueType: enumType
 		};
 		codecs.set(key, kind);
 		return kind;
@@ -374,6 +377,7 @@ class RPCStructs {
 					Context.error('RPC cannot carry field ${field.name} of $name: ' + TypeTools.toString(type) + ' is not a kind RPC carries.'
 						+ (anonymous ? '' : ' Mark it @:rpcSkip to leave it off the wire.'), field.pos);
 				}
+				RPCKinds.requireNoPatch(kind, 'field ${field.name} of $name');
 				final pinned:Int = pinnedId(field, name);
 				if (pinned >= 0) {
 					if (pinnedIds.exists(pinned)) {
@@ -386,7 +390,8 @@ class RPCStructs {
 					pinned: pinned,
 					type: type,
 					optional: optional,
-					kind: kind
+					kind: kind,
+					pos: field.pos
 				});
 			}
 		} catch (error:Dynamic) {
@@ -637,14 +642,28 @@ class RPCStructs {
 			write: (frame, value) -> macro $ref.write($frame, $value),
 			read: (input, end) -> macro $ref.read($input, $end),
 			put: packed ? (data, at, value) -> macro $ref.put($data, $at, $value) : null,
-			get: packed ? (data, at) -> macro $ref.get($data, $at) : null
+			get: packed ? (data, at) -> macro $ref.get($data, $at) : null,
+			valueType: type,
+			struct: {
+				key: key,
+				name: name,
+				fields: fields,
+				type: type,
+				access: access,
+				isClass: isClass,
+				module: module,
+				codec: codec,
+				token: token,
+				size: size,
+				pos: pos
+			}
 		};
 		codecs.set(key, kind);
 		return kind;
 	}
 
 	/** A class name for the codec of `key`, the same each build, and no other key's. **/
-	static function codecName(key:String, prefix:String):String {
+	public static function codecName(key:String, prefix:String):String {
 		var name:String = prefix + StringTools.hex(Hash.fnv1a32(Bytes.ofString(key)), 8);
 		var other:Null<String> = names.get(name);
 		var suffix:Int = 0;
@@ -664,7 +683,7 @@ class RPCStructs {
 		return codecs.get(key);
 	}
 
-	static function exists(path:String):Bool {
+	public static function exists(path:String):Bool {
 		return try Context.getType(path) != null catch (_:Dynamic) false;
 	}
 
@@ -709,11 +728,40 @@ private typedef EnumCtor = {
 	final args:Array<StructField>;
 }
 
-private typedef StructField = {
+/** A structure's field, as the generated code reads and writes it. **/
+typedef StructField = {
 	final name:String;
 	final pinned:Int;
 	final type:Type;
 	final optional:Bool;
 	final kind:RPCKind;
+	@:optional final pos:Position;
+}
+
+/**
+	A structure's shape, kept with its kind for the code generated from it
+	later: its codec (`RPCPatches`), its patches.
+**/
+typedef StructInfo = {
+	/** The key its kind is cached under. **/
+	final key:String;
+	/** What it is called in an error. **/
+	final name:String;
+	/** Its fields in wire order. **/
+	final fields:Array<StructField>;
+	/** Its type, written out in full. **/
+	final type:ComplexType;
+	/** The classes whose private fields generated code reads and sets. **/
+	final access:Array<String>;
+	final isClass:Bool;
+	/** The module the generated classes are defined in. **/
+	final module:Null<String>;
+	/** Its codec class's name, in `crossbyte.rpc._internal.codec`. **/
+	final codec:String;
+	/** Its token in a signature. **/
+	final token:String;
+	/** The bytes a whole value takes, or -1 when that depends on the value. **/
+	final size:Int;
+	final pos:Position;
 }
 #end

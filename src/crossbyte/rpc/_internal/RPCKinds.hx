@@ -374,6 +374,8 @@ class RPCKinds {
 		// Numbers and Bools that cannot be absent: all of them made room for,
 		// or checked, at once.
 		final fixed:Bool = !optional && element.put != null && element.get != null;
+		requireNoPatch(element, "an array's element");
+		final arrayOfType:ComplexType = TPath({pack: [], name: "Array", params: [TPType(optional ? nullOf(elementType) : elementType)]});
 		return {
 			name: "Array<" + element.name + ">",
 			token: "[" + token(element, optional) + "]",
@@ -381,6 +383,10 @@ class RPCKinds {
 			roomOf: value -> macro $value.length * $v{least} + 5,
 			zero: macro null,
 			compound: true,
+			element: element,
+			elementOptional: optional,
+			elementType: elementType,
+			valueType: arrayOfType,
 			write: (frame, value) -> {
 				final list:String = local();
 				final item:String = local();
@@ -500,6 +506,7 @@ class RPCKinds {
 		// The least an entry takes: its key's (a String's count, or an Int)
 		// and its value's, as an array's element.
 		final least:Int = (stringKeys ? 1 : 4) + (!optional && element.size > 0 ? element.size : 1);
+		requireNoPatch(element, "a map's value");
 		return {
 			name: name,
 			token: "[" + keyToken + ":" + token(element, optional) + "]",
@@ -507,6 +514,11 @@ class RPCKinds {
 			roomOf: value -> macro 5,
 			zero: macro null,
 			compound: true,
+			element: element,
+			elementOptional: optional,
+			elementType: elementType,
+			valueType: mapType,
+			mapKey: keyToken,
 			write: (frame, value) -> {
 				final map:String = local();
 				final keys:String = local();
@@ -611,6 +623,7 @@ class RPCKinds {
 					case "Array" if (params.length == 1):
 						final element:Null<RPCKind> = ofType(params[0], pos);
 						element == null ? null : arrayKind(element, isNullType(params[0]), RPCContractMacroTools.fullComplexType(stripNull(params[0])));
+					case "crossbyte.rpc.RPCPatch" if (params.length == 1): RPCPatches.patchKind(params[0], pos);
 					case "haxe.ds.StringMap" if (params.length == 1): mapOf(Context.getType("String"), params[0], pos);
 					case "haxe.ds.IntMap" if (params.length == 1): mapOf(Context.getType("Int"), params[0], pos);
 					case _ if (RPCStructs.isStruct(cls)): RPCStructs.classKind(cls, type, pos);
@@ -634,6 +647,18 @@ class RPCKinds {
 		}
 		final element:Null<RPCKind> = ofType(value, pos);
 		return element == null ? null : mapKind(keyKind == STRING, element, isNullType(value), RPCContractMacroTools.fullComplexType(stripNull(value)));
+	}
+
+	/**
+		Fails the build for a patch where only a whole value goes: a patch is
+		against a base its receiver holds, which an element of an array or a
+		field of a structure has none of its own to name.
+	**/
+	public static function requireNoPatch(kind:RPCKind, where:String):Void {
+		if (kind.patch == true) {
+			Context.error('RPC cannot carry ${kind.name} as $where: RPCPatch, RPCMapPatch and RPCStringMapPatch are arguments and answers only.',
+				Context.currentPos());
+		}
 	}
 
 	/** Whether `type` is `Null<T>`, however it is named: one typedef at a time, since a full follow drops the `Null`. **/
@@ -755,5 +780,25 @@ typedef RPCKind = {
 	@:optional final put:(Expr, Expr, Expr) -> Expr;
 	@:optional final get:(Expr, Expr) -> Expr;
 	@:optional final most:Int;
+	@:optional final struct:RPCStructs.StructInfo;
+	@:optional final element:RPCKind;
+	@:optional final elementOptional:Bool;
+	@:optional final elementType:ComplexType;
+	@:optional final valueType:ComplexType;
+	@:optional final mapKey:String;
+	@:optional final isEnum:Bool;
+	@:optional final patch:Bool;
+	@:optional final reuse:RPCReuse;
+}
+
+/**
+	How a kind is read into what a session keeps for it, valid during the
+	call (a patch, always; an `@:reuse` argument): the type of what is kept,
+	how one is made, and how a value is read into it.
+**/
+typedef RPCReuse = {
+	final type:ComplexType;
+	final make:Expr;
+	final readInto:(input:Expr, end:Expr, held:Expr) -> Expr;
 }
 #end

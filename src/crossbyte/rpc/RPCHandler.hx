@@ -114,6 +114,27 @@ abstract class RPCHandler<C:RPCCommands = Dynamic, D = Dynamic> {
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
 
 	/**
+		What this handler's calls read their patches and `@:reuse` arguments
+		into, for a session: generated for a handler that has any.
+	**/
+	@:noCompletion public function __rpc_newReuse():Any {
+		return null;
+	}
+
+	/** What the session dispatching keeps for this handler's calls, made the first time it is asked for. **/
+	@:noCompletion private inline function __rpc_reuse():Any {
+		final session = this_session;
+		if (session == null) {
+			return __rpc_newReuse();
+		}
+		var held:Any = session.__reuse;
+		if (held == null) {
+			held = session.__reuse = __rpc_newReuse();
+		}
+		return held;
+	}
+
+	/**
 		Whether this handler serves a session with `commands`: one that names
 		no kind of session serves any; one that does (generated) only those
 		whose commands are of its class.

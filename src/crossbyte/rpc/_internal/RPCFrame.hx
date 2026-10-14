@@ -170,6 +170,16 @@ class RPCFrame extends ByteArrayData {
 	}
 
 	/**
+		Readies the buffer to be written from 0 with no frame head: for a
+		value written outside a call (a patch kept as bytes), whose bytes are
+		then those before `position`.
+	**/
+	public inline function beginScratch():Void {
+		length = __length;
+		position = 0;
+	}
+
+	/**
 		Makes room for `count` more bytes from `position`, keeping what is
 		written: an array of fixed-size elements makes room for all of them
 		at once, then writes each where it goes with the `Bytes` setters.

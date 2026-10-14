@@ -337,8 +337,12 @@ class RPCHandlerMacro {
 			});
 		}
 
+		final reused:Array<ReusedArg> = [];
 		for (method in methods) {
-			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX));
+			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX, reused));
+		}
+		if (reused.length > 0) {
+			newFields.push(reuseHolder(tag, reused));
 		}
 
 		newFields.push(makeDispatcher(methods, entries, usePerfectHash, tag, inheritedDispatch != null));
@@ -429,7 +433,48 @@ class RPCHandlerMacro {
 		return "__rpc_decode_call_" + tag + "_" + method;
 	}
 
-	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool):Field {
+	/**
+		What a session keeps for this handler's calls (see `RPCHandler.__rpc_reuse`):
+		a class of one field for each argument read into what is kept, made
+		with them all, and the override that makes it.
+	**/
+	static function reuseHolder(tag:String, reused:Array<ReusedArg>):Field {
+		final pos = Context.currentPos();
+		final pack:Array<String> = ["crossbyte", "rpc", "_internal", "codec"];
+		final name:String = holderName(tag);
+		final init:Array<Expr> = [];
+		final fields:Array<Field> = [];
+		for (arg in reused) {
+			fields.push({name: arg.field, access: [APublic], kind: FVar(arg.type, null), pos: pos});
+			init.push(macro $i{arg.field} = ${arg.make});
+		}
+		fields.push({name: "new", access: [APublic], kind: FFun({args: [], ret: null, expr: macro $b{init}}), pos: pos});
+		if (!RPCStructs.exists(pack.concat([name]).join("."))) {
+			Context.defineType({
+				pack: pack,
+				name: name,
+				pos: pos,
+				meta: [{name: ":noCompletion", params: [], pos: pos}],
+				kind: TDClass(),
+				fields: fields
+			}, Context.getLocalModule());
+		}
+		final path:TypePath = {pack: pack, name: name};
+		return {
+			name: "__rpc_newReuse",
+			access: [APublic, AOverride],
+			meta: [{name: ":noCompletion", params: [], pos: pos}],
+			kind: FFun({args: [], ret: macro :Any, expr: macro return new $path()}),
+			pos: pos
+		};
+	}
+
+	/** The holder class of a handler class's kept arguments: one name per handler, whatever its path. **/
+	static function holderName(tag:String):String {
+		return "H" + StringTools.hex(crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(tag)), 8) + "_" + (tag.length > 40 ? tag.substr(tag.length - 40) : tag);
+	}
+
+	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool, reused:Array<ReusedArg>):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 		final reads:Array<Expr> = [];
@@ -452,7 +497,22 @@ class RPCHandlerMacro {
 				]),
 				pos: m.pos
 			});
-			reads.push(macro $i{local} = $e{readerForArg(a, m.pos)});
+			final kind = a.type == null ? null : RPCKinds.of(unwrapNull(a.type), m.pos);
+			if (kind != null && kind.reuse != null) {
+				// Read into what the session keeps for it, valid during the call.
+				final field:String = "r_" + m.name + "_" + i;
+				reused.push({field: field, type: kind.reuse.type, make: kind.reuse.make});
+				final holderPath:ComplexType = TPath({pack: ["crossbyte", "rpc", "_internal", "codec"], name: holderName(tag)});
+				final readInto:Expr = kind.reuse.readInto(macro input, macro this.this_frameEnd, macro __held.$field);
+				final isOpt:Bool = a.opt || RPCContractMacroTools.isNullable(a.type, m.pos);
+				final get:Expr = macro {
+					final __held:$holderPath = cast this.__rpc_reuse();
+					$readInto;
+				};
+				reads.push(macro $i{local} = ${isOpt ? macro(input.readByte() != 0 ? $get : null) : get});
+			} else {
+				reads.push(macro $i{local} = $e{readerForArg(a, m.pos)});
+			}
 			paramExprs.push({expr: EConst(CIdent(local)), pos: m.pos});
 		}
 		// Read whole and within the frame, or the frame is not sound: what an
@@ -1146,6 +1206,13 @@ class RPCHandlerMacro {
 			pos: pos
 		});
 	}
+}
+
+/** An argument read into what a session keeps for it: its field in the holder, its type, and how one is made. **/
+private typedef ReusedArg = {
+	field:String,
+	type:ComplexType,
+	make:Expr
 }
 
 /** An op a generated dispatch answers, and the method it calls. **/

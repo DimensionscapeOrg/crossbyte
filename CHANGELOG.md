@@ -209,6 +209,27 @@ All notable changes to CrossByte will be documented in this file.
   All 32 bits arrive, so a tick that has wrapped past 2^31 - 1 (as
   `SequenceRing` orders them) carries on, in five bytes. Each is an `Int`
   wherever one is wanted. Kinds `vu` and `vi` in a signature.
+- **Structures sent as what changed: `RPCPatch<T>`.** An argument or an
+  answer of type `RPCPatch<T>`, `T` a class that implements `RPCStruct`,
+  carries the fields of a value that differ from a base both ends hold: a
+  bit for each field, then each that differs whole, a nested structure as a
+  patch of its own. The sender calls `patch.diff(base, current)` (a `null`
+  base sends the patch from the structure as its constructor makes it,
+  `isFull`, which applies to anything); the receiver calls
+  `patch.apply(base, into)`. Fields are compared at the precision they are
+  sent (a `Float32` at single precision, NaN equal to NaN). Writing
+  allocates nothing, and the session reads every call's patch into one it
+  keeps, valid during the call, as a socket's event is. Up to 64 fields;
+  kind `~{...}` in a signature, so a peer without patches finds no method.
+  `write(out)` and `read(input)` give a patch as bytes of its own, for a
+  recording or a patch carried in a `Bytes` argument.
+- **`RPCCodec<T>` and `RPCCodecs.of(Type)`**, the generated code of a
+  structure as an interface generic code can hold: `make`, `copy` (nested
+  structures and arrays into those held, so nothing is shared), `equals`
+  (as the bytes would compare), `write` and `read` (into a value held, or a
+  new one), `writePatch` and `readPatch`, and `name`, `fieldCount`,
+  `maxSize` and `layout` (the hash of its layout, for a stored baseline).
+  `RPCCodecs.of` on anything but such a class fails the build.
 - **`IdList.copyFrom(other)` and `IdList.addAll(other)`**, so a pooled list
   (one per tick in a `SequenceRing<IdList>`) takes a view's ids in order
   and keeps its storage, allocating nothing once it has grown.
