@@ -5,6 +5,10 @@ import crossbyte.db.postgres.PostgresConnection;
 import crossbyte.db.postgres.PostgresStatement;
 import crossbyte.db.postgres.PostgresParameter;
 import crossbyte.db.postgres._internal.PostgresWire;
+import crossbyte.db.kv.KVOptions;
+import crossbyte.db.kv.KVStore;
+import crossbyte.db.kv.KVStoreChecks;
+import crossbyte.db.kv.PostgresKVStore;
 import haxe.io.Bytes;
 import utest.Assert;
 import crossbyte.test.Require;
@@ -631,6 +635,124 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
+	public function testTheKeyValueStoreDoesWhatEveryStoreDoes():Void {
+		// Every check the stand-in libpq runs (PostgresKVStoreTest), against a
+		// server that parses the SQL: the upserts, the scan's window over its
+		// range, the "C" collation, bytea bound as binary, transactions.
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var tables:Array<String> = [];
+		var make = function(options:KVOptions):KVStore {
+			var name:String = table + "_kv" + tables.length;
+			tables.push(name);
+			// A table the check means to be refused stays as it gave it.
+			return PostgresKVStore.open(__config(), __withTable(options, name));
+		};
+
+		try {
+			KVStoreChecks.writesAndReads(make);
+			KVStoreChecks.valuesAreTheCallersOwn(make);
+			KVStoreChecks.compareAndSetWritesOnlyAtTheRevision(make);
+			KVStoreChecks.deletesLeaveTombstones(make);
+			KVStoreChecks.aRevisionFromBeforeADeleteIsNotTheNextValues(make);
+			KVStoreChecks.compareAndDeleteDeletesOnlyAtTheRevision(make);
+			KVStoreChecks.scansAreInCodePointOrder(make);
+			KVStoreChecks.scansReadAPrefixOrARange(make);
+			KVStoreChecks.pagesReadEveryKeyOnce(make);
+			KVStoreChecks.scansSkipTombstonesUnlessAsked(make);
+			KVStoreChecks.aPageEndsAtItsBytes(make);
+			KVStoreChecks.refusesWhatItWouldNotHold(make);
+			KVStoreChecks.purgeRemovesOnlyOldTombstones(make);
+			KVStoreChecks.aRollbackDiscardsEveryWrite(make);
+			KVStoreChecks.aCommitKeepsEveryWrite(make);
+			KVStoreChecks.aClosedStoreRefuses(make);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__dropKeyValueTables(tables);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testKeyValueCompareAndSetRacesAcrossConnectionsLoseWithoutLosingAWrite():Void {
+		// Threads each with their own connection, adding one to a counter by
+		// compare-and-set at READ COMMITTED: a write another overtook waits
+		// for it, finds the revision moved and answers null; none is lost.
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var name:String = table + "_race";
+		var options:KVOptions = {table: name};
+
+		try {
+			var setup = PostgresKVStore.open(__config(), options);
+			var read = setup.put("counter", Bytes.ofString("0"));
+			var other = PostgresKVStore.open(__config(), options);
+			Require.notNull(other.compareAndSet("counter", Bytes.ofString("0"), read.revision));
+			Assert.isNull(setup.compareAndSet("counter", Bytes.ofString("0"), read.revision), "a write from a stale read went through");
+			other.close();
+			setup.close();
+
+			var threads:Int = 4;
+			var each:Int = 50;
+			var done = new sys.thread.Lock();
+			var guard = new sys.thread.Mutex();
+			var failures:Array<String> = [];
+
+			for (t in 0...threads) {
+				sys.thread.Thread.create(function():Void {
+					try {
+						var store = PostgresKVStore.open(__config(), options);
+
+						for (i in 0...each) {
+							while (true) {
+								var current = store.get("counter");
+								var next:Int = Std.parseInt(current.value.toString()) + 1;
+
+								if (store.compareAndSet("counter", Bytes.ofString(Std.string(next)), current.revision) != null) {
+									break;
+								}
+							}
+						}
+
+						store.close();
+					} catch (e:Dynamic) {
+						guard.acquire();
+						failures.push(Std.string(e));
+						guard.release();
+					}
+
+					done.release();
+				});
+			}
+
+			for (t in 0...threads) {
+				Assert.isTrue(done.wait(120), "a thread did not finish");
+			}
+
+			Assert.same([], failures, failures.join("; "));
+			var check = PostgresKVStore.open(__config(), options);
+			var counter = Require.notNull(check.get("counter"));
+			Assert.equals(Std.string(threads * each), counter.value.toString());
+			Assert.equals(threads * each + 2.0, counter.revision);
+			check.close();
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__dropKeyValueTables([name]);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testKeepAliveAndUserTimeoutAreAcceptedByLibpq():Void {
 		#if cpp
 		if (__skip()) {
@@ -677,6 +799,27 @@ class PostgresIntegrationTest extends utest.Test {
 		// state on a development machine, and is not a defect in the driver.
 		Assert.pass();
 		return true;
+	}
+
+	/** `options` with its table `name`, unless it names one of its own, which a check means to be refused. **/
+	@:noCompletion private static function __withTable(options:KVOptions, name:String):KVOptions {
+		return {
+			table: options.table == KVOptions.DEFAULT_TABLE ? name : options.table,
+			maxKeyBytes: options.maxKeyBytes,
+			maxValueBytes: options.maxValueBytes,
+			maxScanLimit: options.maxScanLimit,
+			maxPageBytes: options.maxPageBytes,
+			clock: options.clock
+		};
+	}
+
+	@:noCompletion private function __dropKeyValueTables(tables:Array<String>):Void {
+		for (name in tables) {
+			try {
+				connection.request('DROP TABLE IF EXISTS $name');
+				connection.request('DROP TABLE IF EXISTS ${name}_migrations');
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	@:noCompletion private function __count():Int {

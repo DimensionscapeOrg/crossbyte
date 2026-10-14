@@ -61,11 +61,6 @@ final class KVRecord {
 
 	/** The key and revision, and the value's size, for a log: never the value. **/
 	public function toString():String {
-		return 'KVRecord($key, revision ${KVRecord.__whole(revision)}${tombstone ? ", tombstone" : ", " + value.length + " bytes"})';
-	}
-
-	/** A whole number past 2^31 without an exponent. **/
-	@:noCompletion private static function __whole(value:Float):String {
-		return value < 2147483648.0 ? Std.string(Std.int(value)) : haxe.Int64.toStr(haxe.Int64.fromFloat(value));
+		return 'KVRecord($key, revision ${crossbyte.db.kv._internal.KVWrites.whole(revision)}${tombstone ? ", tombstone" : ", " + value.length + " bytes"})';
 	}
 }

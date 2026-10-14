@@ -156,11 +156,29 @@ between the check and the write. A page of a scan is one statement too, which re
 store is used by one thread at a time, as its connection is: several threads share a database through a
 `ConnectionPool` of stores, each its own connection to the file.
 
+### In PostgreSQL
+
+`PostgresKVStore` keeps them in PostgreSQL, natively, for records several servers share:
+
+```haxe
+import crossbyte.db.kv.PostgresKVStore;
+
+var store = PostgresKVStore.open({host: "127.0.0.1", user: "game", password: "secret", database: "game"});
+```
+
+Its table is made through `SchemaMigrator.postgres()`, whose advisory lock keeps instances starting together from
+both making it, and its key is in the "C" collation, so keys sort by their bytes there as everywhere else and a scan
+is one index range. Every statement binds its values (a value as a binary `bytea`) and every write is one statement
+with the revision check in its `WHERE`. At READ COMMITTED, the server's default, a compare-and-set another
+connection's write overtook waits for it and answers null; inside a REPEATABLE READ or SERIALIZABLE transaction the
+server fails it instead, with an `SQLError` to retry the transaction on. PHP's PDO driver binds nothing, so the store
+is native only.
+
 ### Transactions and limits
 
 `begin()`, `commit()` and `rollback()` keep writes together. A `MemoryKVStore` transaction holds the store for the
 thread that began it; other threads wait for it to end. An `SQLiteKVStore` one begins with `BEGIN IMMEDIATE`, taking
-the database's write lock at once.
+the database's write lock at once, and a `PostgresKVStore` one at the connection's `isolationLevel`.
 
 What a caller can make a store hold is bounded by its `KVOptions`, each a refusal rather than a truncation: a key
 of at most `maxKeyBytes` in UTF-8 (1 KiB), a value of at most `maxValueBytes` (1 MiB, as Firestore holds a

@@ -69,6 +69,7 @@ const STANDALONE = [
   'src/crossbyte/db/kv/KVPage.hx',
   'src/crossbyte/db/kv/KVStore.hx',
   'src/crossbyte/db/kv/MemoryKVStore.hx',
+  'src/crossbyte/db/kv/PostgresKVStore.hx',
   'src/crossbyte/db/kv/SQLiteKVStore.hx',
   'src/crossbyte/db/mongodb/MongoConfig.hx',
   'src/crossbyte/db/mongodb/MongoConnection.hx',

@@ -27,6 +27,12 @@
  *                       aborted transaction succeeds with the tag ROLLBACK, and
  *                       PQtransactionStatus reports the state
  *
+ * and the statements `PostgresKVStore` sends, against one table of records
+ * the whole process shares, as a server's table is shared by its connections
+ * (see "The key/value table" below; fake:kv-clear empties it). A ROLLBACK puts
+ * the table back as it was at the BEGIN, which is enough for a test that does
+ * not write from two connections inside one transaction.
+ *
  * A host named "fail-<anything>" refuses the connection with a message naming
  * it, and one named "slow-connect" takes 1.5 seconds to connect.
  *
@@ -50,7 +56,15 @@ static volatile LONG fakeLive = 0;
 static void fakeCountLive(int delta) {
 	InterlockedExchangeAdd(&fakeLive, (LONG)delta);
 }
+static SRWLOCK fakeTableLock = SRWLOCK_INIT;
+static void fakeLockTable(void) {
+	AcquireSRWLockExclusive(&fakeTableLock);
+}
+static void fakeUnlockTable(void) {
+	ReleaseSRWLockExclusive(&fakeTableLock);
+}
 #else
+#include <pthread.h>
 #include <time.h>
 #define FAKEPQ_EXPORT __attribute__((visibility("default")))
 static void fakeSleepMs(int ms) {
@@ -62,6 +76,13 @@ static void fakeSleepMs(int ms) {
 static volatile long fakeLive = 0;
 static void fakeCountLive(int delta) {
 	__sync_fetch_and_add(&fakeLive, (long)delta);
+}
+static pthread_mutex_t fakeTableLock = PTHREAD_MUTEX_INITIALIZER;
+static void fakeLockTable(void) {
+	pthread_mutex_lock(&fakeTableLock);
+}
+static void fakeUnlockTable(void) {
+	pthread_mutex_unlock(&fakeTableLock);
 }
 #endif
 
@@ -93,6 +114,24 @@ enum {
 	PQTRANS_UNKNOWN = 4
 };
 
+/* One record of the key/value table. */
+typedef struct FakeRecord {
+	char* key;
+	unsigned char* value;
+	int valueLength;
+	long long revision;
+	char created[48];
+	char updated[48];
+	int deleted;
+	char schema[16];
+} FakeRecord;
+
+typedef struct FakeTable {
+	FakeRecord* records;
+	int count;
+	int capacity;
+} FakeTable;
+
 typedef struct FakeConn {
 	int status;
 	int transaction;
@@ -101,21 +140,22 @@ typedef struct FakeConn {
 	volatile int cancelled;
 	char* conninfo;
 	char error[512];
+	/* The key/value table as it was at this connection's BEGIN. */
+	FakeTable* snapshot;
 } FakeConn;
 
 typedef struct FakeCancel {
 	FakeConn* conn;
 } FakeCancel;
 
+/* A result of `fields` columns and `rows` rows; a cell is NULL for SQL NULL. */
 typedef struct FakeResult {
 	int status;
 	int fields;
 	int rows;
-	char* name;
-	char* value;
-	int length;
-	/* One value per row, for fake:count; NULL for the one-row results. */
-	char** rowValues;
+	char** names;
+	char** cells;
+	int* lengths;
 	char command[48];
 	/* Room for any count PQcmdTuples can give: 2^64 - 1 is twenty digits. */
 	char tuples[24];
@@ -146,25 +186,8 @@ static FakeResult* fakeResult(int status, const char* command) {
 	return result;
 }
 
-/* One row, one column. */
-static FakeResult* fakeRow(const char* name, const char* value, size_t length) {
-	FakeResult* result = fakeResult(PGRES_TUPLES_OK, "SELECT 1");
-
-	if (result == NULL) {
-		return NULL;
-	}
-
-	result->fields = 1;
-	result->rows = 1;
-	result->name = fakeDup(name, strlen(name));
-	result->value = fakeDup(value, length);
-	result->length = (int)length;
-	snprintf(result->tuples, sizeof(result->tuples), "1");
-	return result;
-}
-
-/* n rows of one column, holding 1 to n. */
-static FakeResult* fakeCount(int n) {
+/* Rows of the columns `names`, `count` of them, every cell NULL until set. */
+static FakeResult* fakeTuples(const char* const* names, int count, int rows) {
 	FakeResult* result = fakeResult(PGRES_TUPLES_OK, "SELECT");
 	int i;
 
@@ -172,24 +195,62 @@ static FakeResult* fakeCount(int n) {
 		return NULL;
 	}
 
-	result->rowValues = (char**)calloc((size_t)(n > 0 ? n : 1), sizeof(char*));
+	result->fields = count;
+	result->rows = rows;
+	result->names = (char**)calloc((size_t)(count > 0 ? count : 1), sizeof(char*));
+	result->cells = (char**)calloc((size_t)(count * rows > 0 ? count * rows : 1), sizeof(char*));
+	result->lengths = (int*)calloc((size_t)(count * rows > 0 ? count * rows : 1), sizeof(int));
 
-	if (result->rowValues == NULL) {
-		free(result);
+	for (i = 0; i < count; i++) {
+		result->names[i] = fakeDup(names[i], strlen(names[i]));
+	}
+
+	snprintf(result->command, sizeof(result->command), "SELECT %d", rows);
+	snprintf(result->tuples, sizeof(result->tuples), "%d", rows);
+	return result;
+}
+
+static void fakeCell(FakeResult* result, int row, int field, const char* value, size_t length) {
+	int at = row * result->fields + field;
+	free(result->cells[at]);
+	result->cells[at] = value == NULL ? NULL : fakeDup(value, length);
+	result->lengths[at] = value == NULL ? 0 : (int)length;
+}
+
+static void fakeText(FakeResult* result, int row, int field, const char* value) {
+	fakeCell(result, row, field, value, value == NULL ? 0 : strlen(value));
+}
+
+/* One row, one column. */
+static FakeResult* fakeRow(const char* name, const char* value, size_t length) {
+	const char* names[1];
+	FakeResult* result;
+	names[0] = name;
+	result = fakeTuples(names, 1, 1);
+
+	if (result != NULL) {
+		fakeCell(result, 0, 0, value, length);
+	}
+
+	return result;
+}
+
+/* n rows of one column, holding 1 to n. */
+static FakeResult* fakeCount(int n) {
+	const char* names[1] = {"n"};
+	FakeResult* result = fakeTuples(names, 1, n);
+	int i;
+
+	if (result == NULL) {
 		return NULL;
 	}
 
 	for (i = 0; i < n; i++) {
 		char text[16];
 		snprintf(text, sizeof(text), "%d", i + 1);
-		result->rowValues[i] = fakeDup(text, strlen(text));
+		fakeText(result, i, 0, text);
 	}
 
-	result->fields = 1;
-	result->rows = n;
-	result->name = fakeDup("n", 1);
-	snprintf(result->command, sizeof(result->command), "SELECT %d", n);
-	snprintf(result->tuples, sizeof(result->tuples), "%d", n);
 	return result;
 }
 
@@ -233,7 +294,390 @@ static int conninfoValue(const char* conninfo, const char* keyword, char* out, s
 	return 1;
 }
 
-static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const char* const* values) {
+/* ------------------------------------------------------------------------
+ * The key/value table
+ *
+ * The statements PostgresKVStore sends, told apart by how they begin and a
+ * phrase in each, with their parameters where the store puts them:
+ *
+ *   INSERT ... ON CONFLICT (record_key) ...
+ *                                      put: $1 key, $2 value (binary), $3 now,
+ *                                      $4 schema; "WHERE r.deleted" makes it
+ *                                      a create, only over none or a tombstone
+ *   UPDATE ... deleted = TRUE ...      delete: $1 key, $2 now, and $3 the
+ *                                      revision when "AND revision = $3"
+ *   UPDATE ... SET record_value = $2   update at a revision: $1 key, $2 value,
+ *                                      $3 now, $4 schema, $5 revision
+ *   SELECT revision, ...               get: $1 key, $2 most bytes to return
+ *   SELECT p.record_key, ...           a page: $1 low, $2 high, $3 rows to
+ *                                      read, $4 limit, $5 most bytes of a
+ *                                      value, $6 most bytes of a page; live
+ *                                      records only with "AND NOT deleted"
+ *   DELETE FROM ... WHERE deleted ...  purge: $1 updated before
+ *
+ * Keys are compared with strcmp, which is their UTF-8 bytes' order, as the
+ * "C" collation compares them. A value comes back as the server sends a
+ * bytea as text: \x and its hex.
+ * ------------------------------------------------------------------------ */
+
+static FakeTable fakeTable = {NULL, 0, 0};
+
+static void fakeFreeRecord(FakeRecord* record) {
+	free(record->key);
+	free(record->value);
+}
+
+static void fakeCopyRecord(FakeRecord* to, const FakeRecord* from) {
+	*to = *from;
+	to->key = fakeDup(from->key, strlen(from->key));
+	to->value = (unsigned char*)malloc((size_t)(from->valueLength > 0 ? from->valueLength : 1));
+	if (from->valueLength > 0) {
+		memcpy(to->value, from->value, (size_t)from->valueLength);
+	}
+}
+
+static void fakeClearTable(FakeTable* table) {
+	int i;
+	for (i = 0; i < table->count; i++) {
+		fakeFreeRecord(&table->records[i]);
+	}
+	free(table->records);
+	table->records = NULL;
+	table->count = 0;
+	table->capacity = 0;
+}
+
+static FakeTable* fakeCopyTable(const FakeTable* from) {
+	FakeTable* copy = (FakeTable*)calloc(1, sizeof(FakeTable));
+	int i;
+	copy->capacity = from->count > 0 ? from->count : 1;
+	copy->records = (FakeRecord*)calloc((size_t)copy->capacity, sizeof(FakeRecord));
+	for (i = 0; i < from->count; i++) {
+		fakeCopyRecord(&copy->records[i], &from->records[i]);
+	}
+	copy->count = from->count;
+	return copy;
+}
+
+/* Where `key` is, or where it would go: *found says which. */
+static int fakeFind(const char* key, int* found) {
+	int lo = 0;
+	int hi = fakeTable.count;
+
+	while (lo < hi) {
+		int mid = (lo + hi) / 2;
+		int order = strcmp(fakeTable.records[mid].key, key);
+
+		if (order < 0) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+
+	*found = lo < fakeTable.count && strcmp(fakeTable.records[lo].key, key) == 0;
+	return lo;
+}
+
+static FakeRecord* fakeInsert(int at, const char* key) {
+	if (fakeTable.count == fakeTable.capacity) {
+		fakeTable.capacity = fakeTable.capacity == 0 ? 16 : fakeTable.capacity * 2;
+		fakeTable.records = (FakeRecord*)realloc(fakeTable.records, (size_t)fakeTable.capacity * sizeof(FakeRecord));
+	}
+
+	memmove(&fakeTable.records[at + 1], &fakeTable.records[at], (size_t)(fakeTable.count - at) * sizeof(FakeRecord));
+	memset(&fakeTable.records[at], 0, sizeof(FakeRecord));
+	fakeTable.records[at].key = fakeDup(key, strlen(key));
+	fakeTable.records[at].value = (unsigned char*)malloc(1);
+	fakeTable.count++;
+	return &fakeTable.records[at];
+}
+
+static void fakeSetValue(FakeRecord* record, const char* value, int length) {
+	free(record->value);
+	record->value = (unsigned char*)malloc((size_t)(length > 0 ? length : 1));
+	if (length > 0) {
+		memcpy(record->value, value, (size_t)length);
+	}
+	record->valueLength = length;
+}
+
+static const char* fakeParam(int nParams, const char* const* values, int n) {
+	return (n <= nParams && values != NULL && values[n - 1] != NULL) ? values[n - 1] : "";
+}
+
+/* A bytea as the server sends it as text. */
+static char* fakeByteaText(const unsigned char* value, int length) {
+	static const char digits[] = "0123456789abcdef";
+	char* out = (char*)malloc((size_t)length * 2 + 3);
+	int i;
+	out[0] = '\\';
+	out[1] = 'x';
+	for (i = 0; i < length; i++) {
+		out[2 + i * 2] = digits[value[i] >> 4];
+		out[3 + i * 2] = digits[value[i] & 15];
+	}
+	out[2 + length * 2] = '\0';
+	return out;
+}
+
+static FakeResult* fakeWritten(const FakeRecord* record) {
+	const char* names[3] = {"revision", "created_at", "updated_at"};
+	FakeResult* result = fakeTuples(names, 3, 1);
+	char revision[32];
+	snprintf(revision, sizeof(revision), "%lld", record->revision);
+	fakeText(result, 0, 0, revision);
+	fakeText(result, 0, 1, record->created);
+	fakeText(result, 0, 2, record->updated);
+	return result;
+}
+
+static FakeResult* fakeNothingWritten(const char* tag) {
+	const char* names[3] = {"revision", "created_at", "updated_at"};
+	FakeResult* result = fakeTuples(names, 3, 0);
+	snprintf(result->command, sizeof(result->command), "%s", tag);
+	return result;
+}
+
+static FakeResult* fakeChanged(const char* verb, int count) {
+	FakeResult* result = fakeResult(PGRES_COMMAND_OK, "");
+	snprintf(result->command, sizeof(result->command), "%s %d", verb, count);
+	snprintf(result->tuples, sizeof(result->tuples), "%d", count);
+	return result;
+}
+
+static FakeResult* fakeKvPut(int create, int nParams, const char* const* values, const int* lengths) {
+	const char* key = fakeParam(nParams, values, 1);
+	const char* now = fakeParam(nParams, values, 3);
+	int found;
+	int at = fakeFind(key, &found);
+	FakeRecord* record;
+
+	if (found && create && !fakeTable.records[at].deleted) {
+		return fakeNothingWritten("INSERT 0 0");
+	}
+
+	if (!found) {
+		record = fakeInsert(at, key);
+		record->revision = 1;
+		snprintf(record->created, sizeof(record->created), "%s", now);
+	} else {
+		record = &fakeTable.records[at];
+		record->revision++;
+		if (record->deleted) {
+			snprintf(record->created, sizeof(record->created), "%s", now);
+		}
+	}
+
+	fakeSetValue(record, fakeParam(nParams, values, 2), lengths != NULL && nParams >= 2 ? lengths[1] : 0);
+	snprintf(record->updated, sizeof(record->updated), "%s", now);
+	snprintf(record->schema, sizeof(record->schema), "%s", fakeParam(nParams, values, 4));
+	record->deleted = 0;
+	return fakeWritten(record);
+}
+
+static FakeResult* fakeKvUpdate(int nParams, const char* const* values, const int* lengths) {
+	int found;
+	int at = fakeFind(fakeParam(nParams, values, 1), &found);
+	FakeRecord* record;
+
+	if (!found || fakeTable.records[at].deleted || fakeTable.records[at].revision != atoll(fakeParam(nParams, values, 5))) {
+		return fakeNothingWritten("UPDATE 0");
+	}
+
+	record = &fakeTable.records[at];
+	record->revision++;
+	fakeSetValue(record, fakeParam(nParams, values, 2), lengths != NULL && nParams >= 2 ? lengths[1] : 0);
+	snprintf(record->updated, sizeof(record->updated), "%s", fakeParam(nParams, values, 3));
+	snprintf(record->schema, sizeof(record->schema), "%s", fakeParam(nParams, values, 4));
+	return fakeWritten(record);
+}
+
+static FakeResult* fakeKvDelete(int atRevision, int nParams, const char* const* values) {
+	int found;
+	int at = fakeFind(fakeParam(nParams, values, 1), &found);
+	FakeRecord* record;
+
+	if (!found || fakeTable.records[at].deleted || (atRevision && fakeTable.records[at].revision != atoll(fakeParam(nParams, values, 3)))) {
+		return fakeChanged("UPDATE", 0);
+	}
+
+	record = &fakeTable.records[at];
+	record->revision++;
+	fakeSetValue(record, "", 0);
+	snprintf(record->updated, sizeof(record->updated), "%s", fakeParam(nParams, values, 2));
+	snprintf(record->schema, sizeof(record->schema), "0");
+	record->deleted = 1;
+	return fakeChanged("UPDATE", 1);
+}
+
+static FakeResult* fakeKvGet(int nParams, const char* const* values) {
+	const char* names[6] = {"revision", "created_at", "updated_at", "value_schema", "size", "value"};
+	int found;
+	int at = fakeFind(fakeParam(nParams, values, 1), &found);
+	const FakeRecord* record;
+	FakeResult* result;
+	char text[32];
+
+	if (!found || fakeTable.records[at].deleted) {
+		return fakeTuples(names, 6, 0);
+	}
+
+	record = &fakeTable.records[at];
+	result = fakeTuples(names, 6, 1);
+	snprintf(text, sizeof(text), "%lld", record->revision);
+	fakeText(result, 0, 0, text);
+	fakeText(result, 0, 1, record->created);
+	fakeText(result, 0, 2, record->updated);
+	fakeText(result, 0, 3, record->schema);
+	snprintf(text, sizeof(text), "%d", record->valueLength);
+	fakeText(result, 0, 4, text);
+
+	if (record->valueLength <= atoi(fakeParam(nParams, values, 2))) {
+		char* hex = fakeByteaText(record->value, record->valueLength);
+		fakeText(result, 0, 5, hex);
+		free(hex);
+	}
+
+	return result;
+}
+
+static FakeResult* fakeKvScan(int live, int nParams, const char* const* values) {
+	const char* names[10] = {"record_key", "revision", "created_at", "updated_at", "deleted", "value_schema", "size", "n", "running", "value"};
+	const char* low = fakeParam(nParams, values, 1);
+	const char* high = fakeParam(nParams, values, 2);
+	int fetch = atoi(fakeParam(nParams, values, 3));
+	int limit = atoi(fakeParam(nParams, values, 4));
+	long long maxValue = atoll(fakeParam(nParams, values, 5));
+	long long pageBytes = atoll(fakeParam(nParams, values, 6));
+	int found;
+	int at = fakeFind(low, &found);
+	int rows = 0;
+	int i;
+	long long running = 0;
+	FakeResult* result;
+
+	for (i = at; i < fakeTable.count && rows < fetch && strcmp(fakeTable.records[i].key, high) < 0; i++) {
+		if (!live || !fakeTable.records[i].deleted) {
+			rows++;
+		}
+	}
+
+	result = fakeTuples(names, 10, rows);
+	rows = 0;
+
+	for (i = at; i < fakeTable.count && rows < fetch && strcmp(fakeTable.records[i].key, high) < 0; i++) {
+		const FakeRecord* record = &fakeTable.records[i];
+		char text[32];
+		int n;
+
+		if (live && record->deleted) {
+			continue;
+		}
+
+		n = ++rows;
+		running += record->valueLength;
+		fakeText(result, n - 1, 0, record->key);
+		snprintf(text, sizeof(text), "%lld", record->revision);
+		fakeText(result, n - 1, 1, text);
+		fakeText(result, n - 1, 2, record->created);
+		fakeText(result, n - 1, 3, record->updated);
+		fakeText(result, n - 1, 4, record->deleted ? "t" : "f");
+		fakeText(result, n - 1, 5, record->schema);
+		snprintf(text, sizeof(text), "%d", record->valueLength);
+		fakeText(result, n - 1, 6, text);
+		snprintf(text, sizeof(text), "%d", n);
+		fakeText(result, n - 1, 7, text);
+		snprintf(text, sizeof(text), "%lld", running);
+		fakeText(result, n - 1, 8, text);
+
+		if (n <= limit && record->valueLength <= maxValue && (n == 1 || running <= pageBytes)) {
+			char* hex = fakeByteaText(record->value, record->valueLength);
+			fakeText(result, n - 1, 9, hex);
+			free(hex);
+		}
+	}
+
+	return result;
+}
+
+static FakeResult* fakeKvPurge(int nParams, const char* const* values) {
+	double before = atof(fakeParam(nParams, values, 1));
+	int kept = 0;
+	int purged = 0;
+	int i;
+
+	for (i = 0; i < fakeTable.count; i++) {
+		if (fakeTable.records[i].deleted && atof(fakeTable.records[i].updated) < before) {
+			fakeFreeRecord(&fakeTable.records[i]);
+			purged++;
+		} else {
+			fakeTable.records[kept++] = fakeTable.records[i];
+		}
+	}
+
+	fakeTable.count = kept;
+	return fakeChanged("DELETE", purged);
+}
+
+/* One of the key/value table's statements, or NULL when `sql` is none of them. */
+static FakeResult* fakeKv(FakeConn* conn, const char* sql, int nParams, const char* const* values, const int* lengths) {
+	FakeResult* result = NULL;
+	(void)conn;
+	fakeLockTable();
+
+	if (strcmp(sql, "fake:kv-clear") == 0) {
+		fakeClearTable(&fakeTable);
+		result = fakeResult(PGRES_COMMAND_OK, "OK");
+	} else if (startsWith(sql, "INSERT INTO ") && strstr(sql, " ON CONFLICT (record_key) ") != NULL) {
+		result = fakeKvPut(strstr(sql, "WHERE r.deleted") != NULL, nParams, values, lengths);
+	} else if (startsWith(sql, "UPDATE ") && strstr(sql, "deleted = TRUE") != NULL) {
+		result = fakeKvDelete(strstr(sql, "AND revision = $3") != NULL, nParams, values);
+	} else if (startsWith(sql, "UPDATE ") && strstr(sql, "SET record_value = $2") != NULL) {
+		result = fakeKvUpdate(nParams, values, lengths);
+	} else if (startsWith(sql, "SELECT revision, created_at")) {
+		result = fakeKvGet(nParams, values);
+	} else if (startsWith(sql, "SELECT p.record_key")) {
+		result = fakeKvScan(strstr(sql, "AND NOT deleted") != NULL, nParams, values);
+	} else if (startsWith(sql, "DELETE FROM ") && strstr(sql, "WHERE deleted AND updated_at") != NULL) {
+		result = fakeKvPurge(nParams, values);
+	}
+
+	fakeUnlockTable();
+	return result;
+}
+
+static void fakeBeginKv(FakeConn* conn) {
+	fakeLockTable();
+	if (conn->snapshot != NULL) {
+		fakeClearTable(conn->snapshot);
+		free(conn->snapshot);
+	}
+	conn->snapshot = fakeCopyTable(&fakeTable);
+	fakeUnlockTable();
+}
+
+/* Ends the transaction's hold on the table: putting it back as it was at the BEGIN when `undo`. */
+static void fakeEndKv(FakeConn* conn, int undo) {
+	if (conn->snapshot == NULL) {
+		return;
+	}
+
+	fakeLockTable();
+	if (undo) {
+		fakeClearTable(&fakeTable);
+		fakeTable = *conn->snapshot;
+	} else {
+		fakeClearTable(conn->snapshot);
+	}
+	free(conn->snapshot);
+	conn->snapshot = NULL;
+	fakeUnlockTable();
+}
+
+static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const char* const* values, const int* lengths) {
+	FakeResult* kv;
+
 	if (conn == NULL) {
 		return NULL;
 	}
@@ -253,14 +697,17 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 		if (conn->failNextCommit) {
 			/* A COMMIT that fails ends the transaction all the same. */
 			conn->failNextCommit = 0;
+			fakeEndKv(conn, 1);
 			return fakeError(conn, "could not serialize access due to read/write dependencies among transactions");
 		}
 
+		fakeEndKv(conn, aborted);
 		return fakeResult(PGRES_COMMAND_OK, aborted ? "ROLLBACK" : "COMMIT");
 	}
 
 	if (strcmp(sql, "ROLLBACK") == 0 || strcmp(sql, "ROLLBACK;") == 0) {
 		conn->transaction = TX_IDLE;
+		fakeEndKv(conn, 1);
 		return fakeResult(PGRES_COMMAND_OK, "ROLLBACK");
 	}
 
@@ -270,7 +717,14 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 
 	if (strcmp(sql, "BEGIN") == 0 || strcmp(sql, "BEGIN;") == 0) {
 		conn->transaction = TX_OPEN;
+		fakeBeginKv(conn);
 		return fakeResult(PGRES_COMMAND_OK, "BEGIN");
+	}
+
+	kv = fakeKv(conn, sql, nParams, values, lengths);
+
+	if (kv != NULL) {
+		return kv;
 	}
 
 	if (strcmp(sql, "SELECT $1::text") == 0) {
@@ -379,6 +833,8 @@ FAKEPQ_EXPORT char* PQerrorMessage(const void* conn) {
 
 FAKEPQ_EXPORT void PQfinish(void* conn) {
 	if (conn != NULL) {
+		/* A server rolls back what a closed connection left open. */
+		fakeEndKv((FakeConn*)conn, 1);
 		free(((FakeConn*)conn)->conninfo);
 		free(conn);
 		fakeCountLive(-1);
@@ -386,16 +842,15 @@ FAKEPQ_EXPORT void PQfinish(void* conn) {
 }
 
 FAKEPQ_EXPORT void* PQexec(void* conn, const char* query) {
-	return fakeRun((FakeConn*)conn, query, 0, NULL);
+	return fakeRun((FakeConn*)conn, query, 0, NULL, NULL);
 }
 
 FAKEPQ_EXPORT void* PQexecParams(void* conn, const char* command, int nParams, const Oid* paramTypes,
 	const char* const* paramValues, const int* paramLengths, const int* paramFormats, int resultFormat) {
 	(void)paramTypes;
-	(void)paramLengths;
 	(void)paramFormats;
 	(void)resultFormat;
-	return fakeRun((FakeConn*)conn, command, nParams, paramValues);
+	return fakeRun((FakeConn*)conn, command, nParams, paramValues, paramLengths);
 }
 
 FAKEPQ_EXPORT int PQresultStatus(const void* res) {
@@ -412,34 +867,32 @@ FAKEPQ_EXPORT int PQnfields(const void* res) {
 
 FAKEPQ_EXPORT char* PQfname(const void* res, int field) {
 	const FakeResult* result = (const FakeResult*)res;
-	return (result == NULL || field != 0 || result->fields == 0) ? NULL : result->name;
+	return (result == NULL || field < 0 || field >= result->fields) ? NULL : result->names[field];
+}
+
+static int fakeInside(const FakeResult* result, int row, int field) {
+	return result != NULL && row >= 0 && row < result->rows && field >= 0 && field < result->fields;
 }
 
 FAKEPQ_EXPORT char* PQgetvalue(const void* res, int row, int field) {
 	const FakeResult* result = (const FakeResult*)res;
 
-	if (result != NULL && result->rowValues != NULL) {
-		return (field != 0 || row < 0 || row >= result->rows) ? (char*)"" : result->rowValues[row];
+	if (!fakeInside(result, row, field) || result->cells[row * result->fields + field] == NULL) {
+		/* libpq's answer for a NULL. */
+		return (char*)"";
 	}
 
-	return (result == NULL || row != 0 || field != 0 || result->rows == 0) ? (char*)"" : result->value;
+	return result->cells[row * result->fields + field];
 }
 
 FAKEPQ_EXPORT int PQgetlength(const void* res, int row, int field) {
 	const FakeResult* result = (const FakeResult*)res;
-
-	if (result != NULL && result->rowValues != NULL) {
-		return (field != 0 || row < 0 || row >= result->rows) ? 0 : (int)strlen(result->rowValues[row]);
-	}
-
-	return (result == NULL || row != 0 || field != 0 || result->rows == 0) ? 0 : result->length;
+	return fakeInside(result, row, field) ? result->lengths[row * result->fields + field] : 0;
 }
 
 FAKEPQ_EXPORT int PQgetisnull(const void* res, int row, int field) {
-	(void)res;
-	(void)row;
-	(void)field;
-	return 0;
+	const FakeResult* result = (const FakeResult*)res;
+	return fakeInside(result, row, field) && result->cells[row * result->fields + field] == NULL;
 }
 
 FAKEPQ_EXPORT char* PQcmdTuples(void* res) {
@@ -459,18 +912,19 @@ FAKEPQ_EXPORT void PQclear(void* res) {
 	FakeResult* result = (FakeResult*)res;
 
 	if (result != NULL) {
-		if (result->rowValues != NULL) {
-			int i;
+		int i;
 
-			for (i = 0; i < result->rows; i++) {
-				free(result->rowValues[i]);
-			}
-
-			free(result->rowValues);
+		for (i = 0; i < result->fields; i++) {
+			free(result->names[i]);
 		}
 
-		free(result->name);
-		free(result->value);
+		for (i = 0; i < result->fields * result->rows; i++) {
+			free(result->cells[i]);
+		}
+
+		free(result->names);
+		free(result->cells);
+		free(result->lengths);
 		free(result);
 	}
 }

@@ -220,6 +220,8 @@ class TestSuites {
 		// bridge's threading and its GC-free zones are checked without a
 		// server.
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
+		// The key/value store in PostgreSQL, against the same stand-in.
+		runner.addCase(new crossbyte.db.kv.PostgresKVStoreTest());
 		// The native MySQL client against a server that logs every byte it
 		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());

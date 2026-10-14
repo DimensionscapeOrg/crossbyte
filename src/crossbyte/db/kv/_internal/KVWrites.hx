@@ -33,6 +33,11 @@ class KVWrites {
 		}
 	}
 
+	/** A whole number as SQL takes one, past 2^31 too, never with an exponent. **/
+	public static function whole(value:Float):String {
+		return value < 2147483648.0 ? Std.string(Std.int(value)) : haxe.Int64.toStr(haxe.Int64.fromFloat(value));
+	}
+
 	/** Refuses a stored value past `maxValue`, which is not read. **/
 	public static inline function checkSize(key:String, size:Float, maxValue:Int):Void {
 		if (size > maxValue) {
