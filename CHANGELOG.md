@@ -56,6 +56,14 @@ All notable changes to CrossByte will be documented in this file.
   `IOErrorEvent.OVERFLOW_ERROR_ID`. A `LocalConnection` closed this way was
   told `Reason.Error` with a message before.
 
+- **`RPCSession.dialWith(connect)` and `backOff()`.** `dialWith` dials as
+  `dial` does, redialling with its waits, through a function that makes each
+  connection, so a session can dial `tls://` with `TLSOptions` (a private
+  authority, a client certificate) or a connection a test builds; one that
+  throws is an attempt that failed. `backOff()` ends the connection and
+  counts it as a failed attempt, for a peer that says hello and is then
+  refused by the application: the wait goes on doubling while each
+  connection is backed off, where such a peer was dialled again at once.
 - **Maps on the compiled RPC lane.** `Map<String, T>` and `Map<Int, T>`
   (and `StringMap<T>`, `IntMap<T>`), `T` any kind the lane carries, as
   arguments, answers, structure fields and array elements: a count, then

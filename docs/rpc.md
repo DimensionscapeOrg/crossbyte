@@ -1351,6 +1351,32 @@ it is up now, `onUp` and `onDown` when it comes and goes, and `close()` ends it:
 it dials no more. It makes its first attempt at the next tick, so callbacks set
 after `dial` returns hear it.
 
+`RPCSession.dialWith` dials the same way through a function that makes each
+connection, for one `dial` cannot make from an address alone: `tls://` with
+`TLSOptions` (a private authority, a client certificate), or a connection a
+test builds. A function that throws is an attempt that failed.
+
+```haxe
+// Given commands:ChatCommands, authority:crossbyte.net.Certificate.
+var secure = RPCSession.dialWith(() -> new NetConnection("tls://127.0.0.1:4001", null, null, null, null, false, {certAuthority: authority}),
+	commands);
+```
+
+A peer that answers and says hello can still be one the application will not
+use (another build, a check of its own that failed). Dialled again at once,
+it would be dialled in a loop. `backOff()` ends the connection and counts it
+as an attempt that failed: the next dial waits, and the wait goes on doubling
+for as long as each connection is backed off, back to its shortest once one
+ends that was not.
+
+```haxe
+secure.onHello = () -> {
+	if (secure.peerAnswersFingerprint != secure.callsFingerprint) {
+		secure.backOff();
+	}
+};
+```
+
 ## Deadlines
 
 A peer that is still there can still leave a call unanswered. A call can be

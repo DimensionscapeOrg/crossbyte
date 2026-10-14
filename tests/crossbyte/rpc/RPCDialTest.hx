@@ -130,6 +130,117 @@ class RPCDialTest extends utest.Test {
 		closeQuietly(session, host);
 	}
 
+	public function testAPeerBackedOffAfterItsHelloIsDialledWithGrowingWaits():Void {
+		// A peer that accepts and says hello, but that the application
+		// refuses: before backOff, dialled again at once, in a loop.
+		var server = new ServerSocket();
+		var host:NetHost = null;
+		var accepted:Int = 0;
+		var waits:Array<Float> = [];
+		var session:RPCSession<DialCommands> = null;
+		var backends:Array<RPCSession<Dynamic, Dynamic>> = [];
+		try {
+			server.bind(0, "127.0.0.1");
+			host = NetHost.fromServerSocket(server, connection -> {
+				accepted++;
+				waits.push(@:privateAccess session.__redialDelay);
+				backends.push(new RPCSession(connection, null, new DialHandler()));
+			});
+			host.listen();
+
+			final port:Int = server.localPort;
+			var dialled:Int = 0;
+			session = RPCSession.dialWith(() -> {
+				dialled++;
+				return new crossbyte.net.NetConnection('tcp://127.0.0.1:$port');
+			}, new DialCommands());
+			var hellos:Int = 0;
+			session.onHello = () -> {
+				hellos++;
+				session.backOff();
+			};
+			pumpUntil(() -> accepted >= 5, 20.0);
+
+			Assert.isTrue(accepted >= 5, 'the session stopped dialling: $accepted attempts');
+			Assert.isTrue(hellos >= 4, 'the peer was not heard to say hello: $hellos');
+			Assert.same([0.25, 0.5, 1.0, 2.0, 4.0], waits.slice(0, 5), "the wait did not grow between connections backed off");
+			Assert.equals(accepted, dialled, "the connector did not make each connection");
+
+			// Accepted now: a connection not backed off, and the wait goes back
+			// to its shortest once it ends.
+			session.onHello = () -> hellos++;
+			final before:Int = accepted;
+			pumpUntil(() -> session.up && accepted > before, 20.0);
+			Assert.isTrue(session.up, "the session did not come up once it stopped backing off");
+			Assert.equals(5, answerOf(session.commands.echo(5)));
+			for (backend in backends) {
+				backend.close();
+			}
+			pumpUntil(() -> !session.up, 5.0);
+			Assert.equals(RPCSession.MIN_REDIAL, @:privateAccess session.__redialDelay, "the wait did not go back to its shortest");
+		} catch (e:Dynamic) {
+			closeQuietly(session, host);
+			throw e;
+		}
+		closeQuietly(session, host);
+	}
+
+	public function testAConnectorThatThrowsIsAnAttemptThatFailed():Void {
+		var attempts:Int = 0;
+		var session = RPCSession.dialWith(() -> {
+			attempts++;
+			throw "no route";
+		}, new DialCommands());
+		try {
+			pumpUntil(() -> attempts >= 3, 10.0);
+			Assert.isTrue(attempts >= 3, 'the connector was tried $attempts times');
+			Assert.isFalse(session.up);
+			final call = session.commands.echo(1);
+			Assert.isTrue(call.completed && isReason(call.cause), "a call while down did not fail with a reason");
+			Assert.stringContains("no route", call.error);
+			Assert.raises(() -> RPCSession.dialWith(null), crossbyte.errors.ArgumentError);
+		} catch (e:Dynamic) {
+			session.close();
+			throw e;
+		}
+		session.close();
+	}
+
+	public function testATlsConnectionIsDialledThroughDialWith():Void {
+		#if (cpp || java || jvm)
+		var fixture = crossbyte.net.TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.pass("no certificate toolchain");
+			return;
+		}
+		var server = new ServerSocket(true);
+		var host:NetHost = null;
+		var session:RPCSession<DialCommands> = null;
+		try {
+			server.setCertificate(fixture.certificate, fixture.key);
+			server.bind(0, "127.0.0.1");
+			host = NetHost.fromServerSocket(server, connection -> {
+				var backend = new RPCSession(connection, null, new DialHandler());
+				Assert.notNull(backend);
+			});
+			host.listen();
+			final port:Int = server.localPort;
+			final tls:crossbyte.net.TLSOptions = {certAuthority: fixture.certificate};
+			var commands = new DialCommands();
+			session = RPCSession.dialWith(() -> new crossbyte.net.NetConnection('tls://127.0.0.1:$port', null, null, null, null, false, tls), commands);
+			pumpUntil(() -> session.up && session.peerVersion > 0, 10.0);
+			Assert.isTrue(session.up, "the session never connected over TLS");
+			Assert.equals(7, answerOf(commands.echo(7)));
+		} catch (e:Dynamic) {
+			closeQuietly(session, host);
+			throw e;
+		}
+		closeQuietly(session, host);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testACallInFlightWhenTheConnectionGoesCarriesItsReason():Void {
 		var server = new ServerSocket();
 		var host:NetHost = null;

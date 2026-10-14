@@ -664,9 +664,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		peerCapabilities = capabilities;
 		peerCallsFingerprint = calls;
 		peerAnswersFingerprint = answers;
-		// Really up: a dialled session waits its shortest again from here.
+		// Really up: a dialled session waits its shortest again from here,
+		// unless the last connection was backed off, when the wait goes on
+		// growing until a connection ends that was not.
 		__heardHello = true;
-		__redialDelay = MIN_REDIAL;
+		if (!__backedOff) {
+			__redialDelay = MIN_REDIAL;
+		}
 		try {
 			onHello();
 		} catch (error:Dynamic) {
@@ -684,6 +688,12 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	// the next attempt, and the timer waiting; and, for any session, whether
 	// close() has ended it for good.
 	@:noCompletion private var __dialUri:Null<String> = null;
+	// For a session made by dialWith(): what makes each connection.
+	@:noCompletion private var __dialer:Null<Void->NetConnection> = null;
+	// backOff() was called on this connection, and on one since the last
+	// connection that ended without it; see backOff.
+	@:noCompletion private var __backingOff:Bool = false;
+	@:noCompletion private var __backedOff:Bool = false;
 	@:noCompletion private var __redialDelay:Float = MIN_REDIAL;
 	@:noCompletion private var __redialTimer:Int = TimerHandle.INVALID;
 	@:noCompletion private var __closed:Bool = false;
@@ -725,9 +735,90 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
+		A client session that dials as `dial` does, through `connect`, which
+		makes each connection: a `NetConnection` of the caller's own, so a
+		session can dial `tls://` with `TLSOptions` (a private authority, a
+		client certificate), or anything a test or an application builds.
+		It is called for the first attempt, at the next tick, and for each
+		attempt after, with the same waits as `dial`'s; one that throws is
+		an attempt that failed. Each call must make a new connection,
+		dialling or connected already, and the session takes it over.
+
+		```haxe
+		// Given commands:ChatCommands, authority:crossbyte.net.Certificate.
+		var hub = RPCSession.dialWith(() -> new NetConnection("tls://hub.internal:7000", null, null, null, null, false, {certAuthority: authority}),
+			commands);
+		hub.onUp = () -> trace("hub up");
+		```
+
+		Everything else is `dial`'s: calls fail at once while it is down, it
+		comes back as its connections end, and `close()` ends it.
+	**/
+	public static function dialWith<C:RPCCommands>(connect:Void->NetConnection, ?commands:C, ?handler:RPCHandler<Dynamic, Dynamic>):RPCSession<C, Dynamic> {
+		if (connect == null) {
+			throw new ArgumentError("RPCSession.dialWith needs a function that makes each connection");
+		}
+		final session = new RPCSession<C, Dynamic>(new Unconnected(CONNECTOR), commands, handler);
+		session.__dialer = connect;
+		session.__ended = true;
+		session.__endReason = Reason.Error("Not connected yet");
+		session.__redialTimer = Timer.setTimeout(0, session.__dial);
+		return session;
+	}
+
+	/** What a session made by `dialWith` names where it dials, in a message. **/
+	@:noCompletion private static inline final CONNECTOR:String = "its connector";
+
+	/** Whether this session dials its connections itself: made by `dial` or `dialWith`. **/
+	@:noCompletion private inline function __dials():Bool {
+		return __dialUri != null || __dialer != null;
+	}
+
+	/**
+		Ends this connection and counts it as an attempt that failed: a
+		session made by `dial` or `dialWith` dials again after its wait, and
+		the wait goes on doubling (from `MIN_REDIAL` to `MAX_REDIAL`) for as
+		long as each connection it makes is backed off, rather than going back
+		to its shortest as the peer says hello. For a peer that answers and
+		says hello, but that the application refuses (another build, a
+		handshake of its own that failed), which would otherwise be dialled
+		again at once, in a loop:
+
+		```haxe
+		// Given backend:RPCSession<ChatCommands>.
+		backend.onHello = () -> {
+			if (backend.peerAnswersFingerprint != backend.callsFingerprint) {
+				backend.backOff();
+			}
+		};
+		```
+
+		The wait goes back to its shortest once a connection ends that was
+		not backed off. Calls waiting fail, and `onDown` is told, as for any
+		connection that ends. On a session that does not dial its own
+		connections, this closes its connection, and nothing dials again.
+	**/
+	public function backOff():Void {
+		if (__dials()) {
+			__backingOff = true;
+			__backedOff = true;
+		}
+		try {
+			(__connection : NetConnectionBase).__closeWith(Reason.Closed);
+		} catch (_:Dynamic) {}
+		// A connection whose close says nothing has ended all the same.
+		if (!__ended) {
+			__connectionEnded(Reason.Closed);
+		}
+		// Ended before this was told of it (it had not come up): counted
+		// already, as any attempt that fails is.
+		__backingOff = false;
+	}
+
+	/**
 		Ends the session: it stops its heartbeat, dials no more if it was made
-		by `dial`, and closes its connection, whose end its calls waiting and
-		`onDown` hear as usual.
+		by `dial` or `dialWith`, and closes its connection, whose end its calls
+		waiting and `onDown` hear as usual.
 	**/
 	public function close():Void {
 		__closed = true;
@@ -747,7 +838,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 	}
 
-	/** One attempt: a new connection to `__dialUri`, which the session moves to. **/
+	/** One attempt: a new connection to `__dialUri`, or from `__dialer`, which the session moves to. **/
 	@:noCompletion private function __dial():Void {
 		__redialTimer = TimerHandle.INVALID;
 		if (__closed) {
@@ -755,13 +846,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		var connection:Null<NetConnection> = null;
 		try {
-			// A single try over local IPC, whose connect waits on this thread
-			// for a listener: a dial never holds up the runtime waiting. A
-			// millisecond, not 0, which LocalConnection takes for no deadline.
-			connection = NetConnection.__dialWithin(__dialUri, 0.001);
+			if (__dialer != null) {
+				connection = __dialer();
+				if (connection == null) {
+					throw "it made no connection";
+				}
+			} else {
+				// A single try over local IPC, whose connect waits on this
+				// thread for a listener: a dial never holds up the runtime
+				// waiting. A millisecond, not 0, which LocalConnection takes
+				// for no deadline.
+				connection = NetConnection.__dialWithin(__dialUri, 0.001);
+			}
 		} catch (error:Dynamic) {
-			// Refused as it was made: a local:// name nobody listens on.
-			__endReason = Reason.Error("Could not connect to " + __dialUri + ": " + Std.string(error));
+			// Refused as it was made: a local:// name nobody listens on, or a
+			// connector that threw.
+			__endReason = Reason.Error("Could not connect to " + (__dialUri != null ? __dialUri : CONNECTOR) + ": " + Std.string(error));
 			__redialLater();
 			return;
 		}
@@ -770,7 +870,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/** Dials again once the wait is up, and waits longer next time. **/
 	@:noCompletion private function __redialLater():Void {
-		if (__closed || __dialUri == null || __redialTimer != TimerHandle.INVALID) {
+		if (__closed || !__dials() || __redialTimer != TimerHandle.INVALID) {
 			return;
 		}
 		final delay:Float = __redialDelay;
@@ -814,6 +914,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __connectionEnded(reason:Reason):Void {
 		final wasUp:Bool = __isUp && !__ended;
 		final heardHello:Bool = __heardHello;
+		final backingOff:Bool = __backingOff;
+		__backingOff = false;
 		__heardHello = false;
 		// The next connection, or the next peer, hears its own.
 		__helloSaid = false;
@@ -846,11 +948,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				Logger.error("RPCSession.onDown threw: " + Std.string(error));
 			}
 		}
-		if (__dialUri != null && !__closed) {
+		if (__dials() && !__closed) {
 			// At once after a connection whose peer said hello; later, and
-			// longer each time, after an attempt that never got that far: a
-			// connect refused, or a peer that accepted and closed.
-			if (wasUp && heardHello) {
+			// longer each time, after an attempt that never got that far (a
+			// connect refused, or a peer that accepted and closed) or one
+			// the application backed off from.
+			if (wasUp && heardHello && !backingOff) {
+				__backedOff = false;
+				__redialDelay = MIN_REDIAL;
 				__dial();
 			} else {
 				__redialLater();
