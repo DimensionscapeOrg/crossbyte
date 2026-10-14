@@ -109,9 +109,14 @@ class RPCMaps {
 	}
 
 	public static function sortStrings(a:Array<String>):Void {
+		__sortStringsWithin(a, depthOf(a.length));
+	}
+
+	/** `sortStrings`, the quicksort going `depth` deep before it heapsorts: for a test to reach every path. **/
+	@:noCompletion public static function __sortStringsWithin(a:Array<String>, depth:Int):Void {
 		final n:Int = a.length;
 		if (n > 1) {
-			stringRun(a, 0, n - 1, depthOf(n));
+			stringRun(a, 0, n - 1, depth);
 		}
 	}
 
@@ -217,9 +222,14 @@ class RPCMaps {
 	}
 
 	public static function sortInts(a:Array<Int>):Void {
+		__sortIntsWithin(a, depthOf(a.length));
+	}
+
+	/** `sortInts`, the quicksort going `depth` deep before it heapsorts. **/
+	@:noCompletion public static function __sortIntsWithin(a:Array<Int>, depth:Int):Void {
 		final n:Int = a.length;
 		if (n > 1) {
-			intRun(a, 0, n - 1, depthOf(n));
+			intRun(a, 0, n - 1, depth);
 		}
 	}
 

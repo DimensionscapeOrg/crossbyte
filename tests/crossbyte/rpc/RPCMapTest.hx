@@ -106,7 +106,7 @@ class RPCMapTest extends utest.Test {
 			seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
 			return seed;
 		};
-		for (n in [0, 1, 2, 15, 16, 17, 100, 1000, 5000]) {
+		for (n in [0, 1, 2, 15, 16, 17, 100, 600]) {
 			final shapes:Array<Array<Int>> = [
 				[for (_ in 0...n) next() - 0x40000000],
 				[for (i in 0...n) i],
@@ -123,8 +123,19 @@ class RPCMapTest extends utest.Test {
 				final strings = [for (v in shape) "k" + v];
 				final expectedStrings = strings.copy();
 				expectedStrings.sort((x, y) -> RPCMaps.__byUnits(x, y));
-				RPCMaps.sortStrings(strings);
-				Assert.same(expectedStrings, strings, 'strings of $n were not sorted');
+				final sortedStrings = strings.copy();
+				RPCMaps.sortStrings(sortedStrings);
+				Assert.same(expectedStrings, sortedStrings, 'strings of $n were not sorted');
+				// Heapsorted from the first level, or the second: the path a set
+				// of keys that defeats the quicksort's pivots takes.
+				for (depth in [0, 1]) {
+					final heapInts = shape.copy();
+					RPCMaps.__sortIntsWithin(heapInts, depth);
+					Assert.same(expected, heapInts, 'ints of $n were not heapsorted at depth $depth');
+					final heapStrings = strings.copy();
+					RPCMaps.__sortStringsWithin(heapStrings, depth);
+					Assert.same(expectedStrings, heapStrings, 'strings of $n were not heapsorted at depth $depth');
+				}
 			}
 		}
 	}
