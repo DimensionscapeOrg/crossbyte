@@ -1122,13 +1122,37 @@ private class ConfigJson {
 							at = save;
 						}
 					}
-					out.addChar(unit);
+					addCodePoint(out, unit);
 				default:
 					at--;
 					fail("unknown escape in a string");
 			}
 			start = at;
 		}
+	}
+
+	// neko's StringBuf.addChar takes one byte and its strings are UTF-8 bytes,
+	// so a character past ASCII is added as its UTF-8 encoding there.
+	static function addCodePoint(out:StringBuf, code:Int):Void {
+		#if neko
+		if (code < 0x80) {
+			out.addChar(code);
+		} else if (code < 0x800) {
+			out.addChar(0xC0 | (code >> 6));
+			out.addChar(0x80 | (code & 63));
+		} else if (code < 0x10000) {
+			out.addChar(0xE0 | (code >> 12));
+			out.addChar(0x80 | ((code >> 6) & 63));
+			out.addChar(0x80 | (code & 63));
+		} else {
+			out.addChar(0xF0 | (code >> 18));
+			out.addChar(0x80 | ((code >> 12) & 63));
+			out.addChar(0x80 | ((code >> 6) & 63));
+			out.addChar(0x80 | (code & 63));
+		}
+		#else
+		out.addChar(code);
+		#end
 	}
 
 	function readHex4():Int {
