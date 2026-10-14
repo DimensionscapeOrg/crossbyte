@@ -208,9 +208,9 @@ class MemoryKVStore implements KVStore {
 		happened before it.
 	**/
 	public function rollback():Void {
-		__enter();
+		__hold();
 
-		if (__undo == null) {
+		if (__closed || __undo == null) {
 			__leave();
 			return;
 		}
@@ -221,9 +221,7 @@ class MemoryKVStore implements KVStore {
 	}
 
 	public function close():Void {
-		#if target.threaded
-		__lock.acquire();
-		#end
+		__hold();
 
 		if (__closed) {
 			__leave();
@@ -255,8 +253,8 @@ class MemoryKVStore implements KVStore {
 	}
 
 	@:noCompletion private function get_inTransaction():Bool {
-		__enter();
-		var open:Bool = __undo != null;
+		__hold();
+		var open:Bool = !__closed && __undo != null;
 		__leave();
 		return open;
 	}
@@ -370,10 +368,16 @@ class MemoryKVStore implements KVStore {
 			record.createdAt, record.updatedAt, record.schema, record.tombstone);
 	}
 
-	@:noCompletion private inline function __enter():Void {
+	/** Takes the store, closed or not. **/
+	@:noCompletion private inline function __hold():Void {
 		#if target.threaded
 		__lock.acquire();
 		#end
+	}
+
+	/** Takes the store, refusing a closed one. **/
+	@:noCompletion private inline function __enter():Void {
+		__hold();
 
 		if (__closed) {
 			__leave();

@@ -444,5 +444,8 @@ class KVStoreChecks {
 		Assert.raises(() -> store.put("k", bytes("v")), IllegalOperationError);
 		Assert.raises(() -> store.scan(), IllegalOperationError);
 		Assert.raises(() -> store.begin(), IllegalOperationError);
+		// What a pool or a catch asks of it as it is let go of still answers.
+		Assert.isFalse(store.inTransaction);
+		store.rollback();
 	}
 }
