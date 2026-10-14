@@ -115,6 +115,9 @@ class RPCHandlerMacro {
 						for (i in 0...method.args.length) {
 							final expected = method.args[i];
 							final actual = fn.args[i];
+							if (RPCContractMacroTools.isReused(actual) && !RPCContractMacroTools.isReused(expected)) {
+								expected.meta = (expected.meta != null ? expected.meta : []).concat([{name: RPCContractMacroTools.REUSE_META, params: [], pos: implementation.pos}]);
+							}
 							actual.opt = expected.opt;
 							if (actual.type == null) {
 								actual.type = expected.type;
@@ -216,6 +219,9 @@ class RPCHandlerMacro {
 		RPCContractMacroTools.requireDistinctOps([for (entry in entries) {name: entry.method.name, op: entry.op, pos: entry.method.pos}], true);
 
 		final tag = classTag();
+		// `@:reuse` on the handler class: every structure, array and map
+		// argument of every method it reads.
+		final reuseAll:Bool = Context.getLocalClass().get().meta.has(RPCContractMacroTools.REUSE_META);
 		// Hooks cost a handler nothing unless it, or a handler it extends,
 		// overrides them: only then are the calls generated at all.
 		final callsBefore = findField(fields, "beforeCall") != null || ancestorField(ancestors, "beforeCall") != null;
@@ -339,7 +345,7 @@ class RPCHandlerMacro {
 
 		final reused:Array<ReusedArg> = [];
 		for (method in methods) {
-			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX, reused));
+			newFields.push(makeDecoder(method, tag, callsBefore, callsAfter, methods.length <= INLINED_DECODERS_MAX, reused, reuseAll));
 		}
 		if (reused.length > 0) {
 			newFields.push(reuseHolder(tag, reused));
@@ -474,10 +480,12 @@ class RPCHandlerMacro {
 		return "H" + StringTools.hex(crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(tag)), 8) + "_" + (tag.length > 40 ? tag.substr(tag.length - 40) : tag);
 	}
 
-	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool, reused:Array<ReusedArg>):Field {
+	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool, mayInline:Bool, reused:Array<ReusedArg>, reuseAll:Bool):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 		final reads:Array<Expr> = [];
+		// This method's arguments read into what the session keeps.
+		final mine:Array<ReusedArg> = [];
 
 		// Each argument a local, read into below.
 		for (i in 0...m.args.length) {
@@ -498,12 +506,21 @@ class RPCHandlerMacro {
 				pos: m.pos
 			});
 			final kind = a.type == null ? null : RPCKinds.of(unwrapNull(a.type), m.pos);
-			if (kind != null && kind.reuse != null) {
+			// A patch always; anything else marked @:reuse, or of a handler
+			// marked so, when it is a structure, an array or a map.
+			final reuse:Null<RPCReuse> = kind == null ? null : (kind.reuse != null ? kind.reuse : (RPCContractMacroTools.isReused(a) ? RPCPatches.reuseOf(kind,
+				'argument ${a.name} of ${m.name}', true, m.pos) : (reuseAll ? RPCPatches.reuseOf(kind, 'argument ${a.name} of ${m.name}', false, m.pos) : null)));
+			if (reuse != null) {
 				// Read into what the session keeps for it, valid during the call.
 				final field:String = "r_" + m.name + "_" + i;
-				reused.push({field: field, type: kind.reuse.type, make: kind.reuse.make});
+				final held:ReusedArg = {field: field, type: reuse.type, make: reuse.make, poison: reuse.poison, local: local};
+				reused.push(held);
+				mine.push(held);
 				final holderPath:ComplexType = TPath({pack: ["crossbyte", "rpc", "_internal", "codec"], name: holderName(tag)});
-				final readInto:Expr = kind.reuse.readInto(macro input, macro this.this_frameEnd, macro __held.$field);
+				// Made fresh each call under -D crossbyte_fresh_events, which a
+				// handler keeping one shows; else the session's, valid during the call.
+				final readInto:Expr = Context.defined("crossbyte_fresh_events") ? reuse.readInto(macro input, macro this.this_frameEnd,
+					reuse.make) : macro __held.$field = ${reuse.readInto(macro input, macro this.this_frameEnd, macro __held.$field)};
 				final isOpt:Bool = a.opt || RPCContractMacroTools.isNullable(a.type, m.pos);
 				final get:Expr = macro {
 					final __held:$holderPath = cast this.__rpc_reuse();
@@ -582,6 +599,16 @@ class RPCHandlerMacro {
 			}
 		}
 		stmts.push(macro if (__read) $b{run});
+		// Under -D crossbyte_check_events, what was kept for the call is
+		// garbage once it returns: a handler keeping it shows at once.
+		if (Context.defined("crossbyte_check_events")) {
+			for (held in mine) {
+				if (held.poison != null) {
+					final value:Expr = macro $i{held.local};
+					stmts.push(macro if (__read && $value != null) ${held.poison(value)});
+				}
+			}
+		}
 
 		var body:Expr = {expr: EBlock(stmts), pos: m.pos};
 
@@ -946,7 +973,7 @@ class RPCHandlerMacro {
 										opt: arg.opt,
 										type: arg.type,
 										value: null,
-										meta: []
+										meta: arg.meta != null ? arg.meta : []
 									} : FunctionArg)
 							],
 							ret: fn.ret != null ? fn.ret : macro :Void,
@@ -975,7 +1002,7 @@ class RPCHandlerMacro {
 							opt: arg.opt,
 							type: RPCContractMacroTools.fullType(arg.type, method.pos),
 							value: null,
-							meta: []
+							meta: RPCContractMacroTools.isReused(arg) ? [{name: RPCContractMacroTools.REUSE_META, params: [], pos: method.pos}] : []
 						} : FunctionArg)
 				],
 				ret: RPCContractMacroTools.fullType(method.ret, method.pos),
@@ -1208,11 +1235,13 @@ class RPCHandlerMacro {
 	}
 }
 
-/** An argument read into what a session keeps for it: its field in the holder, its type, and how one is made. **/
+/** An argument read into what a session keeps for it: its field in the holder, its type, how one is made, and how one is poisoned. **/
 private typedef ReusedArg = {
 	field:String,
 	type:ComplexType,
-	make:Expr
+	make:Expr,
+	poison:Null<Expr->Expr>,
+	local:String
 }
 
 /** An op a generated dispatch answers, and the method it calls. **/

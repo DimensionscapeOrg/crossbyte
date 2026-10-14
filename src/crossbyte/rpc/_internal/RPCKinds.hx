@@ -804,5 +804,6 @@ typedef RPCReuse = {
 	final type:ComplexType;
 	final make:Expr;
 	final readInto:(input:Expr, end:Expr, held:Expr) -> Expr;
+	@:optional final poison:Expr->Expr;
 }
 #end

@@ -209,6 +209,10 @@ class AllocationBudgetTest extends utest.Test {
 	// hold, the client's frame map here; on the jvm the map's table is reused.
 	private static final RPC_PATCH_TICK_CHURN = new Budget("a tick of patches with one entry added and one removed", "tick", [64, 64, 3],
 		[144, 144, 72]);
+	// The last four inputs, each tick: read into what the session keeps for
+	// an @:reuse argument, the array and its four structures.
+	private static final RPC_REUSED_INPUTS = new Budget("a one-way call of the last four inputs, read into what the session keeps", "call", [0, 0, 0],
+		[8, 8, 8]);
 	private static final RPC_TYPED_ONE_WAY =new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
@@ -1329,6 +1333,31 @@ class AllocationBudgetTest extends utest.Test {
 		__within(RPC_PATCH_TICK_CHURN, __measureTicks(true));
 	}
 
+	public function testInputsReadIntoWhatTheSessionKeeps():Void {
+		final link = LinkedConnection.pair();
+		final commands = new ReplicaCommands();
+		final client = new ReplicaClient();
+		final serverSession = new RPCSession<ReplicaCommands>(link.server, commands);
+		final clientSession = new RPCSession(link.client, null, client);
+		final recent:Array<ReplicaInput> = [for (_ in 0...4) new ReplicaInput()];
+		var seq:Int = 0;
+		final op = () -> {
+			seq++;
+			for (i in 0...4) {
+				recent[i].seq = seq - 3 + i;
+				recent[i].controls = (seq + i) & 63;
+			}
+			commands.inputs(seq, seq, recent);
+			if (client.newest != seq) {
+				throw "the inputs did not arrive";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_REUSED_INPUTS, AllocationMeter.measure(op, 20000));
+		Assert.notNull(serverSession);
+		Assert.notNull(clientSession);
+	}
+
 	static function __measureTicks(churn:Bool):AllocationReading {
 		final link = LinkedConnection.pair();
 		final commands = new ReplicaCommands();
@@ -2114,9 +2143,18 @@ class ReplicaShip implements crossbyte.rpc.RPCStruct {
 	public function new() {}
 }
 
+class ReplicaInput implements crossbyte.rpc.RPCStruct {
+	public var aimSteps:crossbyte.rpc.UInt16 = 0;
+	public var controls:crossbyte.rpc.UInt8 = 0;
+	public var seq:crossbyte.rpc.VarUInt = 0;
+
+	public function new() {}
+}
+
 interface ReplicaContract {
 	function state(tick:crossbyte.rpc.VarUInt, base:crossbyte.rpc.VarUInt, own:crossbyte.rpc.RPCPatch<ReplicaOwn>,
 		ships:crossbyte.rpc.RPCMapPatch<ReplicaShip>, bolts:crossbyte.rpc.RPCMapPatch<ReplicaShip>):Void;
+	function inputs(ack:crossbyte.rpc.VarUInt, newest:crossbyte.rpc.VarUInt, recent:Array<ReplicaInput>):Void;
 }
 
 @:rpcContract(ReplicaContract)
@@ -2187,6 +2225,7 @@ private class ReplicaServer {
 /** The client's side: a ring of two frames for each map, applied into with recycling. **/
 private class ReplicaClient extends RPCHandler implements ReplicaContract {
 	public var applied:Int = 0;
+	public var newest:Int = 0;
 	final __own = [new ReplicaOwn(), new ReplicaOwn()];
 	final __ships = [new haxe.ds.IntMap<ReplicaShip>(), new haxe.ds.IntMap<ReplicaShip>()];
 	final __shipKeys = [new crossbyte.ds.IdList(), new crossbyte.ds.IdList()];
@@ -2211,6 +2250,12 @@ private class ReplicaClient extends RPCHandler implements ReplicaContract {
 			bolts.applyKeys(__bolts[from], __boltKeys[from], __bolts[into], __boltKeys[into], true);
 		}
 		applied = tick;
+	}
+
+	public function inputs(ack:crossbyte.rpc.VarUInt, newest:crossbyte.rpc.VarUInt, @:reuse recent:Array<ReplicaInput>):Void {
+		if (recent.length == 4 && recent[3].seq == newest) {
+			this.newest = newest;
+		}
 	}
 }
 

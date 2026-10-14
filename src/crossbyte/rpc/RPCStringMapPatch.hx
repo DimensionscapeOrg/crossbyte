@@ -301,6 +301,15 @@ final class RPCStringMapPatch<V> {
 		}
 	}
 
+	/** Empties the patch, so one kept past its call reads as no patch at all (-D crossbyte_check_events). **/
+	@:noCompletion public function __poison():Void {
+		removed.resize(0);
+		__added.resize(0);
+		__updated.resize(0);
+		__received = false;
+		__sending = false;
+	}
+
 	function __requireApply(base:Null<StringMap<V>>, into:StringMap<V>):Void {
 		if (into == null) {
 			throw new ArgumentError("RPCStringMapPatch.apply needs a map to set: the base to patch in place, or another.");

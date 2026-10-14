@@ -64,7 +64,8 @@ class RPCPatches {
 			reuse: {
 				type: patchType,
 				make: macro $r.newPatch(),
-				readInto: (input, end, held) -> macro $r.readPatchArg($input, $end, $held)
+				readInto: (input, end, held) -> macro $r.readPatchArg($input, $end, $held),
+				poison: value -> macro $r.poisonPatch($value)
 			}
 		};
 	}
@@ -93,9 +94,173 @@ class RPCPatches {
 			reuse: {
 				type: patchType,
 				make: macro $r.$make(),
-				readInto: (input, end, held) -> macro $r.$read($input, $end, $held)
+				readInto: (input, end, held) -> macro $r.$read($input, $end, $held),
+				poison: value -> macro $value.__poison()
 			}
 		};
+	}
+
+	/**
+		How an argument of `kind` is read into what a session keeps for it,
+		valid during the call (`@:reuse`): a class's fields set in place, its
+		nested structures and arrays read into those it holds; an array's
+		length set to the count read, its element instances kept and read
+		into; a map cleared and refilled. Of any other kind, `null`, or an
+		error when the argument was marked itself (`explicit`): an anonymous
+		structure is made each call, so it cannot be kept.
+	**/
+	public static function reuseOf(kind:RPCKind, where:String, explicit:Bool, pos:Position):Null<RPCReuse> {
+		if (kind.struct != null) {
+			if (!kind.struct.isClass) {
+				if (explicit) {
+					Context.error('RPC $where is marked @:reuse, and ${kind.name} is an anonymous structure, which is made each call: declare a class that implements RPCStruct.',
+						pos);
+				}
+				return null;
+			}
+			final r:Expr = replicationOf(kind.struct, pos).r;
+			return {
+				type: kind.struct.type,
+				make: macro $r.make(),
+				readInto: (input, end, held) -> readInto(kind, false, input, end, held),
+				poison: value -> macro $r.poison($value)
+			};
+		}
+		if (kind.element != null) {
+			final path:TypePath = switch (kind.valueType) {
+				case TPath(p): p;
+				case _: throw "a collection's type is a path";
+			};
+			return {
+				type: kind.valueType,
+				make: kind.mapKey != null ? macro new $path() : macro [],
+				readInto: (input, end, held) -> readInto(kind, false, input, end, held),
+				poison: value -> poisonField(kind, false, value)
+			};
+		}
+		if (explicit) {
+			Context.error('RPC $where is marked @:reuse, and a ${kind.name} has nothing to keep: @:reuse is for structures, arrays and maps.', pos);
+		}
+		return null;
+	}
+
+	/**
+		Reads a value of `kind` into `held` (which may be `null`), and answers
+		what to keep: the same instance where it can be.
+	**/
+	public static function readInto(kind:RPCKind, optional:Bool, input:Expr, end:Expr, held:Expr):Expr {
+		if (optional) {
+			final inner:Expr = readInto(kind, false, input, end, held);
+			return macro($input.readByte() != 0 ? $inner : null);
+		}
+		if (kind.struct != null && kind.struct.isClass) {
+			final r:Expr = replicationOf(kind.struct, kind.struct.pos).r;
+			final h:String = RPCKinds.local();
+			final t:ComplexType = kind.struct.type;
+			return macro {
+				var $h:$t = $held;
+				if ($i{h} == null) {
+					$i{h} = $r.make();
+				}
+				$r.readInto($input, $end, $i{h});
+			};
+		}
+		if (kind.element != null) {
+			final t:ComplexType = kind.valueType;
+			final count:String = RPCKinds.local();
+			final list:String = RPCKinds.local();
+			final at:String = RPCKinds.local();
+			final least:Int = !kind.elementOptional && kind.element.size > 0 ? kind.element.size : 1;
+			if (kind.mapKey != null) {
+				final path:TypePath = switch (t) {
+					case TPath(p): p;
+					case _: throw "a map's type is a path";
+				};
+				final keyLeast:Int = kind.mapKey == "utf8" ? 1 : 4;
+				final getKey:Expr = kind.mapKey == "utf8" ? macro $input.readVarUtf() : macro crossbyte.rpc._internal.RPCWire.readI32($input);
+				final getValue:Expr = RPCKinds.read(kind.element, kind.elementOptional, input, end);
+				return macro {
+					final $count:Int = $input.readVarUInt();
+					crossbyte.rpc._internal.RPCWire.requireCount($input, $end, $i{count}, $v{least + keyLeast});
+					var $list:$t = cast $held;
+					if ($i{list} == null) {
+						$i{list} = new $path();
+					} else {
+						$i{list}.clear();
+					}
+					for (_ in 0...$i{count}) {
+						final __key = $getKey;
+						$i{list}.set(__key, $getValue);
+					}
+					$i{list};
+				};
+			}
+			final each:Expr = readInto(kind.element, kind.elementOptional, input, end, macro $i{list}[$i{at}]);
+			final fresh:Expr = readInto(kind.element, kind.elementOptional, input, end, macro null);
+			final kept:Bool = kind.element.struct != null && kind.element.struct.isClass;
+			return macro {
+				final $count:Int = $input.readVarUInt();
+				crossbyte.rpc._internal.RPCWire.requireCount($input, $end, $i{count}, $v{least});
+				var $list:$t = $held;
+				if ($i{list} == null) {
+					$i{list} = [];
+				}
+				if ($i{list}.length > $i{count}) {
+					$i{list}.resize($i{count});
+				}
+				for ($i{at} in 0...$i{count}) {
+					if ($i{at} < $i{list}.length) {
+						$i{list}[$i{at}] = ${kept ? each : RPCKinds.read(kind.element, kind.elementOptional, input, end)};
+					} else {
+						$i{list}.push($fresh);
+					}
+				}
+				$i{list};
+			};
+		}
+		return RPCKinds.read(kind, optional, input, end);
+	}
+
+	/** A statement setting a field of `kind` in place to garbage, or `null` for a kind that has none (a `Bool`, an enum). **/
+	public static function poisonField(kind:RPCKind, optional:Bool, value:Expr):Null<Expr> {
+		if (kind.struct != null) {
+			if (!kind.struct.isClass) {
+				return null;
+			}
+			final r:Expr = replicationOf(kind.struct, kind.struct.pos).r;
+			return macro $r.poison($value);
+		}
+		if (kind.element != null) {
+			if (kind.mapKey != null) {
+				return macro if ($value != null) $value.clear();
+			}
+			final at:String = RPCKinds.local();
+			final each:Null<Expr> = poisonValue(kind.element, macro $value[$i{at}]);
+			if (each == null) {
+				return null;
+			}
+			return macro if ($value != null) for ($i{at} in 0...$value.length) $each;
+		}
+		final set:Null<Expr> = poisonValue(kind, value);
+		return optional && set == null ? macro $value = null : set;
+	}
+
+	// A value set to garbage where it is: numbers to 0xDBDBDBDB or NaN,
+	// strings to a marker.
+	static function poisonValue(kind:RPCKind, value:Expr):Null<Expr> {
+		if (kind.struct != null || kind.element != null) {
+			return poisonField(kind, false, value);
+		}
+		if (kind.isEnum == true) {
+			return null;
+		}
+		final token:String = kind.bits != null ? (StringTools.startsWith(kind.token, "q") ? "f64" : "i32") : kind.token;
+		return switch (token) {
+			case "f64" | "f32": macro $value = cast Math.NaN;
+			case "i32" | "i8" | "u8" | "i16" | "u16" | "vu" | "vi": macro $value = cast 0xDBDBDBDB;
+			case "utf8": macro $value = cast "\u{FFFD}RPC value used after its call";
+			case _: null;
+		}
 	}
 
 	/** The codec `RPCCodecs.of` answers for a class, as an expression. **/
@@ -356,7 +521,26 @@ class RPCPatches {
 					into.$fname = $cr.readInto(input, end, __t);
 				});
 			} else {
-				readsInto.push(macro into.$fname = ${RPCKinds.read(field.kind, field.optional, macro input, macro end)});
+				readsInto.push(macro into.$fname = ${readInto(field.kind, field.optional, macro input, macro end, macro into.$fname)});
+			}
+		}
+
+		// poison: every field set to what reads as garbage, for
+		// -D crossbyte_check_events.
+		final poisons:Array<Expr> = [];
+		for (field in info.fields) {
+			final fname:String = field.name;
+			final each:Null<Expr> = poisonField(field.kind, field.optional, macro value.$fname);
+			if (each != null) {
+				poisons.push(each);
+			}
+		}
+		final statePoisons:Array<Expr> = [macro poison(state.values)];
+		for (field in info.fields) {
+			if (nested(field)) {
+				final cr:Expr = replicationOf(field.kind.struct, pos).r;
+				final childState:String = "c_" + field.name;
+				statePoisons.push(macro $cr.poisonState(state.$childState));
 			}
 		}
 
@@ -443,6 +627,15 @@ class RPCPatches {
 			}, pos),
 			fn("readInto", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("into", type)], type,
 				macro $b{readsInto.concat([macro return into])}, pos),
+			fn("poison", [arg("value", type)], macro :Void, macro if (value != null) $b{poisons}, pos,
+				"Sets what `value` holds to garbage: a value used after its call is seen at once (-D crossbyte_check_events)."),
+			fn("poisonState", [arg("state", sType)], macro :Void, macro $b{statePoisons}, pos),
+			fn("poisonPatch", [arg("patch", patchType)], macro :Void, macro {
+				final state:$sType = cast patch.__state;
+				if (state != null) {
+					poisonState(state);
+				}
+			}, pos),
 			fn("newPatch", [], patchType, macro {
 				final patch = new $patchPath(${rep.i}.instance);
 				patch.__state = new $sPath();

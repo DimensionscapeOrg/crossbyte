@@ -399,6 +399,15 @@ final class RPCMapPatch<V> {
 		}
 	}
 
+	/** Empties the patch, so one kept past its call reads as no patch at all (-D crossbyte_check_events). **/
+	@:noCompletion public function __poison():Void {
+		removed.length = 0;
+		__added.length = 0;
+		__updated.length = 0;
+		__received = false;
+		__sending = false;
+	}
+
 	// ------------------------------------------------------------ applying
 
 	function __requireApply(base:Null<IntMap<V>>, into:IntMap<V>):Void {

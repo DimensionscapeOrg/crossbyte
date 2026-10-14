@@ -253,6 +253,20 @@ All notable changes to CrossByte will be documented in this file.
   and `+ - * /` of those. The bounds and widths are in the structure's
   layout, `b{...}` in a signature: a peer built with others finds no
   method.
+- **`@:reuse`: arguments read into what the session keeps.** On a
+  handler's argument, on a contract method (`@:reuse(recent)`, naming its
+  arguments, since a typed interface keeps no argument metadata) or on the
+  handler class (every structure, array and map argument), the argument is
+  read into one instance the session keeps, valid during the call, as a
+  socket's event is: a structure's fields set in place (its nested
+  structures and arrays too), an array's element instances kept, a map
+  cleared and refilled. The last four inputs of a tick allocate nothing,
+  natively and on the jvm. Nothing changes on the wire. Under
+  `-D crossbyte_check_events` what was kept is set to garbage once the call
+  returns (numbers 0xDBDBDBDB, floats NaN, strings a marker), so a handler
+  that keeps one shows it at once; `-D crossbyte_fresh_events` reads each
+  call's afresh. An anonymous structure marked `@:reuse` fails the build:
+  it is made each call.
 - **`RPCCodec<T>` and `RPCCodecs.of(Type)`**, the generated code of a
   structure as an interface generic code can hold: `make`, `copy` (nested
   structures and arrays into those held, so nothing is shared), `equals`

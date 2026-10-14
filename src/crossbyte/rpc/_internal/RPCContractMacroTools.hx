@@ -239,12 +239,17 @@ class RPCContractMacroTools {
 					if (retType == null) {
 						retType = macro :Void;
 					}
+					// `@:reuse` on the method: every argument, or those it names,
+					// read into what the handler's session keeps (an
+					// argument's own metadata is not kept in a typed
+					// interface, so the method says which).
+					final reuse:Null<Array<String>> = reusedArgs(field);
 					final methodArgs:Array<FunctionArg> = args.map(arg -> ({
 						name: arg.name,
 						opt: arg.opt,
 						type: fullComplexType(arg.t),
 						value: null,
-						meta: []
+						meta: reuse != null && (reuse.length == 0 || reuse.indexOf(arg.name) >= 0) ? [{name: REUSE_META, params: [], pos: field.pos}] : []
 					} : FunctionArg));
 					final responseType = responsePayloadType(retType, field.pos);
 					methods.push({
@@ -264,6 +269,46 @@ class RPCContractMacroTools {
 			final parentType = parent.t.get();
 			collectContractMethods(parentType, parentType.params, parent.params.map(bind), methods, declaredIn, signatures);
 		}
+	}
+
+	/** The metadata that has an argument read into what a handler's session keeps for it, valid during the call. **/
+	public static inline final REUSE_META:String = ":reuse";
+
+	/**
+		The arguments a contract method's `@:reuse` names: `[]` for all of
+		them, `null` when it has none.
+	**/
+	static function reusedArgs(field:ClassField):Null<Array<String>> {
+		final entries = field.meta.extract(REUSE_META);
+		if (entries.length == 0) {
+			return null;
+		}
+		final names:Array<String> = [];
+		for (entry in entries) {
+			if (entry.params != null) {
+				for (param in entry.params) {
+					switch (param.expr) {
+						case EConst(CIdent(name)) | EConst(CString(name)):
+							names.push(name);
+						case _:
+							Context.error("@:reuse on a contract method names its arguments: @:reuse(recent).", param.pos);
+					}
+				}
+			}
+		}
+		return names;
+	}
+
+	/** Whether an argument carries `@:reuse`. **/
+	public static function isReused(arg:FunctionArg):Bool {
+		if (arg.meta != null) {
+			for (entry in arg.meta) {
+				if (entry.name == REUSE_META) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**
