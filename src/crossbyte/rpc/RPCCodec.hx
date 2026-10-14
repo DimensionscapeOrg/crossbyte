@@ -116,4 +116,8 @@ interface RPCCodec<T> {
 	@:noCompletion function __apply(state:Any, base:Null<T>, into:T):T;
 	@:noCompletion function __writePatch(frame:crossbyte.rpc._internal.RPCFrame, patch:RPCPatch<T>):Void;
 	@:noCompletion function __readPatch(input:ByteArrayInput, end:Int, patch:RPCPatch<T>):Void;
+	@:noCompletion function __writeMapPatch(frame:crossbyte.rpc._internal.RPCFrame, patch:RPCMapPatch<T>):Void;
+	@:noCompletion function __readMapPatch(input:ByteArrayInput, end:Int, patch:RPCMapPatch<T>):Void;
+	@:noCompletion function __writeStringMapPatch(frame:crossbyte.rpc._internal.RPCFrame, patch:RPCStringMapPatch<T>):Void;
+	@:noCompletion function __readStringMapPatch(input:ByteArrayInput, end:Int, patch:RPCStringMapPatch<T>):Void;
 }

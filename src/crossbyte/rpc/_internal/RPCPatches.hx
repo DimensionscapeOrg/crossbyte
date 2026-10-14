@@ -69,6 +69,35 @@ class RPCPatches {
 		};
 	}
 
+	/** The kind of `RPCMapPatch<V>`, or of `RPCStringMapPatch<V>`, `param` being `V`. **/
+	public static function mapPatchKind(param:Type, stringKeys:Bool, pos:Position):Null<RPCKind> {
+		final what:String = stringKeys ? "RPCStringMapPatch" : "RPCMapPatch";
+		final info:StructInfo = classStruct(param, what, pos);
+		final rep:Replication = replicationOf(info, pos);
+		final r:Expr = rep.r;
+		final patchType:ComplexType = TPath({pack: ["crossbyte", "rpc"], name: what, params: [TPType(info.type)]});
+		final write:String = stringKeys ? "writeStringMapPatchArg" : "writeMapPatchArg";
+		final read:String = stringKeys ? "readStringMapPatchArg" : "readMapPatchArg";
+		final make:String = stringKeys ? "newStringMapPatch" : "newMapPatch";
+		return {
+			name: what + "<" + info.name + ">",
+			token: "~[" + (stringKeys ? "utf8" : "i32") + ":" + info.token + "]",
+			size: -1,
+			roomOf: value -> macro 8,
+			zero: macro null,
+			compound: true,
+			patch: true,
+			valueType: patchType,
+			write: (frame, value) -> macro $r.$write($frame, $value),
+			read: (input, end) -> macro $r.$read($input, $end, $r.$make()),
+			reuse: {
+				type: patchType,
+				make: macro $r.$make(),
+				readInto: (input, end, held) -> macro $r.$read($input, $end, $held)
+			}
+		};
+	}
+
 	/** The codec `RPCCodecs.of` answers for a class, as an expression. **/
 	public static function codecOf(type:Type, pos:Position):Expr {
 		final info:StructInfo = classStruct(type, "RPCCodecs.of", pos);
@@ -426,6 +455,12 @@ class RPCPatches {
 				pos: pos
 			}
 		];
+		for (field in mapPatchFields(info, rep, false, pos)) {
+			fields.push(field);
+		}
+		for (field in mapPatchFields(info, rep, true, pos)) {
+			fields.push(field);
+		}
 		return {
 			pack: pack,
 			name: name,
@@ -434,6 +469,117 @@ class RPCPatches {
 			kind: TDClass(),
 			fields: fields
 		};
+	}
+
+	/**
+		A map patch's writer, reader and maker, for values of this structure,
+		`Int` keys or `String` ones:
+
+		```
+		varuint  head      the removed count twice, plus 1 when full
+		varuint  added     count
+		varuint  updated   count
+		removed  keys, ascending
+		added    per entry, ascending: its key, then its value's patch from the default
+		updated  per entry, ascending: its key, then its value's patch from the base's
+		```
+
+		An `Int` key is key-coded (`RPCKeys`); a `String` key is written whole.
+		The counts are checked against what is left of the frame before any
+		pool grows, at the least an entry takes (a byte of key and one of
+		mask); a full patch that removes or updates is unreadable.
+	**/
+	static function mapPatchFields(info:StructInfo, rep:Replication, stringKeys:Bool, pos:Position):Array<Field> {
+		final type:ComplexType = info.type;
+		final sType:ComplexType = rep.sType;
+		final what:String = stringKeys ? "RPCStringMapPatch" : "RPCMapPatch";
+		final patchType:ComplexType = TPath({pack: ["crossbyte", "rpc"], name: what, params: [TPType(type)]});
+		final patchPath:TypePath = {pack: ["crossbyte", "rpc"], name: what, params: [TPType(type)]};
+		final patchName:Expr = macro $v{what + "<" + info.name + ">"};
+		final wide:Bool = info.fields.length > 32;
+		final addedHigh:Expr = wide ? macro crossbyte.rpc._internal.RPCKeys.at(patch.__addedMasksHigh, i) : macro 0;
+		final updatedHigh:Expr = wide ? macro crossbyte.rpc._internal.RPCKeys.at(patch.__updatedMasksHigh, i) : macro 0;
+		final keyType:ComplexType = stringKeys ? macro :String : macro :Int;
+		final putRemoved:Expr = stringKeys ? macro crossbyte.rpc._internal.RPCKeys.putStringKeys(frame,
+			patch.removed) : macro crossbyte.rpc._internal.RPCKeys.putKeys(frame, patch.removed);
+		final putKey:Expr = stringKeys ? macro frame.putString(key) : macro {
+			crossbyte.rpc._internal.RPCKeys.putKey(frame, i == 0, previous, key);
+			previous = key;
+		};
+		final keyAt = (list:Expr) -> stringKeys ? macro $list[i] : macro crossbyte.rpc._internal.RPCKeys.at($list, i);
+		final addedKey:Expr = keyAt(macro added);
+		final updatedKey:Expr = keyAt(macro updated);
+		final getRemoved:Expr = stringKeys ? macro crossbyte.rpc._internal.RPCKeys.getStringKeys(input, removedCount,
+			patch.removed) : macro crossbyte.rpc._internal.RPCKeys.getKeys(input, removedCount, patch.removed);
+		final previousType:ComplexType = stringKeys ? macro :Null<String> : macro :Int;
+		final previousZero:Expr = stringKeys ? macro null : macro 0;
+		final getKey:Expr = stringKeys ? macro crossbyte.rpc._internal.RPCKeys.nextStringKey(input,
+			previous) : macro crossbyte.rpc._internal.RPCKeys.getKey(input, i == 0, previous);
+		final suffix:String = stringKeys ? "StringMapPatch" : "MapPatch";
+		return [
+			fn("write" + suffix + "Arg", [arg("frame", macro :crossbyte.rpc._internal.RPCFrame), arg("patch", patchType)], macro :Void, macro {
+				if (patch == null) {
+					throw crossbyte.rpc._internal.RPCFrame.nullValue($patchName);
+				}
+				if (!patch.__sending) {
+					throw new crossbyte.errors.ArgumentError(patch.__received ? "A map patch that arrived cannot be sent on: apply it, and diff the maps." : "Diff the map patch before sending it: patch.diff(base, current).");
+				}
+				final added = patch.__added;
+				final updated = patch.__updated;
+				frame.putVarUInt((patch.removed.length << 1) | (patch.isFull ? 1 : 0));
+				frame.putVarUInt(added.length);
+				frame.putVarUInt(updated.length);
+				$putRemoved;
+				final current = patch.__currentValues;
+				final initial:$type = defaultValue();
+				var previous:Int = 0;
+				for (i in 0...added.length) {
+					final key:$keyType = $addedKey;
+					$putKey;
+					writePatch(frame, initial, current.get(key), crossbyte.rpc._internal.RPCKeys.at(patch.__addedMasks, i), $addedHigh, -1);
+				}
+				final base = patch.__baseValues;
+				previous = 0;
+				for (i in 0...updated.length) {
+					final key:$keyType = $updatedKey;
+					$putKey;
+					writePatch(frame, base.get(key), current.get(key), crossbyte.rpc._internal.RPCKeys.at(patch.__updatedMasks, i), $updatedHigh, -1);
+				}
+			}, pos),
+			fn("read" + suffix + "Arg", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", patchType)], patchType, macro {
+				final head:Int = input.readVarUInt();
+				final added:Int = input.readVarUInt();
+				final updated:Int = input.readVarUInt();
+				final removedCount:Int = head >>> 1;
+				final full:Bool = (head & 1) != 0;
+				if (added < 0 || updated < 0 || (full && (removedCount != 0 || updated != 0))) {
+					throw "RPC map patch counts do not read";
+				}
+				final limit:Int = end < input.length ? end : input.length;
+				// At the least a byte a removed key, and two an entry: its key and its mask.
+				if ((removedCount : Float) + 2.0 * added + 2.0 * updated > limit - input.position) {
+					throw "RPC frame names more than it holds";
+				}
+				patch.__beginRead(full, added, updated);
+				$getRemoved;
+				final state:$sType = cast patch.__addedState;
+				var previous:$previousType = $previousZero;
+				for (i in 0...added) {
+					previous = $getKey;
+					patch.__added.push(previous);
+					readPatch(input, end, state, false);
+					apply(state, null, patch.__addedValues[i]);
+				}
+				previous = $previousZero;
+				for (i in 0...updated) {
+					previous = $getKey;
+					patch.__updated.push(previous);
+					readPatch(input, end, cast patch.__updatedStates[i], false);
+				}
+				return patch;
+			}, pos),
+			fn("new" + suffix, [], patchType, macro return new $patchPath(${rep.i}.instance), pos)
+		];
 	}
 
 	/** The bytes the masks of nested structures add to a patch, at most. **/
@@ -461,6 +607,8 @@ class RPCPatches {
 		final selfPath:TypePath = {pack: pack, name: name};
 		final patchType:ComplexType = TPath({pack: ["crossbyte", "rpc"], name: "RPCPatch", params: [TPType(type)]});
 		final nullType:ComplexType = TPath({pack: [], name: "Null", params: [TPType(type)]});
+		final mapType:ComplexType = TPath({pack: ["crossbyte", "rpc"], name: "RPCMapPatch", params: [TPType(type)]});
+		final stringMapType:ComplexType = TPath({pack: ["crossbyte", "rpc"], name: "RPCStringMapPatch", params: [TPType(type)]});
 		final layout:Int = crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(info.token));
 		final fields:Array<Field> = [
 			{
@@ -506,6 +654,16 @@ class RPCPatches {
 				macro $r.writePatchArg(frame, patch), pos),
 			method("__readPatch", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", patchType)], macro :Void, macro {
 				$r.readPatchArg(input, end, patch);
+			}, pos),
+			method("__writeMapPatch", [arg("frame", macro :crossbyte.rpc._internal.RPCFrame), arg("patch", mapType)], macro :Void,
+				macro $r.writeMapPatchArg(frame, patch), pos),
+			method("__readMapPatch", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", mapType)], macro :Void, macro {
+				$r.readMapPatchArg(input, end, patch);
+			}, pos),
+			method("__writeStringMapPatch", [arg("frame", macro :crossbyte.rpc._internal.RPCFrame), arg("patch", stringMapType)], macro :Void,
+				macro $r.writeStringMapPatchArg(frame, patch), pos),
+			method("__readStringMapPatch", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", stringMapType)], macro :Void, macro {
+				$r.readStringMapPatchArg(input, end, patch);
 			}, pos)
 		];
 		for (each in [

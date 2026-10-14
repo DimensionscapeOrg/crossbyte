@@ -196,6 +196,14 @@ class AllocationBudgetTest extends utest.Test {
 		[1776, 1776, 1760], [2288, 2288, 2264]);
 	private static final RPC_MAP_256 = new Budget("an RPC call of a Map<String, Int> of 256 entries answered with it through a receiver", "call",
 		[0, 0, 63648], [0, 0, 79624]);
+	// A per-observer tick of replicated state: the own ship's patch, 16
+	// ships of which a few fields change, and a window of bolts one of which
+	// is added and one removed, diffed against the frames before, sent
+	// one-way, read into the session's patches, and applied by the client
+	// into a ring of two frames with recycling. Nothing is made for it at
+	// either end once the patches, pools and frames have grown.
+	private static final RPC_PATCH_TICK = new Budget("a tick of patches: a structure and two keyed maps, diffed, sent, read and applied", "tick",
+		[0, 0, 0], [8, 8, 8]);
 	private static final RPC_TYPED_ONE_WAY =new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
@@ -1308,6 +1316,33 @@ class AllocationBudgetTest extends utest.Test {
 		Assert.isTrue(heard[0] > 0);
 	}
 
+	public function testATickOfPatches():Void {
+		final link = LinkedConnection.pair();
+		final commands = new ReplicaCommands();
+		final client = new ReplicaClient();
+		final serverSession = new RPCSession<ReplicaCommands>(link.server, commands);
+		final clientSession = new RPCSession(link.client, null, client);
+		final server = new ReplicaServer();
+		var tick:Int = 0;
+		final op = () -> {
+			tick++;
+			server.step(tick);
+			// The first tick against nothing, as a joining client is sent it.
+			final first:Bool = tick == 1;
+			commands.state(tick, tick - 1, server.ownPatch.diff(first ? null : server.ownBefore, server.own),
+				server.shipPatch.diffKeys(first ? null : server.shipsBefore, server.shipKeys, server.ships, server.shipKeys),
+				server.boltPatch.diffKeys(first ? null : server.bolts, server.boltView(tick - 1), server.bolts, server.boltView(tick)));
+			if (client.applied != tick) {
+				throw "the tick was not applied";
+			}
+		};
+		__warm(op, WARM_CHEAP);
+		__within(RPC_PATCH_TICK, AllocationMeter.measure(op, 20000));
+		Assert.isTrue(client.applied > 0);
+		Assert.notNull(serverSession);
+		Assert.notNull(clientSession);
+	}
+
 	public function testATypedRuntimeRpcCall():Void {
 		// runtimeCall's writer is the session's frame, and registerArgs'
 		// reader the session's own: a call of numbers allocates nothing.
@@ -2034,6 +2069,132 @@ private class PassingConnection extends crossbyte.net.NetConnectionBase implemen
 
 	inline function set_onReady(value:Void->Void):Void->Void {
 		return __onReady = value != null ? value : () -> {};
+	}
+}
+
+class ReplicaOwn implements crossbyte.rpc.RPCStruct {
+	public var lastSeq:crossbyte.rpc.VarUInt = 0;
+	public var x:Float = 0;
+	public var y:Float = 0;
+	public var vx:Float = 0;
+	public var vy:Float = 0;
+	public var energy:Float = 0;
+	public var aimSteps:crossbyte.rpc.UInt16 = 0;
+	public var engineLocked:Bool = false;
+
+	public function new() {}
+}
+
+class ReplicaShip implements crossbyte.rpc.RPCStruct {
+	public var x:crossbyte.rpc.Float32 = 0;
+	public var y:crossbyte.rpc.Float32 = 0;
+	public var vx:crossbyte.rpc.Float32 = 0;
+	public var vy:crossbyte.rpc.Float32 = 0;
+	public var aimSteps:crossbyte.rpc.UInt16 = 0;
+	public var controls:crossbyte.rpc.UInt8 = 0;
+	public var engineLocked:Bool = false;
+	public var engineHeat:crossbyte.rpc.Float32 = 0;
+
+	public function new() {}
+}
+
+interface ReplicaContract {
+	function state(tick:crossbyte.rpc.VarUInt, base:crossbyte.rpc.VarUInt, own:crossbyte.rpc.RPCPatch<ReplicaOwn>,
+		ships:crossbyte.rpc.RPCMapPatch<ReplicaShip>, bolts:crossbyte.rpc.RPCMapPatch<ReplicaShip>):Void;
+}
+
+@:rpcContract(ReplicaContract)
+private class ReplicaCommands extends RPCCommands {
+	public function new() {}
+}
+
+/** The server's side of a tick: the values, what each was the tick before, and the patches it sends. **/
+private class ReplicaServer {
+	public final own = new ReplicaOwn();
+	public final ownBefore = new ReplicaOwn();
+	public final ownPatch = new crossbyte.rpc.RPCPatch(crossbyte.rpc.RPCCodecs.of(ReplicaOwn));
+	// Ships patched in place: the frame before is a copy of its own.
+	public final ships = new haxe.ds.IntMap<ReplicaShip>();
+	public final shipsBefore = new haxe.ds.IntMap<ReplicaShip>();
+	public final shipKeys = new crossbyte.ds.IdList();
+	public final shipPatch = new crossbyte.rpc.RPCMapPatch(crossbyte.rpc.RPCCodecs.of(ReplicaShip));
+	// Bolts never change: a pool of 64, a window of 10 of them visible, one
+	// entering and one leaving each tick.
+	public final bolts = new haxe.ds.IntMap<ReplicaShip>();
+	public final boltPatch = new crossbyte.rpc.RPCMapPatch(crossbyte.rpc.RPCCodecs.of(ReplicaShip));
+	final __views = [new crossbyte.ds.IdList(), new crossbyte.ds.IdList()];
+
+	public function new() {
+		for (i in 0...16) {
+			final ship = new ReplicaShip();
+			ship.x = i;
+			ships.set(100 + i * 3, ship);
+			shipsBefore.set(100 + i * 3, new ReplicaShip());
+			shipKeys.push(100 + i * 3);
+		}
+		for (i in 0...64) {
+			final bolt = new ReplicaShip();
+			bolt.x = i;
+			bolts.set(1000 + i, bolt);
+		}
+	}
+
+	/** The ids of the bolts visible at `tick`, in a list of its own for that tick. **/
+	public function boltView(tick:Int):crossbyte.ds.IdList {
+		final view = __views[tick & 1];
+		view.clear();
+		for (i in 0...10) {
+			view.push(1000 + ((tick + i) & 63));
+		}
+		return view;
+	}
+
+	public function step(tick:Int):Void {
+		crossbyte.rpc.RPCCodecs.of(ReplicaOwn).copy(own, ownBefore);
+		for (key in shipKeys) {
+			crossbyte.rpc.RPCCodecs.of(ReplicaShip).copy(ships.get(key), shipsBefore.get(key));
+		}
+		own.lastSeq = tick;
+		own.x += 1.5;
+		own.vy = tick & 7;
+		own.energy -= 0.25;
+		// Three ships of the sixteen move, their x and y, and one turns.
+		for (i in 0...3) {
+			final ship = ships.get(100 + ((tick + i * 5) % 16) * 3);
+			ship.x += 1;
+			ship.y -= 0.5;
+		}
+		ships.get(100 + (tick % 16) * 3).aimSteps = tick & 0xFFFF;
+	}
+}
+
+/** The client's side: a ring of two frames for each map, applied into with recycling. **/
+private class ReplicaClient extends RPCHandler implements ReplicaContract {
+	public var applied:Int = 0;
+	final __own = [new ReplicaOwn(), new ReplicaOwn()];
+	final __ships = [new haxe.ds.IntMap<ReplicaShip>(), new haxe.ds.IntMap<ReplicaShip>()];
+	final __shipKeys = [new crossbyte.ds.IdList(), new crossbyte.ds.IdList()];
+	final __bolts = [new haxe.ds.IntMap<ReplicaShip>(), new haxe.ds.IntMap<ReplicaShip>()];
+	final __boltKeys = [new crossbyte.ds.IdList(), new crossbyte.ds.IdList()];
+
+	public function new() {}
+
+	public function state(tick:crossbyte.rpc.VarUInt, base:crossbyte.rpc.VarUInt, own:crossbyte.rpc.RPCPatch<ReplicaOwn>,
+			ships:crossbyte.rpc.RPCMapPatch<ReplicaShip>, bolts:crossbyte.rpc.RPCMapPatch<ReplicaShip>):Void {
+		final from:Int = (base : Int) & 1;
+		final into:Int = (tick : Int) & 1;
+		final first:Bool = applied == 0;
+		own.apply(first ? null : __own[from], __own[into]);
+		// The first tick's ships are a patch against nothing the client
+		// held; from the second on, against the frame before.
+		if (first) {
+			ships.applyKeys(null, null, __ships[into], __shipKeys[into], true);
+			bolts.applyKeys(null, null, __bolts[into], __boltKeys[into], true);
+		} else {
+			ships.applyKeys(__ships[from], __shipKeys[from], __ships[into], __shipKeys[into], true);
+			bolts.applyKeys(__bolts[from], __boltKeys[from], __bolts[into], __boltKeys[into], true);
+		}
+		applied = tick;
 	}
 }
 

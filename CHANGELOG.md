@@ -223,6 +223,23 @@ All notable changes to CrossByte will be documented in this file.
   kind `~{...}` in a signature, so a peer without patches finds no method.
   `write(out)` and `read(input)` give a patch as bytes of its own, for a
   recording or a patch carried in a `Bytes` argument.
+- **Keyed maps sent as what changed: `RPCMapPatch<V>` and
+  `RPCStringMapPatch<V>`.** A map of entity ids (or `String` keys) to
+  structures goes as the keys removed, the entries added (each a patch from
+  the default) and patches of the entries both ends hold whose values
+  differ; an entry that is the same bytes is not sent. `diff(base,
+  current)` takes two maps; `diffKeys(baseValues, baseKeys, currentValues,
+  currentKeys)` takes views of shared frames (one map of values per tick,
+  an `IdList` of ids per observer, in any order) and allocates nothing.
+  Keys go ascending, the first as a zigzag varint and each next as its
+  distance from the one before: a byte for ids that sit close together,
+  where an `Int` is four. The receiver calls `apply(base, into, recycle)`,
+  or `applyKeys` with the maps' key lists, which allocates nothing: values
+  already in `into` are patched in place, and with `recycle` dropped values
+  serve the next adds. A wrong base is refused naming the key; counts past
+  the frame, keys out of order and keys past 2^31 - 1 are unreadable.
+  `sizeBound()` bounds the bytes, for a call that must fit a datagram.
+  Kinds `~[i32:{...}]` and `~[utf8:{...}]`.
 - **`RPCCodec<T>` and `RPCCodecs.of(Type)`**, the generated code of a
   structure as an interface generic code can hold: `make`, `copy` (nested
   structures and arrays into those held, so nothing is shared), `equals`

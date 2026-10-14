@@ -624,6 +624,8 @@ class RPCKinds {
 						final element:Null<RPCKind> = ofType(params[0], pos);
 						element == null ? null : arrayKind(element, isNullType(params[0]), RPCContractMacroTools.fullComplexType(stripNull(params[0])));
 					case "crossbyte.rpc.RPCPatch" if (params.length == 1): RPCPatches.patchKind(params[0], pos);
+					case "crossbyte.rpc.RPCMapPatch" if (params.length == 1): RPCPatches.mapPatchKind(params[0], false, pos);
+					case "crossbyte.rpc.RPCStringMapPatch" if (params.length == 1): RPCPatches.mapPatchKind(params[0], true, pos);
 					case "haxe.ds.StringMap" if (params.length == 1): mapOf(Context.getType("String"), params[0], pos);
 					case "haxe.ds.IntMap" if (params.length == 1): mapOf(Context.getType("Int"), params[0], pos);
 					case _ if (RPCStructs.isStruct(cls)): RPCStructs.classKind(cls, type, pos);
