@@ -50,7 +50,8 @@ elsewhere. Files, UDP, reliable UDP, IPC, threads and databases are not there.
 Some classes are built for PHP code to use, and these are tested on PHP 8 (`ci/php-tests.hxml`): SQLite through
 PHP's `sqlite3` extension (`open()` only; see [data.md](data.md#sqlite)), `BCrypt` through PHP's own
 `password_hash` and `password_verify`, `SecureRandom`, HMAC-SHA256, JWTs (`JWT`, `JWKSet`), and `Ed25519`, EdDSA
-tokens (`JWTSigner.EdDSA`) and `Argon2id` through PHP's sodium extension. PostgreSQL goes through PDO. SQLite needs
+tokens (`JWTSigner.EdDSA`) and `Argon2id` through PHP's sodium extension, and the key/value store in memory
+(`MemoryKVStore`; see [data.md](data.md#a-keyvalue-store)). PostgreSQL goes through PDO. SQLite needs
 `extension=sqlite3` in `php.ini`, and Ed25519 and Argon2id `extension=sodium`. PHP has no threads, so nothing that
 needs one is there.
 

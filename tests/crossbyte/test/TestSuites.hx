@@ -179,6 +179,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.ConnectionPoolMetricsTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.db.StorageModesTest());
+		// The key/value store in memory, on every target (PortableSuite and
+		// PHP too), with its calls from several threads where there are any.
+		runner.addCase(new crossbyte.db.kv.KVKeysTest());
+		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		// MongoDB: the codec, Extended JSON, SCRAM and connection strings need

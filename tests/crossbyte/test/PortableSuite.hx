@@ -315,6 +315,10 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		// Modes read from configuration text, which PHP reads its own way.
 		runner.addCase(new crossbyte.db.StorageModesTest());
+		// The key/value store in memory, and the order its keys sort in,
+		// which is a string's own order on no target.
+		runner.addCase(new crossbyte.db.kv.KVKeysTest());
+		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		runner.addCase(new crossbyte.rpc.RPCContractTest());

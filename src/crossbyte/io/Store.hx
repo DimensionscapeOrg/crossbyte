@@ -43,7 +43,9 @@ import crossbyte.io._internal.store.StoreBackend;
  * error in a page, an allocation failure elsewhere) and never silently
  * truncates.
  *
- * @see `crossbyte.db` for a server's data, which is a different problem.
+ * @see `crossbyte.db.kv` for a server's records by key, with revisions,
+ *      compare-and-set, scans and transactions, and `crossbyte.db` for the rest
+ *      of a server's data, which is a different problem.
  */
 class Store {
 	@:noCompletion private var __backend:IStoreBackend;
