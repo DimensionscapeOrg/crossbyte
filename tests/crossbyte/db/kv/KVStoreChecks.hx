@@ -32,6 +32,17 @@ class KVStoreChecks {
 		return record == null ? null : record.value.toString();
 	}
 
+	/** The `KVError` `run` throws, or null when it throws none or something else. **/
+	public static function kvError(run:Void->Void):Null<KVError> {
+		try {
+			run();
+		} catch (e:KVError) {
+			return e;
+		} catch (_:Dynamic) {}
+
+		return null;
+	}
+
 	public static function writesAndReads(make:KVOptions->KVStore):Void {
 		var clock = new TestClock();
 		var store = make({clock: clock.read});

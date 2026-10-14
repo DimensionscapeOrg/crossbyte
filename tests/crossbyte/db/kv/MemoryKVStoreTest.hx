@@ -177,7 +177,7 @@ class MemoryKVStoreTest extends utest.Test {
 			Assert.isTrue(done.wait(60), "a thread did not finish");
 		}
 
-		Assert.same([], failures);
+		Assert.same([], failures, failures.join("; "));
 		var counter = Require.notNull(store.get("counter"));
 		Assert.equals(Std.string(threads * each), text(counter));
 		Assert.equals(threads * each + 1.0, counter.revision);

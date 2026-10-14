@@ -183,6 +183,10 @@ class TestSuites {
 		// PHP too), with its calls from several threads where there are any.
 		runner.addCase(new crossbyte.db.kv.KVKeysTest());
 		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
+		#if !js
+		// Where the SQL stores are, and what they say where they are not.
+		runner.addCase(new crossbyte.db.kv.KVSupportTest());
+		#end
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		// MongoDB: the codec, Extended JSON, SCRAM and connection strings need
@@ -229,6 +233,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.SQLiteStatementTest());
 		// SchemaMigrator.sqlite() on a real database; on PHP too.
 		runner.addCase(new crossbyte.db.SchemaMigratorPresetTest());
+		// The key/value store in SQLite; on PHP too.
+		runner.addCase(new crossbyte.db.kv.SQLiteKVStoreTest());
 		// What only the native driver has: the worker, cancel(), bound values.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		// Red team: a datagram stored as a blob from its listener.

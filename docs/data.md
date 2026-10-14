@@ -19,7 +19,9 @@ statement that is running.
 
 On PHP, `SQLiteConnection` uses PHP's `sqlite3` extension, which has to be enabled in `php.ini`. Connections open
 with `open()`, and a statement's parameters are written into its text as quoted literals. `openAsync()`,
-`executeEach` and interrupting a running statement are native only.
+`executeEach` and interrupting a running statement are native only. PHP's `sqlite3` runs a statement again to read
+its rows, so there a write with `RETURNING` is made twice: read what a write changed with a `SELECT` after it, in
+the same transaction.
 
 ## MySQL and MariaDB
 
@@ -131,10 +133,34 @@ while (true) {
 Tombstones are left out unless the scan sets `includeTombstones`, for a reader keeping a copy that needs to hear of a
 delete.
 
+### In SQLite
+
+`SQLiteKVStore` keeps the records in an SQLite table, natively and on PHP:
+
+```haxe
+import crossbyte.db.kv.SQLiteKVStore;
+import haxe.io.Bytes;
+
+var store = SQLiteKVStore.open("data/game.db");
+store.put("users/alice", Bytes.ofString("{}"));
+store.close();
+```
+
+`open` puts a file in WAL mode, so readers do not wait for a writer. The store makes its table (`kv` unless
+`KVOptions.table` names another) through `SchemaMigrator.sqlite()`, recorded in `kv_migrations`, and
+`SQLiteKVStore.migrations()` gives the migration for a migrator of your own. `new SQLiteKVStore(connection)` puts a
+store on a connection already open, whose own statements can then share the store's transactions.
+
+Each write is one statement, an upsert with the revision check in its `WHERE`, so no other connection can come
+between the check and the write. A page of a scan is one statement too, which reads only the values it returns. A
+store is used by one thread at a time, as its connection is: several threads share a database through a
+`ConnectionPool` of stores, each its own connection to the file.
+
 ### Transactions and limits
 
 `begin()`, `commit()` and `rollback()` keep writes together. A `MemoryKVStore` transaction holds the store for the
-thread that began it; other threads wait for it to end.
+thread that began it; other threads wait for it to end. An `SQLiteKVStore` one begins with `BEGIN IMMEDIATE`, taking
+the database's write lock at once.
 
 What a caller can make a store hold is bounded by its `KVOptions`, each a refusal rather than a truncation: a key
 of at most `maxKeyBytes` in UTF-8 (1 KiB), a value of at most `maxValueBytes` (1 MiB, as Firestore holds a

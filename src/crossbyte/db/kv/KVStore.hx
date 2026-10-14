@@ -8,7 +8,8 @@ import haxe.io.Bytes;
 	on the revision a record was read at; scans of a prefix or a range, in key
 	order, a page at a time; and transactions.
 
-	`MemoryKVStore` keeps its records in memory, on every target.
+	`MemoryKVStore` keeps its records in memory, on every target, and
+	`SQLiteKVStore` in an SQLite database, natively and on PHP.
 
 	```haxe
 	import crossbyte.db.kv.KVStore;
@@ -37,7 +38,9 @@ import haxe.io.Bytes;
 	every target and backend. **Values** are bytes, at most
 	`KVOptions.maxValueBytes` (1 MiB unless set).
 
-	**Threading.** `MemoryKVStore` may be used from any thread.
+	**Threading.** `MemoryKVStore` may be used from any thread. An SQL store
+	is used by one thread at a time, as its connection is; a
+	`ConnectionPool` of them is how several threads share a database.
 
 	It is an `ITransactionalConnection`, so a `ConnectionPool` rolls back a
 	transaction a borrower left open.
@@ -129,7 +132,8 @@ interface KVStore extends crossbyte.db.ITransactionalConnection {
 		nest.
 
 		`MemoryKVStore` holds the store for the thread that began it, so other
-		threads' calls wait for it to end.
+		threads' calls wait for it to end. `SQLiteKVStore` begins with `BEGIN
+		IMMEDIATE`, which takes the database's write lock at once.
 
 		@throws IllegalOperationError When a transaction is open already.
 	**/
