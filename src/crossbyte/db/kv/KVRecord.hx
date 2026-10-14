@@ -38,7 +38,8 @@ final class KVRecord {
 	/**
 		The fingerprint of the value's format it was written with, 0 for
 		none, so a reader can refuse a record written in a format it does not
-		read rather than misread it.
+		read rather than misread it: a `KVRepo` keeps its codec's
+		`KVCodec.schema` here, and refuses a record under another.
 	**/
 	public final schema:Int;
 

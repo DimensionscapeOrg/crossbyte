@@ -319,6 +319,8 @@ class PortableSuite {
 		// which is a string's own order on no target.
 		runner.addCase(new crossbyte.db.kv.KVKeysTest());
 		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
+		runner.addCase(new crossbyte.db.kv.KVRepoTest());
+		runner.addCase(new crossbyte.db.kv.KVRepoRPCTest());
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		runner.addCase(new crossbyte.rpc.RPCContractTest());

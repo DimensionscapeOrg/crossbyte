@@ -75,6 +75,12 @@ class KVStoreChecks {
 		// An empty value is a value.
 		store.put("empty", Bytes.alloc(0));
 		Assert.equals(0, Require.notNull(store.get("empty")).value.length);
+
+		// A schema is any Int: an RPCStruct layout is a 32-bit hash, half of
+		// them negative.
+		store.put("layout", bytes("x"), -1965589011);
+		Assert.equals(-1965589011, Require.notNull(store.get("layout")).schema);
+		Assert.equals(-1965589011, store.scan({prefix: "layout"}).items[0].schema);
 		store.close();
 	}
 

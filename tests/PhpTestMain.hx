@@ -20,6 +20,7 @@ class PhpTestMain {
 		runner.addCase(new crossbyte.db.StorageModesTest());
 		runner.addCase(new crossbyte.db.kv.KVKeysTest());
 		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
+		runner.addCase(new crossbyte.db.kv.KVRepoTest());
 		runner.addCase(new crossbyte.db.kv.SQLiteKVStoreTest());
 		runner.addCase(new crossbyte.db.kv.KVSupportTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());

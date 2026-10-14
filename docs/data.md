@@ -174,6 +174,29 @@ connection's write overtook waits for it and answers null; inside a REPEATABLE R
 server fails it instead, with an `SQLError` to retry the transaction on. PHP's PDO driver binds nothing, so the store
 is native only.
 
+### Typed values
+
+A `KVRepo<T>` reads and writes the values under one key prefix through a `KVCodec<T>`, and keeps the codec's `schema`
+beside each value it writes. `KVCodecs.json()` writes JSON; `KVCodecs.rpc(RPCCodecs.of(Ship))` writes an `RPCStruct`
+class as the RPC lane sends it, a few bytes a field, its schema the class's layout; `text()` and `bytes()` are the
+plain ones.
+
+```haxe
+import crossbyte.db.kv.KVCodecs;
+import crossbyte.db.kv.KVRepo;
+import crossbyte.db.kv.MemoryKVStore;
+
+var players = new KVRepo<{name:String, level:Int}>(new MemoryKVStore(), "players/", KVCodecs.json());
+var saved = players.put("alice", {name: "Alice", level: 1});
+players.compareAndSet("alice", {name: "Alice", level: 2}, saved.revision);
+trace(players.get("alice").value.level); // 2
+```
+
+A record written with another schema (an `RPCStruct` whose fields have changed since, a JSON schema number raised
+with `KVCodecs.json(2)`) is refused with a `KVError` of `SchemaMismatch` naming its key, rather than read as the new
+format, and bytes its codec cannot read with `Undecodable`. Keys and scans are the repository's own, the prefix taken
+off, so several repositories share a store as etcd's clients share one keyspace through its namespaces.
+
 ### Transactions and limits
 
 `begin()`, `commit()` and `rollback()` keep writes together. A `MemoryKVStore` transaction holds the store for the

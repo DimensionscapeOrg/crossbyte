@@ -6,11 +6,12 @@ package crossbyte.db.kv;
 enum abstract KVErrorKind(Int) to Int {
 	/**
 		A record was written in another format than the one reading it: its
-		`KVRecord.schema` is not the reader's.
+		`KVRecord.schema` is not the codec's `KVCodec.schema`. For an
+		`RPCStruct` value, the class's fields changed since it was written.
 	**/
 	var SchemaMismatch = 1;
 
-	/** A record's value is not one its reader reads: its bytes are not a whole value of its type. **/
+	/** A record's value is not one its codec reads: its bytes are not a whole value of its type. **/
 	var Undecodable = 2;
 
 	/**

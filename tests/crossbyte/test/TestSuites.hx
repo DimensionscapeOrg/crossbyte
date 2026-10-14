@@ -183,6 +183,8 @@ class TestSuites {
 		// PHP too), with its calls from several threads where there are any.
 		runner.addCase(new crossbyte.db.kv.KVKeysTest());
 		runner.addCase(new crossbyte.db.kv.MemoryKVStoreTest());
+		runner.addCase(new crossbyte.db.kv.KVRepoTest());
+		runner.addCase(new crossbyte.db.kv.KVRepoRPCTest());
 		#if !js
 		// Where the SQL stores are, and what they say where they are not.
 		runner.addCase(new crossbyte.db.kv.KVSupportTest());

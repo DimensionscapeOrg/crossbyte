@@ -3,9 +3,10 @@ package crossbyte.db.kv;
 import crossbyte.errors.Error;
 
 /**
-	A record a store will not hand back as it is: one written in another
-	format than its reader's (`SchemaMismatch`), one its reader cannot read
-	(`Undecodable`), or one past the store's limits (`TooLarge`). `kind` says
+	A record a store or a `KVRepo` will not hand back as it is: one written
+	in another format than the repository's codec (`SchemaMismatch`), one
+	its codec cannot read (`Undecodable`), or one past the store's limits
+	(`TooLarge`). `kind` says
 	which, to switch on rather than the message, and `key` names the record.
 	`errorId` is the kind's number.
 

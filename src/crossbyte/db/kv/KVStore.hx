@@ -10,7 +10,8 @@ import haxe.io.Bytes;
 
 	`MemoryKVStore` keeps its records in memory, on every target;
 	`SQLiteKVStore` in an SQLite database, natively and on PHP; and
-	`PostgresKVStore` in PostgreSQL, natively.
+	`PostgresKVStore` in PostgreSQL, natively. `KVRepo` reads and writes
+	typed values in any of them through a `KVCodec`.
 
 	```haxe
 	import crossbyte.db.kv.KVStore;
@@ -62,7 +63,7 @@ interface KVStore extends crossbyte.db.ITransactionalConnection {
 		next revision of the one there. Answers the record written.
 
 		@param schema The fingerprint of the value's format, 0 for none: kept
-		as `KVRecord.schema` for a reader to check.
+		as `KVRecord.schema`, which a `KVRepo` checks as it reads.
 		@throws ArgumentError When `key` is not a key, or `value` is null or
 		past `KVOptions.maxValueBytes`.
 	**/
