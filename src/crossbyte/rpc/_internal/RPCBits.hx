@@ -46,9 +46,6 @@ class RPCBits {
 		if (quantize.length > 0 && range.length > 0) {
 			Context.error('RPC $where is marked both @:quantize and @:range: one is its encoding.', field.pos);
 		}
-		if (optional) {
-			Context.error('RPC $where may be absent, and a field marked @:quantize or @:range cannot be: give it a value that stands for none.', field.pos);
-		}
 		if (quantize.length > 0) {
 			if (kind.token != "f64" && kind.token != "f32") {
 				Context.error('RPC $where: @:quantize is for a Float or Float32 field, and this one is ${kind.name}.', field.pos);
@@ -183,6 +180,276 @@ class RPCBits {
 			},
 			same: (a, b) -> macro(cast $a : Int) == (cast $b : Int)
 		};
+	}
+
+	// ------------------------------------------------------------ the layout
+
+	/**
+		Whether a structure of `fields` is in the bit layout: `marked`
+		(`@:rpcBits`), or one of its fields is a bit kind.
+	**/
+	public static function isBitLayout(fields:Array<RPCStructs.StructField>, marked:Bool):Bool {
+		if (marked) {
+			return true;
+		}
+		for (field in fields) {
+			if (field.kind.bits != null) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** `fields`, a `Bool` among them one bit, as the bit layout has it. **/
+	public static function withBoolBits(fields:Array<RPCStructs.StructField>):Array<RPCStructs.StructField> {
+		return [
+			for (field in fields)
+				field.kind.token == "bool" && field.kind.bits == null ? {
+					name: field.name,
+					pinned: field.pinned,
+					type: field.type,
+					optional: field.optional,
+					kind: BOOL_BIT,
+					pos: field.pos
+				} : field
+		];
+	}
+
+	/** Whether every field of a structure in the bit layout is in its bit section: an array of it is one run of bits. **/
+	public static function bitsOnly(fields:Array<RPCStructs.StructField>):Bool {
+		for (field in fields) {
+			if (field.kind.bits == null) {
+				return false;
+			}
+		}
+		return fields.length > 0;
+	}
+
+	/** The fewest bits a value of a structure all of bits takes: its presence bits and the bits of the fields that cannot be absent. **/
+	public static function leastBits(fields:Array<RPCStructs.StructField>):Int {
+		var bits:Int = 0;
+		for (field in fields) {
+			bits += field.optional ? 1 : field.kind.bits.width;
+		}
+		return bits;
+	}
+
+	/** A `Bool` in the bit layout: one bit. **/
+	static final BOOL_BIT:RPCKind = {
+		name: "Bool",
+		token: "bool",
+		size: -1,
+		roomOf: value -> macro 0,
+		zero: macro false,
+		compound: false,
+		write: (frame, value) -> throw "a bit kind is written in a bit section",
+		read: (input, end) -> throw "a bit kind is read from a bit section",
+		bits: {
+			width: 1,
+			put: value -> macro((cast $value : Bool) ? 1 : 0),
+			get: raw -> macro($raw != 0)
+		},
+		same: (a, b) -> macro(cast $a : Bool) == (cast $b : Bool)
+	};
+
+	/**
+		Statements writing a whole value in the bit layout, `value` being an
+		expression of it, into `frame`:
+
+		```
+		bit section, LSB first:
+		  per field in wire order: its presence bit, if it may be absent;
+		                           its bits, if a bit kind and there
+		  0-7 bits of zeros, to a whole byte
+		byte section: per field in wire order that is not a bit kind and is
+		              there, as the byte layout writes it (with no presence byte)
+		```
+	**/
+	public static function writeValue(fields:Array<RPCStructs.StructField>, value:Expr):Array<Expr> {
+		final stmts:Array<Expr> = [(macro var __acc:Int = 0), (macro var __fill:Int = 0)];
+		for (e in writeFieldBits(fields, value, true)) {
+			stmts.push(e);
+		}
+		stmts.push(macro if (__fill > 0) frame.putByte(__acc & 0xFF));
+		for (i in 0...fields.length) {
+			final field = fields[i];
+			if (field.kind.bits != null) {
+				continue;
+			}
+			final name:String = field.name;
+			final put:Expr = RPCKinds.write(field.kind, false, macro frame, macro $value.$name);
+			stmts.push(field.optional ? macro if ($i{presence(i)}) $put : put);
+		}
+		return stmts;
+	}
+
+	/**
+		The bit section's statements for a value's fields (`declare`: with
+		the presence locals declared), leaving `__p<i>` set for each field
+		that may be absent.
+	**/
+	public static function writeFieldBits(fields:Array<RPCStructs.StructField>, value:Expr, declare:Bool):Array<Expr> {
+		final stmts:Array<Expr> = [];
+		for (i in 0...fields.length) {
+			final field = fields[i];
+			final name:String = field.name;
+			final get:Expr = macro $value.$name;
+			final p:String = presence(i);
+			if (field.optional) {
+				stmts.push(declare ? macro var $p:Bool = $get != null : macro $i{p} = $get != null);
+				for (e in RPCPatches.putBits(macro $i{p} ? 1 : 0, 1)) {
+					stmts.push(e);
+				}
+			}
+			final bits = field.kind.bits;
+			if (bits != null) {
+				final put:Array<Expr> = RPCPatches.putBits(bits.put(get), bits.width);
+				stmts.push(field.optional ? macro if ($i{p}) $b{put} : macro $b{put});
+			}
+		}
+		return stmts;
+	}
+
+	/**
+		Statements reading a whole value in the bit layout: `assign(field, i,
+		value)` sets each field; `readBytes(field)`, a field of the byte
+		section that is there (as the byte layout reads it, with no presence
+		byte; `null`: as `RPCKinds` reads it).
+	**/
+	public static function readValue(fields:Array<RPCStructs.StructField>, input:Expr, end:Expr, assign:(RPCStructs.StructField, Int, Expr) -> Expr,
+			?readBytes:RPCStructs.StructField->Expr):Array<Expr> {
+		final stmts:Array<Expr> = [(macro var __acc:Int = 0), (macro var __have:Int = 0)];
+		for (e in readFieldBits(fields, assign, true)) {
+			stmts.push(e);
+		}
+		for (i in 0...fields.length) {
+			final field = fields[i];
+			if (field.kind.bits != null) {
+				continue;
+			}
+			final get:Expr = readBytes != null ? readBytes(field) : RPCKinds.read(field.kind, false, input, end);
+			stmts.push(assign(field, i, field.optional ? macro($i{presence(i)} ? $get : null) : get));
+		}
+		return stmts;
+	}
+
+	/** The bit section's statements for a value's fields, reading `input` (`declare`: with the presence locals declared). **/
+	public static function readFieldBits(fields:Array<RPCStructs.StructField>, assign:(RPCStructs.StructField, Int, Expr) -> Expr, declare:Bool):Array<Expr> {
+		final stmts:Array<Expr> = [];
+		for (i in 0...fields.length) {
+			final field = fields[i];
+			final p:String = presence(i);
+			if (field.optional) {
+				final take:Expr = RPCPatches.takeBits(1);
+				stmts.push(declare ? macro var $p:Bool = $take != 0 : macro $i{p} = $take != 0);
+			}
+			final bits = field.kind.bits;
+			if (bits != null) {
+				final get:Expr = bits.get(RPCPatches.takeBits(bits.width));
+				stmts.push(assign(field, i, field.optional ? macro($i{p} ? $get : null) : get));
+			}
+		}
+		return stmts;
+	}
+
+	/**
+		An array of a class whose fields are all in its bit section, as one
+		run: a varint count, then every element's bits, one after another,
+		and zeros to a whole byte once at the end, where each element alone
+		would pad its own.
+	**/
+	public static function runWrite(info:RPCStructs.StructInfo, frame:Expr, list:Expr, name:String):Expr {
+		final item:String = RPCKinds.local();
+		final nameExpr:Expr = macro $v{name};
+		final elementName:Expr = macro $v{info.name};
+		final each:Array<Expr> = writeFieldBits(info.fields, macro $i{item}, true);
+		final held:String = RPCKinds.local();
+		return macro {
+			final $held = $list;
+			if ($i{held} == null) {
+				throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+			}
+			$frame.putVarUInt($i{held}.length);
+			var __acc:Int = 0;
+			var __fill:Int = 0;
+			${named(frame, "frame")};
+			for ($i{item} in $i{held}) {
+				if ($i{item} == null) {
+					throw crossbyte.rpc._internal.RPCFrame.nullValue($elementName);
+				}
+				$b{each};
+			}
+			if (__fill > 0) {
+				frame.putByte(__acc & 0xFF);
+			}
+		};
+	}
+
+	/**
+		Reads a run `runWrite` wrote into `held` (`null`: a new array), its
+		element instances kept and read into, and answers the array. The count
+		is checked first against what the frame has left, at the fewest bits
+		an element takes.
+	**/
+	public static function runRead(info:RPCStructs.StructInfo, input:Expr, end:Expr, held:Expr):Expr {
+		final ctor:TypePath = switch (info.type) {
+			case TPath(path): path;
+			case _: throw "a class's type is a path";
+		};
+		final t:ComplexType = info.type;
+		final count:String = RPCKinds.local();
+		final list:String = RPCKinds.local();
+		final at:String = RPCKinds.local();
+		final made:String = RPCKinds.local();
+		final least:Int = leastBits(info.fields);
+		final assign = (field:RPCStructs.StructField, i:Int, value:Expr) -> {
+			final fname:String = field.name;
+			return macro $i{made}.$fname = $value;
+		};
+		final each:Array<Expr> = readFieldBits(info.fields, assign, true);
+		return macro {
+			final $count:Int = $input.readVarUInt();
+			final __limit:Int = $end < $input.length ? $end : $input.length;
+			if ($i{count} < 0 || ($i{count} : Float) * $v{least} > (__limit - $input.position) * 8.0) {
+				throw "RPC frame names more than it holds";
+			}
+			var $list:Array<$t> = $held;
+			if ($i{list} == null) {
+				$i{list} = [];
+			}
+			if ($i{list}.length > $i{count}) {
+				$i{list}.resize($i{count});
+			}
+			var __acc:Int = 0;
+			var __have:Int = 0;
+			${named(input, "input")};
+			for ($i{at} in 0...$i{count}) {
+				var $made:$t = $i{at} < $i{list}.length ? $i{list}[$i{at}] : null;
+				if ($i{made} == null) {
+					$i{made} = new $ctor();
+				}
+				$b{each};
+				if ($i{at} < $i{list}.length) {
+					$i{list}[$i{at}] = $i{made};
+				} else {
+					$i{list}.push($i{made});
+				}
+			}
+			$i{list};
+		};
+	}
+
+	/** `e` as a local called `name`, which the bit cursor's code names: nothing when it is one already. **/
+	static function named(e:Expr, name:String):Expr {
+		return switch (e.expr) {
+			case EConst(CIdent(n)) if (n == name): macro {};
+			case _: macro final $name = $e;
+		}
+	}
+
+	/** The local saying whether field `i` is there. **/
+	public static inline function presence(i:Int):String {
+		return "__p" + i;
 	}
 
 	/** `value` rounded to single precision, as a `Float32` is held natively. **/

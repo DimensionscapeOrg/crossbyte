@@ -376,6 +376,25 @@ class RPCKinds {
 		final fixed:Bool = !optional && element.put != null && element.get != null;
 		requireNoPatch(element, "an array's element");
 		final arrayOfType:ComplexType = TPath({pack: [], name: "Array", params: [TPType(optional ? nullOf(elementType) : elementType)]});
+		// A class all of bits, as one run of bits.
+		if (!optional && element.struct != null && element.struct.isClass && element.struct.bitsOnly) {
+			final info = element.struct;
+			final name:String = "Array<" + element.name + ">";
+			return {
+				name: name,
+				token: "[" + token(element, optional) + "]",
+				size: -1,
+				roomOf: value -> macro $value.length * $v{(info.size > 0 ? info.size : 1)} + 5,
+				zero: macro null,
+				compound: true,
+				element: element,
+				elementOptional: false,
+				elementType: elementType,
+				valueType: arrayOfType,
+				write: (frame, value) -> RPCBits.runWrite(info, frame, value, name),
+				read: (input, end) -> RPCBits.runRead(info, input, end, macro null)
+			};
+		}
 		return {
 			name: "Array<" + element.name + ">",
 			token: "[" + token(element, optional) + "]",

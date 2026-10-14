@@ -19,16 +19,17 @@ import utest.Assert;
 class RPCBitsTest extends utest.Test {
 	public function testAQuantizedShipIsItsBitsThenItsBytes():Void {
 		final ship = remote(1524, -311.5, 120, -45, 16384, 5, false, 180);
-		// controls 6 bits, engineHeat 10, vx, vy, x and y 16 each: 80 bits,
-		// ten bytes; then aimSteps 2 and engineLocked 1.
+		// controls 6 bits, engineHeat 10, engineLocked 1, vx, vy, x and y 16
+		// each: 81 bits, eleven bytes; then aimSteps, 2.
 		final whole = new ByteArray();
 		RPCCodecs.of(BitShip).write(ship, whole);
 		Assert.equals(13, whole.length);
 		Assert.equals(13, RPCCodecs.of(BitShip).maxSize);
 		// The bit section reads back with a BitReader.
-		final reader = new BitReader(whole, 0, 10);
+		final reader = new BitReader(whole, 0, 11);
 		Assert.equals(5, reader.readRange(0, 63));
 		Assert.floatEquals(180, reader.readQuantized(0, 400, 10), 400 / 1023 / 2);
+		Assert.isFalse(reader.readBool());
 		Assert.floatEquals(120, reader.readQuantized(-1024, 1024, 16), 2048 / 65535 / 2);
 		Assert.floatEquals(-45, reader.readQuantized(-1024, 1024, 16), 2048 / 65535 / 2);
 		Assert.floatEquals(1524, reader.readQuantized(-8192, 8192, 16), 16384 / 65535 / 2);
@@ -136,6 +137,71 @@ class RPCBitsTest extends utest.Test {
 		Assert.equals(RPCCodecs.of(BitRuledLiterally).layout, codec.layout);
 	}
 
+	public function testAbsentFieldsAndBoolsAreABitEach():Void {
+		final codec = RPCCodecs.of(BitMaybe);
+		final value = new BitMaybe();
+		value.a = 7;
+		value.on = true;
+		value.q = 0.5;
+		// Bits: a there, name not, on, q there and q's step 128 of 255; then a.
+		final out = new ByteArray();
+		codec.write(value, out);
+		Assert.equals("0d08" + "07000000", hexOf(out));
+		out.position = 0;
+		final back = codec.read(out);
+		Assert.equals(7, back.a);
+		Assert.isNull(back.name);
+		Assert.isTrue(back.on);
+		Assert.floatEquals(0.5, back.q, 1 / 255 / 2);
+		// Each absent: four bits, one byte.
+		final none = new ByteArray();
+		codec.write(new BitMaybe(), none);
+		Assert.equals("00", hexOf(none));
+		// A patch from one to another: the presence bits of what changed.
+		final fixture = new BitFixture();
+		final next = codec.copy(value, new BitMaybe());
+		next.a = null;
+		next.name = "x";
+		fixture.commands.maybe(new RPCPatch(codec).diff(value, next));
+		final into = fixture.handler.lastMaybe.apply(value, new BitMaybe());
+		Assert.isTrue(codec.equals(next, into));
+		Assert.isNull(into.a);
+		Assert.equals("x", into.name);
+		Assert.isTrue(into.on);
+	}
+
+	public function testAnArrayOfAStructureAllOfBitsIsOneRun():Void {
+		// The design's redundant inputs: ack 36000, newest 1000, the last four,
+		// 22 bits each in one run: 17 bytes of arguments.
+		final inputs = [stellar(5, 16384), stellar(5, 16384), stellar(5, 16400), stellar(1, 16420)];
+		final hex:String = argumentsOf(commands -> commands.inputs(36000, 1000, inputs));
+		final writer = new crossbyte.io.BitWriter();
+		for (input in inputs) {
+			writer.writeBits(input.aimSteps, 16);
+			writer.writeBits(input.controls, 6);
+		}
+		Assert.equals("a09902" + "e807" + "04" + hexOf(writer.finish()), hex);
+		Assert.equals(17 * 2, hex.length);
+		// Read back, into what the session keeps.
+		final fixture = new BitFixture();
+		fixture.commands.inputs(1, 2, inputs);
+		final first = fixture.handler.lastInputs;
+		Assert.equals("16384:5,16384:5,16400:5,16420:1", [for (i in first) i.aimSteps + ":" + i.controls].join(","));
+		fixture.commands.inputs(1, 2, [stellar(63, 65535), stellar(0, 0)]);
+		Assert.isTrue(first == fixture.handler.lastInputs);
+		Assert.equals("65535:63,0:0", [for (i in first) i.aimSteps + ":" + i.controls].join(","));
+		// A count the frame cannot hold is unreadable.
+		final answers = errorAnswersAt(fixture.link.client);
+		fixture.link.client.send(frameOf(out -> {
+			out.writeByte(RPCWire.FLAG_REQUEST);
+			out.writeInt(RPCOps.opOf("count([" + INPUT_TOKEN + "]):i32"));
+			out.writeVarUInt(9);
+			out.writeVarUInt(1000);
+			out.writeByte(0);
+		}));
+		Assert.same(["9: " + RPCError.UNREADABLE_MESSAGE], answers);
+	}
+
 	public function testRandomQuantizedPatchesAreTheSameBytesEverywhere():Void {
 		var seed:Int = 99;
 		final next = (bound:Int) -> {
@@ -171,8 +237,8 @@ class RPCBitsTest extends utest.Test {
 	}
 
 	// What every target writes for the random patches above.
-	static inline final FUZZ_BYTES:Int = 1830;
-	static inline final FUZZ_HASH:Int = 154722419;
+	static inline final FUZZ_BYTES:Int = 1811;
+	static inline final FUZZ_HASH:Int = 2046460684;
 
 	// ------------------------------------------------------------------
 
@@ -180,6 +246,18 @@ class RPCBitsTest extends utest.Test {
 		+ "vx:q16(c090000000000000,4090000000000000),vy:q16(c090000000000000,4090000000000000),x:q16(c0c0000000000000,40c0000000000000),"
 		+ "y:q16(c0c0000000000000,40c0000000000000)}";
 	static inline final DIE_TOKEN:String = "b{face:r(1,6)}";
+	static inline final INPUT_TOKEN:String = "b{aimSteps:r(0,65535),controls:r(0,63)}";
+
+	static function stellar(controls:Int, aim:Int):BitInput {
+		final i = new BitInput();
+		i.controls = controls;
+		i.aimSteps = aim;
+		return i;
+	}
+
+	static function hexOf(bytes:ByteArray):String {
+		return (bytes : Bytes).sub(0, bytes.length).toHex();
+	}
 
 	static function remote(x:Float, y:Float, vx:Float, vy:Float, aim:Int, controls:Int, locked:Bool, heat:Float):BitShip {
 		final s = new BitShip();
@@ -294,10 +372,32 @@ class BitRuledLiterally implements RPCStruct {
 	public function new() {}
 }
 
+@:rpcBits
+class BitMaybe implements RPCStruct {
+	public var a:Null<Int> = null;
+	public var name:Null<String> = null;
+	public var on:Bool = false;
+	@:quantize(0, 1, 8) public var q:Null<Float> = null;
+
+	public function new() {}
+}
+
+/** Stellar's input, all of bits. **/
+@:rpcBits
+class BitInput implements RPCStruct {
+	@:range(0, 63) public var controls:Int = 0;
+	@:range(0, 65535) public var aimSteps:Int = 0;
+
+	public function new() {}
+}
+
 interface BitContract {
 	function ship(ship:RPCPatch<BitShip>):Void;
 	function ships(ships:RPCMapPatch<BitShip>):Void;
 	function roll(die:BitDie):Int;
+	function maybe(value:RPCPatch<BitMaybe>):Void;
+	function inputs(ack:VarUInt, newest:VarUInt, recent:Array<BitInput>):Void;
+	function count(recent:Array<BitInput>):Int;
 }
 
 @:rpcContract(BitContract)
@@ -307,8 +407,22 @@ private class BitCommands extends RPCCommands {
 
 private class BitHandler extends RPCHandler implements BitContract {
 	public var lastShip:Null<RPCPatch<BitShip>> = null;
+	public var lastMaybe:Null<RPCPatch<BitMaybe>> = null;
+	public var lastInputs:Null<Array<BitInput>> = null;
 
 	public function new() {}
+
+	public function maybe(value:RPCPatch<BitMaybe>):Void {
+		lastMaybe = value;
+	}
+
+	public function inputs(ack:VarUInt, newest:VarUInt, @:reuse recent:Array<BitInput>):Void {
+		lastInputs = recent;
+	}
+
+	public function count(recent:Array<BitInput>):Int {
+		return recent.length;
+	}
 
 	public function ship(ship:RPCPatch<BitShip>):Void {
 		lastShip = ship;

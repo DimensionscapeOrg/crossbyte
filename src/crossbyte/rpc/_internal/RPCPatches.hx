@@ -165,6 +165,11 @@ class RPCPatches {
 				$r.readInto($input, $end, $i{h});
 			};
 		}
+		if (kind.element != null && kind.mapKey == null && !kind.elementOptional && kind.element.struct != null && kind.element.struct.isClass
+			&& kind.element.struct.bitsOnly) {
+			// One run of bits, its elements read into those `held` has.
+			return RPCBits.runRead(kind.element.struct, input, end, held);
+		}
 		if (kind.element != null) {
 			final t:ComplexType = kind.valueType;
 			final count:String = RPCKinds.local();
@@ -251,7 +256,7 @@ class RPCPatches {
 		if (kind.struct != null || kind.element != null) {
 			return poisonField(kind, false, value);
 		}
-		if (kind.isEnum == true) {
+		if (kind.isEnum == true || kind.token == "bool") {
 			return null;
 		}
 		final token:String = kind.bits != null ? (StringTools.startsWith(kind.token, "q") ? "f64" : "i32") : kind.token;
@@ -427,12 +432,28 @@ class RPCPatches {
 				writeBits.push(e);
 			}
 		}
+		// After the mask, per field that changed: in the bit layout its
+		// presence bit if it may be absent, and its bits if a bit kind.
+		final bitLayout:Bool = info.bitLayout;
 		for (i in 0...n) {
 			final field = info.fields[i];
 			final bits = field.kind.bits;
+			final fname:String = field.name;
+			final p:String = RPCBits.presence(i);
+			final each:Array<Expr> = [];
+			if (bitLayout && field.optional) {
+				writeBits.push(macro var $p:Bool = false);
+				each.push(macro $i{p} = current.$fname != null);
+				for (e in putBits(macro $i{p} ? 1 : 0, 1)) {
+					each.push(e);
+				}
+			}
 			if (bits != null) {
-				final fname:String = field.name;
-				writeBits.push(macro if (${bitTest(i)}) $b{putBits(bits.put(macro current.$fname), bits.width)});
+				final put:Array<Expr> = putBits(bits.put(macro current.$fname), bits.width);
+				each.push(field.optional ? macro if ($i{p}) $b{put} : macro $b{put});
+			}
+			if (each.length > 0) {
+				writeBits.push(macro if (${bitTest(i)}) $b{each});
 			}
 		}
 		writeBits.push(macro if (__fill > 0) frame.putByte(__acc & 0xFF));
@@ -483,8 +504,31 @@ class RPCPatches {
 				});
 			} else if (field.kind.bits != null) {
 				final bits = field.kind.bits;
-				readBitFields.push(macro if ($set) state.values.$fname = ${bits.get(takeBits(bits.width))});
+				final p:String = RPCBits.presence(i);
+				final get:Expr = bits.get(takeBits(bits.width));
+				if (field.optional) {
+					readBitFields.push(macro var $p:Bool = false);
+					readBitFields.push(macro if ($set) {
+						$i{p} = ${takeBits(1)} != 0;
+						state.values.$fname = $i{p} ? $get : null;
+					});
+				} else {
+					readBitFields.push(macro if ($set) state.values.$fname = $get);
+				}
 				applies.push(macro if ($set) into.$fname = state.values.$fname else if (other) into.$fname = from.$fname);
+			} else if (bitLayout && field.optional) {
+				// Its presence in the bit section, the value in the byte section.
+				final p:String = RPCBits.presence(i);
+				readBitFields.push(macro var $p:Bool = false);
+				readBitFields.push(macro if ($set) $i{p} = ${takeBits(1)} != 0);
+				writeBytes.push(macro if ($set && $i{p}) ${RPCKinds.write(field.kind, false, macro frame, macro current.$fname)});
+				readBytes.push(macro if ($set) state.values.$fname = $i{p} ? ${RPCKinds.read(field.kind, false, macro input, macro end)} : null);
+				if (immutable(field.kind)) {
+					applies.push(macro if ($set) into.$fname = state.values.$fname else if (other) into.$fname = from.$fname);
+				} else {
+					applies.push(macro if ($set) into.$fname = ${copy(field.kind, field.optional, macro state.values.$fname, macro into.$fname)} else if (other)
+						into.$fname = ${copy(field.kind, field.optional, macro from.$fname, macro into.$fname)});
+				}
 			} else {
 				writeBytes.push(macro if ($set) ${RPCKinds.write(field.kind, field.optional, macro frame, macro current.$fname)});
 				readBytes.push(macro if ($set) state.values.$fname = ${RPCKinds.read(field.kind, field.optional, macro input, macro end)});
@@ -498,18 +542,24 @@ class RPCPatches {
 		}
 
 		// readInto: a whole value, as the codec reads one, into `into`.
-		final readsInto:Array<Expr> = [(macro var __acc:Int = 0), (macro var __have:Int = 0)];
-		for (field in info.fields) {
-			final bits = field.kind.bits;
-			if (bits != null) {
+		final readsInto:Array<Expr> = [];
+		if (bitLayout) {
+			final assign = (field:StructField, i:Int, value:Expr) -> {
 				final fname:String = field.name;
-				readsInto.push(macro into.$fname = ${bits.get(takeBits(bits.width))});
+				return macro into.$fname = $value;
+			};
+			final kept = (field:StructField) -> {
+				final fname:String = field.name;
+				return readInto(field.kind, false, macro input, macro end, macro into.$fname);
+			};
+			for (e in RPCBits.readValue(info.fields, macro input, macro end, assign, kept)) {
+				readsInto.push(e);
 			}
 		}
 		for (field in info.fields) {
 			final fname:String = field.name;
-			if (field.kind.bits != null) {
-				continue;
+			if (bitLayout) {
+				break;
 			}
 			if (nested(field)) {
 				final cr:Expr = replicationOf(field.kind.struct, pos).r;
@@ -598,13 +648,11 @@ class RPCPatches {
 				arg("mask", macro :Int),
 				arg("maskHigh", macro :Int),
 				arg("flag", macro :Int)
-			], macro :Void, macro {
-				if (current == null) {
+			], macro :Void, macro $b{[
+				macro if (current == null) {
 					throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
 				}
-				$b{writeBits};
-				$b{writeBytes};
-			}, pos, "Writes the patch from `base` to `current` whose fields `mask` names; `flag` is the full bit (0 or 1) of an argument's patch, or -1 for none."),
+			].concat(writeBits).concat(writeBytes)}, pos, "Writes the patch from `base` to `current` whose fields `mask` names; `flag` is the full bit (0 or 1) of an argument's patch, or -1 for none."),
 			fn("readPatch", [
 				arg("input", macro :crossbyte.io.ByteArrayInput),
 				arg("end", macro :Int),

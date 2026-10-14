@@ -253,6 +253,15 @@ All notable changes to CrossByte will be documented in this file.
   and `+ - * /` of those. The bounds and widths are in the structure's
   layout, `b{...}` in a signature: a peer built with others finds no
   method.
+- **The bit layout: `@:rpcBits`, presence bits, and arrays as one run.** A
+  structure marked `@:rpcBits`, or with a `@:quantize` or `@:range` field,
+  puts a `Bool` in one bit and says whether a field that may be absent is
+  there with one bit where the byte layout spends a byte, in its bit
+  section; a quantized or ranged field may be absent too. An array of such
+  a class whose fields are all bits is one run of bits for every element,
+  padded once: Stellar's last four inputs, 22 bits each, are 17 bytes of
+  arguments with the tick and the acknowledgement. Structures not in the
+  bit layout keep 1.0's bytes and ops.
 - **`@:reuse`: arguments read into what the session keeps.** On a
   handler's argument, on a contract method (`@:reuse(recent)`, naming its
   arguments, since a typed interface keeps no argument metadata) or on the

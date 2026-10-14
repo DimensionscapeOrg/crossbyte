@@ -130,9 +130,11 @@ class RPCStructs {
 				}
 			}
 		}
-		final fields:Array<StructField> = shape(path, key, declared, false, cls.module, pos);
+		final shaped:Array<StructField> = shape(path, key, declared, false, cls.module, pos);
+		final bitLayout:Bool = RPCBits.isBitLayout(shaped, cls.meta.has(":rpcBits"));
+		final fields:Array<StructField> = bitLayout ? RPCBits.withBoolBits(shaped) : shaped;
 		return define(key, path, fields, RPCContractMacroTools.fullComplexType(type), [for (owner in chain) pathKey(owner.pack, owner.name)], true,
-			cls.module, pos);
+			cls.module, bitLayout, pos);
 	}
 
 	/**
@@ -147,8 +149,10 @@ class RPCStructs {
 			return known;
 		}
 		final name:String = named != null ? named : "the structure " + TypeTools.toString(type);
-		final fields:Array<StructField> = shape(name, named != null ? "typedef " + named : key, anon.fields, true, null, pos);
-		return define(key, name, fields, full, [], false, null, pos);
+		final shaped:Array<StructField> = shape(name, named != null ? "typedef " + named : key, anon.fields, true, null, pos);
+		final bitLayout:Bool = RPCBits.isBitLayout(shaped, false);
+		final fields:Array<StructField> = bitLayout ? RPCBits.withBoolBits(shaped) : shaped;
+		return define(key, name, fields, full, [], false, null, bitLayout, pos);
 	}
 
 	/**
@@ -445,30 +449,48 @@ class RPCStructs {
 		fields the codec reads and sets.
 	**/
 	static function define(key:String, name:String, fields:Array<StructField>, type:ComplexType, access:Array<String>, isClass:Bool,
-			module:Null<String>, pos:Position):RPCKind {
+			module:Null<String>, bitLayout:Bool, pos:Position):RPCKind {
 		var size:Int = 0;
 		var least:Int = 0;
-		// The bit layout's bit fields take their bits, in a section of whole
-		// bytes before the rest.
-		var bitTotal:Int = 0;
-		var bitLayout:Bool = false;
-		for (field in fields) {
-			if (field.kind.bits != null) {
-				bitLayout = true;
-				bitTotal += field.kind.bits.width;
-				continue;
+		if (!bitLayout) {
+			for (field in fields) {
+				final each:Int = RPCKinds.size(field.kind, field.optional);
+				if (size >= 0) {
+					size = each < 0 ? -1 : size + each;
+				}
+				least += field.optional ? 1 : (field.kind.size > 0 ? field.kind.size : 1);
 			}
-			final each:Int = RPCKinds.size(field.kind, field.optional);
+		} else {
+			// Its bit section in whole bytes, a presence bit for each field
+			// that may be absent (whose size then depends on the value), and
+			// the byte fields after it.
+			var bitsMost:Int = 0;
+			var bitsLeast:Int = 0;
+			for (field in fields) {
+				if (field.optional) {
+					size = -1;
+					bitsMost++;
+					bitsLeast++;
+				}
+				if (field.kind.bits != null) {
+					bitsMost += field.kind.bits.width;
+					if (!field.optional) {
+						bitsLeast += field.kind.bits.width;
+					}
+					continue;
+				}
+				final each:Int = RPCKinds.size(field.kind, false);
+				if (size >= 0) {
+					size = each < 0 ? -1 : size + each;
+				}
+				if (!field.optional) {
+					least += field.kind.size > 0 ? field.kind.size : 1;
+				}
+			}
 			if (size >= 0) {
-				size = each < 0 ? -1 : size + each;
+				size += (bitsMost + 7) >> 3;
 			}
-			least += field.optional ? 1 : (field.kind.size > 0 ? field.kind.size : 1);
-		}
-		if (bitLayout) {
-			if (size >= 0) {
-				size += (bitTotal + 7) >> 3;
-			}
-			least += (bitTotal + 7) >> 3;
+			least += (bitsLeast + 7) >> 3;
 			if (least == 0) {
 				least = 1;
 			}
@@ -484,42 +506,33 @@ class RPCStructs {
 		final read:Array<Expr> = [];
 		final made:Array<ObjectField> = [];
 		if (bitLayout) {
-			// The bit section first: each bit field's bits, then zeros to a
-			// whole byte; the byte fields after it, as the byte layout writes
-			// them.
-			write.push(macro var __acc:Int = 0);
-			write.push(macro var __fill:Int = 0);
-			read.push(macro var __acc:Int = 0);
-			read.push(macro var __have:Int = 0);
-			for (i in 0...fields.length) {
-				final field = fields[i];
-				final bits = field.kind.bits;
-				if (bits == null) {
-					continue;
-				}
+			// The bit section, then the byte fields: see RPCBits.writeValue.
+			for (e in RPCBits.writeValue(fields, macro value)) {
+				write.push(e);
+			}
+			final assign = (field:StructField, i:Int, value:Expr) -> {
 				final fieldName:String = field.name;
-				for (e in RPCPatches.putBits(bits.put(macro value.$fieldName), bits.width)) {
-					write.push(e);
-				}
-				final get:Expr = bits.get(RPCPatches.takeBits(bits.width));
 				if (isClass) {
-					read.push(macro made.$fieldName = $get);
-				} else {
-					final local:String = "__f" + i;
-					read.push(macro var $local = $get);
+					return macro made.$fieldName = $value;
+				}
+				final local:String = "__f" + i;
+				return macro var $local = $value;
+			};
+			for (e in RPCBits.readValue(fields, macro input, macro end, assign)) {
+				read.push(e);
+			}
+			if (!isClass) {
+				for (i in 0...fields.length) {
+					made.push({field: fields[i].name, expr: macro $i{"__f" + i}});
 				}
 			}
-			write.push(macro if (__fill > 0) frame.putByte(__acc & 0xFF));
 		}
 		for (i in 0...fields.length) {
+			if (bitLayout) {
+				break;
+			}
 			final field = fields[i];
 			final fieldName:String = field.name;
-			if (field.kind.bits != null) {
-				if (!isClass) {
-					made.push({field: fieldName, expr: macro $i{"__f" + i}});
-				}
-				continue;
-			}
 			write.push(RPCKinds.write(field.kind, field.optional, macro frame, macro value.$fieldName));
 			final get:Expr = RPCKinds.read(field.kind, field.optional, macro input, macro end);
 			if (isClass) {
@@ -709,6 +722,8 @@ class RPCStructs {
 				codec: codec,
 				token: token,
 				size: size,
+				bitLayout: bitLayout,
+				bitsOnly: bitLayout && RPCBits.bitsOnly(fields) && RPCBits.leastBits(fields) > 0,
 				pos: pos
 			}
 		};
@@ -814,6 +829,10 @@ typedef StructInfo = {
 	final codec:String;
 	/** Its token in a signature. **/
 	final token:String;
+	/** Whether it is in the bit layout (`RPCBits`). **/
+	final bitLayout:Bool;
+	/** Whether every field is in its bit section, so an array of it is one run of bits. **/
+	final bitsOnly:Bool;
 	/** The bytes a whole value takes, or -1 when that depends on the value. **/
 	final size:Int;
 	final pos:Position;
