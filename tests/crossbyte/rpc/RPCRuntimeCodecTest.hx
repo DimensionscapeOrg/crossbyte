@@ -45,7 +45,7 @@ class RPCRuntimeCodecTest extends utest.Test {
 			Assert.equals(tag, referenceTag(arrived[i]), 'arrived as another kind: ' + describe(sent[i]) + ' as ' + describe(arrived[i]));
 			switch (tag) {
 				case RPCRuntimeCodec.TAG_BYTES:
-					Assert.equals((cast sent[i] : Bytes).toHex(), (cast arrived[i] : Bytes).toHex());
+					Assert.equals(hexOf(cast sent[i]), hexOf(cast arrived[i]));
 				case RPCRuntimeCodec.TAG_FLOAT if (Math.isNaN(sent[i])):
 					Assert.isTrue(Math.isNaN(arrived[i]));
 				case _:
@@ -114,9 +114,17 @@ class RPCRuntimeCodecTest extends utest.Test {
 		return values;
 	}
 
+	/**
+		The hex of `bytes`' `length` bytes. On PHP `Bytes.toHex` is of the
+		whole buffer, which for a `ByteArray` is its capacity.
+	**/
+	private static function hexOf(bytes:Bytes):String {
+		return bytes.sub(0, bytes.length).toHex();
+	}
+
 	private static function describe(value:Dynamic):String {
 		// Bytes as hex: as a string, these are not UTF-8.
-		final shown:String = (value is Bytes) ? "0x" + (cast value : Bytes).toHex() : Std.string(value);
+		final shown:String = (value is Bytes) ? "0x" + hexOf(cast value) : Std.string(value);
 		return shown + " (" + Std.string(Type.typeof(value)) + ")";
 	}
 }
