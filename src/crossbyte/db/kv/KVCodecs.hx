@@ -62,7 +62,7 @@ class KVCodecs {
 		return new TextKVCodec(schema);
 	}
 
-	/** Values as the bytes they are. **/
+	/** Values as the bytes they are, copied as they are written. **/
 	public static function bytes(schema:Int = 0):KVCodec<Bytes> {
 		return new BytesKVCodec(schema);
 	}
@@ -161,7 +161,7 @@ private final class BytesKVCodec implements KVCodec<Bytes> {
 	}
 
 	public function encode(value:Bytes):Bytes {
-		return value;
+		return value == null ? null : value.sub(0, value.length);
 	}
 
 	public function decode(bytes:Bytes):Bytes {

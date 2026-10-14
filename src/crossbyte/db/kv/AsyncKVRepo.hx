@@ -25,7 +25,8 @@ import haxe.io.Bytes;
 	```
 
 	A value is encoded as the call is made, on the calling thread, so the
-	caller may change it at once; it is decoded on the worker, so the
+	caller may change it at once, and counted against the store's
+	`AsyncKVStore.maxQueuedBytes`; it is decoded on the worker, so the
 	runtime's thread does neither the reading nor the decoding. A record of
 	another schema, or that its codec cannot read, fails the future with the
 	`KVError` as its `cause`, as `KVRepo` throws it.
@@ -77,7 +78,7 @@ class AsyncKVRepo<T> {
 
 		var full:String = prefix + key;
 		var schema:Int = codec.schema;
-		return store.submit(function(kv:KVStore):KVItem<T> {
+		return store.__write(encoded.length, () -> function(kv:KVStore):KVItem<T> {
 			var record:KVRecord = kv.put(full, encoded, schema);
 			return new KVItem(key, value, record.revision, record.createdAt, record.updatedAt);
 		});
@@ -95,7 +96,7 @@ class AsyncKVRepo<T> {
 
 		var full:String = prefix + key;
 		var schema:Int = codec.schema;
-		return store.submit(function(kv:KVStore):Null<KVItem<T>> {
+		return store.__write(encoded.length, () -> function(kv:KVStore):Null<KVItem<T>> {
 			var record:Null<KVRecord> = kv.compareAndSet(full, encoded, expected, schema);
 			return record == null ? null : new KVItem(key, value, record.revision, record.createdAt, record.updatedAt);
 		});

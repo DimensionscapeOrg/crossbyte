@@ -6,6 +6,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.db.kv.KVStoreChecks.bytes;
 import crossbyte.db.kv.KVStoreChecks.text;
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.sys.System;
 import crossbyte.test.Require;
 import haxe.io.Bytes;
@@ -137,6 +138,45 @@ class AsyncKVStoreTest extends utest.Test {
 		buffer.set(0, "z".code);
 		__value(future);
 		Assert.equals("abc", text(__value(kv.get("k"))));
+	}
+
+	public function testWritesPastTheQueuedBytesAreRefusedAtOnce():Void {
+		// The one worker held: writes wait, and what they hold is counted.
+		var kv = __memory(1);
+		kv.maxQueuedBytes = 100;
+		var gate = new sys.thread.Lock();
+		var held = kv.submit(function(store:KVStore):Int {
+			gate.wait(10);
+			return 0;
+		});
+
+		var first = kv.put("a", Bytes.alloc(60));
+		Assert.equals(60.0, kv.queuedBytes);
+		var refused = kv.put("b", Bytes.alloc(60));
+		Assert.isTrue(refused.completed, "refused at once, its value never copied");
+		Assert.isFalse(refused.succeeded);
+		Assert.isTrue(Std.isOfType(refused.cause, IllegalOperationError), Std.string(refused.cause));
+		var fits = kv.compareAndSet("c", Bytes.alloc(40), 0);
+		Assert.equals(100.0, kv.queuedBytes);
+
+		gate.release();
+		Assert.isTrue(__settle(Future.all([held, first.map(_ -> 0), fits.map(_ -> 0)])));
+		Assert.equals(0.0, kv.queuedBytes, "a write done is let go of");
+		Assert.isNull(__value(kv.get("b")));
+		Assert.notNull(__value(kv.get("c")));
+
+		// A repository's writes are counted too.
+		kv.maxQueuedBytes = 4;
+		var names = new AsyncKVRepo<String>(kv, "names/", KVCodecs.text());
+		var tooLong = names.put("x", "longer than four");
+		Assert.isTrue(tooLong.completed);
+		Assert.isFalse(tooLong.succeeded);
+		Assert.equals("ok", Require.notNull(__value(names.put("y", "ok"))).value);
+
+		kv.maxQueuedBytes = 0;
+		__value(kv.put("big", Bytes.alloc(1000)));
+		Assert.raises(() -> kv.maxQueuedBytes = -1, ArgumentError);
+		Assert.raises(() -> kv.maxQueuedBytes = Math.NaN, ArgumentError);
 	}
 
 	public function testARefusalFailsTheFutureWithTheStoresError():Void {

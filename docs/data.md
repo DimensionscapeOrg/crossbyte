@@ -204,6 +204,8 @@ kv.transaction(store -> {
 Each place in the pool is its own connection. Calls one after another may land on different stores, so writes that
 belong together go in one `transaction`, whose body runs on one worker inside `begin()` and `commit()`. A value is
 copied as the call is made, and what a store refuses fails the future with the store's error as its `cause`.
+`AsyncDatabase` bounds how many calls wait for a worker; `maxQueuedBytes` (64 MiB) bounds the values the writes not
+yet done hold between them, so a store that has stopped keeping up shows as refused writes rather than as memory.
 `AsyncKVRepo` is the same for a `KVRepo`'s typed values, encoded on the calling thread and decoded on the worker.
 Neither is built for JavaScript, which has no threads to run a store on.
 

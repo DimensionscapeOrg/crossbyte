@@ -20,7 +20,11 @@ interface KVCodec<T> {
 	**/
 	var schema(get, never):Int;
 
-	/** `value` as bytes. **/
+	/**
+		`value` as bytes of their own, which the repository may keep past the
+		call (an `AsyncKVRepo` until a worker writes them): never a buffer
+		the caller may go on to change.
+	**/
 	function encode(value:T):Bytes;
 
 	/** The value `bytes` holds; throws when they are not one. **/
