@@ -144,6 +144,18 @@ All notable changes to CrossByte will be documented in this file.
   read and a secret that is empty all throw an `ArgumentError` naming where
   it was looked for, never the value, so a service cannot start on an empty
   key. On PHP too.
+- **`ConfigTree`, nested configuration.** JSON documents and files
+  (`fromJson`, `withJson`, `withJsonFile`; bad JSON throws, naming the file,
+  line and column), defaults merged in at every depth (`withDefaults`), and
+  environment variables with a prefix and a separator (`withEnvironment`):
+  `APP_REALM__ENDPOINTS__0__PUBLIC_PORT` reaches
+  `realm.endpoints[0].publicPort`, matching a key by its letters in any
+  case. Typed getters as strict as `Config`'s (`getString`, `getInt`,
+  `getFloat`, `getBool`, `getArray`, `getStrings`), `section` and
+  `sections` for parts of the tree, `require`, and `secret`, which reads the
+  value through `Secret.resolve`. Objects merge key by key and arrays are
+  replaced whole. It reads JSON with a reader of its own, the same on every
+  target, PHP included.
 
 ### Fixed
 

@@ -302,6 +302,9 @@ class PortableSuite {
 		// Where a secret is read from: an environment and files, which a browser
 		// has neither of, and PHP reads its own way.
 		runner.addCase(new crossbyte.auth.SecretTest());
+		// A JSON reader of its own, which reads bytes and so the same on every
+		// target; the environment and files where there are any.
+		runner.addCase(new crossbyte.core.ConfigTreeTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.SQLRowTest());

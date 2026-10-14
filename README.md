@@ -342,6 +342,10 @@ The [RPC guide](docs/rpc.md) covers the server side, what can be sent, errors, d
   instead (see Extensions).
 - **IPC.** `LocalConnection`, `SharedChannel` and `SharedObject`, natively on Windows, Linux and macOS. On every
   other target they say so with `isSupported`, and throw when used.
+- **Configuration.** `ConfigTree` layers JSON files, defaults and environment variables (`MYSERVICE_SERVER__PORT`
+  reaches `server.port`, and a camelCase key in an array of objects) into one tree, read through strict typed
+  getters, so `"80a80"` is refused rather than read as 80. `Config` does the same for flat `key=value` files.
+  `Secret.resolve` reads a secret the configuration names (`env:NAME`, `file:/run/secrets/name`) rather than holds.
 - **Processes and workers.** `Worker`, task pools, and `NativeProcess`, which starts a child process and reads its
   output natively, on the jvm, HashLink, Neko and Node; not on the interpreter or in a browser.
 - **Files and bytes.** File APIs, `ByteArray`, `ByteArrayInput` and `ByteArrayOutput`.

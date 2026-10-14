@@ -37,6 +37,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.CrossByteTest());
 		runner.addCase(new crossbyte.core.CrossByteRunningFlagTest());
 		runner.addCase(new crossbyte.core.ConfigTest());
+		runner.addCase(new crossbyte.core.ConfigTreeTest());
 		runner.addCase(new crossbyte.core.SocketCapacityTest());
 		runner.addCase(new crossbyte.core.FixedStepTest());
 		runner.addCase(new crossbyte.core.PassFlushTest());

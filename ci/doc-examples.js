@@ -60,6 +60,7 @@ const STANDALONE = [
   'src/crossbyte/auth/jwt/JWKSet.hx',
   'src/crossbyte/auth/jwt/JWT.hx',
   'src/crossbyte/core/Config.hx',
+  'src/crossbyte/core/ConfigTree.hx',
   'src/crossbyte/core/HostApplication.hx',
   'src/crossbyte/crypto/Ed25519.hx',
   'src/crossbyte/db/AsyncDatabase.hx',
