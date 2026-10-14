@@ -15,8 +15,13 @@ final class LogRecord {
 	/** The message as the caller gave it, before any escaping. **/
 	public final message:String;
 
-	/** Structured fields as the caller gave them, or null. **/
-	public final fields:Null<Map<String, String>>;
+	/**
+		Structured fields as the caller gave them, a map or an array, or null.
+		Read them as a map is read (`fields["status"]`, `for (key => value in
+		fields)`), or as one (`var map:Map<String, String> = record.fields`);
+		iterated, an array gives its fields in its order.
+	**/
+	public final fields:Null<LogFields>;
 
 	/** When it was logged: seconds since the Unix epoch, UTC. **/
 	public final time:Float;
@@ -25,7 +30,7 @@ final class LogRecord {
 	public final line:String;
 
 	@:allow(crossbyte.utils.Logger)
-	private function new(level:LogLevel, category:Null<String>, message:String, fields:Null<Map<String, String>>, time:Float, line:String) {
+	private function new(level:LogLevel, category:Null<String>, message:String, fields:Null<LogFields>, time:Float, line:String) {
 		this.level = level;
 		this.category = category;
 		this.message = message;

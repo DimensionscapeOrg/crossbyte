@@ -12,7 +12,16 @@ package crossbyte.utils;
  * ```
  *
  * Structured fields are appended as `key=value` pairs, which stay readable
- * in a terminal and parse cleanly with `logfmt`-style tooling. Set
+ * in a terminal and parse cleanly with `logfmt`-style tooling. A `Map` has
+ * no order of its own, so where the order matters, give the fields as an
+ * array of `LogField`s, which are written in the order given (see
+ * `LogFields`):
+ *
+ * ```haxe
+ * Logger.info("realm started", [{key: "realmId", value: "eu-1"}, {key: "port", value: 7000}]);
+ * ```
+ *
+ * Set
  * `Logger.json = true` to emit one JSON object per record for ingestion by
  * a log collector.
  *
@@ -223,27 +232,27 @@ class Logger {
 	}
 
 	/** Logs at `TRACE`. */
-	public static function trace(message:String, ?fields:Map<String, String>):Void {
+	public static function trace(message:String, ?fields:LogFields):Void {
 		log(LogLevel.TRACE, message, fields);
 	}
 
 	/** Logs at `DEBUG`. */
-	public static function debug(message:String, ?fields:Map<String, String>):Void {
+	public static function debug(message:String, ?fields:LogFields):Void {
 		log(LogLevel.DEBUG, message, fields);
 	}
 
 	/** Logs at `INFO`. */
-	public static function info(message:String, ?fields:Map<String, String>):Void {
+	public static function info(message:String, ?fields:LogFields):Void {
 		log(LogLevel.INFO, message, fields);
 	}
 
 	/** Logs at `WARN`. */
-	public static function warn(message:String, ?fields:Map<String, String>):Void {
+	public static function warn(message:String, ?fields:LogFields):Void {
 		log(LogLevel.WARN, message, fields);
 	}
 
 	/** Logs at `ERROR`. */
-	public static function error(message:String, ?fields:Map<String, String>):Void {
+	public static function error(message:String, ?fields:LogFields):Void {
 		log(LogLevel.ERROR, message, fields);
 	}
 
@@ -252,11 +261,12 @@ class Logger {
 	 *
 	 * @param recordLevel Severity of this record.
 	 * @param message The human-readable message.
-	 * @param fields Optional structured key-value pairs.
+	 * @param fields Optional structured key-value pairs: a map, or an
+	 *        array of `LogField`s written in the order given.
 	 * @param category Optional category, whose level applies instead of the
 	 *        global one.
 	 */
-	public static function log(recordLevel:LogLevel, message:String, ?fields:Map<String, String>, ?category:String):Void {
+	public static function log(recordLevel:LogLevel, message:String, ?fields:LogFields, ?category:String):Void {
 		if (!isEnabledFor(category, recordLevel)) {
 			return;
 		}
@@ -271,7 +281,7 @@ class Logger {
 
 	// Formats and emits a record that has already passed its level.
 	@:allow(crossbyte.utils.LogCategory)
-	@:noCompletion private static function __write(recordLevel:LogLevel, category:Null<String>, message:String, fields:Null<Map<String, String>>):Void {
+	@:noCompletion private static function __write(recordLevel:LogLevel, category:Null<String>, message:String, fields:Null<LogFields>):Void {
 		var records:LogRecord->Void = recordSink;
 		var time:Float = (timestamps || records != null) ? __now() : 0.0;
 		var line:String = json ? __formatJson(recordLevel, category, message, fields, time) : __formatText(recordLevel, category, message, fields, time);
@@ -425,21 +435,42 @@ class Logger {
 	}
 	#end
 
-	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
+	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Null<LogFields>, time:Float):String {
 		var buffer = new StringBuf();
 		__textHead(buffer, recordLevel, category, time);
 		buffer.add(message == null ? "" : __escape(message, false));
 
 		if (fields != null) {
-			for (key => value in fields) {
-				buffer.add(" ");
-				buffer.add(__escape(key, false));
-				buffer.add("=");
-				buffer.add(__quoteIfNeeded(value));
-			}
+			__textFields(buffer, fields);
 		}
 
 		return buffer.toString();
+	}
+
+	// Apart from __formatText, which stays as small as it was before fields
+	// came in two forms: on the jvm a record without fields allocated 24
+	// bytes more once the loops were inside it, too big then to be inlined
+	// where its buffer could be done away with.
+	@:noCompletion private static function __textFields(buffer:StringBuf, fields:LogFields):Void {
+		var pairs:Null<Array<LogField>> = fields.__pairs();
+		if (pairs != null) {
+			for (field in pairs) {
+				if (field != null && field.key != null) {
+					__textField(buffer, field.key, LogFields.__text(field.value));
+				}
+			}
+		} else {
+			for (key => value in fields.__map()) {
+				__textField(buffer, key, value);
+			}
+		}
+	}
+
+	@:noCompletion private static function __textField(buffer:StringBuf, key:String, value:Null<String>):Void {
+		buffer.add(" ");
+		buffer.add(__escape(key, false));
+		buffer.add("=");
+		buffer.add(__quoteIfNeeded(value));
 	}
 
 	/**
@@ -465,34 +496,51 @@ class Logger {
 
 	/**
 		One JSON object, written straight out: `level`, `message`, then `time`
-		and `category` when there are any, then the fields in the map's order.
+		and `category` when there are any, then the fields in their order.
 		Built this way rather than as an anonymous object with
 		`Reflect.setField` per field handed to the reflective
 		`haxe.Json.stringify` (1.1 us a record where text takes 0.7), whose
 		keys would come out in whatever order the target's reflection gives.
 	**/
-	@:noCompletion private static function __formatJson(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
+	@:noCompletion private static function __formatJson(recordLevel:LogLevel, category:Null<String>, message:String, fields:Null<LogFields>, time:Float):String {
 		var buffer = new StringBuf();
 		__jsonHead(buffer, recordLevel, category, message, time);
 
 		if (fields != null) {
-			for (key => value in fields) {
-				// Reserved keys keep their meaning; a colliding field is
-				// namespaced rather than silently dropped.
-				var target:String = (key == "level" || key == "message" || key == "time" || key == "category") ? "field_" + key : key;
-				buffer.add(",");
-				__jsonString(buffer, target);
-				buffer.add(":");
-				if (value == null) {
-					buffer.add("null");
-				} else {
-					__jsonString(buffer, value);
-				}
-			}
+			__jsonFields(buffer, fields);
 		}
 
 		buffer.add("}");
 		return buffer.toString();
+	}
+
+	@:noCompletion private static function __jsonFields(buffer:StringBuf, fields:LogFields):Void {
+		var pairs:Null<Array<LogField>> = fields.__pairs();
+		if (pairs != null) {
+			for (field in pairs) {
+				if (field != null && field.key != null) {
+					__jsonField(buffer, field.key, LogFields.__text(field.value));
+				}
+			}
+		} else {
+			for (key => value in fields.__map()) {
+				__jsonField(buffer, key, value);
+			}
+		}
+	}
+
+	@:noCompletion private static function __jsonField(buffer:StringBuf, key:String, value:Null<String>):Void {
+		// Reserved keys keep their meaning; a colliding field is
+		// namespaced rather than silently dropped.
+		var target:String = (key == "level" || key == "message" || key == "time" || key == "category") ? "field_" + key : key;
+		buffer.add(",");
+		__jsonString(buffer, target);
+		buffer.add(":");
+		if (value == null) {
+			buffer.add("null");
+		} else {
+			__jsonString(buffer, value);
+		}
 	}
 
 	/**

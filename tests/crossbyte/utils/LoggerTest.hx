@@ -451,6 +451,75 @@ class LoggerTest extends utest.Test {
 		Assert.isTrue(records[1].time > 0);
 	}
 
+	public function testFieldsGivenAsAnArrayAreWrittenInTheirOrder():Void {
+		// Names a StringMap gives back in another order on some target: ten of
+		// them, so a hash order that happens to match one cannot pass.
+		var names:Array<String> = ["realmId", "port", "zone", "alpha", "mode", "build", "kind", "epoch", "node", "id"];
+		var fields:Array<LogField> = [for (i in 0...names.length) {key: names[i], value: i}];
+		var expected:String = "[INFO] started " + [for (i in 0...names.length) names[i] + "=" + i].join(" ");
+
+		Logger.info("started", fields);
+		Assert.equals(expected, captured[0]);
+
+		Logger.json = true;
+		Logger.info("started", fields);
+		var expectedJson:String = '{"level":"INFO","message":"started",' + [for (i in 0...names.length) '"${names[i]}":"$i"'].join(",") + "}";
+		Assert.equals(expectedJson, captured[1]);
+	}
+
+	public function testArrayFieldValuesAreWrittenAsText():Void {
+		Logger.info("mixed", [
+			{key: "count", value: 3},
+			{key: "ratio", value: 0.5},
+			{key: "ok", value: true},
+			{key: "none", value: null},
+			{key: "path", value: "/a b"},
+			{key: "count", value: 4},
+			{key: null, value: "skipped"}
+		]);
+		Logger.json = true;
+		Logger.info("mixed", [{key: "none", value: null}, {key: "level", value: "kept"}, {key: "n", value: 7}]);
+
+		Assert.equals('[INFO] mixed count=3 ratio=0.5 ok=true none="" path="/a b" count=4', captured[0]);
+		Assert.equals('{"level":"INFO","message":"mixed","none":null,"field_level":"kept","n":"7"}', captured[1]);
+	}
+
+	public function testCategoriesAndRecordSinksTakeArrayFields():Void {
+		var records:Array<LogRecord> = [];
+		var db = Logger.category("db");
+		db.warn("slow", [{key: "table", value: "users"}, {key: "ms", value: 812}]);
+		Logger.recordSink = record -> records.push(record);
+		db.error("gone", [{key: "b", value: 2}, {key: "a", value: 1}, {key: "b", value: 3}]);
+
+		Assert.equals("[WARN] [db] slow table=users ms=812", captured[0]);
+		Assert.equals(1, records.length);
+		var fields:LogFields = records[0].fields;
+		Assert.equals("2", fields.get("b"));
+		Assert.equals("1", fields["a"]);
+		Assert.isTrue(fields.exists("a"));
+		Assert.isFalse(fields.exists("c"));
+		Assert.same(["b", "a", "b"], [for (key in fields.keys()) key]);
+		Assert.same(["b=2", "a=1", "b=3"], [for (key => value in fields) '$key=$value']);
+		Assert.same(["2", "1", "3"], [for (value in fields) value]);
+		// As a map, a repeated key keeps its last value.
+		var map:Map<String, String> = records[0].fields;
+		Assert.equals("3", map.get("b"));
+		Assert.equals("1", map.get("a"));
+	}
+
+	public function testAMapStillWorksAsFields():Void {
+		var records:Array<LogRecord> = [];
+		var given:Map<String, String> = ["k" => "v"];
+		Logger.recordSink = record -> records.push(record);
+		Logger.info("m", given);
+
+		var map:Map<String, String> = records[0].fields;
+		// The map given, not a copy of it.
+		Assert.isTrue(map == given);
+		Assert.equals("v", records[0].fields["k"]);
+		Assert.isNull(records[0].fields.get("absent"));
+	}
+
 	public function testCategoriesHaveLevelsOfTheirOwn():Void {
 		var access = Logger.category("http.access");
 		var db = Logger.category("db");

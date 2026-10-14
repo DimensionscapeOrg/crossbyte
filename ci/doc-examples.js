@@ -106,6 +106,7 @@ const STANDALONE = [
   'src/crossbyte/rpc/UInt8.hx',
   'src/crossbyte/url/URLVariables.hx',
   'src/crossbyte/utils/LogCategory.hx',
+  'src/crossbyte/utils/LogFields.hx',
   'src/crossbyte/utils/Logger.hx',
 ];
 const GUIDES = [

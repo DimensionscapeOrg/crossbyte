@@ -42,37 +42,37 @@ final class LogCategory {
 		return (candidate : Int) >= (__level : Int) && (__level : Int) < (LogLevel.OFF : Int);
 	}
 
-	public function trace(message:String, ?fields:Map<String, String>):Void {
+	public function trace(message:String, ?fields:LogFields):Void {
 		if (isEnabled(LogLevel.TRACE)) {
 			Logger.__write(LogLevel.TRACE, name, message, fields);
 		}
 	}
 
-	public function debug(message:String, ?fields:Map<String, String>):Void {
+	public function debug(message:String, ?fields:LogFields):Void {
 		if (isEnabled(LogLevel.DEBUG)) {
 			Logger.__write(LogLevel.DEBUG, name, message, fields);
 		}
 	}
 
-	public function info(message:String, ?fields:Map<String, String>):Void {
+	public function info(message:String, ?fields:LogFields):Void {
 		if (isEnabled(LogLevel.INFO)) {
 			Logger.__write(LogLevel.INFO, name, message, fields);
 		}
 	}
 
-	public function warn(message:String, ?fields:Map<String, String>):Void {
+	public function warn(message:String, ?fields:LogFields):Void {
 		if (isEnabled(LogLevel.WARN)) {
 			Logger.__write(LogLevel.WARN, name, message, fields);
 		}
 	}
 
-	public function error(message:String, ?fields:Map<String, String>):Void {
+	public function error(message:String, ?fields:LogFields):Void {
 		if (isEnabled(LogLevel.ERROR)) {
 			Logger.__write(LogLevel.ERROR, name, message, fields);
 		}
 	}
 
-	public function log(recordLevel:LogLevel, message:String, ?fields:Map<String, String>):Void {
+	public function log(recordLevel:LogLevel, message:String, ?fields:LogFields):Void {
 		if (isEnabled(recordLevel)) {
 			Logger.__write(recordLevel, name, message, fields);
 		}

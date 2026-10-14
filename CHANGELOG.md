@@ -156,6 +156,16 @@ All notable changes to CrossByte will be documented in this file.
   value through `Secret.resolve`. Objects merge key by key and arrays are
   replaced whole. It reads JSON with a reader of its own, the same on every
   target, PHP included.
+- **Log fields in the order given.** `Logger`'s and `LogCategory`'s
+  methods take `LogFields`: a `Map<String, String>`, as before, or an array
+  of `LogField`s (`[{key: "realmId", value: id}, {key: "port", value:
+  port}]`), written in the array's order in text and in JSON, each value as
+  `Std.string` writes it. Either is passed as it is, not copied, so a call
+  with no fields costs what it did (91 ns and 320 bytes natively, 30 ns and
+  224 bytes on the jvm, with a sink that keeps nothing), and one with two
+  fields costs 230 ns natively as an array against 320 ns as a map.
+  `LogRecord.fields` is a `LogFields` too, which reads as a map does
+  (`get`, `exists`, `keys`, iteration in order) and converts to one.
 
 ### Fixed
 
