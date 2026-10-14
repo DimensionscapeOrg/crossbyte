@@ -176,7 +176,8 @@ All notable changes to CrossByte will be documented in this file.
   `PostgresSSLMode`**, for modes read from configuration: the names in any
   case (`normal`, `verify-full`, or `VERIFY_FULL`), and for the SQLite modes
   the numbers their pragmas take. Anything else throws an `ArgumentError`
-  rather than becoming another mode.
+  rather than becoming another mode. `MySQLSSLMode.fromString` is the
+  same for MySQL, and its 1.0 name, `ofString`, still works.
 - **`SchemaMigrator.sqlite()` and `SchemaMigrator.postgres()`**, migrators
   with every seam filled in, for those connections or classes extending
   them: statements through `request()`, the default bookkeeping table, the
@@ -296,6 +297,10 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Fixed
 
+- **`JournalMode.fromString` read a name it did not know as `DELETE`.** A
+  misspelt journal mode in a configuration file turned the journal mode
+  it named into SQLite's default without a word. It now throws an
+  `ArgumentError`, as the other modes' `fromString` do. See Upgrading.
 - **A TLS server on Node counted a connection it refused as a failed
   handshake.** One `admit` turned away was closed before any TLS work, but
   the TLS socket Node had already put over it reported the close as a
@@ -350,6 +355,12 @@ All notable changes to CrossByte will be documented in this file.
   a frame built by hand with the op of the method's name, not of its
   signature, so no method answered it. They now feed it the frame the stub
   sends, and say so if the handler is never reached.
+
+### Upgrading from 1.0.0
+
+- `JournalMode.fromString` throws an `ArgumentError` for a name it does
+  not know, where it returned `DELETE`. Code that read an unchecked value
+  through it catches the error, or checks the value first.
 
 ## 1.0.0 - 2026-10-13
 

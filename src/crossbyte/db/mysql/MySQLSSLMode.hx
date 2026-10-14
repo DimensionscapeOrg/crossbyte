@@ -35,8 +35,12 @@ enum abstract MySQLSSLMode(String) to String {
 		is refused with an `ArgumentError` rather than read as a weaker mode.
 		A `String` is not taken as a mode without it, as a `PostgresSSLMode`
 		is not.
+
+		```haxe
+		var mode:MySQLSSLMode = MySQLSSLMode.fromString("verify-identity");
+		```
 	**/
-	public static function ofString(value:String):MySQLSSLMode {
+	public static function fromString(value:String):MySQLSSLMode {
 		if (value == null) {
 			throw new ArgumentError("Invalid MySQL sslMode: null");
 		}
@@ -49,6 +53,11 @@ enum abstract MySQLSSLMode(String) to String {
 			case "VERIFY_IDENTITY": VERIFY_IDENTITY;
 			default: throw new ArgumentError("Invalid MySQL sslMode: " + value);
 		}
+	}
+
+	/** `fromString` under its 1.0 name, kept so 1.0 code compiles. **/
+	public static inline function ofString(value:String):MySQLSSLMode {
+		return fromString(value);
 	}
 
 	/** The native client's number for the mode. **/

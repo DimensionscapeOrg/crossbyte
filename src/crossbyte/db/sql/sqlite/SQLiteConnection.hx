@@ -2156,13 +2156,13 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	private function get_journalMode():JournalMode {
 		var row:Dynamic = __pragmaFirstRow('journal_mode');
 
-		return row != null ? JournalMode.fromString(Std.string(Reflect.field(row, "journal_mode"))) : JournalMode.DELETE;
+		return row != null ? @:privateAccess JournalMode.__ofPragma(Std.string(Reflect.field(row, "journal_mode"))) : JournalMode.DELETE;
 	}
 
 	private function set_journalMode(value:JournalMode):JournalMode {
 		var row:Dynamic = __pragmaFirstRow('journal_mode=' + value);
 
-		return row != null ? JournalMode.fromString(Std.string(Reflect.field(row, "journal_mode"))) : value;
+		return row != null ? @:privateAccess JournalMode.__ofPragma(Std.string(Reflect.field(row, "journal_mode"))) : value;
 	}
 
 	private function get_synchronous():SynchronousMode {

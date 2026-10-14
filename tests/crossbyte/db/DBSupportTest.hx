@@ -92,7 +92,10 @@ class DBSupportTest extends utest.Test {
 		Assert.equals("create", SQLiteMode.CREATE);
 		Assert.equals("read", SQLiteMode.READ);
 		Assert.equals("WAL", JournalMode.WAL);
-		Assert.equals(JournalMode.DELETE, JournalMode.fromString("unknown"));
+		Assert.raises(() -> JournalMode.fromString("unknown"), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JournalMode.fromString(null), crossbyte.errors.ArgumentError);
+		Assert.equals(JournalMode.WAL, JournalMode.fromString(" Wal "));
+		Assert.equals(JournalMode.DELETE, @:privateAccess JournalMode.__ofPragma("unknown"));
 		Assert.equals(2, SynchronousMode.FULL);
 		Assert.equals(2, TempStoreMode.MEMORY);
 		Assert.equals("TRUNCATE", CheckpointMode.TRUNCATE);

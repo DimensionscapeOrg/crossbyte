@@ -60,8 +60,7 @@ migrator.migrate(connection);
 ```
 
 Settings read from a configuration file go through `fromString` on the modes (`JournalMode`, `SynchronousMode`,
-`TempStoreMode`, `PostgresSSLMode`, and `MySQLSSLMode.ofString`), which refuse a value they do not know, except
-`JournalMode`'s, which reads one as `DELETE`.
+`TempStoreMode`, `PostgresSSLMode` and `MySQLSSLMode`), which refuse a value they do not know with an `ArgumentError`.
 
 ## A database host gone silent
 
