@@ -6,8 +6,8 @@
    `haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production`.
 2. Register your checkout as the `crossbyte` haxelib: `haxelib dev crossbyte .`. The native externs include their
    build files through `${haxelib:crossbyte}`, so `-cp src` alone does not build natively.
-3. Install the libraries the suites use, at the versions in `ci/haxelibs.txt`: utest, hxjava (for the jvm),
-   hxnodejs (for Node) and dox (for the API docs).
+3. Install the libraries the suites use, at the versions in `ci/haxelibs.txt`: emitter (CrossByte's events, which
+   every build needs), utest, hxjava (for the jvm), hxnodejs (for Node) and dox (for the API docs).
 4. Optionally, `haxelib install aedifex` for the task runner. `Aedifex.hx` describes the library and its tasks, and
    `haxelib.json` is generated from it: run `aedifex haxelib sync .` after changing it.
 

@@ -66,8 +66,10 @@ CrossByte builds on; hxcpp 4.3.2 from haxelib does not.
 haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production
 ```
 
-The other targets need nothing more, except Node, which needs `hxnodejs`. The repository's tasks (tests, samples,
-docs) run through the `aedifex` task runner: `haxelib install aedifex`.
+CrossByte's events are [Emitter](https://github.com/dimensionscape/emitter)'s: haxelib installs `emitter` with it, and
+a build that adds CrossByte's sources with `-cp` adds `-lib emitter`. The other targets need nothing more, except
+Node, which needs `hxnodejs`. The repository's tasks (tests, samples, docs) run through the `aedifex` task runner:
+`haxelib install aedifex`.
 
 ## Quick start
 
@@ -136,6 +138,11 @@ simulation.post(() -> {
 Timers use a min-heap by default; `WHEEL` picks a timing wheel, for a runtime holding thousands of short timers it
 re-arms constantly. A server can also spread its connections over several runtimes, one per core. See
 [docs/runtime.md](docs/runtime.md) for timers, threads, spreading a server and the native garbage collector.
+
+Everything a runtime delivers is an event, and everything that raises one is an `EventDispatcher`, built on
+[Emitter](https://github.com/dimensionscape/emitter): listen with `addEventListener`, or with `events.on`, whose
+`Subscription` removes even a lambda. A dispatch to one listener allocates nothing. See
+[docs/events.md](docs/events.md).
 
 ### TCP
 
@@ -412,6 +419,7 @@ game server with bots that checks itself.
 ## Documentation
 
 - [Runtime, timers and threads](docs/runtime.md)
+- [Events](docs/events.md)
 - [What a peer can cost: server limits](docs/limits.md)
 - [Reliable UDP](docs/reliable-udp.md)
 - [RPC](docs/rpc.md)

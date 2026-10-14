@@ -90,6 +90,8 @@ const STANDALONE = [
   'src/crossbyte/db/sql/sqlite/TempStoreMode.hx',
   'src/crossbyte/ds/DispatchTable.hx',
   'src/crossbyte/events/Event.hx',
+  'src/crossbyte/events/EventDispatcher.hx',
+  'src/crossbyte/events/EventType.hx',
   'src/crossbyte/http/HTTP2Backend.hx',
   'src/crossbyte/io/File.hx',
   'src/crossbyte/io/Store.hx',
@@ -136,6 +138,7 @@ const STANDALONE = [
 const GUIDES = [
   'README.md',
   'docs/data.md',
+  'docs/events.md',
   'docs/limits.md',
   'docs/performance.md',
   'docs/reliable-udp.md',

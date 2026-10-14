@@ -37,7 +37,7 @@ over a socket mostly the system's loopback calls.
 
 | Operation | Native | Time, native | JVM |
 | --- | --- | --- | --- |
-| an event dispatched to a listener | 0 | 14 ns | 0 |
+| an event dispatched to a listener | 0 | 8 ns | 0 |
 | a timeout armed and fired | 0 | 99 ns | 0 |
 | an interval timer firing and re-arming | 0 | 82 ns | 0 |
 | a callback posted to the runtime and run | 0 | 83 ns | 0 |
