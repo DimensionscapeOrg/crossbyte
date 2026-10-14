@@ -29,17 +29,36 @@ final class IgnoredKey {
  * A JWK Set (RFC 7517), parsed into verification keys.
  *
  * This is what turns a provider's published keys (Google, Microsoft,
- * Auth0, an in-house issuer) into the PEM maps `JWTSigner.RS256` and
- * `JWTSigner.ES256` take:
+ * Auth0, an in-house issuer) into the keys `JWTSigner.RS256`,
+ * `JWTSigner.ES256` and `JWTSigner.EdDSA` take:
  *
  * ```haxe
+ * // Given issuer:String, audience:String.
  * var keys = JWKSet.parse(sys.io.File.getContent("jwks.json"));
- * var jwt = JWT.make(RS256(keys.pemsFor("RS256")), issuer, audience);
+ * var jwt = JWT.make(keys.signer(RS256), issuer, audience);
  * ```
  *
  * Keys are indexed by `kid`, which is how a token names the key it was
  * signed with and how a set with several keys stays unambiguous across a
  * rotation.
+ *
+ * ## Publishing keys
+ *
+ * An issuer signing with Ed25519 publishes its public keys as a set, so the
+ * services verifying its tokens hold no secret. During a rotation the set
+ * holds the retiring key and the next one; verifiers fetch it again when a
+ * token names a key they do not hold (`UNKNOWN_KEY`):
+ *
+ * ```haxe
+ * // Given current:crossbyte.crypto.SigningKeyPair, next:crossbyte.crypto.SigningKeyPair.
+ * var published:String = JWKSet.ofKeys([
+ * 	JWK.ofEd25519("2026-10", current.publicKey),
+ * 	JWK.ofEd25519("2026-11", next.publicKey)
+ * ]).toJson();
+ *
+ * // A verifier, holding no secret:
+ * var verifier = JWT.make(JWKSet.parse(published).signer(EdDSA), "https://accounts.example");
+ * ```
  */
 class JWKSet {
 	/** Every usable key, in document order. */
@@ -115,6 +134,52 @@ class JWKSet {
 	}
 
 	/**
+	 * A set of the given keys, in that order, to write out with `toJson`: the
+	 * document an issuer publishes.
+	 *
+	 * @throws ArgumentError For a null array or entry, or two keys with the
+	 *         same `kid`, which would leave a token naming it ambiguous.
+	 */
+	public static function ofKeys(keys:Array<JWK>):JWKSet {
+		if (keys == null) {
+			throw new ArgumentError("JWKSet.ofKeys was given no keys");
+		}
+
+		var set:JWKSet = new JWKSet();
+		for (key in keys) {
+			if (key == null) {
+				throw new ArgumentError("JWKSet.ofKeys was given a null key");
+			}
+			if (key.kid != null) {
+				if (set.__byKid.exists(key.kid)) {
+					throw new ArgumentError('JWKSet.ofKeys was given two keys named "${key.kid}"');
+				}
+				set.__byKid.set(key.kid, key);
+			}
+			set.keys.push(key);
+		}
+		return set;
+	}
+
+	/**
+	 * The set as a JWK Set document, `{"keys":[...]}`, each key as
+	 * `JWK.toJson` writes it, in order. The same text on every target, and
+	 * `parse` reads it back. Keys in `ignored` are not written.
+	 */
+	public function toJson():String {
+		var out:StringBuf = new StringBuf();
+		out.add('{"keys":[');
+		for (i in 0...keys.length) {
+			if (i > 0) {
+				out.add(",");
+			}
+			out.add(keys[i].toJson());
+		}
+		out.add("]}");
+		return out.toString();
+	}
+
+	/**
 	 * The key published under `kid`, or `null`.
 	 */
 	public function get(kid:String):Null<JWK> {
@@ -185,21 +250,28 @@ class JWKSet {
 	}
 
 	/**
-	 * The keys that verify `algorithm` (`RS256` or `ES256`) as the
+	 * The keys that verify `algorithm` (`RS256`, `ES256` or `EdDSA`) as the
 	 * verify-only `JWTSigner` that `JWT.make` and `JWT.updateKeys` take.
 	 *
 	 * Keys are named by `kid`. A set whose only usable key has none is given
 	 * it under `default`, which a token naming no key resolves to.
 	 *
 	 * ```haxe
+	 * // Given jwt:JWT, fetchedJson:String.
 	 * jwt.updateKeys(JWKSet.parse(fetchedJson).signer(RS256));
 	 * ```
 	 *
-	 * @throws ArgumentError When `algorithm` is neither, or no key here verifies it.
+	 * An `EdDSA` signer needs `Ed25519` where `JWT.make` is called: natively,
+	 * or on PHP with the sodium extension.
+	 *
+	 * @throws ArgumentError When `algorithm` is none of them, or no key here verifies it.
 	 */
 	public function signer(algorithm:JWTAlgorithm):JWTSigner {
+		if (algorithm == JWTAlgorithm.EdDSA) {
+			return EdDSA(__ed25519Keys());
+		}
 		if (algorithm != JWTAlgorithm.RS256 && algorithm != JWTAlgorithm.ES256) {
-			throw new ArgumentError('A JWK Set verifies RS256 or ES256, not "$algorithm"');
+			throw new ArgumentError('A JWK Set verifies RS256, ES256 or EdDSA, not "$algorithm"');
 		}
 
 		var pems:StringMap<String> = pemsFor(algorithm);
@@ -212,6 +284,37 @@ class JWKSet {
 		}
 
 		return algorithm == JWTAlgorithm.RS256 ? RS256(pems) : ES256(pems);
+	}
+
+	/** The Ed25519 keys by `kid`, a lone unnamed one as `default`, as `signer` names them. **/
+	private function __ed25519Keys():StringMap<Bytes> {
+		var named:StringMap<Bytes> = new StringMap<Bytes>();
+		var count:Int = 0;
+		var unnamed:Null<JWK> = null;
+		var unnamedCount:Int = 0;
+		for (key in keys) {
+			if (key.verificationAlgorithm() != (JWTAlgorithm.EdDSA : String)) {
+				continue;
+			}
+			if (key.kid != null) {
+				named.set(key.kid, key.ed25519PublicKey());
+				count++;
+			} else {
+				unnamed = key;
+				unnamedCount++;
+			}
+		}
+		if (count == 0) {
+			// As singlePem: one unnamed key, and only one key at all.
+			if (unnamedCount == 0) {
+				throw new ArgumentError("The JWK Set holds no key that verifies EdDSA");
+			}
+			if (unnamedCount > 1) {
+				throw new ArgumentError("The JWK Set holds " + unnamedCount + " unnamed EdDSA keys, which no token can tell apart");
+			}
+			named.set("default", unnamed.ed25519PublicKey());
+		}
+		return named;
 	}
 
 	private function __ingest(entry:Dynamic):Void {
@@ -253,6 +356,20 @@ class JWKSet {
 				}
 				key.__setEc(x, y);
 
+			case "OKP":
+				// RFC 8037: Ed25519 signs; X25519 and X448 agree keys, and
+				// Ed448 is not verified here.
+				if (crv != "Ed25519") {
+					ignored.push({kid: kid, reason: 'unsupported OKP curve "$crv"; only Ed25519 is supported'});
+					return;
+				}
+				var x:Null<Bytes> = __b64(entry, "x");
+				if (x == null || x.length != 32) {
+					ignored.push({kid: kid, reason: 'Ed25519 key is missing "x" or it is not 32 bytes'});
+					return;
+				}
+				key.__setOkp(x);
+
 			default:
 				ignored.push({kid: kid, reason: 'unsupported kty "$kty"'});
 				return;
@@ -267,11 +384,13 @@ class JWKSet {
 		// Encoded now rather than lazily so a key that cannot be encoded is
 		// reported at parse time, where the reason can be attached to it,
 		// instead of throwing later from inside a verification.
-		try {
-			key.toPem();
-		} catch (e:Dynamic) {
-			ignored.push({kid: kid, reason: Std.string(e)});
-			return;
+		if (kty != "OKP") {
+			try {
+				key.toPem();
+			} catch (e:Dynamic) {
+				ignored.push({kid: kid, reason: Std.string(e)});
+				return;
+			}
 		}
 
 		// Last one wins on a duplicate kid, matching how a rotation

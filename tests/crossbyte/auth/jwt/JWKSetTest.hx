@@ -301,6 +301,172 @@ class JWKSetTest extends utest.Test {
 	}
 	#end
 
+	// --- Ed25519 (RFC 8037), and sets written out ---
+
+	/** RFC 8037 A.2: the public half of the example key. */
+	private static inline final RFC8037_PUBLIC:String = '{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}';
+
+	private static inline final RFC8037_PUBLIC_HEX:String = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+	private static inline final RFC8037_SEED_HEX:String = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+
+	public function testTheRfc8037KeyParsesAsAnEd25519Key():Void {
+		var set = JWKSet.parse('{"keys":[' + RFC8037_PUBLIC + ']}');
+		Assert.equals(1, set.keys.length);
+		Assert.equals(0, set.ignored.length);
+		var key = set.keys[0];
+		Assert.equals("OKP", key.kty);
+		Assert.equals("Ed25519", key.crv);
+		Assert.isNull(key.kid);
+		Assert.equals("EdDSA", key.verificationAlgorithm());
+		Assert.equals(RFC8037_PUBLIC_HEX, key.ed25519PublicKey().toHex());
+		// No PEM form, and not taken for RS256 or ES256.
+		Assert.raises(() -> key.toPem(), crossbyte.errors.ArgumentError);
+		Assert.equals(0, Lambda.count(set.pemsFor("RS256")));
+		Assert.isNull(set.singlePem("ES256"));
+
+		// The private example (A.1) parses to its public half; `d` is not kept.
+		var withPrivate = JWKSet.parse('{"keys":[{"kty":"OKP","crv":"Ed25519","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A",'
+			+ '"x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","kid":"a1"}]}');
+		Assert.equals('{"kty":"OKP","kid":"a1","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}', withPrivate.get("a1").toJson());
+	}
+
+	public function testOtherOctetKeyPairsAreIgnoredWithAReason():Void {
+		var set = JWKSet.parse('{"keys":['
+			+ '{"kty":"OKP","kid":"x","crv":"X25519","x":"hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"},'
+			+ '{"kty":"OKP","kid":"short","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHUQ"},'
+			+ '{"kty":"OKP","kid":"none","crv":"Ed25519"},'
+			+ '{"kty":"OKP","kid":"enc","crv":"Ed25519","use":"enc","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"},'
+			+ '{"kty":"OKP","kid":"es","crv":"Ed25519","alg":"ES256","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"},'
+			+ '{"kty":"OKP","kid":"ok","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}'
+			+ ']}');
+		Assert.equals(1, set.keys.length);
+		Assert.equals("ok", set.keys[0].kid);
+		Assert.equals(5, set.ignored.length);
+		Assert.equals("x", set.ignored[0].kid);
+		Assert.isTrue(set.ignored[0].reason.indexOf("X25519") >= 0, set.ignored[0].reason);
+	}
+
+	public function testOfEd25519WritesTheRfcKeyAndReadsBack():Void {
+		var key = JWK.ofEd25519("2026-10", Bytes.ofHex(RFC8037_PUBLIC_HEX));
+		Assert.equals('{"kty":"OKP","kid":"2026-10","use":"sig","alg":"EdDSA","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}',
+			key.toJson());
+		Assert.equals("EdDSA", key.verificationAlgorithm());
+
+		var unnamed = JWK.ofEd25519(null, Bytes.ofHex(RFC8037_PUBLIC_HEX));
+		Assert.equals('{"kty":"OKP","use":"sig","alg":"EdDSA","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}', unnamed.toJson());
+
+		// The key is copied in and out.
+		var raw = Bytes.ofHex(RFC8037_PUBLIC_HEX);
+		var copied = JWK.ofEd25519("c", raw);
+		raw.set(0, 0);
+		copied.ed25519PublicKey().set(1, 0);
+		Assert.equals(RFC8037_PUBLIC_HEX, copied.ed25519PublicKey().toHex());
+
+		Assert.raises(() -> JWK.ofEd25519("k", Bytes.alloc(31)), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWK.ofEd25519("k", null), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWK.ofEd25519("", Bytes.ofHex(RFC8037_PUBLIC_HEX)), crossbyte.errors.ArgumentError);
+		var rsa = JWKSet.parse('{"keys":[{"kty":"RSA","kid":"r","n":"' + __sampleModulus() + '","e":"AQAB"}]}').keys[0];
+		Assert.raises(() -> rsa.ed25519PublicKey(), crossbyte.errors.ArgumentError);
+	}
+
+	public function testASetWrittenOutParsesBackTheSame():Void {
+		var source = JWKSet.parse('{"keys":[
+			{"kty":"RSA","kid":"r","use":"sig","alg":"RS256","n":"' + __sampleModulus() + '","e":"AQAB","x5c":["ignored"]},
+			{"kty":"EC","kid":"e","crv":"P-256","x":"' + __sampleCoordinate() + '","y":"' + __sampleCoordinate(true) + '"},
+			{"kty":"OKP","kid":"o","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}
+		]}');
+		var written = JWKSet.ofKeys(source.keys).toJson();
+		Assert.equals('{"keys":[{"kty":"RSA","kid":"r","use":"sig","alg":"RS256","n":"' + __sampleModulus() + '","e":"AQAB"},'
+			+ '{"kty":"EC","kid":"e","crv":"P-256","x":"' + __sampleCoordinate() + '","y":"' + __sampleCoordinate(true) + '"},'
+			+ '{"kty":"OKP","kid":"o","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}]}', written);
+		Assert.equals(written, source.toJson());
+
+		var back = JWKSet.parse(written);
+		Assert.equals(0, back.ignored.length);
+		Assert.equals("r,e,o", back.kids().join(","));
+		Assert.equals(source.get("r").toPem(), back.get("r").toPem());
+		Assert.equals(source.get("e").toPem(), back.get("e").toPem());
+		Assert.equals(RFC8037_PUBLIC_HEX, back.get("o").ed25519PublicKey().toHex());
+
+		// A kid with characters JSON escapes, and one PHP's encoder would.
+		var odd = JWKSet.ofKeys([JWK.ofEd25519('a/b"c\\d', Bytes.ofHex(RFC8037_PUBLIC_HEX))]).toJson();
+		Assert.isTrue(odd.indexOf('"kid":"a/b\\"c\\\\d"') >= 0, odd);
+		Assert.equals('a/b"c\\d', JWKSet.parse(odd).kids()[0]);
+
+		Assert.equals('{"keys":[]}', JWKSet.ofKeys([]).toJson());
+	}
+
+	public function testOfKeysRefusesWhatWouldBeAmbiguous():Void {
+		var key = Bytes.ofHex(RFC8037_PUBLIC_HEX);
+		Assert.raises(() -> JWKSet.ofKeys([JWK.ofEd25519("same", key), JWK.ofEd25519("same", key)]), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWKSet.ofKeys([JWK.ofEd25519("a", key), null]), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWKSet.ofKeys(null), crossbyte.errors.ArgumentError);
+		// Unnamed keys do not collide with one another here; signer says when they leave a token ambiguous.
+		Assert.equals(2, JWKSet.ofKeys([JWK.ofEd25519(null, key), JWK.ofEd25519(null, key)]).keys.length);
+	}
+
+	public function testAnEdDSASignerIsMadeFromTheSet():Void {
+		var key = Bytes.ofHex(RFC8037_PUBLIC_HEX);
+		switch (JWKSet.ofKeys([JWK.ofEd25519("a", key), JWK.ofEd25519("b", key)]).signer(EdDSA)) {
+			case EdDSA(keys, privKey, signKeyId):
+				Assert.equals(2, Lambda.count(keys));
+				Assert.isTrue(keys.exists("a") && keys.exists("b"));
+				Assert.equals(RFC8037_PUBLIC_HEX, keys.get("a").toHex());
+				Assert.isNull(privKey);
+				Assert.isNull(signKeyId);
+			default:
+				Assert.fail("not an EdDSA signer");
+		}
+		switch (JWKSet.parse('{"keys":[' + RFC8037_PUBLIC + ']}').signer(EdDSA)) {
+			case EdDSA(keys, _, _):
+				Assert.equals(RFC8037_PUBLIC_HEX, keys.get("default").toHex());
+			default:
+				Assert.fail("not an EdDSA signer");
+		}
+		var rsaOnly = JWKSet.parse('{"keys":[{"kty":"RSA","kid":"r","n":"' + __sampleModulus() + '","e":"AQAB"}]}');
+		Assert.raises(() -> rsaOnly.signer(EdDSA), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> JWKSet.ofKeys([JWK.ofEd25519(null, key), JWK.ofEd25519(null, key)]).signer(EdDSA), crossbyte.errors.ArgumentError);
+		// The EdDSA keys stay out of the RSA signer.
+		var mixed = JWKSet.parse('{"keys":[{"kty":"RSA","kid":"r","n":"' + __sampleModulus() + '","e":"AQAB"},' + RFC8037_PUBLIC + ']}');
+		switch (mixed.signer(RS256)) {
+			case RS256(pems, _, _):
+				Assert.equals(1, Lambda.count(pems));
+			default:
+				Assert.fail("not an RS256 signer");
+		}
+	}
+
+	/**
+	 * The point of publishing: a token an issuer signs verifies at a service
+	 * that holds only the set, and stops verifying when its key leaves it.
+	 */
+	public function testATokenVerifiesThroughAPublishedEd25519Set():Void {
+		#if !(cpp || php)
+		Assert.pass();
+		#else
+		var current = crossbyte.crypto.Ed25519.keypairFromSeed(Bytes.ofHex(RFC8037_SEED_HEX));
+		var next = crossbyte.crypto.Ed25519.keypair();
+		var signing = new haxe.ds.StringMap<Bytes>();
+		signing.set("2026-10", current.publicKey);
+		var issuer = JWT.make(EdDSA(signing, current.secretKey, "2026-10"));
+		var now:Int = Std.int(Date.now().getTime() / 1000);
+		var token = issuer.generateToken({sub: "player-7", iat: now, exp: now + 300});
+
+		var published:String = JWKSet.ofKeys([JWK.ofEd25519("2026-10", current.publicKey), JWK.ofEd25519("2026-11", next.publicKey)]).toJson();
+		var verifier = JWT.make(JWKSet.parse(published).signer(EdDSA));
+		var result = verifier.verify(token);
+		Assert.isTrue(result.valid, Std.string(result.rejection));
+		Assert.equals("player-7", result.payload.subject);
+
+		// The retired key is dropped from the set: its tokens no longer verify.
+		verifier.updateKeys(JWKSet.parse(JWKSet.ofKeys([JWK.ofEd25519("2026-11", next.publicKey)]).toJson()).signer(EdDSA));
+		Assert.equals(JWTRejection.UNKNOWN_KEY, verifier.verify(token).rejection);
+
+		// A verify-only signer cannot mint.
+		Assert.raises(() -> verifier.generateToken({sub: "forged", exp: now + 300}), crossbyte.errors.IllegalOperationError);
+		#end
+	}
+
 	// --- fixtures ---
 
 	/**

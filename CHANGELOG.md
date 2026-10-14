@@ -23,6 +23,13 @@ All notable changes to CrossByte will be documented in this file.
   service verifies on a native server. `isSupported` and
   `unsupportedReason` as for `Ed25519`; the async forms run in the call
   there, as PHP has no threads.
+- **Ed25519 keys in JWK Sets, and sets written out.** `JWKSet.parse` reads
+  RFC 8037's `OKP` keys (`crv` `Ed25519`; other curves are listed in
+  `ignored`), `JWK.ed25519PublicKey()` gives the 32 bytes, and
+  `JWKSet.signer(EdDSA)` makes the verify-only signer. `JWK.ofEd25519(kid,
+  publicKey)` makes such a key, and `JWKSet.ofKeys(keys).toJson()` (and
+  `JWK.toJson()`) write a set out, the same text on every target, so an
+  issuer can publish its current and next keys for rotation.
 - **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
   (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
   on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.
