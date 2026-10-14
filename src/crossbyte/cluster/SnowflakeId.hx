@@ -20,6 +20,9 @@ import haxe.Int64;
 	ordered.
 
 	```haxe
+	import haxe.Int64;
+
+	// Given nodeId:Int.
 	var ids = new SnowflakeId(nodeId);
 	var id:Int64 = ids.next();
 	```
@@ -149,5 +152,77 @@ class SnowflakeId {
 	/** Where in its millisecond an identifier fell. **/
 	public static function sequenceOf(id:Int64):Int {
 		return Int64.toInt(id & Int64.ofInt(MAX_SEQUENCE));
+	}
+
+	/** How many characters `format` writes. **/
+	public static inline var TEXT_LENGTH:Int = 16;
+
+	/**
+		An identifier as text: its 64 bits as 16 lowercase hexadecimal
+		digits, zeros in front, `017f3a9c2b400001`. For a store, a URL or a log
+		that keys on text.
+
+		Every identifier is the same width, so sorting the texts sorts the
+		identifiers: by their bits read as unsigned, which is the order `next`
+		issues them in. An identifier minted 2^41 ms (69.7 years) after the
+		epoch has its top bit set and so reads as a negative `Int64`; its text
+		still sorts after every earlier one's, as a signed comparison of the
+		numbers would not. That holds for 2^42 ms, after which the time
+		wraps.
+
+		```haxe
+		// Given ids:SnowflakeId.
+		var key:String = SnowflakeId.format(ids.next());
+		var id:Int64 = SnowflakeId.parse(key);
+		```
+	**/
+	public static function format(id:Int64):String {
+		var out:StringBuf = new StringBuf();
+		__hex8(out, id.high);
+		__hex8(out, id.low);
+		return out.toString();
+	}
+
+	/**
+		The identifier `format` wrote: exactly 16 hexadecimal digits, in
+		either case.
+
+		@throws ArgumentError When `text` is null, another length, or holds
+		        anything but hexadecimal digits: a sign, a space, a `0x`.
+	**/
+	public static function parse(text:String):Int64 {
+		if (text == null || text.length != TEXT_LENGTH) {
+			throw new ArgumentError("A Snowflake id is " + TEXT_LENGTH + " hexadecimal digits; got " + (text == null ? "null" : '"' + text + '"') + ".");
+		}
+		var high:Int = 0;
+		var low:Int = 0;
+		for (i in 0...TEXT_LENGTH) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			var digit:Int = if (code >= "0".code && code <= "9".code) {
+				code - "0".code;
+			} else if (code >= "a".code && code <= "f".code) {
+				code - "a".code + 10;
+			} else if (code >= "A".code && code <= "F".code) {
+				code - "A".code + 10;
+			} else {
+				throw new ArgumentError('A Snowflake id is hexadecimal digits only; got "$text".');
+			}
+			if (i < 8) {
+				high = (high << 4) | digit;
+			} else {
+				low = (low << 4) | digit;
+			}
+		}
+		return Int64.make(high, low);
+	}
+
+	// `value`'s 32 bits as eight lowercase hex digits, most significant first.
+	private static function __hex8(out:StringBuf, value:Int):Void {
+		var shift:Int = 28;
+		while (shift >= 0) {
+			var digit:Int = (value >>> shift) & 15;
+			out.addChar(digit < 10 ? "0".code + digit : "a".code + digit - 10);
+			shift -= 4;
+		}
 	}
 }

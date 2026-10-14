@@ -166,6 +166,12 @@ All notable changes to CrossByte will be documented in this file.
   fields costs 230 ns natively as an array against 320 ns as a map.
   `LogRecord.fields` is a `LogFields` too, which reads as a map does
   (`get`, `exists`, `keys`, iteration in order) and converts to one.
+- **`SnowflakeId.format(id)` and `parse(text)`**, an identifier as text for
+  a store or a URL: 16 lowercase hexadecimal digits, so sorting the texts
+  sorts the identifiers in the order they were minted, the ones minted after
+  the time's top bit becomes the sign bit (69.7 years after the epoch)
+  included. `parse` takes exactly 16 hex digits, in either case, and throws
+  an `ArgumentError` for anything else.
 
 ### Fixed
 

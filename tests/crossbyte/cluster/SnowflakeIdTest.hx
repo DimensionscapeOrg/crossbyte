@@ -225,6 +225,86 @@ class SnowflakeIdTest extends utest.Test {
 	}
 
 	/** A node number outside the field it has to fit in is refused. **/
+	public function testTheTextFormIsSixteenLowercaseHexDigits():Void {
+		Assert.equals("0000000000000000", SnowflakeId.format(Int64.make(0, 0)));
+		Assert.equals("0000000000000001", SnowflakeId.format(Int64.make(0, 1)));
+		Assert.equals("00000000ffffffff", SnowflakeId.format(Int64.make(0, -1)));
+		Assert.equals("0000000100000000", SnowflakeId.format(Int64.make(1, 0)));
+		Assert.equals("7fffffffffffffff", SnowflakeId.format(Int64.make(0x7FFFFFFF, -1)));
+		Assert.equals("8000000000000000", SnowflakeId.format(Int64.make(0x80000000, 0)));
+		Assert.equals("ffffffffffffffff", SnowflakeId.format(Int64.make(-1, -1)));
+		Assert.equals("0123456789abcdef", SnowflakeId.format(Int64.make(0x01234567, 0x89ABCDEF)));
+		// What Yggdrasil wrote with StringTools.hex, so keys already stored read back.
+		var id:Int64 = new SnowflakeId(7, SnowflakeId.DEFAULT_EPOCH_MS, () -> SnowflakeId.DEFAULT_EPOCH_MS + 123456789).next();
+		Assert.equals((StringTools.hex(id.high, 8) + StringTools.hex(id.low, 8)).toLowerCase(), SnowflakeId.format(id));
+	}
+
+	public function testTextReadsBackToTheSameId():Void {
+		var edges:Array<Int64> = [
+			Int64.make(0, 0), Int64.make(0, 1), Int64.make(0, -1), Int64.make(1, 0), Int64.make(0x7FFFFFFF, -1),
+			Int64.make(0x80000000, 0), Int64.make(-1, -1), Int64.make(0x12345678, 0x9ABCDEF0)
+		];
+		var random = new Xorshift(20261014);
+		for (_ in 0...200) {
+			edges.push(Int64.make(random.next(), random.next()));
+		}
+		for (id in edges) {
+			Assert.isTrue(SnowflakeId.parse(SnowflakeId.format(id)) == id, SnowflakeId.format(id));
+		}
+		Assert.isTrue(SnowflakeId.parse("0123456789ABCDEF") == Int64.make(0x01234567, 0x89ABCDEF));
+	}
+
+	public function testTextThatIsNotAnIdIsRefused():Void {
+		for (text in [null, "", "123", "0123456789abcde", "0123456789abcdef0", "0x23456789abcdef", "-123456789abcdef", " 123456789abcdef", "0123456789abcdeg"]) {
+			Assert.raises(() -> SnowflakeId.parse(text), ArgumentError, text);
+		}
+	}
+
+	public function testTextOrderIsIdOrderAcrossTheWholeRange():Void {
+		var random = new Xorshift(7);
+		var ids:Array<Int64> = [Int64.make(0, 0), Int64.make(-1, -1), Int64.make(0x7FFFFFFF, -1), Int64.make(0x80000000, 0)];
+		for (_ in 0...300) {
+			// Every high half, the sign bit set and not, and lows that differ
+			// only in their top bit.
+			ids.push(Int64.make(random.next(), random.next()));
+			ids.push(Int64.make(random.next(), 0x80000000 | random.next()));
+		}
+
+		var byNumber:Array<Int64> = ids.copy();
+		byNumber.sort((a, b) -> Int64.ucompare(a, b));
+		var byText:Array<String> = [for (id in ids) SnowflakeId.format(id)];
+		byText.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+
+		var mismatches:Int = 0;
+		for (i in 0...byNumber.length) {
+			if (SnowflakeId.format(byNumber[i]) != byText[i]) {
+				mismatches++;
+			}
+		}
+		Assert.equals(0, mismatches, "texts out of the ids' order: " + mismatches);
+	}
+
+	public function testIdsMintedPastTheSignBitStillSortAfterEarlierOnes():Void {
+		// 2^41 ms after the epoch the time's top bit is the id's sign bit.
+		var signAt:Float = 2199023255552.0;
+		var now:Float = SnowflakeId.DEFAULT_EPOCH_MS + signAt - 2;
+		var ids = new SnowflakeId(3, SnowflakeId.DEFAULT_EPOCH_MS, () -> now);
+		var texts:Array<String> = [];
+		var minted:Array<Int64> = [];
+		for (_ in 0...5) {
+			var id:Int64 = ids.next();
+			minted.push(id);
+			texts.push(SnowflakeId.format(id));
+			now += 1;
+		}
+
+		Assert.isFalse(minted[1] < 0, "minted before the sign bit");
+		Assert.isTrue(minted[2] < 0, "minted after it, a negative Int64");
+		for (i in 1...texts.length) {
+			Assert.isTrue(texts[i - 1] < texts[i], texts[i - 1] + " then " + texts[i]);
+		}
+	}
+
 	public function testANodeNumberThatDoesNotFitIsRefused():Void {
 		Assert.raises(function():Void {
 			new SnowflakeId(SnowflakeId.MAX_NODE + 1);
@@ -233,5 +313,21 @@ class SnowflakeIdTest extends utest.Test {
 		Assert.raises(function():Void {
 			new SnowflakeId(-1);
 		}, ArgumentError);
+	}
+}
+
+/** 32 bits at a time, the same on every target. **/
+private class Xorshift {
+	var state:Int;
+
+	public function new(seed:Int) {
+		state = seed;
+	}
+
+	public function next():Int {
+		state ^= state << 13;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		return state;
 	}
 }
