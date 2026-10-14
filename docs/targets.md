@@ -55,6 +55,16 @@ and in SQLite (`MemoryKVStore`, `SQLiteKVStore`; see [data.md](data.md#a-keyvalu
 `extension=sqlite3` in `php.ini`, and Ed25519 and Argon2id `extension=sodium`. PHP has no threads, so nothing that
 needs one is there.
 
+RPC is there too, without sockets: contracts and handlers build as anywhere, the codec (`RPCCodecs`, `RPCPatch`,
+`RPCMapPatch`) writes and reads the same bytes as every other target, and a session runs over an `INetConnection`
+that is not a socket, such as one of your own carrying frames however the application does. There are no sockets:
+`NetConnection` and `NetHost` cannot open TCP, WebSocket or UDP, and `ServerSocket.isSupported` and
+`DatagramSocket.isSupported` are false.
+
+**An `Int` is 64 bits.** On PHP a Haxe `Int` is PHP's own integer, which does not wrap where a 32-bit one does:
+`0x7FFFFFFF + 1` is 2147483648 there. CrossByte's hashes, random numbers and RPC wrap where a 32-bit `Int` would, so
+they give the numbers every target does; arithmetic of your own does not.
+
 ## The interpreter
 
 Runtimes take turns rather than run at once, so a spread server is served correctly and no faster. There is no UDP

@@ -15,7 +15,9 @@ There are two lanes on one connection:
 
 RPC runs on every target CrossByte builds for, JavaScript included: the
 portable test suite runs it on Node and in a browser. What carries it is the
-`NetConnection` a session is given, so it goes wherever one does.
+`NetConnection` a session is given, so it goes wherever one does. PHP has no
+sockets in CrossByte, so there RPC is its contracts, its codec and sessions
+over a connection that is not a socket (see [targets.md](targets.md#php)).
 
 A session writes every frame it sends (calls, answers, pings) in one
 buffer of its own, and hands it to its connection's `send`, which copies what
