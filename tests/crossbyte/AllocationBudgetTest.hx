@@ -186,7 +186,17 @@ class AllocationBudgetTest extends utest.Test {
 	// the jvm), and took 2.8 times as long. Measured on 2026-10-09 on
 	// Windows, Linux (WSL) and the jvm.
 	private static final RPC_LARGE_ANSWER = new Budget("a 256 KiB RPC answer of one Bytes, in pieces", "answer", [262144, 262144, 263590], [264192, 264192, 265216]);
-	private static final RPC_TYPED_ONE_WAY = new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
+	// A Map<String, Int> each way through a receiver, keys "key0" up: each
+	// side's map as it is read, its table and keys, and each side's sorted
+	// copy of the keys it writes. Measured on 2026-10-13 natively on Windows
+	// and on the jvm (Oracle 8); Linux taken as Windows. Natively a call of
+	// 256 entries crosses the collector's holes every time, too often for
+	// the meter, so that line is the jvm's alone.
+	private static final RPC_MAP_8 = new Budget("an RPC call of a Map<String, Int> of 8 entries answered with it through a receiver", "call",
+		[1776, 1776, 1760], [2288, 2288, 2264]);
+	private static final RPC_MAP_256 = new Budget("an RPC call of a Map<String, Int> of 256 entries answered with it through a receiver", "call",
+		[0, 0, 63648], [0, 0, 79624]);
+	private static final RPC_TYPED_ONE_WAY =new Budget("a one-way runtime-lane RPC call of three Floats, written and read typed", "call", [0, 0, 0], [8, 8, 8]);
 
 	/**
 		Operations run before measuring, so what the first ones build is not
@@ -864,6 +874,40 @@ class AllocationBudgetTest extends utest.Test {
 		};
 		__warm(op, WARM_CHEAP);
 		return AllocationMeter.measure(op, 20000);
+	}
+
+	/**
+		A map each way, answered with the map that arrived, through a
+		receiver, both ends in this process: what is made is each side's map
+		as it is read (its table and its keys' strings) and each side's copy
+		of the keys it writes, sorted; no value is boxed, natively, and no
+		entry costs anything more.
+	**/
+	public function testAnRpcCallOfAMapAndItsAnswer():Void {
+		for (budget in [RPC_MAP_8, RPC_MAP_256]) {
+			final entries:Int = budget == RPC_MAP_8 ? 8 : 256;
+			#if cpp
+			if (entries > 8) {
+				// Too large for the native meter; see RPC_MAP_256.
+				continue;
+			}
+			#end
+			final fixture = new BudgetRpc();
+			final scores = new Map<String, Int>();
+			for (i in 0...entries) {
+				scores.set("key" + i, i);
+			}
+			final receiver = new MapReceiver();
+			final op = () -> {
+				final told:Int = receiver.told;
+				fixture.commands.scoresThen(scores, receiver);
+				if (receiver.told != told + 1) {
+					throw "the call was not answered";
+				}
+			};
+			__warm(op, entries == 8 ? WARM_CHEAP : WARM);
+			__within(budget, AllocationMeter.measure(op, entries == 8 ? 20000 : 2000));
+		}
 	}
 
 	public function testAnRpcCallAnsweredThroughAnIntReceiver():Void {
@@ -1797,6 +1841,23 @@ private class BudgetCommands extends RPCCommands {
 	@:rpc public function absent(a:Int):RPCResponse<Int> {}
 
 	@:rpc public function blob(size:Int):RPCResponse<Bytes> {}
+
+	@:rpc public function scores(scores:Map<String, Int>):RPCResponse<Map<String, Int>> {}
+}
+
+/** Counts the maps it is told. **/
+private class MapReceiver implements crossbyte.rpc.RPCValueReceiver<Map<String, Int>> {
+	public var told:Int = 0;
+
+	public function new() {}
+
+	public function onValue(call:Int, value:Map<String, Int>):Void {
+		told++;
+	}
+
+	public function onFailure(call:Int, failure:RPCFailure):Void {
+		throw "the call failed: " + failure;
+	}
 }
 
 /** Counts the bytes of the answers it is told. **/
@@ -2068,6 +2129,10 @@ private class BudgetHandler extends RPCHandler {
 
 	@:rpc public function count(n:haxe.Int64):haxe.Int64 {
 		return n + 1;
+	}
+
+	@:rpc public function scores(scores:Map<String, Int>):Map<String, Int> {
+		return scores;
 	}
 }
 #end

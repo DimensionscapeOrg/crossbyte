@@ -449,6 +449,7 @@ on the wire:
 | `crossbyte.rpc.Int8`, `UInt8` | 1 byte |
 | `crossbyte.rpc.Int16`, `UInt16` | 2 bytes |
 | `Array<T>`, `T` any of these | a count, then each element as its type is written |
+| `Map<String, T>`, `Map<Int, T>` (or `StringMap<T>`, `IntMap<T>`), `T` any of these | a count, then each key and its value, in the keys' order |
 | a class that implements `crossbyte.rpc.RPCStruct`, or an anonymous structure | its fields, one after another |
 | an enum | its constructor's index, 1 byte (2 past 256 constructors), then that constructor's arguments |
 | an abstract over any of these, such as `enum abstract Team(Int)` or `UInt` | as the type it abstracts |
@@ -474,6 +475,25 @@ whose arguments could not be read.
 interface BoardContract {
 	function mark(cells:Array<Int>, labels:Array<Null<String>>):Void;
 	function rows():Array<Array<Int>>;
+}
+```
+
+A map's entries go in the order of their keys, so one map is the same bytes
+however it was built and whichever target wrote it: `Int` keys ascending,
+`String` keys by their UTF-16 code units, as JSON's canonical form (RFC 8785)
+orders names and as Haxe compares strings natively, on the jvm and on
+JavaScript (on neko, whose strings are bytes, by their UTF-8 bytes: the same
+but for a key past U+FFFF beside one from U+E000 up). Its count is checked as an array's is, before a map is made, and
+a reader takes entries in any order, a key given twice keeping its last
+value, as protobuf's maps do. Keys are `String` or `Int`; any other key type
+fails the build. Values are written straight from the map and read straight
+into one made for the call, so natively a map of numbers or strings boxes
+nothing for them; the writer copies the keys to sort them, one array a map.
+
+```haxe
+interface RealmContract {
+	function label(realm:Int, labels:Map<String, String>):Void;
+	function population():Map<Int, Int>;
 }
 ```
 
@@ -1034,6 +1054,7 @@ signature := name "(" [ kind ("," kind)* ] ")" [ ":" kind ]
 kind      := [ "?" ] ( "i32" | "bool" | "f64" | "utf8" | "bytes"
                      | "f32" | "i8" | "u8" | "i16" | "u16"
                      | "[" kind "]"
+                     | "[" ( "utf8" | "i32" ) ":" kind "]"
                      | "{" field ("," field)* "}"
                      | "<" ctor ("," ctor)* ">" )
 field     := [ id "=" ] name ":" kind
@@ -1043,7 +1064,8 @@ ctor      := name [ "(" kind ("," kind)* ")" ]
 `i32` is an `Int`, `bool` a `Bool`, `f64` a `Float`, `utf8` a `String` and
 `bytes` a `haxe.io.Bytes`; `f32`, `i8`, `u8`, `i16` and `u16` are `Float32`,
 `Int8`, `UInt8`, `Int16` and `UInt16`; an array is its element's kind in
-brackets, a structure its fields in braces, in their order on the wire, each
+brackets, a map its key's kind and its value's in brackets with a colon
+between (`Map<String, Int>` is `[utf8:i32]`), a structure its fields in braces, in their order on the wire, each
 with its pinned id if it has one, an enum its constructors in angle brackets,
 in index order, each with its arguments' kinds, an abstract the kind of what
 it abstracts,

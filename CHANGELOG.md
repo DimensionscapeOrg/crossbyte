@@ -56,6 +56,15 @@ All notable changes to CrossByte will be documented in this file.
   `IOErrorEvent.OVERFLOW_ERROR_ID`. A `LocalConnection` closed this way was
   told `Reason.Error` with a message before.
 
+- **Maps on the compiled RPC lane.** `Map<String, T>` and `Map<Int, T>`
+  (and `StringMap<T>`, `IntMap<T>`), `T` any kind the lane carries, as
+  arguments, answers, structure fields and array elements: a count, then
+  each key and value as their kinds are written, in the keys' order (`Int`
+  ascending; `String` by UTF-16 code unit, as RFC 8785 orders JSON names),
+  so one map is the same bytes however it was built. The count is checked
+  against what the frame holds before a map is made. Natively a map of
+  numbers or strings boxes nothing for them. Its kind in a signature is
+  `[utf8:i32]`.
 - **RPC error codes cross the wire.** An `RPCError` thrown, returned from
   `beforeCall` or failing a future with an id (`new RPCError("No such
   room.", 3)`) reaches its caller as `RPCFailure.Refused(message, code)`,

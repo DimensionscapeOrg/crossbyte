@@ -96,6 +96,27 @@ class BenchRpc {
 			timedCommands.name(7);
 		});
 
+		// A map each way, answered with the map that arrived: read into a map,
+		// written again, and read into another on the caller's side. Keys
+		// "key0" up and values their number, as the gRPC comparison sends.
+		for (entries in [8, 256]) {
+			final scores = new Map<String, Int>();
+			final labels = new Map<String, String>();
+			for (i in 0...entries) {
+				scores.set("key" + i, i);
+				labels.set("key" + i, "value" + i);
+			}
+			Bench.run('request and response, Map<String, Int> of $entries', function():Void {
+				commands.scores(scores);
+			});
+			Bench.run('request and response, Map<String, String> of $entries', function():Void {
+				commands.labels(labels);
+			});
+			Bench.run('the keys of a map of $entries, in wire order', function():Void {
+				crossbyte.rpc._internal.RPCMaps.stringKeys((cast scores : haxe.ds.StringMap<Int>));
+			});
+		}
+
 		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null || timedServer == null) {
 			Sys.println("  (the handler was never called)");
 		}
@@ -134,6 +155,10 @@ private class BenchCommands extends RPCCommands {
 	@:rpc public function ready(id:Int):RPCResponse<String> {}
 
 	@:rpc public function later(id:Int):RPCResponse<String> {}
+
+	@:rpc public function scores(scores:Map<String, Int>):RPCResponse<Map<String, Int>> {}
+
+	@:rpc public function labels(labels:Map<String, String>):RPCResponse<Map<String, String>> {}
 }
 
 private class BenchHandler extends RPCHandler {
@@ -162,6 +187,14 @@ private class BenchHandler extends RPCHandler {
 	@:rpc public function later(id:Int):crossbyte.Future<String> {
 		pending = new crossbyte.Completer<String>();
 		return pending.future;
+	}
+
+	@:rpc public function scores(scores:Map<String, Int>):Map<String, Int> {
+		return scores;
+	}
+
+	@:rpc public function labels(labels:Map<String, String>):Map<String, String> {
+		return labels;
 	}
 }
 

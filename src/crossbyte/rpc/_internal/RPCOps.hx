@@ -15,6 +15,7 @@ import haxe.io.Bytes;
 	kind      := [ "?" ] ( "i32" | "i64" | "bool" | "f64" | "utf8" | "bytes"
 	                     | "f32" | "i8" | "u8" | "i16" | "u16"
 	                     | "[" kind "]"
+	                     | "[" ( "utf8" | "i32" ) ":" kind "]"
 	                     | "{" field ("," field)* "}"
 	                     | "<" ctor ("," ctor)* ">" )
 	field     := [ id "=" ] name ":" kind
@@ -27,7 +28,8 @@ import haxe.io.Bytes;
 	says. `f32`, `i8`, `u8`, `i16` and `u16` are the compact numbers
 	(`crossbyte.rpc.Float32`, `Int8`, `UInt8`, `Int16`, `UInt16`); an
 	abstract is the kind of what it abstracts. An array is its element's
-	kind in brackets, and a structure (`RPCStructs`) its fields in braces,
+	kind in brackets, a map its key's and its value's kinds in brackets
+	with a colon between (`[utf8:i32]` for `Map<String, Int>`), and a structure (`RPCStructs`) its fields in braces,
 	in their order on the wire, each with its `@:field` id if pinned:
 	`{1=id:i32,name:utf8,x:f32}`; an enum its constructors in angle
 	brackets, in index order, with their arguments' kinds:

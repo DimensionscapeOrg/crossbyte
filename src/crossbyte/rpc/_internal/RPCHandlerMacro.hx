@@ -1109,7 +1109,8 @@ class RPCHandlerMacro {
 				} else if (typeDef.name == "Null" && params.length == 1) {
 					"Null<" + normalizedResolvedTypeKey(Context.follow(params[0])) + ">";
 				} else {
-					pathKey(typeDef.pack, typeDef.name);
+					// With its parameters: `Map<String, Int>` is not `Map<String, String>`.
+					pathKey(typeDef.pack, typeDef.name) + paramsKey(params);
 				}
 			case TInst(typeRef, params):
 				pathKey(typeRef.get().pack, typeRef.get().name) + paramsKey(params);

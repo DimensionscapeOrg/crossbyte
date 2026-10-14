@@ -435,6 +435,85 @@ class RPCKinds {
 		};
 	}
 
+	/**
+		`Map<String, T>` or `Map<Int, T>` (and `StringMap<T>`, `IntMap<T>`)
+		of a kind the lane carries, `T` a `Null<>` too: a varint count, then
+		each entry, its key as its kind is written and then its value, with
+		no tag or length of their own. The entries go in their keys' order
+		(see `RPCMaps`), so a map is the same bytes whoever wrote it. The
+		count is checked against what the frame has left before the map is
+		made, at the least an entry takes, as an array's is. A reader takes
+		the entries in any order, a key given twice keeping its last value,
+		as protobuf's maps do.
+
+		Written straight from the map: its keys copied into an array of
+		their own and sorted there, then each value looked up and written as
+		its kind is, so a number is never boxed for it. Read into a map made
+		for the call, each value set as its kind reads it: natively a map of
+		numbers or strings keeps them unboxed.
+	**/
+	static function mapKind(stringKeys:Bool, element:RPCKind, optional:Bool, elementType:ComplexType):RPCKind {
+		final keyName:String = stringKeys ? "String" : "Int";
+		final keyToken:String = stringKeys ? STRING.token : INT.token;
+		final storedType:ComplexType = optional ? nullOf(elementType) : elementType;
+		final mapPath:TypePath = {pack: ["haxe", "ds"], name: stringKeys ? "StringMap" : "IntMap", params: [TPType(storedType)]};
+		final mapType:ComplexType = TPath(mapPath);
+		final keyType:ComplexType = stringKeys ? macro :String : macro :Int;
+		final name:String = "Map<" + keyName + ", " + element.name + ">";
+		// The least an entry takes: its key's (a String's count, or an Int)
+		// and its value's, as an array's element.
+		final least:Int = (stringKeys ? 1 : 4) + (!optional && element.size > 0 ? element.size : 1);
+		return {
+			name: name,
+			token: "[" + keyToken + ":" + token(element, optional) + "]",
+			size: -1,
+			roomOf: value -> macro 5,
+			zero: macro null,
+			compound: true,
+			write: (frame, value) -> {
+				final map:String = local();
+				final keys:String = local();
+				final key:String = local();
+				final nameExpr:Expr = macro $v{name};
+				final putKey:Expr = stringKeys ? macro $frame.putString($i{key}) : macro $frame.putInt($i{key});
+				final putValue:Expr = write(element, optional, frame, macro $i{map}.get($i{key}));
+				final keysOf:Expr = stringKeys ? macro crossbyte.rpc._internal.RPCMaps.stringKeys($i{map}) : macro crossbyte.rpc._internal.RPCMaps.intKeys($i{map});
+				macro {
+					var $map:$mapType = cast $value;
+					if ($i{map} == null) {
+						throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+					}
+					var $keys:Array<$keyType> = $keysOf;
+					$frame.putVarUInt($i{keys}.length);
+					for ($i{key} in $i{keys}) {
+						$putKey;
+						$putValue;
+					}
+				};
+			},
+			read: (input, end) -> {
+				final count:String = local();
+				final map:String = local();
+				final key:String = local();
+				final held:String = local();
+				final getKey:Expr = stringKeys ? macro $input.readVarUtf() : macro crossbyte.rpc._internal.RPCWire.readI32($input);
+				final getValue:Expr = read(element, optional, input, end);
+				final valueType:ComplexType = storedType;
+				macro {
+					var $count:Int = $input.readVarUInt();
+					crossbyte.rpc._internal.RPCWire.requireCount($input, $end, $i{count}, $v{least});
+					var $map:$mapType = new $mapPath();
+					for (_ in 0...$i{count}) {
+						var $key:$keyType = $getKey;
+						var $held:$valueType = $getValue;
+						$i{map}.set($i{key}, $i{held});
+					}
+					$i{map};
+				};
+			}
+		};
+	}
+
 	// ------------------------------------------------------------ types
 
 	/**
@@ -474,6 +553,7 @@ class RPCKinds {
 					case "crossbyte.rpc.UInt16": UINT16;
 					case "Null" if (params.length == 1): ofType(params[0], pos);
 					case "haxe.Int64": INT64;
+					case "haxe.ds.Map" if (params.length == 2): mapOf(params[0], params[1], pos);
 					// An Int's bits, whichever way a target holds it: on
 					// HashLink it is a core type of its own.
 					case "UInt": abstractKind(INT, "UInt", macro :UInt, macro :Int);
@@ -492,12 +572,29 @@ class RPCKinds {
 					case "Array" if (params.length == 1):
 						final element:Null<RPCKind> = ofType(params[0], pos);
 						element == null ? null : arrayKind(element, isNullType(params[0]), RPCContractMacroTools.fullComplexType(stripNull(params[0])));
+					case "haxe.ds.StringMap" if (params.length == 1): mapOf(Context.getType("String"), params[0], pos);
+					case "haxe.ds.IntMap" if (params.length == 1): mapOf(Context.getType("Int"), params[0], pos);
 					case _ if (RPCStructs.isStruct(cls)): RPCStructs.classKind(cls, type, pos);
 					case _: null;
 				}
 			case _:
 				null;
 		}
+	}
+
+	/**
+		The kind of a map from `key` to `value`, or `null` when the lane does
+		not carry its values. Its keys must be `String` or `Int` themselves:
+		any other key fails the build, naming them, rather than being taken
+		for a type the lane does not carry.
+	**/
+	static function mapOf(key:Type, value:Type, pos:Position):Null<RPCKind> {
+		final keyKind:Null<RPCKind> = ofType(key, pos);
+		if (keyKind != STRING && keyKind != INT) {
+			Context.error("An RPC map's keys are String or Int, and these are " + TypeTools.toString(key) + ".", pos);
+		}
+		final element:Null<RPCKind> = ofType(value, pos);
+		return element == null ? null : mapKind(keyKind == STRING, element, isNullType(value), RPCContractMacroTools.fullComplexType(stripNull(value)));
 	}
 
 	/** Whether `type` is `Null<T>`, however it is named: one typedef at a time, since a full follow drops the `Null`. **/
