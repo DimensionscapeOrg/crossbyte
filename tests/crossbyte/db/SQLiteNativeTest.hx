@@ -1676,6 +1676,45 @@ class SQLiteNativeTest extends utest.Test {
 		}
 	}
 
+	public function testAnOpenWaitsForALockAsItsStatementsDo():Void {
+		// Another connection writing the file holds it locked. A connection
+		// opening it waits, up to lockWaitTimeout, as its statements wait once
+		// it is open: the open's own pragmas ran before the wait was set, so
+		// an open beside a writer failed at once with "database is locked",
+		// as a pool's connections opening together did.
+		var path:String = __path("open-waits");
+		var writer:SQLiteConnection = new SQLiteConnection();
+		writer.open(path);
+		writer.request("CREATE TABLE t (id INTEGER)");
+		writer.begin("EXCLUSIVE");
+		writer.request("INSERT INTO t VALUES (1)");
+
+		var opened = new sys.thread.Lock();
+		var failure:Dynamic = null;
+		var rows:Int = -1;
+
+		sys.thread.Thread.create(function():Void {
+			try {
+				var reader:SQLiteConnection = new SQLiteConnection();
+				reader.open(path);
+				rows = [for (row in reader.request("SELECT id FROM t")) row].length;
+				reader.close();
+			} catch (e:Dynamic) {
+				failure = e;
+			}
+
+			opened.release();
+		});
+
+		crossbyte.sys.System.sleep(0.3);
+		writer.commit();
+		Assert.isTrue(opened.wait(10));
+		writer.close();
+
+		Assert.isNull(failure, Std.string(failure));
+		Assert.equals(1, rows, "the open waited for the commit, and read what it wrote");
+	}
+
 	private function __path(name:String):String {
 		var directory:String = Path.join([Sys.getCwd(), "export"]);
 

@@ -170,9 +170,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	/**
 	 * Seconds to wait on a locked database before failing:
-	 * `DEFAULT_LOCK_WAIT_TIMEOUT`, 5, as `open()` and `openAsync()` leave it.
-	 * `0` fails at once, with "database is locked", which is SQLite's own
-	 * default.
+	 * `DEFAULT_LOCK_WAIT_TIMEOUT`, 5, as `open()` and `openAsync()` leave it,
+	 * and waited for by the open itself. `0` fails at once, with "database is
+	 * locked", which is SQLite's own default.
 	 *
 	 * Another connection writing (in this process or another) holds the
 	 * lock until it commits; this one waits for it, up to this long, rather
@@ -1427,7 +1427,6 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		// Not through the properties: on an asynchronous connection this is
 		// the worker opening, and a property would ask the worker.
 		__setCacheSize(DEFAULT_CACHE_SIZE);
-		__connection.request('PRAGMA busy_timeout = ${crossbyte._internal.Millis.of(DEFAULT_LOCK_WAIT_TIMEOUT)};');
 	}
 
 	private function __onSQLWorkerComplete(e:ThreadEvent):Void {}
@@ -1966,6 +1965,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		} catch (e:Dynamic) {
 			throw new IOError(Std.string(e));
 		}
+
+		// Before anything else the open asks: each pragma after this reads
+		// the file, and without a wait it fails at once, with "database is
+		// locked", while another connection writes it. Asking for the wait
+		// reads nothing.
+		__connection.request('PRAGMA busy_timeout = ${crossbyte._internal.Millis.of(DEFAULT_LOCK_WAIT_TIMEOUT)};');
 	}
 
 	private function get_autoCompact():Bool {
