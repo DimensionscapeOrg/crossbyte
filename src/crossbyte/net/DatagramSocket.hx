@@ -113,12 +113,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 
-		The interpreter has no UDP socket. Neko has one of CrossByte's own,
-		since Haxe's `sys.net.UdpSocket` constructor throws "Not available on
-		this platform" there. A caller checks this flag to take another path
-		when it is false, so it says true only where a socket can be made.
+		The interpreter and PHP have no UDP socket. Neko has one of
+		CrossByte's own, since Haxe's `sys.net.UdpSocket` constructor throws
+		"Not available on this platform" there, as it does on PHP. A caller
+		checks this flag to take another path when it is false, so it says
+		true only where a socket can be made.
 	**/
-	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
+	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval && !php)) true #else false #end;
 
 	/**
 		Whether `receiveBufferSize` and `sendBufferSize` reach the operating

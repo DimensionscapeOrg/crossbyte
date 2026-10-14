@@ -81,8 +81,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
+		False on PHP, where CrossByte has no TCP socket.
 	**/
-	public static var isSupported(default, null):Bool = #if !html5 true #else false #end;
+	public static var isSupported(default, null):Bool = #if !(html5 || php) true #else false #end;
 
 	/**
 		Whether `setAlpn()` reaches the TLS handshake on this target.
