@@ -296,6 +296,12 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Fixed
 
+- **A TLS server on Node counted a connection it refused as a failed
+  handshake.** One `admit` turned away was closed before any TLS work, but
+  the TLS socket Node had already put over it reported the close as a
+  handshake error, and `handshakeFailures` went up for it. A connection
+  refused by `admit` or by `maxConnectionsPerAddress` is no longer counted
+  there, as natively and on the jvm.
 - **SQLite on PHP ran every statement that returns no rows twice.** PHP's
   `SQLite3Result`, read for a statement with no result columns, runs it
   again, and a statement read its result to count the rows it changed: an

@@ -1257,24 +1257,30 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 			__serverSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
-			// a refusal still costs nothing.
+			// a refusal still costs nothing. Node's own listener has already
+			// put a TLS socket over it, which reports a refused connection's
+			// end as a failed handshake ("socket hang up"); the mark tells
+			// the two apart.
 			__serverSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
-					raw.destroy();
+					__refuseNodeRaw(raw);
 					return;
 				}
 				if (!__holdNodeRaw(raw)) {
 					__refusedConnections++;
-					raw.destroy();
+					__refuseNodeRaw(raw);
 				}
 			});
 
 			// A handshake that failed, which Node reports here and nowhere
-			// else. Counted, as natively, and the connection let go.
-			__serverSocket.on("tlsClientError", function(_:Dynamic, raw:NodeSocket):Void {
-				__handshakeFailures++;
+			// else. Counted, as natively, and the connection let go; not a
+			// connection the server refused before its handshake began.
+			__serverSocket.on("tlsClientError", function(_:Dynamic, connection:NodeSocket):Void {
+				if (!__refusedByNode(connection)) {
+					__handshakeFailures++;
+				}
 				try {
-					raw.destroy();
+					connection.destroy();
 				} catch (_:Dynamic) {}
 			});
 		} else {
@@ -1358,6 +1364,20 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	}
 
 	@:noCompletion private static inline var NODE_HOLD:String = "__crossbyteAddressHold";
+
+	/** Closes a TLS server's raw connection refused before its handshake, marked so its end is not counted as a failed one. **/
+	@:noCompletion private static function __refuseNodeRaw(raw:NodeSocket):Void {
+		Reflect.setField(raw, NODE_REFUSED, true);
+		raw.destroy();
+	}
+
+	/** Whether a TLS connection Node reports is over a raw connection `__refuseNodeRaw` closed. **/
+	@:noCompletion private static function __refusedByNode(connection:NodeSocket):Bool {
+		var raw:Dynamic = (cast connection : Dynamic)._parent;
+		return Reflect.field(connection, NODE_REFUSED) == true || (raw != null && Reflect.field(raw, NODE_REFUSED) == true);
+	}
+
+	@:noCompletion private static inline var NODE_REFUSED:String = "__crossbyteRefused";
 	#end
 
 	// The hold __overAddressLimit made for the connection it last let in;
