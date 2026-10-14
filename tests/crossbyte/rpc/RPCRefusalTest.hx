@@ -264,10 +264,11 @@ class RPCRefusalTest extends utest.Test {
 		for (code in [7, -2, 0x7FFFFFFF]) {
 			final response = pair.commands.coded(code);
 			pair.commands.codedThen(code, pair.told);
-			Assert.isTrue(Type.enumEq(Refused("No room.", code), response.failure), 'id $code failed its caller as ' + response.failure);
+			// Compared by value: on the jvm enumEq compares a boxed Int past 127 by reference.
+			Assert.isTrue(refusedWith(response.failure, "No room.", code), 'id $code failed its caller as ' + response.failure);
 			Assert.equals("No room.", response.error);
 			Assert.equals(code, (cast response.cause : RPCError).errorId, "the future's RPCError had another id");
-			Assert.isTrue(Type.enumEq(Refused("No room.", code), pair.told.failures.pop()), 'a receiver of id $code was told otherwise');
+			Assert.isTrue(refusedWith(pair.told.failures.pop(), "No room.", code), 'a receiver of id $code was told otherwise');
 		}
 		// An id of 0 is no code.
 		switch (pair.commands.coded(0).failure) {
@@ -363,6 +364,13 @@ class RPCRefusalTest extends utest.Test {
 			} else {
 				Assert.equals(end, input.position, "an error with no id was framed with more than its message");
 			}
+		}
+	}
+
+	private static function refusedWith(failure:Null<RPCFailure>, message:String, code:Int):Bool {
+		return switch (failure) {
+			case Refused(words, id): words == message && id != null && (id : Int) == code;
+			case _: false;
 		}
 	}
 
