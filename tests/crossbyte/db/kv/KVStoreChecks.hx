@@ -339,7 +339,8 @@ class KVStoreChecks {
 		Assert.raises(() -> store.put("\u{E9}\u{E9}\u{E9}\u{E9}\u{E9}", bytes("a")), ArgumentError);
 		Assert.raises(() -> store.put("a" + String.fromCharCode(0) + "b", bytes("a")), ArgumentError);
 		Assert.raises(() -> store.put("a\u{10FFFF}", bytes("a")), ArgumentError);
-		#if (cpp || jvm || js || hl)
+		// Made where String.fromCharCode makes half a pair: HashLink's throws.
+		#if (cpp || jvm || js)
 		Assert.raises(() -> store.put("a" + String.fromCharCode(0xD800), bytes("a")), ArgumentError);
 		Assert.raises(() -> store.put(String.fromCharCode(0xDC00) + "a", bytes("a")), ArgumentError);
 		#end
