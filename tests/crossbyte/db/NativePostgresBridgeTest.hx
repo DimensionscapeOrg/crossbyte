@@ -554,6 +554,8 @@ class NativePostgresBridgeTest extends utest.Test {
 		Assert.equals(3, rows.length);
 		Assert.equals("n", rows.getFieldsNames().join(","));
 		Assert.equals(1, rows.nfields);
+		// Before any next(), the first row, as Haxe's SQLite result set reads it.
+		Assert.equals(1, rows.getIntResult(0));
 		Assert.equals("1", rows.next().n);
 		Assert.equals(1, rows.getIntResult(0));
 		Assert.equals("2", rows.next().n);

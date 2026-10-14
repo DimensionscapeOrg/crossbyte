@@ -13,7 +13,9 @@ import sys.db.ResultSet;
 
 	A `sys.db.ResultSet`, like the other drivers' `request()`.
 	`getResult(n)` and its kin read field `n` of the row `next()` last
-	gave, in column order.
+	gave, in column order; before any `next()`, of the first row, without
+	moving past it, as Haxe's SQLite result set does, so
+	`request("SELECT count(*) FROM t").getIntResult(0)` reads the count.
 **/
 class PostgresResultSet #if !js implements ResultSet #end {
 	/** How many rows it holds. **/
@@ -97,15 +99,15 @@ class PostgresResultSet #if !js implements ResultSet #end {
 		return __fields;
 	}
 
-	/** Field `n` of the row `next()` last gave. **/
+	/** Field `n` of the row `next()` last gave, or of the first row before any. **/
 	@:noCompletion private function __current(n:Int):Dynamic {
 		var fields:Null<Array<String>> = getFieldsNames();
 
-		if (__index == 0 || fields == null || n < 0 || n >= fields.length) {
+		if (__rows.length == 0 || fields == null || n < 0 || n >= fields.length) {
 			throw new crossbyte.errors.RangeError('No field $n of a current row.');
 		}
 
-		return Reflect.field(__rows[__index - 1], fields[n]);
+		return Reflect.field(__rows[__index == 0 ? 0 : __index - 1], fields[n]);
 	}
 }
 #end

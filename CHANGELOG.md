@@ -297,6 +297,11 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Fixed
 
+- **A `PostgresResultSet` threw when read before `next()`.** `getResult`,
+  `getIntResult` and `getFloatResult` now read the first row then, without
+  moving past it, as Haxe's SQLite result set does, so
+  `request("SELECT count(*) FROM t").getIntResult(0)` works as it does with
+  the other drivers.
 - **`JournalMode.fromString` read a name it did not know as `DELETE`.** A
   misspelt journal mode in a configuration file turned the journal mode
   it named into SQLite's default without a word. It now throws an
