@@ -129,7 +129,8 @@ made differs:
 In a browser a connection is the page's own WebSocket, so a page dials
 `ws://` or `wss://` (a `NetHost` made from one of those is its server) and
 cannot listen. Over reliable UDP every frame goes as one reliable, ordered
-message, split over datagrams when it is larger than one. A `NetConnection`
+message, split over datagrams when it is larger than one, unless the call is
+given another mode. A `NetConnection`
 or `NetHost` given a URI it cannot use throws an `ArgumentError` naming the
 URI and the schemes it takes.
 
@@ -159,6 +160,24 @@ function linkHosts(handler:ChatHandler):NetHost {
 		new RPCSession(connection, null, handler);
 	}, null, null, true, tls);
 }
+```
+
+A call that the next one replaces (a snapshot, a delta, a position) need not
+arrive, nor wait for what was lost before it. The commands' `delivery` sends
+the next call in a `DeliveryMode` of its own over reliable UDP: `UNRELIABLE`,
+or `sequenced(channel)`, which the other side drops when a newer one on its
+channel has arrived first. Only the next call takes it, as with `within`, and
+over a transport with one way to send (TCP, WebSocket, local IPC) it is
+ignored. Such a call must fit one datagram, 1,200 bytes with its frame (less
+in an encrypted session); a larger one throws, or for a request fails
+`Unsent`. A request goes in the mode given and is answered reliably; one that
+is lost is answered by nothing, so give it a deadline.
+
+```haxe
+// Given commands:ChatCommands.
+import crossbyte.net.DeliveryMode;
+
+commands.delivery(DeliveryMode.sequenced(0)).say("lobby", "where everyone is now");
 ```
 
 A local IPC listener serves one peer at a time on its name, and takes the

@@ -78,6 +78,12 @@ All notable changes to CrossByte will be documented in this file.
   on by then. A plain field: a call whose handler never reads `currentCall`
   pays nothing for it, and a number stored there is boxed natively and on
   the jvm, so a hot path keeps an object it has already.
+- **`RPCCommands.delivery(mode)`** sends the next call in a `DeliveryMode`
+  of its own over reliable UDP (`UNRELIABLE`, or `sequenced(channel)`), for
+  snapshots and deltas that the next one replaces; over TCP, WebSocket and
+  local IPC it is ignored. Only the next call takes it, as with `within`,
+  and a call given nothing costs nothing more. Such a call must fit one
+  datagram: a larger one throws, a request failing `Unsent`.
 
 ### Fixed
 

@@ -2116,6 +2116,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:RPCFrame):Void {
 		var message:Null<String> = null;
 		var cause:Dynamic = null;
+		// Given a mode with `RPCCommands.delivery`, over a transport that has
+		// them: sent so, and every other way as any request goes.
+		var delivery:crossbyte.net.DeliveryMode = framed.delivery;
+		if (delivery != crossbyte.net.DeliveryMode.RELIABLE) {
+			framed.delivery = crossbyte.net.DeliveryMode.RELIABLE;
+			if (!(__connection : NetConnectionBase).__takesDelivery()) {
+				delivery = crossbyte.net.DeliveryMode.RELIABLE;
+			}
+		}
 		if (maxOutputPending > 0 && (__connection : NetConnectionBase).__holdsOutput) {
 			// A peer not reading ends the connection here, and the call fails
 			// below with the reason it ended.
@@ -2132,7 +2141,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			cause = new ArgumentError(message);
 		} else {
 			try {
-				if (framed.payloadLength > LARGE_FRAME) {
+				if (delivery != crossbyte.net.DeliveryMode.RELIABLE) {
+					(__connection : NetConnectionBase).__sendWith(framed, delivery);
+				} else if (framed.payloadLength > LARGE_FRAME) {
 					__sendWholeOnce(framed);
 				} else {
 					__connection.send(framed);
@@ -2162,6 +2173,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		@throws ArgumentError When the call is over `maxFrameSize`.
 	**/
 	@:noCompletion private function __sendCallFrame(framed:RPCFrame):Void {
+		if (framed.delivery != crossbyte.net.DeliveryMode.RELIABLE) {
+			__sendCallWith(framed);
+			return;
+		}
 		if (__oversized(framed)) {
 			final message:String = __oversizedMessage("RPC call", framed);
 			__sent(framed);
@@ -2179,6 +2194,38 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} else {
 			__sendFrame(framed);
 		}
+	}
+
+	/**
+		A one-way call given a delivery with `RPCCommands.delivery`: in that
+		mode over a transport that has modes (reliable UDP in its `DATAGRAM`
+		mode), and as any call goes over every other. What the transport
+		throws (an unreliable call larger than a datagram) is thrown.
+	**/
+	@:noCompletion private function __sendCallWith(framed:RPCFrame):Void {
+		final delivery:crossbyte.net.DeliveryMode = framed.delivery;
+		framed.delivery = crossbyte.net.DeliveryMode.RELIABLE;
+		if (!(__connection : NetConnectionBase).__takesDelivery()) {
+			// One way to send: as any call goes.
+			__sendCallFrame(framed);
+			return;
+		}
+		if (__oversized(framed)) {
+			final message:String = __oversizedMessage("RPC call", framed);
+			__sent(framed);
+			throw new ArgumentError(message);
+		}
+		if (__ended) {
+			__sent(framed);
+			return;
+		}
+		try {
+			(__connection : NetConnectionBase).__sendWith(framed, delivery);
+		} catch (error:Dynamic) {
+			__sent(framed);
+			throw error;
+		}
+		__sent(framed);
 	}
 
 	/**

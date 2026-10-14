@@ -6,6 +6,7 @@ package crossbyte.rpc;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.net.DeliveryMode;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc._internal.RPCFrame;
 import crossbyte.rpc._internal.RPCPendingCalls;
@@ -67,6 +68,40 @@ abstract class RPCCommands {
 	@:noCompletion private var __nextTimeout:Int = -1;
 	@:noCompletion private var __callTimeout:Int = 0;
 	@:noCompletion private var __callTimeoutSent:Bool = false;
+	// The delivery `delivery` gave the next call; and whether anything was
+	// given the next call at all, the one thing a call's usual way reads.
+	@:noCompletion private var __nextDelivery:DeliveryMode = DeliveryMode.RELIABLE;
+	@:noCompletion private var __nextGiven:Bool = false;
+
+	/**
+		Sends the next call made through these commands in `mode` over a
+		reliable UDP connection (`rudp://`, in its `DATAGRAM` mode): one that
+		need not arrive, or arrive in order, such as a snapshot or a delta
+		that the next one replaces. Returns these commands, so the call
+		follows, as `within` does:
+
+		```haxe
+		// Given commands:PlayerCommands.
+		commands.delivery(crossbyte.net.DeliveryMode.sequenced(0)).jump();
+		```
+
+		Only the next call takes it. Over TCP, WebSocket, local IPC and a
+		reliable UDP connection in `STREAM` mode, which have one way to send,
+		it is ignored and the call goes as any does. An unreliable or
+		sequenced call must fit one datagram (`maxPayloadSize`, 1,200 bytes
+		less what an encrypted session takes); a larger one throws, a request
+		failing `RPCFailure.Unsent`. A request goes in the mode given, and its
+		answer comes back reliably, as the other side sends it; a request lost
+		on the way is answered by nothing, so give it a deadline.
+
+		Each commands class returns its own type. A call that is given nothing
+		pays nothing for this.
+	**/
+	public function delivery(mode:DeliveryMode):RPCCommands {
+		__nextDelivery = mode;
+		__nextGiven = true;
+		return this;
+	}
 
 	/**
 		Gives the next call made through these commands a deadline of its
@@ -91,6 +126,7 @@ abstract class RPCCommands {
 	**/
 	public function within(seconds:Float):RPCCommands {
 		__nextTimeout = crossbyte._internal.Millis.of(seconds);
+		__nextGiven = true;
 		return this;
 	}
 
@@ -206,29 +242,35 @@ abstract class RPCCommands {
 		// here; anything more (a request, a deadline given, no session) is a
 		// call, which keeps a large commands class's methods small on the jvm.
 		final session = __session;
-		return requestId == 0 && session != null && __nextTimeout < 0 ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op,
-			requestId);
+		return requestId == 0 && session != null && !__nextGiven ? session.__takeFrame(room, 0, op, 0) : __startOtherFrame(room, op, requestId);
 	}
 
-	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `within`; commands with no session. **/
+	/** `__startFrame`'s other ways: a request, with the deadline it waits under; a call given `within` or `delivery`; commands with no session. **/
 	@:noCompletion private function __startOtherFrame(room:Int, op:Int, requestId:Int):RPCFrame {
 		final session = __session;
 		final flags:Int = requestId != 0 ? RPCWire.FLAG_REQUEST : 0;
-		// The deadline `within` gave, taken by this call, one-way or not.
+		// The deadline `within` gave, and the delivery `delivery` gave, taken
+		// by this call, one-way or not.
 		final timeout:Int = __nextTimeout;
-		if (timeout >= 0) {
+		final delivery:DeliveryMode = __nextDelivery;
+		if (__nextGiven) {
+			__nextGiven = false;
 			__nextTimeout = -1;
+			__nextDelivery = DeliveryMode.RELIABLE;
 		}
 		if (session != null) {
-			if (requestId != 0) {
+			final framed:RPCFrame = if (requestId != 0) {
 				// Carried with the call to a peer that reads it, so its
 				// handler knows when this side stops waiting.
 				final waits:Int = timeout >= 0 ? timeout : session.__requestTimeoutMs;
 				__callTimeout = waits;
 				__callTimeoutSent = waits > 0 && session.__readsCallControl();
-				return session.__takeRequestFrame(room, flags, op, requestId, waits);
+				session.__takeRequestFrame(room, flags, op, requestId, waits);
+			} else {
+				session.__takeFrame(room, flags, op, requestId);
 			}
-			return session.__takeFrame(room, flags, op, requestId);
+			framed.delivery = delivery;
+			return framed;
 		}
 		final frame = new RPCFrame(room);
 		frame.begin(room, flags, op, requestId);
@@ -242,6 +284,8 @@ abstract class RPCCommands {
 	**/
 	@:noCompletion private function __dropFrame(framed:RPCFrame):Void {
 		final session = __session;
+		// Not the next frame's, written in the same buffer.
+		framed.delivery = DeliveryMode.RELIABLE;
 		if (session != null) {
 			session.__sent(framed);
 		}

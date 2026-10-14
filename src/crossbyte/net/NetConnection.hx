@@ -1342,6 +1342,22 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 		__noteOutput();
 	}
 
+	/** In `DATAGRAM` mode a message goes in any `DeliveryMode`; a stream has one. **/
+	override public function __takesDelivery():Bool {
+		return __socket.mode == ReliableDatagramSocketMode.DATAGRAM;
+	}
+
+	/** `data` as one message in `delivery`'s mode, in `DATAGRAM` mode; as `send` sends it otherwise. **/
+	override public function __sendWith(data:ByteArray, delivery:DeliveryMode):Void {
+		if (__socket.mode != ReliableDatagramSocketMode.DATAGRAM) {
+			send(data);
+			return;
+		}
+		__socket.__send(data, 0, 0, delivery);
+		outTimestamp = __uptime();
+		__noteOutput();
+	}
+
 	/** Part of `data` in place, as one message in `DATAGRAM` mode, as `send` sends the whole. **/
 	override public function __sendRange(data:ByteArray, offset:Int, length:Int):Void {
 		switch (__socket.mode) {

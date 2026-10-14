@@ -155,6 +155,7 @@ class RPCCommandMacro {
 		}
 		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
 		newFields.push(withinField());
+		newFields.push(deliveryField());
 		newFields.push(fingerprintField(allSent.map(RPCOps.opOf)));
 		final all = fields.concat(newFields);
 		RPCContractMacroTools.requireJvmSize(all, "RPC commands class");
@@ -182,6 +183,32 @@ class RPCCommandMacro {
 				ret: self,
 				expr: macro {
 					this.__nextTimeout = crossbyte._internal.Millis.of(seconds);
+					this.__nextGiven = true;
+					return this;
+				}
+			}),
+			pos: Context.currentPos()
+		};
+	}
+
+	/** `delivery`, returning this class, as `within` is: an override of `RPCCommands.delivery`. **/
+	static function deliveryField():Field {
+		final local = Context.getLocalClass().get();
+		final self:ComplexType = TPath({
+			pack: [],
+			name: local.name,
+			params: [for (param in local.params) TPType(TPath({pack: [], name: param.name}))]
+		});
+		return {
+			name: "delivery",
+			doc: "Sends the next call made through these commands in `mode` over reliable UDP; see `RPCCommands.delivery`.",
+			access: [APublic, AOverride],
+			kind: FFun({
+				args: [{name: "mode", type: macro :crossbyte.net.DeliveryMode}],
+				ret: self,
+				expr: macro {
+					this.__nextDelivery = mode;
+					this.__nextGiven = true;
 					return this;
 				}
 			}),

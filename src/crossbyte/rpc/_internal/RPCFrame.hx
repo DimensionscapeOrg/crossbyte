@@ -63,6 +63,13 @@ class RPCFrame extends ByteArrayData {
 	/** For a writer: the session that sends the frame, its op and request id, the values written, and where their count goes. **/
 	public var owner:Null<crossbyte.rpc.RPCSession<Dynamic, Dynamic>> = null;
 
+	/**
+		How a call's frame goes over a transport with modes (reliable UDP),
+		from `RPCCommands.delivery`; read and put back to `RELIABLE` as the
+		call is sent, so the next frame written here goes as usual.
+	**/
+	public var delivery:crossbyte.net.DeliveryMode = crossbyte.net.DeliveryMode.RELIABLE;
+
 	public var op:Int = 0;
 	public var requestId:Int = 0;
 	public var count:Int = 0;

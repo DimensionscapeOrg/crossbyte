@@ -328,6 +328,20 @@ abstract class NetConnectionBase implements CloseObservable {
 		send(part);
 	}
 
+	/**
+		Whether `__sendWith` sends in a `DeliveryMode` of its own: a reliable
+		UDP connection in its `DATAGRAM` mode. Every other has one way to
+		send, and a sender asking for another sends as usual.
+	**/
+	@:noCompletion public function __takesDelivery():Bool {
+		return false;
+	}
+
+	/** Sends `data` as `send` does, in `delivery`'s mode where `__takesDelivery` says it can. **/
+	@:noCompletion public function __sendWith(data:ByteArray, delivery:DeliveryMode):Void {
+		send(data);
+	}
+
 	// Told as the connection ends, and as it becomes ready, before the
 	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
