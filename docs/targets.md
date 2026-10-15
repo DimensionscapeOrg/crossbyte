@@ -79,6 +79,10 @@ has not taken waits in CrossByte's buffer, where the output limits see it, as on
 whole records and waits until the system has taken them, so a peer that reads slowly over TLS holds up the whole
 runtime meanwhile.
 
+**TLS 1.0 and 1.1 are accepted.** The interpreter's TLS has no lowest version to set, so a secure `Socket`, and
+everything that dials through one, connects to a server that offers nothing newer than TLS 1.0 or 1.1. Natively, on
+the jvm, on Node and on Neko a connection takes TLS 1.2 at least, and such a server is refused.
+
 **A `Float` that holds an `Int`.** The interpreter and Neko keep a `Float` given an `Int` (`var total:Float = 0`, or
 an `Int` passed for a `Float` argument) an `Int` at run time, and add two of them in 32 bits: two billion plus two
 billion is -294,967,296. Only a number written as a class field's initialiser (`var sent:Float = 0;`) is converted.
@@ -125,6 +129,10 @@ A datagram refused for its size is named so only past 65,527 bytes, since both r
 On Linux, HashLink polls its sockets through `select`, which cannot watch a descriptor numbered 1024 or above, and
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
+
+**TLS 1.0 and 1.1, on HashLink.** HashLink's TLS has no lowest version to set, so its secure sockets, client and
+server, agree to TLS 1.0 or 1.1 with a peer that offers nothing newer, where every other target takes TLS 1.2 at
+least. A HashLink server that must refuse them needs a proxy in front of it that does.
 
 **Very wide anonymous RPC structures, on neko.** Neko's loader limits the locals one function may hold at once, and
 refuses the whole program when one function exceeds it, before `main` runs. RPC reads an anonymous structure (a

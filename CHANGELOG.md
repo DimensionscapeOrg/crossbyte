@@ -50,6 +50,12 @@ says how.
 - `File.canonicalize` follows a junction or a symbolic link on PHP under
   Windows, where it corrected only the case of each name: PHP's
   `realpath` follows them there.
+- `docs/targets.md` says that HashLink, client and server, and the
+  interpreter, as a client, accept TLS 1.0 and 1.1, which their TLS has no
+  setting to refuse. Every other target takes TLS 1.2 at least, and tests
+  now hold each target to its own: certificates expired, not yet valid,
+  for another host or from an authority nobody trusts are refused through
+  every client and by a server requiring client certificates.
 - `File`'s documentation says what PHP does on Windows with a file open in
   `FileStream`: as on Node, the file can be moved and deleted, and a
   directory with one inside it is then refused as not empty until it is
