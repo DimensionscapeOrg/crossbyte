@@ -1619,8 +1619,9 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 		// stopAccepting() may already have released the listening socket as
 		// the first half of a graceful shutdown; closing it again is not an
-		// error.
-		if (!__listenerReleased) {
+		// error. On Node there is none until listen() makes it, and a server
+		// closed before then threw from here.
+		if (!__listenerReleased && __serverSocket != null) {
 			try {
 				__serverSocket.close();
 			} catch (e:Dynamic) {
