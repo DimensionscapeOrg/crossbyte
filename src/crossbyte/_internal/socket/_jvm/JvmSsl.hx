@@ -558,16 +558,20 @@ class JvmSslSocket extends sys.net.Socket {
 			ca = null;
 		}
 
-		if (ca != null) {
-			// Every authority of a bundle, not only its first.
-			var store = KeyStore.getInstance(KeyStore.getDefaultType());
-			store.load(null, null);
-			for (i in 0...ca.chain.length) {
-				store.setCertificateEntry("ca" + i, ca.chain[i]);
+		if (__verifies() != false) {
+			// Every authority of a bundle, not only its first; with none, the
+			// system's, as the JDK would take them.
+			var store:Null<KeyStore> = null;
+			if (ca != null) {
+				store = KeyStore.getInstance(KeyStore.getDefaultType());
+				store.load(null, null);
+				for (i in 0...ca.chain.length) {
+					store.setCertificateEntry("ca" + i, ca.chain[i]);
+				}
 			}
 			var factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
 			factory.init(store);
-			trust = factory.getTrustManagers();
+			trust = crossbyte._internal.socket._jvm.JvmDatedTrust.around(factory.getTrustManagers());
 		}
 
 		var context = SSLContext.getInstance("TLS");

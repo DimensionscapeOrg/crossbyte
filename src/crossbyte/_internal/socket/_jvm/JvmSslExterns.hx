@@ -46,7 +46,10 @@ extern class Certificate {
 }
 
 @:native("java.security.cert.X509Certificate")
-extern class X509Certificate extends Certificate {}
+extern class X509Certificate extends Certificate {
+	/** Throws `CertificateExpiredException` or `CertificateNotYetValidException` outside its validity period. **/
+	function checkValidity():Void;
+}
 
 @:native("java.security.Principal")
 extern interface Principal {}

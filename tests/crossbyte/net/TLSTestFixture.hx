@@ -24,8 +24,11 @@ class TLSTestFixture {
 		__attempted = true;
 
 		var directory:String = haxe.io.Path.join([__tempDirectory(), "crossbyte-tls-test"]);
-		var certPath:String = haxe.io.Path.join([directory, "test-cert.pem"]);
-		var keyPath:String = haxe.io.Path.join([directory, "test-key.pem"]);
+		// Named for the day they are made on, as trusted()'s are: a pair kept
+		// past its one day of validity was presented expired, which Node
+		// refuses and the other targets did not all notice.
+		var certPath:String = haxe.io.Path.join([directory, "test-cert-" + __day() + ".pem"]);
+		var keyPath:String = haxe.io.Path.join([directory, "test-key-" + __day() + ".pem"]);
 
 		try {
 			if (!sys.FileSystem.exists(directory)) {
@@ -34,7 +37,7 @@ class TLSTestFixture {
 
 			if (!sys.FileSystem.exists(certPath) || !sys.FileSystem.exists(keyPath)) {
 				var exit:Int = Sys.command("openssl", [
-					"req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-keyout", keyPath, "-out", certPath
+					"req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=localhost", "-keyout", keyPath, "-out", certPath
 				]);
 				if (exit != 0) {
 					return null;
@@ -70,8 +73,9 @@ class TLSTestFixture {
 
 		var directory:String = haxe.io.Path.join([__tempDirectory(), "crossbyte-tls-test"]);
 		var safe:String = ~/[^A-Za-z0-9.-]/g.replace(commonName, "_");
-		var certPath:String = haxe.io.Path.join([directory, "cert-" + safe + ".pem"]);
-		var keyPath:String = haxe.io.Path.join([directory, "key-" + safe + ".pem"]);
+		// Named for the day, as selfSigned()'s are.
+		var certPath:String = haxe.io.Path.join([directory, "cert-" + safe + "-" + __day() + ".pem"]);
+		var keyPath:String = haxe.io.Path.join([directory, "key-" + safe + "-" + __day() + ".pem"]);
 
 		try {
 			if (!sys.FileSystem.exists(directory)) {
@@ -80,7 +84,7 @@ class TLSTestFixture {
 
 			if (!sys.FileSystem.exists(certPath) || !sys.FileSystem.exists(keyPath)) {
 				var exit:Int = Sys.command("openssl", [
-					"req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=" + commonName,
+					"req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=" + commonName,
 					"-keyout", keyPath, "-out", certPath
 				]);
 
@@ -220,6 +224,12 @@ class TLSTestFixture {
 			}
 			sys.FileSystem.deleteDirectory(directory);
 		} catch (_:Dynamic) {}
+	}
+
+	/** The calendar day, `YYYYMMDD`, a fixture made today is named for. **/
+	private static function __day():String {
+		// time of day: the day decides when a new pair is due.
+		return DateTools.format(Date.now(), "%Y%m%d");
 	}
 
 	private static function __tempDirectory():String {
