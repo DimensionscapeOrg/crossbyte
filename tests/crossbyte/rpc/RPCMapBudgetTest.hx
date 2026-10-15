@@ -493,6 +493,13 @@ class RPCMapBudgetTest extends utest.Test {
 				loop.step();
 			}
 			Assert.isTrue(loop.partial > 300, 'reliable $reliable: only ${loop.partial} of the diffs left anything out');
+			// And until the jvm has compiled the path fully: a run that
+			// overlaps the switch allocates the objects the compiled code
+			// leaves out, a few bytes a diff, which Java 8 on one core did in
+			// a quarter of the runs after 400 steps.
+			for (_ in 0...20000) {
+				loop.step();
+			}
 			final reading = crossbyte.test.AllocationMeter.measure(loop.step, 200);
 			Assert.isTrue(reading.perOperation == 0, 'reliable $reliable: a budgeted diff allocated $reading');
 		}
