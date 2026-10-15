@@ -10,11 +10,12 @@ class ByteDeltaTest extends utest.Test {
 		seed = 0x1B873593;
 	}
 
-	// xorshift, so every target draws the same bytes.
+	// xorshift, so every target draws the same bytes: wrap32 is the value
+	// but on PHP, whose 64-bit Int a shift left carries past 32 bits.
 	private function random(bound:Int):Int {
-		seed ^= seed << 13;
+		seed = crossbyte.utils.Hash.wrap32(seed ^ (seed << 13));
 		seed ^= seed >>> 17;
-		seed ^= seed << 5;
+		seed = crossbyte.utils.Hash.wrap32(seed ^ (seed << 5));
 		return (seed & 0x7FFFFFFF) % bound;
 	}
 
