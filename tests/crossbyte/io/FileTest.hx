@@ -674,10 +674,23 @@ class FileTest extends utest.Test {
 		}
 
 		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), Std.string(raised));
-		Assert.isTrue(StringTools.startsWith((raised : crossbyte.errors.IOError).message, "Could not delete"), Std.string(raised));
-		Assert.equals(-1, Std.string(raised).indexOf("not empty"), Std.string(raised));
+		final message:String = (raised : crossbyte.errors.IOError).message;
+		Assert.isTrue(StringTools.startsWith(message, "Could not delete"), message);
+		// One line: the reason, not a stack trace (PHP's exceptions carry one in their text).
+		Assert.equals(-1, message.indexOf("
+"), message);
+		if (message.indexOf("held.txt") >= 0) {
+			// The file was refused: its own reason, not "not empty".
+			Assert.equals(-1, message.indexOf("not empty"), message);
+		} else {
+			// The file went, its handle allowing that (PHP opens files so), but Windows keeps a
+			// deleted file's name until it is closed: the directory is refused, as not empty.
+			Assert.isFalse(held.exists, message);
+		}
 
-		try root.deleteDirectory(true) catch (_:Dynamic) {}
+		// Closed, it goes.
+		root.deleteDirectory(true);
+		Assert.isFalse(root.exists);
 	}
 
 	public function testDeleteDirectoryOnAMissingPathThrowsInsteadOfCrashing():Void {
@@ -1035,7 +1048,7 @@ class FileTest extends utest.Test {
 		// one inside it: CrossByte locks nothing, and a reader stops no copy. A
 		// move is another matter: Windows refuses one while a handle without
 		// delete sharing is open, which FileStream's is on every target but
-		// Node.
+		// Node and PHP.
 		var dir = File.createTempDirectory();
 		var inner = dir.resolvePath("inner");
 		inner.createDirectory();
@@ -1066,7 +1079,7 @@ class FileTest extends utest.Test {
 		stream.close();
 		Assert.same(["contents", "contents"], copied);
 
-		#if nodejs
+		#if (nodejs || php)
 		var refused:Bool = false;
 		#else
 		var refused:Bool = System.isWindows;

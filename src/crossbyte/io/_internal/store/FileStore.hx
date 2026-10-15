@@ -1,6 +1,7 @@
 package crossbyte.io._internal.store;
 
 #if !(js && !nodejs)
+import crossbyte._internal.ErrorText;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import sys.FileSystem;
@@ -104,7 +105,7 @@ class FileStore implements IStoreBackend {
 
 			done(null);
 		} catch (e:Dynamic) {
-			done("Could not open the store: " + Std.string(e));
+			done("Could not open the store: " + ErrorText.of(e));
 		}
 	}
 
@@ -123,7 +124,7 @@ class FileStore implements IStoreBackend {
 
 			done(null, ByteArray.fromBytes(bytes));
 		} catch (e:Dynamic) {
-			done("Could not read '" + key + "': " + Std.string(e), null);
+			done("Could not read '" + key + "': " + ErrorText.of(e), null);
 		}
 	}
 
@@ -159,7 +160,7 @@ class FileStore implements IStoreBackend {
 				} catch (_:Dynamic) {}
 			}
 
-			done("Could not write '" + key + "': " + Std.string(e));
+			done("Could not write '" + key + "': " + ErrorText.of(e));
 		}
 	}
 
@@ -173,7 +174,7 @@ class FileStore implements IStoreBackend {
 
 			done(null);
 		} catch (e:Dynamic) {
-			done("Could not remove '" + key + "': " + Std.string(e));
+			done("Could not remove '" + key + "': " + ErrorText.of(e));
 		}
 	}
 
@@ -199,7 +200,7 @@ class FileStore implements IStoreBackend {
 
 			done(null, found);
 		} catch (e:Dynamic) {
-			done("Could not list the store: " + Std.string(e), null);
+			done("Could not list the store: " + ErrorText.of(e), null);
 		}
 	}
 
@@ -239,7 +240,7 @@ class FileStore implements IStoreBackend {
 
 			done(null);
 		} catch (e:Dynamic) {
-			done("Could not iterate the store: " + Std.string(e));
+			done("Could not iterate the store: " + ErrorText.of(e));
 		}
 	}
 
@@ -253,7 +254,7 @@ class FileStore implements IStoreBackend {
 
 			done(null);
 		} catch (e:Dynamic) {
-			done("Could not clear the store: " + Std.string(e));
+			done("Could not clear the store: " + ErrorText.of(e));
 		}
 	}
 

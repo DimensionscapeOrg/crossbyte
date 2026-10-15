@@ -9,6 +9,7 @@ import crossbyte.Object;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
+import crossbyte._internal.ErrorText;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -671,7 +672,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			return e;
 		}
 
-		var detail:String = Std.string(e);
+		var detail:String = ErrorText.of(e);
 		return new SQLError(operation, detail, "Execution failed: " + detail);
 	}
 
@@ -1379,7 +1380,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				try {
 					file = new File(cast reference);
 				} catch (e:Dynamic) {
-					throw new ArgumentError(Std.string(e));
+					throw new ArgumentError(ErrorText.of(e));
 				}
 			} else if (Std.isOfType(reference, File)) {
 				file = cast reference;
@@ -1963,7 +1964,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection = Sqlite.open(path);
 			#end
 		} catch (e:Dynamic) {
-			throw new IOError(Std.string(e));
+			throw new IOError(ErrorText.of(e));
 		}
 
 		// Before anything else the open asks: each pragma after this reads

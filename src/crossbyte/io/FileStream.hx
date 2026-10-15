@@ -7,6 +7,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.errors.EOFError;
 import crossbyte.errors.Error;
 import crossbyte.errors.IOError;
+import crossbyte._internal.ErrorText;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.RangeError;
 import crossbyte.events.Event;
@@ -1870,7 +1871,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		if (Std.isOfType(e, Error)) {
 			return (e : Error).message;
 		}
-		return Std.string(e);
+		return ErrorText.of(e);
 	}
 
 	@:noCompletion private function get_endian():Endian {
@@ -2342,7 +2343,7 @@ private class AsyncFile {
 				got += read;
 			}
 		} catch (e:Dynamic) {
-			return Broken("The file could not be read: " + Std.string(e));
+			return Broken("The file could not be read: " + ErrorText.of(e));
 		}
 
 		mutex.acquire();
@@ -2442,7 +2443,7 @@ private class AsyncFile {
 			writer.flush();
 			return null;
 		} catch (e:Dynamic) {
-			return "The file could not be written: " + Std.string(e);
+			return "The file could not be written: " + ErrorText.of(e);
 		}
 	}
 

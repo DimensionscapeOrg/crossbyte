@@ -9,6 +9,7 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.Error;
 import crossbyte.errors.IOError;
+import crossbyte._internal.ErrorText;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.FileListEvent;
@@ -565,7 +566,7 @@ final class File extends EventDispatcher {
 		try {
 			FileOps.saveBytes(path, bytes);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$path": ${Std.string(e)}');
+			throw __ioError('Could not write "$path": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -580,7 +581,7 @@ final class File extends EventDispatcher {
 		try {
 			FileOps.saveBytes(path, Bytes.ofString(text));
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$path": ${Std.string(e)}');
+			throw __ioError('Could not write "$path": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -797,11 +798,12 @@ final class File extends EventDispatcher {
 
 		The path is the one the file system gives for the file, so every link on the way, a junction on
 		Windows included, is followed: natively and on Node through the system's own call
-		(`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, and on the interpreter, neko and
-		HashLink under Linux and macOS `realpath`. Two cases fall back to correcting the case of each name
-		that exists, listing each directory on the way down, without following links: a path with nothing
-		at the end of it (AIR follows a link to a target that does not exist, and this does not), and the
-		interpreter, neko and HashLink under Windows, whose standard library resolves no link.
+		(`GetFinalPathNameByHandle`, `realpath`), on the jvm `toRealPath`, on PHP `realpath`, and on the
+		interpreter, neko and HashLink under Linux and macOS `realpath`. Two cases fall back to correcting
+		the case of each name that exists, listing each directory on the way down, without following links:
+		a path with nothing at the end of it (AIR follows a link to a target that does not exist, and this
+		does not), and the interpreter, neko and HashLink under Windows, whose standard library resolves no
+		link.
 
 		The following code shows how to use the canonicalize() method to find the correct capitalization of a
 		directory name. Before running this example, create a directory named CrossByte Test on the desktop of your computer.
@@ -1038,7 +1040,7 @@ final class File extends EventDispatcher {
 			// by another process are not a missing file, and reporting them as
 			// one would send whoever reads the error looking for the wrong
 			// thing entirely.
-			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}');
+			throw __ioError('Unable to copy "$source" to "$target": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -1281,7 +1283,7 @@ final class File extends EventDispatcher {
 		try {
 			FileSystem.createDirectory(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not create the directory "$__path": ${Std.string(e)}');
+			throw __ioError('Could not create the directory "$__path": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -1293,7 +1295,8 @@ final class File extends EventDispatcher {
 		an exception.
 		@throws	IOError The directory does not exist, or the directory could not be deleted. On Windows a
 		directory with a file open inside it cannot be deleted, unless whatever has the file open allowed
-		that: most programs do not, nor does `FileStream` except on Node.
+		that: most programs do not, nor does `FileStream` except on Node and PHP. On PHP the file is then
+		deleted but keeps its name until it is closed, so the directory is refused as not empty until then.
 
 		The following code creates an empty directory and then uses the deleteDirectory() method to delete the directory.
 
@@ -1328,7 +1331,7 @@ final class File extends EventDispatcher {
 				} catch (e:FileCancelled) {
 					throw e;
 				} catch (e:Dynamic) {
-					throw __ioError('Could not delete "${Path.join([__path, item])}": ${Std.string(e)}');
+					throw __ioError('Could not delete "${Path.join([__path, item])}": ${ErrorText.of(e)}');
 				}
 			}
 		} else if (__listPath(__path).length > 0) {
@@ -1340,7 +1343,7 @@ final class File extends EventDispatcher {
 		try {
 			FileSystem.deleteDirectory(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not delete "$__path": ${Std.string(e)}');
+			throw __ioError('Could not delete "$__path": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -1353,7 +1356,8 @@ final class File extends EventDispatcher {
 		@events complete Dispatched when the directory has been deleted successfully.
 		@events ioError The directory does not exist or could not be deleted. On Windows a directory with a
 		file open inside it cannot be deleted, unless whatever has the file open allowed that: most programs
-		do not, nor does `FileStream` except on Node.
+		do not, nor does `FileStream` except on Node and PHP. On PHP the file is then deleted but keeps its
+		name until it is closed, so the directory is refused as not empty until then.
 
 	**/
 	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void {
@@ -1368,7 +1372,7 @@ final class File extends EventDispatcher {
 
 		@throws	IOError The file does not exist, is a directory, or could not be deleted. On Windows a
 		file that is open cannot be deleted, unless whatever has it open allowed that:
-		most programs do not, nor does `FileStream` except on Node.
+		most programs do not, nor does `FileStream` except on Node and PHP.
 
 		The following code creates a temporary file and then calls the deleteFile() method to delete it.
 
@@ -1393,7 +1397,7 @@ final class File extends EventDispatcher {
 		try {
 			FileSystem.deleteFile(__path);
 		} catch (e:Dynamic) {
-			throw __ioError('Could not delete "$__path": ${Std.string(e)}');
+			throw __ioError('Could not delete "$__path": ${ErrorText.of(e)}');
 		}
 	}
 
@@ -1403,7 +1407,7 @@ final class File extends EventDispatcher {
 		@events complete Dispatched when the file has been deleted successfully.
 		@events ioError The file does not exist, is a directory, or could not be deleted. On Windows a file
 		that is open cannot be deleted, unless whatever has it open allowed that: most programs do not, nor
-		does `FileStream` except on Node.
+		does `FileStream` except on Node and PHP.
 	**/
 	public function deleteFileAsync():Void {
 		__startAsync(_ -> {
@@ -1643,7 +1647,7 @@ final class File extends EventDispatcher {
 		and destination refer to the same file or folder (other than by a name changed only in case); or
 		a directory would be moved into itself. On Windows a file that is open cannot be moved, nor a
 		directory with one inside it, unless whatever has the file open allowed that: most programs do
-		not, nor does `FileStream` except on Node.
+		not, nor does `FileStream` except on Node and PHP.
 		@throws ArgumentError `newLocation` is null.
 
 		The following code shows how to use the moveTo() method to rename a file. The original filename
@@ -1703,7 +1707,7 @@ final class File extends EventDispatcher {
 				try {
 					FileSystem.rename(source, target);
 				} catch (e:Dynamic) {
-					throw __ioError('Could not rename "$source" to "$target": ${Std.string(e)}');
+					throw __ioError('Could not rename "$source" to "$target": ${ErrorText.of(e)}');
 				}
 
 				return;
@@ -1741,7 +1745,7 @@ final class File extends EventDispatcher {
 			try {
 				FileOps.replace(source, target);
 			} catch (e:Dynamic) {
-				throw __ioError('Could not move "$source" over "$target": ${Std.string(e)}');
+				throw __ioError('Could not move "$source" over "$target": ${ErrorText.of(e)}');
 			}
 
 			return;
@@ -1759,7 +1763,7 @@ final class File extends EventDispatcher {
 			try {
 				FileSystem.rename(target, aside);
 			} catch (e:Dynamic) {
-				throw __ioError('Could not move "$target" out of the way: ${Std.string(e)}');
+				throw __ioError('Could not move "$target" out of the way: ${ErrorText.of(e)}');
 			}
 		}
 
@@ -1788,7 +1792,7 @@ final class File extends EventDispatcher {
 				throw e;
 			}
 
-			throw __ioError('Could not move "$source" to "$target": ${Std.string(e)}');
+			throw __ioError('Could not move "$source" to "$target": ${ErrorText.of(e)}');
 		}
 
 		if (across) {
@@ -1796,7 +1800,7 @@ final class File extends EventDispatcher {
 			try {
 				__removePath(source);
 			} catch (e:Dynamic) {
-				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}');
+				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${ErrorText.of(e)}');
 			}
 		}
 
@@ -1804,7 +1808,7 @@ final class File extends EventDispatcher {
 			try {
 				__removePath(aside);
 			} catch (e:Dynamic) {
-				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}');
+				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${ErrorText.of(e)}');
 			}
 		}
 	}
@@ -1827,7 +1831,7 @@ final class File extends EventDispatcher {
 			the source could not be moved to the target; or the source and destination refer to the same file
 			or folder (other than by a name changed only in case). On Windows a file that is open cannot be
 			moved, nor a directory with one inside it, unless whatever has the file open allowed that: most
-			programs do not, nor does `FileStream` except on Node.
+			programs do not, nor does `FileStream` except on Node and PHP.
 
 			The following code shows how to use the moveToAsync() method to rename a file. The original filename
 			is test1.txt and the resulting name is test2.txt. Since both the source and destination File object
@@ -2149,7 +2153,7 @@ final class File extends EventDispatcher {
 		try {
 			FileOps.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
-			throw __ioError('Could not write "$__path": ${Std.string(e)}');
+			throw __ioError('Could not write "$__path": ${ErrorText.of(e)}');
 		}
 
 		// What was saved, kept as a copy, read from the start as a load would
@@ -2282,12 +2286,14 @@ final class File extends EventDispatcher {
 			return null;
 		}
 		#else
-		if (System.isWindows || !FileSystem.exists(path)) {
+		// realpath: on POSIX, and on PHP under Windows as well, where PHP's
+		// follows a junction or a symbolic link and gives each name its case.
+		// The interpreter's, neko's and HashLink's there resolve no link.
+		if (#if !php System.isWindows || #end !FileSystem.exists(path)) {
 			return null;
 		}
 
 		try {
-			// realpath, on POSIX.
 			return FileSystem.fullPath(path);
 		} catch (_:Dynamic) {
 			return null;

@@ -31,6 +31,19 @@ says how.
   structure still takes a local per field, so on neko one of more than
   about a hundred fields is refused: `docs/targets.md` says so.
 
+#### Platform
+
+- On PHP, a `File`, `FileStream`, file `Store` or SQLite error says why in
+  one line. Its message carried PHP's stack trace as well, the exception's
+  text, after the reason.
+- `File.canonicalize` follows a junction or a symbolic link on PHP under
+  Windows, where it corrected only the case of each name: PHP's
+  `realpath` follows them there.
+- `File`'s documentation says what PHP does on Windows with a file open in
+  `FileStream`: as on Node, the file can be moved and deleted, and a
+  directory with one inside it is then refused as not empty until it is
+  closed. `FileTest` runs in the PHP lane.
+
 ### Upgrading from 1.0.0
 
 #### Runtime
