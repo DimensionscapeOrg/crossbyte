@@ -47,9 +47,11 @@ class AsyncDatabaseTest extends utest.Test {
 		// A caller long gone (a request that timed out) does not get its query
 		// run anyway, holding a connection that live requests want.
 		var db = AsyncDatabase.of(__pool());
-		db.queueTimeout = 0.1;
-
+		// Set once the worker is taken: a job's deadline is fixed as it is
+		// submitted, and the job that takes the worker, given 0.1 s, failed
+		// before a loaded machine's worker woke to it.
 		var release = __occupyTheWorker(db);
+		db.queueTimeout = 0.1;
 		var ran:Bool = false;
 		var late = db.submit(function(_):Int {
 			ran = true;
@@ -125,9 +127,9 @@ class AsyncDatabaseTest extends utest.Test {
 	**/
 	public function testAJobFailsAtItsDeadlineWhileTheWorkersAreBusy():Void {
 		var db = AsyncDatabase.of(__pool());
-		db.queueTimeout = 0.2;
-
+		// Set once the worker is taken, as above.
 		var release = __occupyTheWorker(db);
+		db.queueTimeout = 0.2;
 		var ran:Bool = false;
 		var started:Float = haxe.Timer.stamp();
 		var late = db.submit(function(_):Int {
@@ -178,9 +180,9 @@ class AsyncDatabaseTest extends utest.Test {
 	public function testAJobExpiredAtItsDeadlineIsCounted():Void {
 		var registry = new Metrics();
 		var db = AsyncDatabase.of(__pool(), null, registry, "deadline");
-		db.queueTimeout = 0.1;
-
+		// Set once the worker is taken, as above.
 		var release = __occupyTheWorker(db);
+		db.queueTimeout = 0.1;
 		var started:Float = haxe.Timer.stamp();
 		var late = db.submit(_ -> 1);
 
