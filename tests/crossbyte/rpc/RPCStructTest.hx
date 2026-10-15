@@ -68,6 +68,80 @@ class StructSparseWrap implements RPCStruct {
 	public function new() {}
 }
 
+/** A typedef as wide as a structure goes, a quarter of its fields absent when sent: see `testAWideTypedefArrivesWithEveryField`. **/
+typedef StructWideShape = {
+	var w00:Int;
+	var w01:Null<String>;
+	var w02:Bool;
+	var w03:Null<Int>;
+	var w04:Int;
+	var w05:Null<String>;
+	var w06:Bool;
+	var w07:Null<Int>;
+	var w08:Int;
+	var w09:Null<String>;
+	var w10:Bool;
+	var w11:Null<Int>;
+	var w12:Int;
+	var w13:Null<String>;
+	var w14:Bool;
+	var w15:Null<Int>;
+	var w16:Int;
+	var w17:Null<String>;
+	var w18:Bool;
+	var w19:Null<Int>;
+	var w20:Int;
+	var w21:Null<String>;
+	var w22:Bool;
+	var w23:Null<Int>;
+	var w24:Int;
+	var w25:Null<String>;
+	var w26:Bool;
+	var w27:Null<Int>;
+	var w28:Int;
+	var w29:Null<String>;
+	var w30:Bool;
+	var w31:Null<Int>;
+	var w32:Int;
+	var w33:Null<String>;
+	var w34:Bool;
+	var w35:Null<Int>;
+	var w36:Int;
+	var w37:Null<String>;
+	var w38:Bool;
+	var w39:Null<Int>;
+	var w40:Int;
+	var w41:Null<String>;
+	var w42:Bool;
+	var w43:Null<Int>;
+	var w44:Int;
+	var w45:Null<String>;
+	var w46:Bool;
+	var w47:Null<Int>;
+	var w48:Int;
+	var w49:Null<String>;
+	var w50:Bool;
+	var w51:Null<Int>;
+	var w52:Int;
+	var w53:Null<String>;
+	var w54:Bool;
+	var w55:Null<Int>;
+	var w56:Int;
+	var w57:Null<String>;
+	var w58:Bool;
+	var w59:Null<Int>;
+	var w60:Int;
+	var w61:Null<String>;
+	var w62:Bool;
+	var w63:Null<Int>;
+}
+
+class StructWideHolder implements RPCStruct {
+	public var shape:Null<StructWideShape> = null;
+
+	public function new() {}
+}
+
 /** Arrays and a map of them, the map last, so the frame ends with it. **/
 class StructSparseHolder implements RPCStruct {
 	public var items:Array<StructSparse> = [];
@@ -317,6 +391,100 @@ class RPCStructTest extends utest.Test {
 			Assert.equals(5, [for (_ in back.zones.keys()) 1].length);
 			Assert.isNull(back.zones.get(4).value);
 		}
+	}
+
+	/**
+		A typedef as wide as a structure goes arrives whole. It is read into
+		a local per field, and each field's read once left its own locals in
+		the same scope: on neko, whose loader refuses a function holding more
+		than its stack allows, the program did not load.
+	**/
+	public function testAWideTypedefArrivesWithEveryField():Void {
+		final held = new StructWideHolder();
+		final shape:StructWideShape = {
+			w00: 0,
+			w01: "s1",
+			w02: true,
+			w03: 3,
+			w04: 28,
+			w05: null,
+			w06: false,
+			w07: null,
+			w08: 56,
+			w09: "s9",
+			w10: true,
+			w11: 11,
+			w12: 84,
+			w13: null,
+			w14: false,
+			w15: null,
+			w16: 112,
+			w17: "s17",
+			w18: true,
+			w19: 19,
+			w20: 140,
+			w21: null,
+			w22: false,
+			w23: null,
+			w24: 168,
+			w25: "s25",
+			w26: true,
+			w27: 27,
+			w28: 196,
+			w29: null,
+			w30: false,
+			w31: null,
+			w32: 224,
+			w33: "s33",
+			w34: true,
+			w35: 35,
+			w36: 252,
+			w37: null,
+			w38: false,
+			w39: null,
+			w40: 280,
+			w41: "s41",
+			w42: true,
+			w43: 43,
+			w44: 308,
+			w45: null,
+			w46: false,
+			w47: null,
+			w48: 336,
+			w49: "s49",
+			w50: true,
+			w51: 51,
+			w52: 364,
+			w53: null,
+			w54: false,
+			w55: null,
+			w56: 392,
+			w57: "s57",
+			w58: true,
+			w59: 59,
+			w60: 420,
+			w61: null,
+			w62: false,
+			w63: null
+		};
+		held.shape = shape;
+		final codec = RPCCodecs.of(StructWideHolder);
+		final out = new ByteArray();
+		codec.write(held, out);
+		out.position = 0;
+		final back:StructWideShape = codec.read(out).shape;
+		var wrong:Int = 0;
+		for (i in 0...64) {
+			final name:String = "w" + (i < 10 ? "0" : "") + i;
+			if (Reflect.field(back, name) != Reflect.field(shape, name)) {
+				wrong++;
+			}
+		}
+		Assert.equals(0, wrong);
+		Assert.equals("s9", back.w09);
+		Assert.isNull(back.w05);
+		Assert.equals(3, back.w03);
+		Assert.isNull(back.w63);
 	}
 
 	static function point(x:Float, y:Float):StructPoint {

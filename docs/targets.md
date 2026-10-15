@@ -126,10 +126,11 @@ On Linux, HashLink polls its sockets through `select`, which cannot watch a desc
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
 
-**Very wide RPC structures, on neko.** Neko's loader limits the stack one function may use, and refuses the whole
-program when one function exceeds it, before `main` runs. The readers RPC generates for an `RPCStruct` grow with its
-fields, more with each optional one: a structure of forty fields, twenty of them optional, is past the limit. Split
-one that wide into nested structures. Every other target takes it.
+**Very wide anonymous RPC structures, on neko.** Neko's loader limits the locals one function may hold at once, and
+refuses the whole program when one function exceeds it, before `main` runs. RPC reads an anonymous structure (a
+typedef) into a local per field, so one of more than about a hundred fields is past the limit: declare it as a class
+implementing `RPCStruct`, which is read into the object field by field and loads at any width RPC carries. Every
+other target takes either.
 
 **Half a surrogate pair, on HashLink.** A string can hold half of a surrogate pair on its own (a string cut in the
 middle of an emoji does). A `ByteArray` writes one as U+FFFD, as every target does, and so do HTTP text responses,

@@ -604,7 +604,7 @@ class RPCPatches {
 		if (bitLayout) {
 			final assign = (field:StructField, i:Int, value:Expr) -> {
 				final fname:String = field.name;
-				return macro into.$fname = $value;
+				return RPCStructs.scoped(macro into.$fname, value);
 			};
 			final kept = (field:StructField) -> {
 				final fname:String = field.name;
@@ -629,7 +629,7 @@ class RPCPatches {
 					into.$fname = $cr.readInto(input, end, __t);
 				});
 			} else {
-				readsInto.push(macro into.$fname = ${readInto(field.kind, field.optional, macro input, macro end, macro into.$fname)});
+				readsInto.push(RPCStructs.scoped(macro into.$fname, readInto(field.kind, field.optional, macro input, macro end, macro into.$fname)));
 			}
 		}
 

@@ -581,18 +581,23 @@ class RPCStructs {
 		final write:Array<Expr> = [];
 		final read:Array<Expr> = [];
 		final made:Array<ObjectField> = [];
+		// Each field is read in a scope of its own (see `scoped`). An
+		// anonymous structure's field goes into a local declared before it.
 		if (bitLayout) {
 			// The bit section, then the byte fields: see RPCBits.writeValue.
 			for (e in RPCBits.writeValue(fields, macro value)) {
 				write.push(e);
 			}
+			if (!isClass) {
+				for (i in 0...fields.length) {
+					final local:String = "__f" + i;
+					final localType:ComplexType = fieldLocalType(fields[i]);
+					read.push(macro var $local:$localType);
+				}
+			}
 			final assign = (field:StructField, i:Int, value:Expr) -> {
 				final fieldName:String = field.name;
-				if (isClass) {
-					return macro made.$fieldName = $value;
-				}
-				final local:String = "__f" + i;
-				return macro var $local = $value;
+				return isClass ? scoped(macro made.$fieldName, value) : scoped(macro $i{"__f" + i}, value);
 			};
 			for (e in RPCBits.readValue(fields, macro input, macro end, assign)) {
 				read.push(e);
@@ -612,10 +617,12 @@ class RPCStructs {
 			write.push(RPCKinds.write(field.kind, field.optional, macro frame, macro value.$fieldName));
 			final get:Expr = RPCKinds.read(field.kind, field.optional, macro input, macro end);
 			if (isClass) {
-				read.push(macro made.$fieldName = $get);
+				read.push(scoped(macro made.$fieldName, get));
 			} else {
 				final local:String = "__f" + i;
-				read.push(macro var $local = $get);
+				final localType:ComplexType = fieldLocalType(field);
+				read.push(macro var $local:$localType);
+				read.push(scoped(macro $i{local}, get));
 				made.push({field: fieldName, expr: macro $i{local}});
 			}
 		}
@@ -817,6 +824,27 @@ class RPCStructs {
 		};
 		codecs.set(key, kind);
 		return kind;
+	}
+
+	/**
+		`target = value` in a block of its own, so the locals reading `value`
+		makes end with it. Neko's loader refuses a function holding more
+		locals at once than its stack allows, as a reader of forty fields
+		did with every field's locals in one scope. The block keeps a local
+		of its own, as one holding a lone assignment is merged into the one
+		around it.
+	**/
+	public static function scoped(target:Expr, value:Expr):Expr {
+		return macro {
+			final __v = $value;
+			$target = __v;
+		};
+	}
+
+	/** The type of the local an anonymous structure's field is read into. **/
+	static function fieldLocalType(field:StructField):ComplexType {
+		final full:ComplexType = RPCContractMacroTools.fullComplexType(field.type);
+		return field.optional && !RPCKinds.isNullType(field.type) ? TPath({pack: [], name: "Null", params: [TPType(full)]}) : full;
 	}
 
 	/** The size classes made so far, by the structure's or enum's key. **/

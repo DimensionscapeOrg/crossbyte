@@ -352,7 +352,10 @@ class RPCBits {
 			final p:String = presence(i);
 			if (field.optional) {
 				final take:Expr = RPCPatches.takeBits(1);
-				stmts.push(declare ? macro var $p:Bool = $take != 0 : macro $i{p} = $take != 0);
+				if (declare) {
+					stmts.push(macro var $p:Bool = false);
+				}
+				stmts.push(RPCStructs.scoped(macro $i{p}, macro $take != 0));
 			}
 			final bits = field.kind.bits;
 			if (bits != null) {

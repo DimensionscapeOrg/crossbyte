@@ -20,6 +20,17 @@ says how.
   takes the program's exit code, and every runtime keeps it as
   `exitCode`. (Upgrading)
 
+### Fixed
+
+#### RPC
+
+- A wide `RPCStruct` loads on neko. Its reader held every field's locals
+  in one scope, so a structure of forty fields, twenty of them optional,
+  passed what neko's loader allows one function and the program did not
+  load. Each field is now read in a scope of its own. An anonymous
+  structure still takes a local per field, so on neko one of more than
+  about a hundred fields is refused: `docs/targets.md` says so.
+
 ### Upgrading from 1.0.0
 
 #### Runtime
