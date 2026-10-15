@@ -7,6 +7,7 @@ import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
 import crossbyte.test.Require;
 import haxe.io.Bytes;
+import haxe.io.Path;
 import utest.Assert;
 
 /**
@@ -26,12 +27,22 @@ class PostgresKVStoreTest extends utest.Test {
 			user: "tester",
 			password: "secret",
 			database: "fake",
-			libraryPath: switch (Sys.systemName().toLowerCase()) {
-				case "windows": "crossbyte_fakepq.dll";
-				case "mac": "crossbyte_fakepq.dylib";
-				default: "crossbyte_fakepq.dso";
-			}
+			libraryPath: libraryPath()
 		};
+	}
+
+	/**
+		The stand-in beside the test program, as `NativePostgresBridgeTest`
+		names it: a bare name is not looked for there on Linux, which then
+		loads the real libpq, finds no server, and fails every case.
+	**/
+	static function libraryPath():String {
+		var name:String = switch (crossbyte.sys.System.PLATFORM) {
+			case "windows": "crossbyte_fakepq.dll";
+			case "mac": "crossbyte_fakepq.dylib";
+			default: "crossbyte_fakepq.dso";
+		};
+		return Path.join([Path.directory(Sys.programPath()), name]);
 	}
 
 	/** A store on a new connection, the stand-in's table emptied first. **/
