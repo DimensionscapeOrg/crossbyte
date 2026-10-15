@@ -114,6 +114,72 @@ class UncaughtErrorTest extends utest.Test {
 		}
 	}
 
+	/**
+		Startup is the exception to containment: an INIT listener that throws
+		leaves the runtime half started, so once INIT's other listeners have
+		run it exits, with code 1.
+	**/
+	public function testAnInitListenerThatThrowsEndsTheRuntime():Void {
+		var runtime = new CrossByte(false, DEFAULT, true);
+		var reports = __watch(runtime);
+		var laterInits = 0;
+		var exits = 0;
+
+		runtime.addEventListener(Event.INIT, _ -> throw "the database would not open");
+		runtime.addEventListener(Event.INIT, _ -> laterInits++);
+		runtime.addEventListener(Event.EXIT, _ -> exits++);
+		runtime.pump(1 / 60, 0);
+
+		Assert.equals(1, laterInits, "the INIT listener after the one that threw never ran");
+		Assert.equals(1, exits, "a runtime whose INIT failed did not exit");
+		Assert.equals(1, runtime.exitCode);
+		Assert.equals(1, reports.length);
+		if (reports.length > 0) {
+			Assert.equals(UncaughtErrorEvent.LIFECYCLE, reports[0].source);
+		}
+	}
+
+	/** `exit` keeps its code, and a later exit with none does not undo it. **/
+	public function testExitKeepsItsCode():Void {
+		var runtime = new CrossByte(false, DEFAULT, true);
+		runtime.pump(1 / 60, 0);
+		Assert.equals(0, runtime.exitCode);
+		runtime.exit(3);
+		Assert.equals(3, runtime.exitCode);
+		runtime.exit();
+		Assert.equals(3, runtime.exitCode);
+	}
+
+	#if eval
+	/**
+		What the process exits with, checked by running one: a
+		`ServerApplication` whose INIT throws (tests/fixtures/startfail)
+		exits with 1, and one that exits with a code of its own with that.
+		Once, on the interpreter: the code is the runtime's, the same on
+		every target, and the cases above check it there.
+	**/
+	public function testAProgramWhoseStartupFailsExitsWithOne():Void {
+		// tests/TestMain.hx, on the interpreter: the repository is above it.
+		var root:String = haxe.io.Path.directory(haxe.io.Path.directory(Sys.programPath()));
+
+		function run(defines:Array<String>):{code:Int, output:String} {
+			var args:Array<String> = ["--cwd", root, "-cp", "src", "-lib", "emitter", "-cp", "tests/fixtures/startfail", "-main", "StartFail", "--interp"].concat(defines);
+			var process = new sys.io.Process("haxe", args);
+			var output:String = process.stdout.readAll().toString() + process.stderr.readAll().toString();
+			var code:Int = process.exitCode();
+			process.close();
+			return {code: code, output: output};
+		}
+
+		var failed = run([]);
+		Assert.equals(1, failed.code, failed.output);
+		Assert.isTrue(failed.output.indexOf("did not start") >= 0, failed.output);
+
+		var chosen = run(["-D", "startfail_exit=3"]);
+		Assert.equals(3, chosen.code, chosen.output);
+	}
+	#end
+
 	#if js
 	/**
 		On JavaScript the loop is a chain of the platform's own timeouts, so a

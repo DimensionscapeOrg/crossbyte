@@ -508,6 +508,16 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __isPrimordial:Bool;
 	@:noCompletion private var __usesHostLoop:Bool = false;
 	@:noCompletion private var __didInit:Bool = false;
+	// Whether an INIT listener threw: the runtime did not start, and exits
+	// once INIT's other listeners have run.
+	@:noCompletion private var __initFailed:Bool = false;
+
+	/**
+		What this runtime exits with: `0` until `exit` is given another code,
+		and `1` once an `Event.INIT` listener has thrown, since the runtime did
+		not start. See `exit`.
+	**/
+	public var exitCode(default, null):Int = 0;
 	@:noCompletion private var __didExit:Bool = false;
 	// Hot-path tick events are reused to reduce per-frame allocation churn.
 	// These events are ephemeral during dispatch and must not be retained.
@@ -688,7 +698,23 @@ final class CrossByte extends EventDispatcher {
 	/* public function runInThread(job:Function):Void{
 
 	}*/
-	public function exit():Void {
+	/**
+		Ends this runtime: its loop stops, `Event.EXIT` is dispatched, what it
+		holds is sent, its children exit, and its sockets close. From any
+		thread; from another, it stops now rather than once its frame is out.
+
+		@param code The program's exit code, `0` for success, as `Sys.exit`
+			takes it. On the primordial runtime of a program whose main loop
+			CrossByte runs (an `Application` or `ServerApplication`), the
+			process exits with it once the runtime has; under a
+			`HostApplication`, whose host owns the process, it is only kept.
+			Every runtime keeps it as `exitCode`. A later call with `0` does
+			not undo an earlier failure's code.
+	**/
+	public function exit(code:Int = 0):Void {
+		if (code != 0) {
+			exitCode = code;
+		}
 		__setRunning(false);
 		#if target.threaded
 		__registryLock.acquire();
@@ -1179,6 +1205,9 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
+		if (event.type == Event.INIT) {
+			__initFailed = true;
+		}
 		// What was thrown, as it was thrown: the exception a listener threw,
 		// or the value, not a wrapper made for it.
 		__uncaught(@:privateAccess error.unwrap(), event.type == TickEvent.TICK ? UncaughtErrorEvent.TICK : UncaughtErrorEvent.LIFECYCLE);
@@ -1841,6 +1870,17 @@ final class CrossByte extends EventDispatcher {
 			if (hasEventListener(Event.INIT)) {
 				dispatchContained(new Event(Event.INIT));
 			}
+			// A listener that threw left the runtime half started: whatever it
+			// was opening (a database, a listener) is not there, and running
+			// on would be a server up with nothing behind it. It exits, as a
+			// program whose startup fails does, so a supervisor sees code 1.
+			// The error itself was logged, and reported, as it was caught.
+			if (__initFailed) {
+				try {
+					Logger.log(LogLevel.ERROR, "The runtime did not start: an INIT listener threw. It exits with code 1.", null, LOG_CATEGORY);
+				} catch (_:Dynamic) {}
+				exit(1);
+			}
 		}
 	}
 
@@ -1970,6 +2010,18 @@ final class CrossByte extends EventDispatcher {
 			__primordial = null;
 		}
 		#end
+
+		// Last: the program's exit code, for a program whose main loop this
+		// runtime ran. A host's process is the host's to end.
+		if (__isPrimordial && !__usesHostLoop && exitCode != 0) {
+			#if nodejs
+			// Set, not exit(): Node ends with it once what is still pending
+			// (a write, a close) is done.
+			js.Node.process.exitCode = exitCode;
+			#elseif sys
+			Sys.exit(exitCode);
+			#end
+		}
 	}
 
 	#if (cpp && windows)

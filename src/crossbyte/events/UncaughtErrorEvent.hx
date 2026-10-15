@@ -14,6 +14,14 @@ package crossbyte.events;
 	application that reports failures itself can quiet the log with
 	`Logger.setLevel("runtime", LogLevel.OFF)`.
 
+	Startup is the exception. An `Event.INIT` listener that throws leaves
+	the runtime half started (the database it was opening, the listener it
+	was binding, are not there), so once INIT's other listeners have run the
+	runtime exits with code 1, as a program whose startup fails does; on an
+	application's primordial runtime the process exits with it, so a
+	supervisor sees the failure. Catch inside the listener to carry on
+	instead.
+
 	Listen for it to report failures somewhere the log does not reach, or to
 	decide that one is fatal and call `exit()`:
 

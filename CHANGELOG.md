@@ -2,7 +2,32 @@
 
 All notable changes to CrossByte will be documented in this file.
 
-## Unreleased
+## 1.0.1 - Unreleased
+
+### Changed
+
+Entries marked "(Upgrading)" can need code changed; the Upgrading section
+says how.
+
+#### Runtime
+
+- A failed start ends the program. An `Event.INIT` listener that throws
+  leaves its runtime half started, so once INIT's other listeners have
+  run the runtime exits with code 1, as a program whose startup fails
+  does, and an application whose main loop CrossByte runs exits the
+  process with it, where a server could run on with nothing listening.
+  Failures after startup are contained as before. `CrossByte.exit(code)`
+  takes the program's exit code, and every runtime keeps it as
+  `exitCode`. (Upgrading)
+
+### Upgrading from 1.0.0
+
+#### Runtime
+
+- An `Event.INIT` listener that throws ends its runtime with exit code 1,
+  and an application's process with it, where it was logged and the
+  runtime ran on. To carry on past a failure in startup, catch it inside
+  the listener.
 
 ## 1.0.0 - 2026-10-15
 
