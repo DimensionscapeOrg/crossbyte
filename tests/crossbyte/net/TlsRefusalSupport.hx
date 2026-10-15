@@ -26,15 +26,6 @@ import utest.Assert;
 	the ones refused: a client that cannot connect at all refuses too.
 **/
 class TlsRefusalSupport {
-	/** The clients this target has, each as a failure names it. **/
-	public static function clients():Array<TlsClient> {
-		var clients:Array<TlsClient> = [SocketClient];
-		#if !(hl || neko)
-		clients.push(WebSocketClient);
-		#end
-		return clients.concat(netConnections()).concat(loaders());
-	}
-
 	/**
 		`tls://` on every target, and `wss://` but on neko and HashLink, where
 		a WebSocket client cannot connect: its handshake key needs secure
