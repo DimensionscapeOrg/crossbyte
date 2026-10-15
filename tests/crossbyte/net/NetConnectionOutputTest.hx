@@ -143,7 +143,8 @@ class NetConnectionOutputTest extends utest.Test {
 		with no drain told, until it reads again; one that never does is
 		closed at the socket's `maxOutputBufferSize`, as `Reason.Overflow`.
 		The buffers are made small where they can be, so the kernel holds
-		little; on Node the marks are larger than what it holds.
+		little; on Node and the interpreter the marks are larger than what it
+		holds.
 	**/
 	@:timeout(30000)
 	public function testATcpPeerThatStopsReadingIsHeldHighAndOneThatNeverReadsOverflows(async:Async):Void {
@@ -338,13 +339,15 @@ class NetConnectionOutputTest extends utest.Test {
 
 	#if (cpp || java || jvm || nodejs || eval)
 	// The marks and the limit the stalled cases use, and the most they send.
-	// Node cannot size a socket's buffers, so its kernel holds more.
-	private static inline var HIGH:Int = #if nodejs 8 * 1024 * 1024 #else 512 * 1024 #end;
-	private static inline var LOW:Int = #if nodejs 1024 * 1024 #else 64 * 1024 #end;
-	private static inline var LIMIT:Int = #if nodejs 4 * 1024 * 1024 #else 256 * 1024 #end;
+	// Node and the interpreter cannot size a socket's buffers, so their
+	// kernel holds more: on Linux a loopback connection takes megabytes
+	// before a send would wait.
+	private static inline var HIGH:Int = #if (nodejs || eval) 8 * 1024 * 1024 #else 512 * 1024 #end;
+	private static inline var LOW:Int = #if (nodejs || eval) 1024 * 1024 #else 64 * 1024 #end;
+	private static inline var LIMIT:Int = #if (nodejs || eval) 4 * 1024 * 1024 #else 256 * 1024 #end;
 	private static inline var MOST:Int = 128 * 1024 * 1024;
 	// Sent a pass, the next once the pass has handed it to the system.
-	private static inline var PIECE:Int = #if nodejs 1024 * 1024 #else 64 * 1024 #end;
+	private static inline var PIECE:Int = #if (nodejs || eval) 1024 * 1024 #else 64 * 1024 #end;
 
 	private static function __smallBuffer(socket:Socket):Void {
 		if (Socket.bufferSizeSupported) {
