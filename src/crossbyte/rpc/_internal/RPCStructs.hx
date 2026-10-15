@@ -534,7 +534,7 @@ class RPCStructs {
 				if (size >= 0) {
 					size = each < 0 ? -1 : size + each;
 				}
-				least += field.optional ? 1 : (field.kind.size > 0 ? field.kind.size : 1);
+				least += field.optional ? 1 : RPCKinds.leastOf(field.kind);
 			}
 		} else {
 			// Its bit section in whole bytes, a presence bit for each field
@@ -560,7 +560,7 @@ class RPCStructs {
 					size = each < 0 ? -1 : size + each;
 				}
 				if (!field.optional) {
-					least += field.kind.size > 0 ? field.kind.size : 1;
+					least += RPCKinds.leastOf(field.kind);
 				}
 			}
 			if (size >= 0) {
@@ -795,6 +795,7 @@ class RPCStructs {
 			token: token,
 			size: size,
 			exact: exact,
+			least: least,
 			bitLayout: bitLayout,
 			bitsOnly: bitLayout && RPCBits.bitsOnly(fields) && RPCBits.leastBits(fields) > 0,
 			pos: pos
@@ -1025,6 +1026,8 @@ typedef StructInfo = {
 	final size:Int;
 	/** Whether every value takes exactly `size` bytes: none of its fields may be absent, and each takes the same bytes whatever it holds. **/
 	final exact:Bool;
+	/** The fewest bytes a whole value takes, at least one, as `RPCKinds.leastOf` answers for its kind. **/
+	final least:Int;
 	final pos:Position;
 }
 #end

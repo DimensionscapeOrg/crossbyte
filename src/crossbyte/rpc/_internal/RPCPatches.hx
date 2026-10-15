@@ -176,7 +176,7 @@ class RPCPatches {
 			final count:String = RPCKinds.local();
 			final list:String = RPCKinds.local();
 			final at:String = RPCKinds.local();
-			final least:Int = !kind.elementOptional && kind.element.size > 0 ? kind.element.size : 1;
+			final least:Int = kind.elementOptional ? 1 : RPCKinds.leastOf(kind.element);
 			if (kind.mapKey != null) {
 				final path:TypePath = switch (t) {
 					case TPath(p): p;

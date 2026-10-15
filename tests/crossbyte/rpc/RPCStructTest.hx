@@ -53,6 +53,30 @@ class StructPinned implements RPCStruct {
 	public function new() {}
 }
 
+/** Two fields of fixed sizes, either of which may be absent: from two bytes to seven. **/
+class StructSparse implements RPCStruct {
+	public var value:Null<Int> = null;
+	public var flag:Null<Bool> = null;
+
+	public function new() {}
+}
+
+/** One of those inside another: from two bytes to seven again. **/
+class StructSparseWrap implements RPCStruct {
+	public var inner:StructSparse = new StructSparse();
+
+	public function new() {}
+}
+
+/** Arrays and a map of them, the map last, so the frame ends with it. **/
+class StructSparseHolder implements RPCStruct {
+	public var items:Array<StructSparse> = [];
+	public var wrapped:Array<StructSparseWrap> = [];
+	public var zones:Map<Int, StructSparse> = new Map();
+
+	public function new() {}
+}
+
 /** A subclass's fields and its parent's go out together. **/
 class StructBase implements RPCStruct {
 	public var base:Int = 0;
@@ -254,6 +278,45 @@ class RPCStructTest extends utest.Test {
 			}
 		}));
 		Assert.same(["6: " + RPCError.UNREADABLE_MESSAGE], answers);
+	}
+
+	/**
+		An array or a map of a structure whose fields of a fixed size may be
+		absent arrives, read into a new value and into one kept: an element
+		takes from a presence byte a field up to the most, and a count is
+		checked against the fewest. Checked against the most (every field
+		there), each was refused as naming more than the frame held.
+	**/
+	public function testStructuresWhoseFieldsAreAbsentArriveInArraysAndMaps():Void {
+		final held = new StructSparseHolder();
+		for (_ in 0...20) {
+			held.items.push(new StructSparse());
+		}
+		final some = new StructSparse();
+		some.value = 7;
+		some.flag = true;
+		held.items.push(some);
+		for (_ in 0...10) {
+			held.wrapped.push(new StructSparseWrap());
+		}
+		for (i in 0...5) {
+			held.zones.set(i, new StructSparse());
+		}
+		final codec = RPCCodecs.of(StructSparseHolder);
+		final out = new ByteArray();
+		codec.write(held, out);
+		for (into in [null, new StructSparseHolder()]) {
+			out.position = 0;
+			final back = codec.read(out, into);
+			Assert.equals(21, back.items.length);
+			Assert.isNull(back.items[0].value);
+			Assert.equals(7, back.items[20].value);
+			Assert.isTrue(back.items[20].flag);
+			Assert.equals(10, back.wrapped.length);
+			Assert.isNull(back.wrapped[9].inner.flag);
+			Assert.equals(5, [for (_ in back.zones.keys()) 1].length);
+			Assert.isNull(back.zones.get(4).value);
+		}
 	}
 
 	static function point(x:Float, y:Float):StructPoint {

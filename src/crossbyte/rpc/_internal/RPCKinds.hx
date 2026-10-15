@@ -143,6 +143,19 @@ class RPCKinds {
 		return kind.measure == null && kind.size >= 0;
 	}
 
+	/**
+		The fewest bytes a value of `kind` that is there takes, a byte at the
+		least: what a count of them read is checked against. A structure
+		whose fields may be absent takes fewer than its `size`, which is the
+		most it takes.
+	**/
+	public static function leastOf(kind:RPCKind):Int {
+		if (fixedSize(kind)) {
+			return kind.size > 0 ? kind.size : 1;
+		}
+		return kind.struct != null ? kind.struct.least : 1;
+	}
+
 	/** Reads a value from `input`, a `ByteArrayInput`, in a frame ending at `end`. **/
 	public static function read(kind:RPCKind, optional:Bool, input:Expr, end:Expr):Expr {
 		final get:Expr = kind.read(input, end);
@@ -403,9 +416,10 @@ class RPCKinds {
 		ask for an array of two billion.
 	**/
 	static function arrayKind(element:RPCKind, optional:Bool, elementType:ComplexType):RPCKind {
-		// The least an element takes: its size, or a byte (a String's count,
-		// an absent element's presence byte), which every kind takes at least.
-		final least:Int = !optional && element.size > 0 ? element.size : 1;
+		// The least an element takes: its size, the fewest a structure whose
+		// fields may be absent takes, or a byte (a String's count, an absent
+		// element's presence byte), which every kind takes at least.
+		final least:Int = optional ? 1 : leastOf(element);
 		// Numbers and Bools that cannot be absent: all of them made room for,
 		// or checked, at once.
 		final fixed:Bool = !optional && element.put != null && element.get != null;
@@ -588,7 +602,7 @@ class RPCKinds {
 		final name:String = "Map<" + keyName + ", " + element.name + ">";
 		// The least an entry takes: its key's (a String's count, or an Int)
 		// and its value's, as an array's element.
-		final least:Int = (stringKeys ? 1 : 4) + (!optional && element.size > 0 ? element.size : 1);
+		final least:Int = (stringKeys ? 1 : 4) + (optional ? 1 : leastOf(element));
 		requireNoPatch(element, "a map's value");
 		return {
 			name: name,
