@@ -37,7 +37,8 @@ import sys.io.File as HaxeFile;
 import sys.io.FileInput;
 import sys.io.FileOutput;
 import sys.io.FileSeek;
-#if js
+#if (js || php)
+// One thread, and on PHP no sys.thread.Mutex to build with.
 import crossbyte._internal.js.NoMutex as Mutex;
 #else
 import sys.thread.Mutex;
@@ -89,7 +90,7 @@ import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 
 	The events of an asynchronously opened file are the stream's own (`progress`,
 	`outputProgress`, `complete`, `ioError`, `close`), with the stream as their target. Where there
-	are no threads (Node), a file can be opened asynchronously only to read.
+	are no threads (Node, PHP), a file can be opened asynchronously only to read.
 **/
 @:access(crossbyte.io.ByteArray)
 @:access(crossbyte.io.ByteArrayData)
@@ -165,7 +166,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		read data from the buffer, new data is read in to refill the read buffer.
 
 		The readAhead property has no effect on a file that is opened synchronously, nor where there
-		are no threads (Node), where the file is read to its end at once.
+		are no threads (Node, PHP), where the file is read to its end at once.
 
 		As data is read in asynchronously, the FileStream object dispatches progress events. In the event
 		handler method for the progress event, check to see that the required number of bytes is available
@@ -338,7 +339,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		@event		complete The file data has been read to the input buffer. (The file must be opened
 		with the fileMode parameter set to FileMode.READ or FileMode.UPDATE.)
 		@throws 	IllegalOperationError `fileMode` writes, and the target has no threads to write
-		with (Node).
+		with (Node, PHP).
 	 */
 	public function openAsync(file:File, fileMode:FileMode):Void {
 		#if !target.threaded
@@ -1713,8 +1714,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	@:noCompletion private inline function __i32(bytes:Bytes, at:Int):Int {
-		return __endian == LITTLE_ENDIAN ? bytes.getInt32(at) : ((bytes.get(at) << 24) | (bytes.get(at + 1) << 16) | (bytes.get(at + 2) << 8)
-			| bytes.get(at + 3));
+		// wrap32 is the big-endian value but on PHP, where `<< 24` does not
+		// reach a sign bit at 31: a negative read back as the unsigned
+		// number its bytes make.
+		return __endian == LITTLE_ENDIAN ? bytes.getInt32(at) : crossbyte.utils.Hash.wrap32((bytes.get(at) << 24) | (bytes.get(at + 1) << 16)
+			| (bytes.get(at + 2) << 8) | bytes.get(at + 3));
 	}
 
 	@:noCompletion private inline function __put16(value:Int):Void {

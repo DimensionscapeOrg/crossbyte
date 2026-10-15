@@ -219,8 +219,12 @@ class FileStreamContractTest extends utest.Test {
 
 	public function testObjectsLargerThanSixtyFourKilobytesRoundTrip():Void {
 		// Framed by writeUtf's 16-bit length, past 65,535 bytes writeObject
-		// would throw RangeError.
-		var big:Array<String> = [for (i in 0...20000) "item" + i];
+		// would throw RangeError. On PHP 7,000 items, still past 65,535 bytes
+		// either way: reading an object there takes time that grows with the
+		// square of its text (a character at a time through mb_substr, in the
+		// JSON bounds and Haxe's Unserializer), 16 s for 20,000.
+		var count:Int = #if php 7000 #else 20000 #end;
+		var big:Array<String> = [for (i in 0...count) "item" + i];
 
 		for (encoding in [crossbyte.net.ObjectEncoding.HXSF, crossbyte.net.ObjectEncoding.JSON]) {
 			for (async in __writeModes()) {
@@ -240,7 +244,7 @@ class FileStreamContractTest extends utest.Test {
 					__open(reader, file, async);
 					var back:Array<String> = reader.readObject();
 					Assert.equals(big.length, back.length, how);
-					Assert.equals("item19999", back[back.length - 1], how);
+					Assert.equals("item" + (count - 1), back[back.length - 1], how);
 					Assert.equals("after", reader.readObject(), how);
 					__close(reader);
 				} catch (e:Dynamic) {

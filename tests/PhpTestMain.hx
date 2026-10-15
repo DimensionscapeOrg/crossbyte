@@ -10,7 +10,8 @@
 	BitReader, whose layout its bit fields share, and the spatial grids a
 	server picks each observer's entries with; and the rest of crossbyte.io
 	that needs neither a thread nor a socket: ByteArray's other classes,
-	ByteDelta, Store, and the path arithmetic under File. PHP
+	ByteDelta, Store, FileStream (which opens a file asynchronously only to
+	read there, as on Node), and the path arithmetic under File. PHP
 	has no sockets in CrossByte, so the RPC cases that open one are left out
 	there, each in its class; RPCSlowPeerTest has no other, and is not here.
 	Naming TestSuites from here would compile every group in it, sockets,
@@ -59,6 +60,9 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.io.BitPackingTest());
 			runner.addCase(new crossbyte.io.StoreTest());
 			runner.addCase(new crossbyte.io.FilePathTest());
+			runner.addCase(new crossbyte.io.FileStreamTest());
+			runner.addCase(new crossbyte.io.FileStreamContractTest());
+			runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 			runner.addCase(new crossbyte.ds.SpatialGridTest());
 			runner.addCase(new crossbyte.ds.SparseSpatialGridTest());
 			addRPC(runner);
