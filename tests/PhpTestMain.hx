@@ -5,8 +5,9 @@
 	SecureRandom, HMAC-SHA256, Ed25519, EdDSA tokens, Argon2id, ConfigTree and
 	Secret from CrossByte there, and the key/value store is built for it, so
 	those are what this runs, and RPC: its
-	contracts, its codec and its sessions over in-process connections, and
-	the ByteArray reads and writes its bytes go through. PHP
+	contracts, its codec and its sessions over in-process connections, the
+	ByteArray reads and writes its bytes go through, and the spatial grids a
+	server picks each observer's entries with. PHP
 	has no sockets in CrossByte, so the RPC cases that open one are left out
 	there, each in its class; RPCSlowPeerTest has no other, and is not here.
 	Naming TestSuites from here would compile every group in it, sockets,
@@ -46,6 +47,8 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.core.ConfigTreeTest());
 			runner.addCase(new crossbyte.utils.UtilsTest());
 			runner.addCase(new crossbyte.io.ByteArrayIOTest());
+			runner.addCase(new crossbyte.ds.SpatialGridTest());
+			runner.addCase(new crossbyte.ds.SparseSpatialGridTest());
 			addRPC(runner);
 		});
 	}
@@ -87,6 +90,7 @@ class PhpTestMain {
 		runner.addCase(new crossbyte.rpc.RPCPatchTest());
 		runner.addCase(new crossbyte.rpc.RPCMapPatchTest());
 		runner.addCase(new crossbyte.rpc.RPCPatchSizeTest());
+		runner.addCase(new crossbyte.rpc.RPCMapBudgetTest());
 		runner.addCase(new crossbyte.rpc.RPCBitsTest());
 		runner.addCase(new crossbyte.rpc.RPCReuseTest());
 		runner.addCase(new crossbyte.rpc.RPCStructTest());
