@@ -745,10 +745,13 @@ jobs:
     needs: select
     if: ${{ needs.select.outputs.cpp_mode != 'none' || needs.select.outputs.js_mode != 'none' }}
     runs-on: windows-latest
-    # A run takes about 21 minutes, the samples aside, and the browser and
-    # TURN interop steps move with the network. 35 leaves room for a slow
-    # runner without letting a hang run on.
-    timeout-minutes: 35
+    # A run took 34 minutes on 2026-10-14, and needs about 43 from a
+    # compiler cache older than the code (the native harness alone builds in
+    # 12 minutes warm, 16 cold); the browser and TURN interop steps move
+    # with the network. 55 leaves room for a slow runner without letting a
+    # hang run on. A run cut off at its limit does not save the compiler
+    # cache, so a limit too tight starts every later run cold as well.
+    timeout-minutes: 55
     defaults:
       run:
         # A pwsh step does not stop at a native command that fails: it runs
