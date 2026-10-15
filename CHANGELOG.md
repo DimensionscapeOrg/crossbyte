@@ -34,8 +34,8 @@ says how.
 #### Data
 
 - On PHP, `KVCodecs.text` refuses a value that is not well-formed UTF-8
-  as it is written, with an `ArgumentError`, as a key that is not is
-  refused. It was stored and then refused when it was read.
+  as it is written, with an `ArgumentError`, as such a key is refused. It
+  was stored and then refused when it was read.
 
 #### Platform
 
