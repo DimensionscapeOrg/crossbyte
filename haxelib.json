@@ -19,8 +19,8 @@
 	"contributors": [
 		"Dimensionscape"
 	],
-	"releasenote": "First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.",
-	"version": "1.0.0-rc.1",
+	"releasenote": "1.0.0, one networking runtime for the Haxe targets: TCP and tls:// with client certificates, UDP and reliable UDP, HTTP/1.1 and HTTP/2, WebSocket, typed RPC with maps and state replication, and databases, with TLS 1.3 and WebRTC natively, servers spread over several cores, and PHP tested for the classes built for it.",
+	"version": "1.0.0",
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
 	"dependencies": {
 		"emitter": "2.0.0"

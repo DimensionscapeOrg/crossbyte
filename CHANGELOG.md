@@ -4,370 +4,7 @@ All notable changes to CrossByte will be documented in this file.
 
 ## Unreleased
 
-### Added
-
-- **Ed25519 and EdDSA tokens on PHP.** `Ed25519` signs and verifies through
-  PHP's sodium extension, which is libsodium as the native builds are, so
-  keys and signatures are the same bytes on both and RFC 8032's vectors
-  hold on each. `JWTSigner.EdDSA` works there too: a PHP service can mint
-  tokens that native servers verify holding only the public key.
-  `isSupported` is true on PHP when the extension is loaded, and
-  `unsupportedReason` says to load it when it is not.
-- **`Ed25519.keypairFromSeed(seed)`**, the pair a 32-byte seed makes
-  (`SEED_BYTES`): the private key as RFC 8032 writes it and a JWK's `d`
-  carries it, natively and on PHP. A service can keep only the seed as its
-  secret.
-- **Argon2id on PHP**, through the sodium extension: `hash`, `verify`,
-  `needsRehash` and `derive` write and accept the same `$argon2id$` strings
-  and tags as the native builds and Node, so a password set through a PHP
-  service verifies on a native server. `isSupported` and
-  `unsupportedReason` as for `Ed25519`; the async forms run in the call
-  there, as PHP has no threads.
-- **Ed25519 keys in JWK Sets, and sets written out.** `JWKSet.parse` reads
-  RFC 8037's `OKP` keys (`crv` `Ed25519`; other curves are listed in
-  `ignored`), `JWK.ed25519PublicKey()` gives the 32 bytes, and
-  `JWKSet.signer(EdDSA)` makes the verify-only signer. `JWK.ofEd25519(kid,
-  publicKey)` makes such a key, and `JWKSet.ofKeys(keys).toJson()` (and
-  `JWK.toJson()`) write a set out, the same text on every target, so an
-  issuer can publish its current and next keys for rotation.
-- **JWT verification options.** `JWT.expectedIssuers` accepts a token from
-  any of several issuers (beside `expectedIssuer`, compared exactly).
-  `JWT.requireIssuedAt` refuses a token without `iat` (`MISSING_ISSUED_AT`)
-  or whose `exp` is not after it (`EXPIRY_NOT_AFTER_ISSUE`).
-  `JWT.verifySignature(token)` makes every check but those of the times,
-  for a caller that judges them itself, such as one revoking a token until
-  it would have expired. `JWT`, `JWKSet`, the `JWT` tests and the new ones
-  now run on PHP as well.
-- **A PHP test lane.** `ci/php-tests.hxml` runs the classes that claim PHP
-  (SQLite, `BCrypt`, `SecureRandom`, HMAC-SHA256) on PHP 8, and CI runs it
-  on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says what PHP has.
-- **`ByteArrayInput.require(count)`** throws the `EOFError` a short read
-  throws unless `count` bytes remain, so a record of several fields can be
-  checked whole before any of it is read.
-- **Length-prefixed bytes.** `ByteArrayOutput.writeVarBytes(value, offset,
-  length)` writes a varuint length and then the bytes, and
-  `ByteArrayInput.readVarBytes(maxLength)` reads them back as a copy. The
-  length is checked against `maxLength` (1 MiB unless given) and against
-  the bytes remaining before anything is allocated, so five bytes claiming
-  2 GB are refused, and a failed read leaves `position` where it was, as
-  `readVarUtf` does. `ByteArray` has neither, as it has no `readVarUtf`.
-- **`ServerSocket.maxConnectionsPerAddress`**, the most connections one
-  address may hold open at once (nginx's `limit_conn`), off unless set. One
-  past it is closed as it is accepted, before any TLS work, and counted in
-  `refusedConnections`; its place comes back as it closes, or as its
-  handshake fails. Addresses are keyed as `RateLimiter.addressKey` keys
-  them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
-  its sessions against it and an `HTTPServer` its connections, natively,
-  on the jvm and on Node.
-- **`tls://` for `NetHost` and `NetConnection`**, TCP with TLS beside
-  `wss://`, and one options type for both: `TLSOptions` (`certificate`,
-  `key`, `certAuthority`, `verifyCert`, `clientAuthority`), named as
-  `Socket` and `HTTPTLSOptions` name them. A host reads its certificate and
-  key and the authority clients' certificates must come from; a connection
-  reads what to trust, whether to verify and what to present. The host's
-  `cert` parameter is now `tls`, and takes the same `{certificate, key}` as
-  before.
-- **Client certificates.** `Socket.setCertificate(certificate, key)` (and so
-  a `wss://` `WebSocket`'s) presents a certificate to a server that asks
-  for one, to go with `ServerSocket.requireClientCertificate`, natively, on
-  the jvm and on Node. `Socket.peerCertificate` is the certificate the
-  other end presented: a server's to its client, and a client's to the
-  server that asked. `Certificate.commonName` and `Certificate.der` say what
-  a certificate is, read the same way on every target.
-- **What a `NetConnection` holds for a slow peer.** `bytesPending` says how
-  many bytes sent have not gone yet, over TCP, WebSocket, reliable UDP and
-  local IPC. `outputHighWater` and `outputLowWater` call `onOutputHigh` once
-  a backlog reaches the first and `onOutputDrained` once it falls to the
-  second (Netty's water marks, Node's `highWaterMark` and `drain`), so a
-  server can skip updates for a client that has fallen behind and resync it.
-  With no marks set a send costs nothing more and allocates nothing.
-- **`Reason.Overflow`**, for a connection its transport closed because what
-  waited for its peer passed the limit (`maxOutputBufferSize`, a reliable
-  UDP session's queue, a local connection's `maxQueuedBytes`), told apart
-  without reading a message. Such an `ioError` carries
-  `IOErrorEvent.OVERFLOW_ERROR_ID`. A `LocalConnection` closed this way was
-  told `Reason.Error` with a message before.
-
-- **`RPCSession.dialWith(connect)` and `backOff()`.** `dialWith` dials as
-  `dial` does, redialling with its waits, through a function that makes each
-  connection, so a session can dial `tls://` with `TLSOptions` (a private
-  authority, a client certificate) or a connection a test builds; one that
-  throws is an attempt that failed. `backOff()` ends the connection and
-  counts it as a failed attempt, for a peer that says hello and is then
-  refused by the application: the wait goes on doubling while each
-  connection is backed off, where such a peer was dialled again at once.
-- **Maps on the compiled RPC lane.** `Map<String, T>` and `Map<Int, T>`
-  (and `StringMap<T>`, `IntMap<T>`), `T` any kind the lane carries, as
-  arguments, answers, structure fields and array elements: a count, then
-  each key and value as their kinds are written, in the keys' order (`Int`
-  ascending; `String` by UTF-16 code unit, as RFC 8785 orders JSON names),
-  so one map is the same bytes however it was built. The count is checked
-  against what the frame holds before a map is made. Natively a map of
-  numbers or strings boxes nothing for them. Its kind in a signature is
-  `[utf8:i32]`. Against protobuf's `map<string, int32>` and
-  `map<string, string>` of 8 and 256 entries, measured as the README's gRPC
-  figures were, a call is fewer bytes on the wire and less processor time
-  than grpc-go's and grpc-js's, natively and on Node (`docs/performance.md`,
-  "Maps beside gRPC"); the RPC bench has the map calls (`--kinds`).
-- **RPC error codes cross the wire.** An `RPCError` thrown, returned from
-  `beforeCall` or failing a future with an id (`new RPCError("No such
-  room.", 3)`) reaches its caller as `RPCFailure.Refused(message, code)`,
-  and the `RPCError` its future fails with has the id as its `errorId`, on
-  both lanes and passed on by a handler that answers with a refused call.
-  `Refused` gains an optional `code`, so `case Refused(message):` still
-  matches. On the wire the id follows the refusal code 0 after the message,
-  where a 1.0 peer reads the handler's refusal and passes over it; an id of
-  0 sends nothing more than before (`docs/rpc.md`, "On the wire").
-- **`RPCSession.maxInboundFrameSize`** limits the frames a session reads
-  apart from `maxFrameSize`, which then limits only what it sends, so a
-  server can refuse large calls in (a request is answered `TooLarge`, naming
-  the limit) without blocking its own large answers and snapshots out. It
-  reads as `maxFrameSize` until set; `-1` makes it follow again.
-- **`RPCCall.data`**, a slot for state that belongs to one call (a request
-  context, a start time), set in `beforeCall` or the method and read in
-  `afterCall`. It stays with the call when it answers later through a
-  `Future`, and `afterCall` then runs with that call as its `currentCall`
-  and its session as `session`, rather than whichever call the handler is
-  on by then. A plain field: a call whose handler never reads `currentCall`
-  pays nothing for it, and a number stored there is boxed natively and on
-  the jvm, so a hot path keeps an object it has already.
-- **`RPCCommands.delivery(mode)`** sends the next call in a `DeliveryMode`
-  of its own over reliable UDP (`UNRELIABLE`, or `sequenced(channel)`), for
-  snapshots and deltas that the next one replaces; over TCP, WebSocket and
-  local IPC it is ignored. Only the next call takes it, as with `within`,
-  and a call given nothing costs nothing more. Such a call must fit one
-  datagram: a larger one throws, a request failing `Unsent`.
-- **`Secret.resolve(ref)`** reads a secret that configuration names rather
-  than holds: `env:NAME` from the environment, `file:PATH` from a file (a
-  Docker or Kubernetes secret, its trailing line break taken off), and any
-  other text as itself. A variable that is not set, a file that cannot be
-  read and a secret that is empty all throw an `ArgumentError` naming where
-  it was looked for, never the value, so a service cannot start on an empty
-  key. On PHP too.
-- **`ConfigTree`, nested configuration.** JSON documents and files
-  (`fromJson`, `withJson`, `withJsonFile`; bad JSON throws, naming the file,
-  line and column), defaults merged in at every depth (`withDefaults`), and
-  environment variables with a prefix and a separator (`withEnvironment`):
-  `APP_REALM__ENDPOINTS__0__PUBLIC_PORT` reaches
-  `realm.endpoints[0].publicPort`, matching a key by its letters in any
-  case. Typed getters as strict as `Config`'s (`getString`, `getInt`,
-  `getFloat`, `getBool`, `getArray`, `getStrings`), `section` and
-  `sections` for parts of the tree, `require`, and `secret`, which reads the
-  value through `Secret.resolve`. Objects merge key by key and arrays are
-  replaced whole. It reads JSON with a reader of its own, the same on every
-  target, PHP included.
-- **Log fields in the order given.** `Logger`'s and `LogCategory`'s
-  methods take `LogFields`: a `Map<String, String>`, as before, or an array
-  of `LogField`s (`[{key: "realmId", value: id}, {key: "port", value:
-  port}]`), written in the array's order in text and in JSON, each value as
-  `Std.string` writes it. Either is passed as it is, not copied, so a call
-  with no fields costs what it did (91 ns and 320 bytes natively, 30 ns and
-  224 bytes on the jvm, with a sink that keeps nothing), and one with two
-  fields costs 230 ns natively as an array against 320 ns as a map.
-  `LogRecord.fields` is a `LogFields` too, which reads as a map does
-  (`get`, `exists`, `keys`, iteration in order) and converts to one.
-- **`SnowflakeId.format(id)` and `parse(text)`**, an identifier as text for
-  a store or a URL: 16 lowercase hexadecimal digits, so sorting the texts
-  sorts the identifiers in the order they were minted, the ones minted after
-  the time's top bit becomes the sign bit (69.7 years after the epoch)
-  included. `parse` takes exactly 16 hex digits, in either case, and throws
-  an `ArgumentError` for anything else.
-- **`fromString` on `SynchronousMode`, `TempStoreMode` and
-  `PostgresSSLMode`**, for modes read from configuration: the names in any
-  case (`normal`, `verify-full`, or `VERIFY_FULL`), and for the SQLite modes
-  the numbers their pragmas take. Anything else throws an `ArgumentError`
-  rather than becoming another mode. `MySQLSSLMode.fromString` is the
-  same for MySQL, and its 1.0 name, `ofString`, still works.
-- **`SchemaMigrator.sqlite()` and `SchemaMigrator.postgres()`**, migrators
-  with every seam filled in, for those connections or classes extending
-  them: statements through `request()`, the default bookkeeping table, the
-  record written with bound values and the server's UTC time, and each
-  migration in a transaction (`BEGIN IMMEDIATE` on SQLite). The PostgreSQL
-  one holds an advisory lock across the run (`SchemaMigrator.lockKey(table)`
-  says which), so service instances starting together migrate one at a time.
-  Natively and on PHP. `docs/data.md` has a Migrations section.
-- **A child process's directory and environment.**
-  `NativeProcessStartupInfo.workingDirectory` starts the child in another
-  directory (one that is not there is an `ArgumentError`), and
-  `environment` adds variables to this program's, sets over them, or takes
-  one out with a null, so a child need not see a secret its parent holds;
-  `inheritEnvironment = false` gives it those variables alone. A relative
-  path to the program is still read from this program's directory. Natively
-  (through a spawner of CrossByte's own when either is set, as hxcpp's
-  cannot set them), on the jvm and on Node; HashLink and neko throw an
-  `IllegalOperationError` for either.
-- **A child's output by line.** `NativeProcessEvent.STANDARD_OUTPUT_LINE`
-  and `STANDARD_ERROR_LINE` carry each line, without its `\n` or `\r\n`,
-  however the reads cut it, the last as the stream closes. A line longer
-  than `NativeProcess.maxLineLength` (64 Ki characters) arrives in pieces of
-  that length, so a child that never writes a line break is held to that
-  much. Dispatched only while listened for, on every target with
-  `NativeProcess`.
-- **`VarUInt` and `VarInt`**, compact `Int`s for the compiled RPC lane: an
-  unsigned LEB128 varint (protobuf's `uint32`), or zigzagged first
-  (`sint32`), one byte up to 127 (or -64 to 63), at most five, where an
-  `Int` always takes four. For ticks, acknowledgements and input sequences.
-  All 32 bits arrive, so a tick that has wrapped past 2^31 - 1 (as
-  `SequenceRing` orders them) carries on, in five bytes. Each is an `Int`
-  wherever one is wanted. Kinds `vu` and `vi` in a signature.
-- **Structures sent as what changed: `RPCPatch<T>`.** An argument or an
-  answer of type `RPCPatch<T>`, `T` a class that implements `RPCStruct`,
-  carries the fields of a value that differ from a base both ends hold: a
-  bit for each field, then each that differs whole, a nested structure as a
-  patch of its own. The sender calls `patch.diff(base, current)` (a `null`
-  base sends the patch from the structure as its constructor makes it,
-  `isFull`, which applies to anything); the receiver calls
-  `patch.apply(base, into)`. Fields are compared at the precision they are
-  sent (a `Float32` at single precision, NaN equal to NaN). Writing
-  allocates nothing, and the session reads every call's patch into one it
-  keeps, valid during the call, as a socket's event is. Up to 64 fields;
-  kind `~{...}` in a signature, so a peer without patches finds no method.
-  `write(out)` and `read(input)` give a patch as bytes of its own, for a
-  recording or a patch carried in a `Bytes` argument. Stellar's per-player
-  tick (its own ship and 16 others, driven by its simulation) is 437 bytes
-  with today's field types and 276 quantized, against 546 through
-  Yggdrasil's codec and 613 through protobuf, made in 0.82 us and read in
-  0.82 us natively, against 5.6 and 6.3 us and 3.7 and 3.5 us
-  (`docs/performance.md`, "Replication beside Yggdrasil's codec and
-  protobuf"; the benches in `tests/perf/replication`). The RPC guide's
-  "Replicating state" shows the whole of it.
-- **Keyed maps sent as what changed: `RPCMapPatch<V>` and
-  `RPCStringMapPatch<V>`.** A map of entity ids (or `String` keys) to
-  structures goes as the keys removed, the entries added (each a patch from
-  the default) and patches of the entries both ends hold whose values
-  differ; an entry that is the same bytes is not sent. `diff(base,
-  current)` takes two maps; `diffKeys(baseValues, baseKeys, currentValues,
-  currentKeys)` takes views of shared frames (one map of values per tick,
-  an `IdList` of ids per observer, in any order) and allocates nothing.
-  Keys go ascending, the first as a zigzag varint and each next as its
-  distance from the one before: a byte for ids that sit close together,
-  where an `Int` is four. The receiver calls `apply(base, into, recycle)`,
-  or `applyKeys` with the maps' key lists, which allocates nothing: values
-  already in `into` are patched in place, and with `recycle` dropped values
-  serve the next adds. A wrong base is refused naming the key; counts past
-  the frame, keys out of order and keys past 2^31 - 1 are unreadable.
-  `sizeBound()` bounds the bytes, for a call that must fit a datagram.
-  Kinds `~[i32:{...}]` and `~[utf8:{...}]`.
-- **`@:quantize(min, max, bits)` and `@:range(min, max)` on structure
-  fields.** A quantized `Float` or `Float32` goes as one of 2^bits evenly
-  spaced points from `min` to `max` (clamped; NaN refused), a ranged
-  integer in the bits its range needs (outside it refused, and a read past
-  it unreadable), in a bit section before the structure's other fields,
-  laid out as `BitWriter` lays its bits, so a section reads back with a
-  `BitReader`. Stellar's remote ship is 13 bytes whole, where its `Float32`
-  form is 24, and 7 as a patch of three fields. Patches compare quantized
-  fields by their step, so jitter below one sends nothing. Bounds are
-  literals or static inline constants of a class (`ShipRules.MAX_HEAT`),
-  and `+ - * /` of those. The bounds and widths are in the structure's
-  layout, `b{...}` in a signature: a peer built with others finds no
-  method.
-- **The bit layout: `@:rpcBits`, presence bits, and arrays as one run.** A
-  structure marked `@:rpcBits`, or with a `@:quantize` or `@:range` field,
-  puts a `Bool` in one bit and says whether a field that may be absent is
-  there with one bit where the byte layout spends a byte, in its bit
-  section; a quantized or ranged field may be absent too. An array of such
-  a class whose fields are all bits is one run of bits for every element,
-  padded once: Stellar's last four inputs, 22 bits each, are 17 bytes of
-  arguments with the tick and the acknowledgement. Structures not in the
-  bit layout keep 1.0's bytes and ops.
-- **`@:reuse`: arguments read into what the session keeps.** On a
-  handler's argument, on a contract method (`@:reuse(recent)`, naming its
-  arguments, since a typed interface keeps no argument metadata) or on the
-  handler class (every structure, array and map argument), the argument is
-  read into one instance the session keeps, valid during the call, as a
-  socket's event is: a structure's fields set in place (its nested
-  structures and arrays too), an array's element instances kept, a map
-  cleared and refilled. The last four inputs of a tick allocate nothing,
-  natively and on the jvm. Nothing changes on the wire. Under
-  `-D crossbyte_check_events` what was kept is set to garbage once the call
-  returns (numbers 0xDBDBDBDB, floats NaN, strings a marker), so a handler
-  that keeps one shows it at once; `-D crossbyte_fresh_events` reads each
-  call's afresh. An anonymous structure marked `@:reuse` fails the build:
-  it is made each call.
-- **`RPCCodec<T>` and `RPCCodecs.of(Type)`**, the generated code of a
-  structure as an interface generic code can hold: `make`, `copy` (nested
-  structures and arrays into those held, so nothing is shared), `equals`
-  (as the bytes would compare), `write` and `read` (into a value held, or a
-  new one), `writePatch` and `readPatch`, and `name`, `fieldCount`,
-  `maxSize` and `layout` (the hash of its layout, for a stored baseline).
-  `RPCCodecs.of` on anything but such a class fails the build.
-- **`IdList.copyFrom(other)` and `IdList.addAll(other)`**, so a pooled list
-  (one per tick in a `SequenceRing<IdList>`) takes a view's ids in order
-  and keeps its storage, allocating nothing once it has grown.
-
-### Fixed
-
-- **A `PostgresResultSet` threw when read before `next()`.** `getResult`,
-  `getIntResult` and `getFloatResult` now read the first row then, without
-  moving past it, as Haxe's SQLite result set does, so
-  `request("SELECT count(*) FROM t").getIntResult(0)` works as it does with
-  the other drivers.
-- **`JournalMode.fromString` read a name it did not know as `DELETE`.** A
-  misspelt journal mode in a configuration file turned the journal mode
-  it named into SQLite's default without a word. It now throws an
-  `ArgumentError`, as the other modes' `fromString` do. See Upgrading.
-- **A TLS server on Node counted a connection it refused as a failed
-  handshake.** One `admit` turned away was closed before any TLS work, but
-  the TLS socket Node had already put over it reported the close as a
-  handshake error, and `handshakeFailures` went up for it. A connection
-  refused by `admit` or by `maxConnectionsPerAddress` is no longer counted
-  there, as natively and on the jvm.
-- **SQLite on PHP ran every statement that returns no rows twice.** PHP's
-  `SQLite3Result`, read for a statement with no result columns, runs it
-  again, and a statement read its result to count the rows it changed: an
-  INSERT inserted twice and a BEGIN failed with "cannot start a transaction
-  within a transaction". Such a result is now answered from SQLite's
-  `changes()` and never read. `SQLiteConnection.isSupported` is true on PHP,
-  and `docs/data.md` says what SQLite does there.
-- **`BCrypt` on PHP answered differently from every other target.** It wrote
-  new hashes as `$2y$`, which `needsRehash` on any other target flags, and
-  asked PHP whether a hash needed rehashing, so it never flagged `$2y$`;
-  hashes stored by earlier versions natively did not verify there; and the
-  Haxe implementation's arithmetic overflowed PHP's integers. New hashes on
-  PHP are written `$2b$` (the same algorithm), `needsRehash` is the same
-  everywhere, earlier versions' hashes verify, and the vectors pass.
-- **The first `RPCSession.sessionId` was 0 natively and on the jvm**, and 1
-  elsewhere: the counter there answered its value from before the add. Ids
-  start at 1 on every target, so 0 is never a session.
-- **`ByteArrayInput`'s fixed-size reads went past the buffer in `-D final`
-  builds** (Lime's release builds define it): their bounds check was
-  compiled out, so natively a payload shorter than its fields was read past
-  its end. `readByte`, `readShort`, `readInt`, `readFloat`, `readDouble`,
-  `readBytes` and the `position` setter are checked in every build now, and
-  `ci/final-tests.hxml` runs the readers' tests built that way. The check
-  costs a native read loop about 0.2 ns a read (a 19-byte record of five
-  fields read in 3.8 ns rather than 2.9 ns), and the jvm's about 0.04 ns;
-  an RPC call measured no different on either.
-- **A session made by `RPCSession.dial` redialled a peer that accepts and
-  closes in a loop**, hundreds of times a second: its wait went back to the
-  shortest whenever a connect succeeded, and a connection that ended after
-  connecting was dialled again at once. The wait now goes back to the
-  shortest only once the peer's hello has come, and a connection closed
-  before it counts as a failed attempt, so the wait doubles as it does for a
-  refused connect.
-- **`BCrypt.dummyHash` says what it does on PHP.** It keeps its hash in a
-  static, which a PHP process serving one request rarely still has, so
-  there the sign-in it protects pays for a hash as well as the verify. Its
-  docs say so and show a fixed hash to verify against on PHP instead.
-- **An `RPCSession` given its handler or commands after it was made told its
-  peer fingerprints of 0.** It said hello in its constructor, with what it
-  had then. It now says hello again when a handler or commands given later
-  change its fingerprints, so `peerCallsFingerprint` and
-  `peerAnswersFingerprint` on the other side are what it really has, and
-  `onHello` is called again there.
-- **Two RPC benchmark cases timed a refusal.** "dispatch a one-way call"
-  and "dispatch one-way, hooks overridden" in `tests/bench` fed the handler
-  a frame built by hand with the op of the method's name, not of its
-  signature, so no method answered it. They now feed it the frame the stub
-  sends, and say so if the handler is never reached.
-
-### Upgrading from 1.0.0
-
-- `JournalMode.fromString` throws an `ArgumentError` for a name it does
-  not know, where it returned `DELETE`. Code that read an unchecked value
-  through it catches the error, or checks the value first.
-
-## 1.0.0 - 2026-10-13
+## 1.0.0 - 2026-10-15
 
 ### Highlights
 
@@ -390,28 +27,59 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   streamed responses and server-sent events; a router, compression, rate
   limiting, request limits and Prometheus metrics; one server spread over
   several cores.
-- **Typed RPC.** Compiled contracts carry arrays, structures, enums,
+- **TLS 1.3 natively.** The hxcpp fork native builds use carries mbedTLS
+  3.6.7, so native TLS negotiates 1.3 with every peer that offers it and
+  servers resume returning clients with session tickets. The jvm and Node
+  speak it through their own TLS. On all three, `tls://` hosts and
+  connections take one `TLSOptions`, a client can present a certificate
+  to a server that asks for one, and a running server takes a renewed
+  certificate without a restart.
+- **Typed RPC.** Compiled contracts carry arrays, structures, maps, enums,
   `Null<T>` and compact numbers, generated with no reflection; the runtime
   lane has typed calls; a request can hand its answer to a receiver and
-  allocate nothing; calls get deadlines, handlers can answer later,
-  clients redial, and a hello versions the protocol.
+  allocate nothing; calls get deadlines, handlers can answer later and
+  refuse with an error code, `@:rpcLimit` caps a method's call rate and
+  argument size, clients redial (through a connection you make, with
+  `dialWith`), and a hello versions the protocol.
+- **Typed state replication.** `RPCPatch<T>` sends a structure as the
+  fields that differ from a base both ends hold, and `RPCMapPatch<V>` a map
+  of entities as the entries removed, added and changed; `@:quantize` and
+  `@:range` pack fields into bits; `@:reuse` reads arguments into
+  instances the session keeps; and a map patch can be filled within a byte
+  budget, in your order of priority, the rest following on later ticks. A
+  game's per-player tick of 17 ships is 437 bytes, or 276 quantized,
+  against 613 through protobuf. `SpatialGrid` and `SparseSpatialGrid`, for
+  worlds with no bounds, find who is near whom.
 - **Databases.** MongoDB over its wire protocol, with BSON; a native MySQL
   client with TLS and MySQL 8 logins; Postgres parameter binding,
   cancellation and timeouts; SQLite with an asynchronous worker, attached
   databases and schemas; `ConnectionPool`, `AsyncDatabase` and
-  `SchemaMigrator`.
+  `SchemaMigrator`; and a key/value store with revisions, compare-and-set,
+  scans and transactions (`crossbyte.db.kv`), kept in memory, SQLite or
+  Postgres, with typed records and an asynchronous form.
 - **Crypto.** libsodium, vendored (AEAD, X25519, key exchange, BLAKE2b,
   HKDF, Ed25519, Argon2id); RSA and ECDSA signatures; JWT with RS256, ES256
-  and EdDSA, JWKS and claims of your own; OAuth PKCE; asynchronous password
+  and EdDSA, JWKS, claims of your own and revocation by `jti`; OAuth PKCE; asynchronous password
   hashing.
 - **Every target.** Node runs the networking stack: sockets, TLS,
   WebSocket, UDP and the HTTP server. The jvm runs the whole suite, TLS
-  included. HashLink and Neko build and run again. The native suite runs on
-  Windows, Linux and macOS.
+  included. PHP is tested for what it is built for: SQLite and migrations,
+  `BCrypt`, `Argon2id`, `Ed25519` and JWT, `ConfigTree` and `Secret`, with
+  the same hashes, keys and signatures as the native builds. HashLink and
+  Neko build and run again. The native suite runs on Windows, Linux and
+  macOS.
 - **Runtime and operations.** `Future` and `Completer`, work posted between
   threads, timers on a heap or a timing wheel, loop-health measures, a
-  structured `Logger`, layered `Config`, durable `Store`, graceful shutdown
-  and Windows service control, and `crossbyte.metrics`.
+  structured `Logger`, layered `Config` and nested `ConfigTree`, secrets
+  that configuration names read from the environment or a file
+  (`Secret.resolve`), durable `Store`, graceful shutdown and Windows service
+  control, and `crossbyte.metrics`.
+- **Events on Emitter.** CrossByte's events and dispatchers are those of
+  Emitter 2, the event library Graphaxe builds on too: one kind of event,
+  and one way to listen, for a program that uses both. Beside the
+  ActionScript names, every dispatcher has Emitter's verbs under `events`:
+  `events.on` and `events.once` answer with a `Subscription` that removes
+  even a lambda.
 - **Hardened and faster.** Every server bounds what one peer can make it
   hold or spend; the wire parsers are fuzzed; and natively, sending or
   receiving a message over TCP, UDP, reliable UDP or WebSocket allocates
@@ -422,6 +90,19 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 
 #### Runtime
 
+- CrossByte's events are built on Emitter 2.0 (the `emitter` haxelib, a
+  dependency): `crossbyte.events.Event` extends `emitter.Event`,
+  `EventDispatcher` extends `emitter.Emitter`, and `EventType` and
+  `IEventDispatcher` are Emitter's `EventType` and `IEmitter`. A listener
+  written for `emitter.Event` takes CrossByte's events, and a framework
+  built on Emitter shares them. Every dispatcher keeps the ActionScript
+  names and has Emitter's verbs under `events`: `events.on` and
+  `events.once` answer with a `Subscription` whose `cancel()` removes that
+  listener, a lambda included; `events.has(type, listener)` asks about one
+  listener; `events.clear`, `events.dispatch`, and typed signals
+  (`events.emit`). A dispatch to one listener takes 6 ns natively, where
+  it took 12, and 2 on the jvm, where it took 4, allocating nothing.
+  `docs/events.md` describes them. (Upgrading)
 - `crossbyte.Future<T>` and `crossbyte.Completer<T>`: `then`, `map`,
   `flatMap`, `all`, `catchError`, `Future.resolved` and `Future.failed`,
   with the failure itself as `cause`. `RPCResponse` extends `Future`.
@@ -453,8 +134,37 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   timestamps, a `sink` and a `recordSink` that receives each record whole,
   and categories (`Logger.category(name)`, `Logger.setLevel(category,
   level)`, inherited along the dots).
+- Log fields in the order given: `Logger`'s and `LogCategory`'s methods
+  take `LogFields`, a `Map<String, String>` or an array of `LogField`s
+  (`[{key: "realmId", value: id}, {key: "port", value: port}]`), written in
+  the array's order in text and in JSON, each value as `Std.string` writes
+  it. Either is passed as it is, not copied: a call with no fields costs
+  91 ns and 320 bytes natively and 30 ns and 224 bytes on the jvm, with a
+  sink that keeps nothing, and one with two fields costs 230 ns natively as
+  an array against 320 ns as a map. `LogRecord.fields` is a `LogFields`
+  too, which reads as a map does (`get`, `exists`, `keys`, iteration in
+  order) and converts to one.
 - `crossbyte.core.Config`: configuration layered from defaults, `key=value`
   files and environment variables, with typed getters and `require()`.
+- `Secret.resolve(ref)` reads a secret that configuration names rather
+  than holds: `env:NAME` from the environment, `file:PATH` from a file (a
+  Docker or Kubernetes secret, its trailing line break taken off), and any
+  other text as itself. A variable that is not set, a file that cannot be
+  read and a secret that is empty all throw an `ArgumentError` naming where
+  it was looked for, never the value, so a service cannot start on an empty
+  key. On PHP too.
+- `crossbyte.core.ConfigTree`, nested configuration: JSON documents and
+  files (`fromJson`, `withJson`, `withJsonFile`; bad JSON throws, naming the
+  file, line and column), defaults merged in at every depth
+  (`withDefaults`), and environment variables with a prefix and a separator
+  (`withEnvironment`): `APP_REALM__ENDPOINTS__0__PUBLIC_PORT` reaches
+  `realm.endpoints[0].publicPort`, matching a key by its letters in any
+  case. Typed getters as strict as `Config`'s (`getString`, `getInt`,
+  `getFloat`, `getBool`, `getArray`, `getStrings`), `section` and
+  `sections` for parts of the tree, `require`, and `secret`, which reads the
+  value through `Secret.resolve`. Objects merge key by key and arrays are
+  replaced whole. It reads JSON with a reader of its own, the same on every
+  target, PHP included.
 - `crossbyte.metrics`: `Counter`, `Gauge`, `Histogram` and a `Metrics`
   registry with Prometheus text output, and `MetricsEndpoint` to serve it.
 - `TypedWorker<In, Out, Progress>`, a `Worker` whose messages have types,
@@ -465,8 +175,31 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `crossbyte.io.BitWriter` and `BitReader`, `crossbyte.core.FixedStep`,
   `crossbyte.ds.IdList`, `IntPriorityQueue` and `ExpiringMap`. The
   `arena` sample builds a server from them.
+- `IdList.copyFrom(other)` and `IdList.addAll(other)`, so a pooled list
+  (one per tick in a `SequenceRing<IdList>`) takes a view's ids in order
+  and keeps its storage, allocating nothing once it has grown.
+- `crossbyte.ds.SparseSpatialGrid`, `SpatialGrid` with no bounds: a spatial
+  hash, whose cells exist only where something is, found by their
+  coordinates in an open-addressing table and let go when they empty. For a
+  world with no edge, one too large for an array entry per cell, or crowds
+  far apart: what it holds grows with the ids and the cells they are in,
+  never with where they are, and one entity a long way off is one more
+  cell. The same `set`, `remove`, `has`, `queryCircle`, `queryCircleIds`,
+  `queryRect`, `queryRectIds` and `clear`, with `cellCount`; a query over
+  more cells than are held walks those held. Cells run `MAX_CELL` (2^30)
+  either way from the origin, a position past that filed at the limit. A
+  sibling rather than a mode, so the dense grid's code is as it was. On the
+  arena sample's workload grown to 250,000 entities, moving costs 6.8 ns an
+  entity a step natively (the dense grid 6.2) and a view 479 ns (422);
+  nothing is allocated once warm, natively and on the jvm.
 - `crossbyte.cluster`: `SnowflakeId`, `Rendezvous` hashing, `Membership`
   and `NodeChannel`, low-level pieces for running as more than one node.
+- `SnowflakeId.format(id)` and `parse(text)`, an identifier as text for a
+  store or a URL: 16 lowercase hexadecimal digits, so sorting the texts
+  sorts the identifiers in the order they were minted, the ones minted
+  after the time's top bit becomes the sign bit (69.7 years after the
+  epoch) included. `parse` takes exactly 16 hex digits, in either case, and
+  throws an `ArgumentError` for anything else.
 - Data structures: `BitSet.nextSetBit`, `nextClearBit`, iteration,
   `isEmpty`, `clone` and the set operations; `RadixTree.longestPrefix` and
   `longestPrefixLength`; `QuadTree.queryCircle`; `Deque` with a starting
@@ -483,6 +216,16 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - `crossbyte.utils.Checksum` (CRC-32, Adler-32, MD5, SHA-1 and XOR) and
   `crossbyte.utils.IntParse`, which reads an integer the same way on every
   target.
+- `ByteArrayInput.require(count)` throws the `EOFError` a short read
+  throws unless `count` bytes remain, so a record of several fields can be
+  checked whole before any of it is read.
+- Length-prefixed bytes: `ByteArrayOutput.writeVarBytes(value, offset,
+  length)` writes a varuint length and then the bytes, and
+  `ByteArrayInput.readVarBytes(maxLength)` reads them back as a copy. The
+  length is checked against `maxLength` (1 MiB unless given) and against
+  the bytes remaining before anything is allocated, so five bytes claiming
+  2 GB are refused, and a failed read leaves `position` where it was, as
+  `readVarUtf` does. `ByteArray` has neither, as it has no `readVarUtf`.
 - `crossbyte.sys.System.sleep(seconds)`, which returns on the interpreter
   on Windows, where `Sys.sleep` can sleep for days.
 - `GlobalTimer.setTimeout` and `setInterval` take a `Void->Void` function
@@ -500,9 +243,27 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `fromFile` or `fromPem`, a key in any form it comes in (PKCS#1, SEC1,
   PKCS#8, encrypted or not). A `Key` prints as `[Key: redacted]`.
 - ALPN: `ServerSocket.setAlpn()` and `Socket.alpnProtocol`.
+- A running TLS server takes a new certificate: `setCertificate` (and a
+  `ServerWebSocket`'s `cert`) on a server already listening is presented
+  to every handshake from then on, and each connection already up keeps
+  the one it began with, so a certificate renewed while the server runs is
+  taken without a restart. `addSniCertificate` likewise, with
+  `clearSniCertificates()` to replace a set; `setCertificate` on a
+  `tls://` or `wss://` `NetHost` (`INetHost`); and
+  `HTTPServer.reloadCertificate()`, which reads its configured files
+  again. A server spread over runtimes presents it on every one, a
+  `reusePort` listener each included. Natively, on the jvm and on Node,
+  neko and HashLink.
 - Native TLS servers resume returning clients with session tickets; build
   with `-D HXCPP_SSL_NO_TICKETS` to turn that off. With the hxcpp fork on
   mbedTLS 3.6.7, TLS 1.3 is negotiated with every peer that offers it.
+- Client certificates: `Socket.setCertificate(certificate, key)` (and so a
+  `wss://` `WebSocket`'s) presents a certificate to a server that asks for
+  one, to go with `ServerSocket.requireClientCertificate`, natively, on the
+  jvm and on Node. `Socket.peerCertificate` is the certificate the other
+  end presented: a server's to its client, and a client's to the server
+  that asked. `Certificate.commonName` and `Certificate.der` say what a
+  certificate is, read the same way on every target.
 - Limits on a server: `ServerSocket.admit(address, port)`, asked before
   any TLS work; `maxAcceptsPerTick` (64); `maxPendingHandshakes` (256);
   `maxConnections` (10,000); `maxPendingHandshakesPerAddress` (16);
@@ -511,6 +272,15 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `acceptFailures` and `handshakeFailures`. They are `Float`s, as
   `PeerConnection.refusedChannels` is, exact to 2^53, so a flood that goes
   on for long enough cannot wrap one past 2^31 into a negative number.
+- `ServerSocket.maxConnectionsPerAddress`, the most connections one
+  address may hold open at once (nginx's `limit_conn`), off unless set. One
+  past it is closed as it is accepted, before any TLS work, and counted in
+  `refusedConnections`; neither it nor one `admit` refuses is counted in
+  `handshakeFailures`. Its place comes back as it closes, or as its
+  handshake fails. Addresses are keyed as `RateLimiter.addressKey` keys
+  them, so an IPv6 client is counted by its /64. A `ServerWebSocket` counts
+  its sessions against it and an `HTTPServer` its connections, natively,
+  on the jvm and on Node.
 - Limits on a connection: `Socket.maxOutputBufferSize`,
   `outputOverflowPolicy` and `outputBufferLength` for what waits for a
   peer, and `maxInputBufferSize` (16 MiB) with `inputOverflowPolicy`
@@ -534,18 +304,51 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `ServerSocket`, an `HTTPServer` or a `ServerWebSocket`.
 - `IOErrorEvent.TIMEOUT_ERROR_ID` marks a connect that timed out, and a
   `NetConnection` reports it as `Reason.Timeout`.
+- `Reason.Overflow`, for a connection its transport closed because what
+  waited for its peer passed the limit (`maxOutputBufferSize`, a reliable
+  UDP session's queue, a local connection's `maxQueuedBytes`), told apart
+  without reading a message. Such an `ioError` carries
+  `IOErrorEvent.OVERFLOW_ERROR_ID`. (Upgrading)
+- What a `NetConnection` holds for a slow peer: `bytesPending` says how
+  many bytes sent have not gone yet, over TCP, WebSocket, reliable UDP and
+  local IPC. `outputHighWater` and `outputLowWater` call `onOutputHigh`
+  once a backlog reaches the first and `onOutputDrained` once it falls to
+  the second (Netty's water marks, Node's `highWaterMark` and `drain`), so
+  a server can skip updates for a client that has fallen behind and resync
+  it. With no marks set a send costs nothing more and allocates nothing.
 - `userData` on `Socket`, `ReliableDatagramSocket`, `DataChannel` and
   `NetConnectionBase`, for an application's state that should go when the
   connection goes.
 - `crossbyte.net.RateLimiter`, a token bucket with `tryAcquire`,
   `secondsUntil`, `addressKey` and a bound on keys (`maxKeys`), and
   `crossbyte.net.ConcurrencyLimiter` for how many at once.
+- Rate limits shared by several processes: a `RateLimiter` given a
+  `RateLimitStore` (`new RateLimiter(5, 60, store)`) keeps its buckets
+  there, so the limiters of PHP's requests, or of a service behind a load
+  balancer, limit together, each check one read and one compare-and-set.
+  `crossbyte.db.kv.KVRateLimitStore` keeps them in a `KVStore` (SQLite on
+  PHP and natively) and sweeps away those full again. `RateLimiter.consume`
+  answers a `RateLimitResult` (`limit`, `remaining`, `retryAfter`,
+  `resetAfter`) for the `RateLimit` and `Retry-After` headers.
+- `crossbyte.net.TrustedProxies`: the client's address behind trusted
+  proxies (addresses, CIDR blocks, `loopback`, `linklocal` and
+  `uniquelocal`), read from RFC 7239 `Forwarded` or `X-Forwarded-For` as
+  the right-most hop not trusted, as Express's `trust proxy` reads it.
 - `crossbyte.net.FrameCodec`: length-prefixed messages over a stream, with
   `maxFrameSize` checked on the header.
+- `maxConnectionsPerAddress` and `maxPendingHandshakesPerAddress` on
+  `NetHost` (`INetHost`): a TCP or WebSocket host's are its server's, and a
+  reliable datagram host counts its sessions by address itself.
 - `crossbyte.net.LocalAddress` and `ReflexiveAddress`, and on `INetHost`
   `localAddressFor`, `discoverPublicAddress`, `dial` and `canDial`.
-- `new NetHost("wss://...")` takes the certificate it presents as `cert`,
-  and a `NetHost` URI on port 0 listens on a port the system picks.
+- A `NetHost` URI on port 0 listens on a port the system picks.
+- `tls://` for `NetHost` and `NetConnection`, TCP with TLS beside
+  `wss://`, and one options type for both: `TLSOptions` (`certificate`,
+  `key`, `certAuthority`, `verifyCert`, `clientAuthority`), named as
+  `Socket` and `HTTPTLSOptions` name them. A `tls://` or `wss://` host,
+  given them as its constructor's `tls`, reads its certificate and key and
+  the authority clients' certificates must come from; a connection reads
+  what to trust, whether to verify and what to present.
 
 #### UDP
 
@@ -741,6 +544,26 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   abstract over a carried type is carried as that type. Each is generated
   at compile time with no reflection; a type the lane cannot carry fails
   the build.
+- Maps on the compiled lane: `Map<String, T>` and `Map<Int, T>` (and
+  `StringMap<T>`, `IntMap<T>`), `T` any kind the lane carries, as
+  arguments, answers, structure fields and array elements: a count, then
+  each key and value as their kinds are written, in the keys' order (`Int`
+  ascending; `String` by UTF-16 code unit, as RFC 8785 orders JSON names),
+  so one map is the same bytes however it was built. The count is checked
+  against what the frame holds before a map is made. Natively a map of
+  numbers or strings boxes nothing for them. Its kind in a signature is
+  `[utf8:i32]`. Against protobuf's `map<string, int32>` and
+  `map<string, string>` of 8 and 256 entries, measured as the README's gRPC
+  figures were, a call is fewer bytes on the wire and less processor time
+  than grpc-go's and grpc-js's, natively and on Node (`docs/performance.md`,
+  "Maps beside gRPC"); the RPC bench has the map calls (`--kinds`).
+- `VarUInt` and `VarInt`, compact `Int`s for the compiled lane: an
+  unsigned LEB128 varint (protobuf's `uint32`), or zigzagged first
+  (`sint32`), one byte up to 127 (or -64 to 63), at most five, where an
+  `Int` always takes four. For ticks, acknowledgements and input sequences.
+  All 32 bits arrive, so a tick that has wrapped past 2^31 - 1 (as
+  `SequenceRing` orders them) carries on, in five bytes. Each is an `Int`
+  wherever one is wanted. Kinds `vu` and `vi` in a signature.
 - Typed runtime calls: `RPCSession.runtimeCall(op)` and
   `runtimeRequest(op)` write values straight into the frame, and
   `registerArgs(op, handler)` reads them through `RPCArgs`.
@@ -753,6 +576,12 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   (`commands.within(2).joinThen(room, receiver)`). Every deadline
   waits in one heap a session, under one timer, so a call's deadline
   allocates nothing, whatever its length.
+- `RPCCommands.delivery(mode)` sends the next call in a `DeliveryMode` of
+  its own over reliable UDP (`UNRELIABLE`, or `sequenced(channel)`), for
+  snapshots and deltas that the next one replaces; over TCP, WebSocket and
+  local IPC it is ignored. Only the next call takes it, as with `within`,
+  and a call given nothing costs nothing more. Such a call must fit one
+  datagram: a larger one throws, a request failing `Unsent`.
 - Deadlines and cancellation reach the handler, as gRPC's do: a call's
   deadline goes with it, and a call its caller cancels (`cancelCall`) or
   times out is cancelled on the other side. A handler reads its call as
@@ -772,7 +601,18 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `RPCSession.cancelCall(id)` stops waiting for a call.
 - `RPCSession.dial(uri, ?commands, ?handler)`: a client that redials, from
   0.25 to 30 seconds apart, until `close()`, with `onUp`, `onDown` and
-  `up`.
+  `up`. The wait goes back to the shortest only once the peer's hello has
+  come, and a connection closed before it counts as a failed attempt, so a
+  peer that accepts and closes in a loop is dialled at the doubling waits
+  of a refused connect.
+- `RPCSession.dialWith(connect)` dials as `dial` does, redialling with its
+  waits, through a function that makes each connection, so a session can
+  dial `tls://` with `TLSOptions` (a private authority, a client
+  certificate) or a connection a test builds; one that throws is an attempt
+  that failed. `backOff()` ends the connection and counts it as a failed
+  attempt, for a peer that says hello and is then refused by the
+  application: the wait goes on doubling while each connection is backed
+  off.
 - Errors: `crossbyte.rpc.RPCError`, whose message reaches the caller, and
   `RPCSession.onHandlerError` and `onUnreadableFrame`. `RPCResponse.failure`
   says why a future's call failed as the `RPCFailure` a receiver is told
@@ -784,15 +624,53 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   message and passed on by a handler that answers with a refused call.
   A handler refuses with those cases itself, as a gRPC handler answers with
   a status code, through `RPCError.refusal(Busy, "Slow down.")`. (Upgrading)
+- Error codes cross the wire: an `RPCError` thrown, returned from
+  `beforeCall` or failing a future with an id (`new RPCError("No such
+  room.", 3)`) reaches its caller as `RPCFailure.Refused(message, code)`,
+  and the `RPCError` its future fails with has the id as its `errorId`, on
+  both lanes and passed on by a handler that answers with a refused call.
+  `code` is optional, so `case Refused(message):` matches a refusal with
+  or without one. On the wire the id follows the refusal code 0 after the
+  message, and an id of 0 sends nothing after it (`docs/rpc.md`, "On the
+  wire").
 - Hooks: `RPCHandler.beforeCall` and `afterCall`, and for runtime handlers
   `RPCSession.beforeRuntimeCall` and `afterRuntimeCall`.
+- Limits per method: `@:rpcLimit(calls = 10, seconds = 1, bytes = 2048)` on
+  a handler's method gives each session a token bucket for it, as
+  `RateLimiter` keeps one, and caps the bytes of its arguments; on the
+  handler class it is the limit of every method without one of its own, and
+  `@:rpcLimit()` takes a method out of it. A call over its rate is refused
+  `Busy` (`RPCError.RATE_LIMITED_MESSAGE`), and one over its size
+  `TooLarge` before its arguments are read, both before `beforeCall`.
+  `byAddress = field` spends from a `RateLimiter` the handler holds as
+  well, by the session's remote address (an IPv6 client by its /64), so
+  more connections do not buy a client more calls. A handler with no limit
+  is generated as before, and a limited call allocates nothing: a one-way
+  call takes 45 ns natively where it takes 38, and 25 on the jvm where it
+  takes 19 (`docs/rpc.md`, "Limits per method").
+- `RPCCall.data`, a slot for state that belongs to one call (a request
+  context, a start time), set in `beforeCall` or the method and read in
+  `afterCall`. It stays with the call when it answers later through a
+  `Future`, and `afterCall` then runs with that call as its `currentCall`
+  and its session as `session`. A plain field: a call whose handler never
+  reads `currentCall` pays nothing for it, and a number stored there is
+  boxed natively and on the jvm, so a hot path keeps an object it has
+  already.
 - Contracts, handlers and commands classes can extend others of their
   kind.
 - A hello as each connection starts: `RPCSession.PROTOCOL_VERSION`,
   `peerVersion`, `peerCapabilities`, `peerCallsFingerprint`,
-  `peerAnswersFingerprint` and `onHello`.
+  `peerAnswersFingerprint` and `onHello`. A session given its handler or
+  commands after it was made says hello again when they change its
+  fingerprints, so the other side's are what it really has, and `onHello`
+  is called again there.
 - `RPCSession.maxFrameSize` (8 MiB) and `RPCHandler.session`, the
   session whose call is running.
+- `RPCSession.maxInboundFrameSize` limits the frames a session reads
+  apart from `maxFrameSize`, which then limits only what it sends, so a
+  server can refuse large calls in (a request is answered `TooLarge`,
+  naming the limit) without blocking its own large answers and snapshots
+  out. It reads as `maxFrameSize` until set; `-1` makes it follow again.
 - Large answers in pieces: an answer longer than `RPCSession.chunkLength`
   (64 KiB) goes in pieces between the frames sent while it goes, as HTTP/2's
   DATA frames do, so a small call behind a large answer is not held up for
@@ -822,6 +700,107 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   calls its client back through typed stubs and reads `session.data` as a
   `Player`. A session whose commands are of another class refuses such a
   handler with an `ArgumentError`. (Upgrading)
+- Structures sent as what changed: an argument or an answer of type
+  `RPCPatch<T>`, `T` a class that implements `RPCStruct`, carries the
+  fields of a value that differ from a base both ends hold: a bit for each
+  field, then each that differs whole, a nested structure as a patch of its
+  own. The sender calls `patch.diff(base, current)` (a `null` base sends
+  the patch from the structure as its constructor makes it, `isFull`, which
+  applies to anything); the receiver calls `patch.apply(base, into)`.
+  Fields are compared at the precision they are sent (a `Float32` at single
+  precision, NaN equal to NaN). Writing allocates nothing, and the session
+  reads every call's patch into one it keeps, valid during the call, as a
+  socket's event is. Up to 64 fields; kind `~{...}` in a signature, so a
+  peer without patches finds no method. `write(out)` and `read(input)` give
+  a patch as bytes of its own, for a recording or a patch carried in a
+  `Bytes` argument. Stellar's per-player tick (its own ship and 16 others,
+  driven by its simulation) is 437 bytes with today's field types and 276
+  quantized, against 546 through Yggdrasil's codec and 613 through
+  protobuf, made in 0.82 us and read in 0.82 us natively, against 5.6 and
+  6.3 us and 3.7 and 3.5 us (`docs/performance.md`, "Replication beside
+  Yggdrasil's codec and protobuf"; the benches in `tests/perf/replication`).
+  The RPC guide's "Replicating state" shows the whole of it.
+- Keyed maps sent as what changed: `RPCMapPatch<V>` and
+  `RPCStringMapPatch<V>`. A map of entity ids (or `String` keys) to
+  structures goes as the keys removed, the entries added (each a patch from
+  the default) and patches of the entries both ends hold whose values
+  differ; an entry that is the same bytes is not sent. `diff(base,
+  current)` takes two maps; `diffKeys(baseValues, baseKeys, currentValues,
+  currentKeys)` takes views of shared frames (one map of values per tick,
+  an `IdList` of ids per observer, in any order) and allocates nothing.
+  Keys go ascending, the first as a zigzag varint and each next as its
+  distance from the one before: a byte for ids that sit close together,
+  where an `Int` is four. The receiver calls `apply(base, into, recycle)`,
+  or `applyKeys` with the maps' key lists, which allocates nothing: values
+  already in `into` are patched in place, and with `recycle` dropped values
+  serve the next adds. A wrong base is refused naming the key; counts past
+  the frame, keys out of order and keys past 2^31 - 1 are unreadable.
+  `sizeBound()` bounds the bytes, for a call that must fit a datagram.
+  Kinds `~[i32:{...}]` and `~[utf8:{...}]`.
+- Map patches within a budget: `RPCMapPatch.diffKeysWithin(baseValues,
+  base, currentValues, currentKeys, maxBytes, sent)`, and
+  `RPCStringMapPatch`'s. The view's keys come in the caller's order of
+  priority, and entries are carried while the patch stays within `maxBytes`;
+  from the first that does not fit on, the rest wait, as Unreal's
+  replication stops where a connection is saturated, so an entry never goes
+  ahead of one ranked higher. `deferred` lists what waits, in order, and
+  `isPartial` says there is some. Removals always go: a byte or two each,
+  and one left out would leave a ghost. The base is an `RPCMapBaseline`
+  (`RPCStringMapBaseline`), the record of what the observer holds, which
+  the diff reads and writes: the keys it holds once the patch arrives, and
+  a copy of the older value it still has for each update left out, so an
+  entry left out is owed until a later patch carries it, against
+  acknowledged baselines in a `SequenceRing` as for any patch, or one
+  baseline written over itself over a reliable connection. Every entry is
+  weighed exactly: its key as its group codes it, by a Fenwick tree of the
+  chosen, and its patch by a size the RPC macros generate beside the
+  codec's writer, which adds up what the writer writes without writing it;
+  a budget that fits everything writes `diffKeys`' bytes and measures
+  nothing. Nothing is allocated once warm, natively and on the jvm. On
+  Stellar's tick, the other ships' patch per observer within 180 bytes is
+  168 bytes against 375, in 1.3 us against 0.71 natively.
+- `@:quantize(min, max, bits)` and `@:range(min, max)` on structure
+  fields. A quantized `Float` or `Float32` goes as one of 2^bits evenly
+  spaced points from `min` to `max` (clamped; NaN refused), a ranged
+  integer in the bits its range needs (outside it refused, and a read past
+  it unreadable), in a bit section before the structure's other fields,
+  laid out as `BitWriter` lays its bits, so a section reads back with a
+  `BitReader`. Stellar's remote ship is 13 bytes whole, where its `Float32`
+  form is 24, and 7 as a patch of three fields. Patches compare quantized
+  fields by their step, so jitter below one sends nothing. Bounds are
+  literals or static inline constants of a class (`ShipRules.MAX_HEAT`),
+  and `+ - * /` of those. The bounds and widths are in the structure's
+  layout, `b{...}` in a signature: a peer built with others finds no
+  method.
+- The bit layout: `@:rpcBits`, presence bits, and arrays as one run. A
+  structure marked `@:rpcBits`, or with a `@:quantize` or `@:range` field,
+  puts a `Bool` in one bit and says whether a field that may be absent is
+  there with one bit where the byte layout spends a byte, in its bit
+  section; a quantized or ranged field may be absent too. An array of such
+  a class whose fields are all bits is one run of bits for every element,
+  padded once: Stellar's last four inputs, 22 bits each, are 17 bytes of
+  arguments with the tick and the acknowledgement.
+- `@:reuse`: arguments read into what the session keeps. On a handler's
+  argument, on a contract method (`@:reuse(recent)`, naming its arguments,
+  since a typed interface keeps no argument metadata) or on the handler
+  class (every structure, array and map argument), the argument is read
+  into one instance the session keeps, valid during the call, as a
+  socket's event is: a structure's fields set in place (its nested
+  structures and arrays too), an array's element instances kept, a map
+  cleared and refilled. The last four inputs of a tick allocate nothing,
+  natively and on the jvm. Nothing changes on the wire. Under
+  `-D crossbyte_check_events` what was kept is set to garbage once the call
+  returns (numbers 0xDBDBDBDB, floats NaN, strings a marker), so a handler
+  that keeps one shows it at once; `-D crossbyte_fresh_events` reads each
+  call's afresh. An anonymous structure marked `@:reuse` fails the build:
+  it is made each call.
+- `RPCCodec<T>` and `RPCCodecs.of(Type)`, the generated code of a
+  structure as an interface generic code can hold: `make`, `copy` (nested
+  structures and arrays into those held, so nothing is shared), `equals`
+  (as the bytes would compare), `write` and `read` (into a value held, or a
+  new one), `writePatch` and `readPatch`, and `name`, `fieldCount`,
+  `maxSize` and `layout` (the hash of its layout, for a stored baseline).
+  `RPCCodecs.of` on anything but such a class fails the build.
 - RPC on Node and in a browser.
 - An RPC guide, `docs/rpc.md`.
 
@@ -840,10 +819,22 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `PostgresStatement.executeParams(params)` with `PostgresParameter`;
   `PostgresConfig.statementTimeout`, keepalive settings,
   `tcpUserTimeout`, `connectionParameters` and `libraryPath`;
-  `PostgresSSLMode` for `sslMode`; and `PostgresConnection.cancel()`.
+  `PostgresSSLMode` for `sslMode`; and `PostgresConnection.cancel()`. A
+  `PostgresResultSet`'s `getResult`, `getIntResult` and `getFloatResult`
+  read the first row before any `next()`, without moving past it, as
+  Haxe's SQLite result set does, so
+  `request("SELECT count(*) FROM t").getIntResult(0)` works as it does with
+  the other drivers.
 - SQLite: `attach()`, `detach()`, `loadSchema()` with
   `getSchemaResult()`, and `queueTimeout` (10 s) for an asynchronous
   connection.
+- `fromString` on `SynchronousMode`, `TempStoreMode` and
+  `PostgresSSLMode`, for modes read from configuration: the names in any
+  case (`normal`, `verify-full`, or `VERIFY_FULL`), and for the SQLite modes
+  the numbers their pragmas take. Anything else throws an `ArgumentError`
+  rather than becoming another mode, as `JournalMode.fromString` now does
+  too. `MySQLSSLMode.fromString` and `IsolationLevel.fromString` are the
+  same for MySQL's modes and for isolation levels.
 - For every driver: `SQLRow` and `executeEach` read a result row by row
   without an object per row; `itemClass` makes each row an instance of a
   class; `crossbyte.db.ITransactionalConnection`.
@@ -851,6 +842,41 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   open; `crossbyte.db.AsyncDatabase<T>`, which runs work on a worker with a
   bounded queue; and `crossbyte.db.SchemaMigrator` for versioned
   migrations.
+- `SchemaMigrator.sqlite()` and `SchemaMigrator.postgres()`, migrators
+  with every seam filled in, for those connections or classes extending
+  them: statements through `request()`, the default bookkeeping table, the
+  record written with bound values and the server's UTC time, and each
+  migration in a transaction (`BEGIN IMMEDIATE` on SQLite). The PostgreSQL
+  one holds an advisory lock across the run (`SchemaMigrator.lockKey(table)`
+  says which), so service instances starting together migrate one at a
+  time. Natively and on PHP. `docs/data.md` has a Migrations section.
+- `crossbyte.db.kv`, a store of records by string key, each with a
+  revision, in the shape etcd and Consul keep theirs. `KVStore` has `get`,
+  `put`, `compareAndSet` (written only at the revision read, or with 0 only
+  where there is none), `delete` and `compareAndDelete`, which leave a
+  tombstone the revision goes on from, `scan` of a prefix or a range in key
+  order a page at a time (`KVScanOptions`, `KVPage`), `purgeTombstones`,
+  and `begin`, `commit` and `rollback`. Keys sort by code point, the order
+  of their UTF-8, on every target. `KVOptions` bounds keys (1 KiB), values
+  (1 MiB), scans (1,000 records) and pages (4 MiB of values).
+  `MemoryKVStore` keeps the records in memory on every target, for any
+  thread. `SQLiteKVStore` keeps them in an SQLite table, natively and on
+  PHP, which it makes through `SchemaMigrator.sqlite()`; each write is one
+  upsert with its revision check in its `WHERE`, and a page of a scan is
+  one statement that reads no value it does not return. `PostgresKVStore`
+  keeps them in PostgreSQL, natively, its table made through
+  `SchemaMigrator.postgres()` with its key in the "C" collation and every
+  value bound. `KVRepo<T>` reads and writes typed values under a key prefix
+  through a `KVCodec<T>`, keeping its `schema` beside each value and
+  refusing a record of another (`KVError` `SchemaMismatch`): JSON
+  (`KVCodecs.json`), an `RPCStruct` class's binary codec with its layout as
+  the schema (`KVCodecs.rpc(RPCCodecs.of(Ship))`), text and bytes.
+  `AsyncKVStore` and `AsyncKVRepo` run each call on a worker with a store
+  from a `ConnectionPool`, through `AsyncDatabase`, and answer with a
+  `Future` on the runtime that made it; `transaction` runs a body on one
+  store inside `begin()` and `commit()`; `maxQueuedBytes` (64 MiB) bounds
+  the values its writes not yet done hold, beside `AsyncDatabase`'s bound
+  on how many wait. `docs/data.md` has a section on it.
 - Compression: `CompressionAlgorithm.LZ4_FRAME` and `ZLIB`, and
   `ByteArray.uncompress(algorithm, maxOutputSize)`.
 - Crypto from libsodium: `AEAD` (XChaCha20-Poly1305), `X25519`,
@@ -862,8 +888,56 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `JWT.verify`, which says why a token was refused (`JWTRejection`);
   `maxTokenLength`, `acceptedTypes`, `requireType` and `updateKeys`; and
   claims of your own (`claim`, `hasClaim`, `setClaim`).
+- JWT verification options: `JWT.expectedIssuers` accepts a token from any
+  of several issuers (beside `expectedIssuer`, compared exactly).
+  `JWT.requireIssuedAt` refuses a token without `iat`
+  (`MISSING_ISSUED_AT`) or whose `exp` is not after it
+  (`EXPIRY_NOT_AFTER_ISSUE`). `JWT.verifySignature(token)` makes every
+  check but those of the times, for a caller that judges them itself, such
+  as one revoking a token until it would have expired. `JWT`, `JWKSet` and
+  their tests run on PHP as well.
+- JWT revocation: `JWTRevocationList` refuses tokens by `jti` until their
+  own `exp` and a `leeway` (60 s), and drops each as its time passes, the
+  soonest first. Given one as `JWT.revocations`, `verify` refuses a listed
+  token as `JWTRejection.REVOKED`, checked last, and `JWT.revoke(token)`
+  lists a token once its signature and claims check, so only a verifier's
+  own tokens fill it. Bounded by `maxEntries` (100,000): past it the entry
+  expiring soonest makes room and the list fails closed, refusing every
+  token that expires no later until that time has passed, so a revoked
+  token is never taken again. It works on its own too (`revoke(jti, exp)`,
+  `isRevoked`), is safe across threads, runs on PHP, and is kept in memory:
+  `entries()` gives a snapshot for an application to keep and revoke again
+  as it starts.
+- Ed25519 keys in JWK Sets, and sets written out: `JWKSet.parse` reads RFC
+  8037's `OKP` keys (`crv` `Ed25519`; other curves are listed in
+  `ignored`), `JWK.ed25519PublicKey()` gives the 32 bytes, and
+  `JWKSet.signer(EdDSA)` makes the verify-only signer. `JWK.ofEd25519(kid,
+  publicKey)` makes such a key, and `JWKSet.ofKeys(keys).toJson()` (and
+  `JWK.toJson()`) write a set out, the same text on every target, so an
+  issuer can publish its current and next keys for rotation.
+- Ed25519 and EdDSA tokens on PHP: `Ed25519` signs and verifies through
+  PHP's sodium extension, which is libsodium as the native builds are, so
+  keys and signatures are the same bytes on both and RFC 8032's vectors
+  hold on each. `JWTSigner.EdDSA` works there too: a PHP service can mint
+  tokens that native servers verify holding only the public key.
+  `isSupported` is true on PHP when the extension is loaded, and
+  `unsupportedReason` says to load it when it is not.
+- `Ed25519.keypairFromSeed(seed)`, the pair a 32-byte seed makes
+  (`SEED_BYTES`): the private key as RFC 8032 writes it and a JWK's `d`
+  carries it, natively and on PHP. A service can keep only the seed as its
+  secret.
+- Argon2id on PHP, through the sodium extension: `hash`, `verify`,
+  `needsRehash` and `derive` write and accept the same `$argon2id$` strings
+  and tags as the native builds and Node, so a password set through a PHP
+  service verifies on a native server. `isSupported` and
+  `unsupportedReason` as for `Ed25519`; the async forms run in the call
+  there, as PHP has no threads.
 - `BCrypt.hashAsync` and `verifyAsync`, the same on `Argon2id`, and
   `dummyHash` on both. Argon2id also runs on Node 24.7 and later.
+  `BCrypt.dummyHash` keeps its hash in a static, which a PHP process
+  serving one request rarely still has, so there the sign-in it protects
+  pays for a hash as well as the verify; its docs show a fixed hash to
+  verify against on PHP instead.
 - `BCrypt.isSupported` and `unsupportedReason`, for `hash`, whose salt comes
   from `SecureRandom`; `verify` works everywhere.
 - `SecureRandom.isSupported`, and `SecureRandom` on Node and in a browser.
@@ -882,6 +956,11 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
   `URLLoader`; an `Application` drives itself there and in a browser.
 - The jvm has TLS (with ALPN, SNI and client certificates) and runs the
   whole suite; HashLink and Neko build and run it too.
+- A PHP test lane: `ci/php-tests.hxml` runs the classes that claim PHP
+  (SQLite and `SchemaMigrator`, `BCrypt`, `Argon2id`, `Ed25519`, JWT and
+  `JWKSet`, `SecureRandom`, HMAC-SHA256, `ConfigTree` and `Secret`) on PHP
+  8, and CI runs it on Linux with Ubuntu's PHP 8.3. `docs/targets.md` says
+  what PHP has.
 - `crossbyte.io.Store`: durable key/value storage on every target,
   IndexedDB in a browser and files elsewhere.
 - `crossbyte.sys.ProcessLifecycle`: graceful shutdown on SIGINT, SIGTERM
@@ -894,6 +973,23 @@ Everything since 1.0.0-rc.1. If you are upgrading from it, read
 - `SharedObject.remove(name)` and `SharedObject.lockWaitTimeout`;
   `LocalConnection.maxQueuedBytes` (16 MB) and `bytesPending`.
 - `NativeProcess` on the jvm, hl and neko.
+- A child process's directory and environment:
+  `NativeProcessStartupInfo.workingDirectory` starts the child in another
+  directory (one that is not there is an `ArgumentError`), and
+  `environment` adds variables to this program's, sets over them, or takes
+  one out with a null, so a child need not see a secret its parent holds;
+  `inheritEnvironment = false` gives it those variables alone. A relative
+  path to the program is still read from this program's directory.
+  Natively (through a spawner of CrossByte's own when either is set, as
+  hxcpp's cannot set them), on the jvm and on Node; HashLink and neko throw
+  an `IllegalOperationError` for either.
+- A child's output by line: `NativeProcessEvent.STANDARD_OUTPUT_LINE` and
+  `STANDARD_ERROR_LINE` carry each line, without its `\n` or `\r\n`,
+  however the reads cut it, the last as the stream closes. A line longer
+  than `NativeProcess.maxLineLength` (64 Ki characters) arrives in pieces
+  of that length, so a child that never writes a line break is held to
+  that much. Dispatched only while listened for, on every target with
+  `NativeProcess`.
 - Test harnesses: a load and churn harness (`ci/load.hxml`), a soak
   (`ci/soak.hxml`), fuzzing of the wire parsers, a performance suite and
   allocation budgets. `docs/testing.md` describes them.
@@ -905,6 +1001,26 @@ says how.
 
 #### Runtime
 
+- A listener added again for a type it already listens for is not added
+  again, as in ActionScript: it keeps its place, runs once, and one removal
+  takes it out. The runtime, which holds a tick listener for each
+  connection, timer and task, keeps each add as before (`allowDuplicates`),
+  so adding one is not a search through the others. (Upgrading)
+- Every way of adding or removing a listener reaches what a class does
+  about it, `events.on`, `events.once` and `removeAllListeners()`
+  included: a
+  `DatagramSocket` polls while anything listens for `DATA`, a
+  `ServerSocket` accepts while anything listens for `connect` (and a spread
+  server hands its runtimes the `connect` listeners added or removed after
+  `listen()`, a `once` listener for one connection), a `WebSocket` reports
+  output progress while anything listens for it, and a request handler
+  tells a `CLOSE` listener added after its client left. `removeAllListeners()` left a socket polling, and a server
+  accepting, for nobody.
+- An event's `target` and `currentTarget` are `emitter.EventTarget`s, not
+  `Object`s: each is still assigned to the dispatcher class it is, and no
+  longer to anything else. (Upgrading)
+- `SQLEvent` and `SQLErrorEvent` give the connection or statement that
+  dispatched them as their `target`, which was null.
 - Every duration is a `Float` of seconds. The members that took
   milliseconds have new names (a socket's `connectTimeout`, the HTTP
   client's `readTimeout`, `responseHeaderTimeout` and `loadTimeout`,
@@ -1603,6 +1719,15 @@ Fixes to code new in this release are not listed.
   a character on JavaScript and HashLink too, and a string ends where its
   length says), are bounded in `final` builds, and one cut short leaves
   `position` alone, as does a `ByteDelta` cut short.
+- `ByteArrayInput`'s fixed-size reads no longer go past the buffer in
+  `-D final` builds (Lime's release builds define it): their bounds check
+  was compiled out, so natively a payload shorter than its fields was read
+  past its end. `readByte`, `readShort`, `readInt`, `readFloat`,
+  `readDouble`, `readBytes` and the `position` setter are checked in every
+  build now, and `ci/final-tests.hxml` runs the readers' tests built that
+  way. The check costs a native read loop about 0.2 ns a read (a 19-byte
+  record of five fields read in 3.8 ns rather than 2.9 ns), and the jvm's
+  about 0.04 ns; an RPC call measured no different on either.
 - `ByteArrayOutput` writes strings as `ByteArray` does, refuses a source
   range outside the source before making room for it, and `writeIntAt`
   checks its range in every build without wrapping. What it becomes is
@@ -1878,6 +2003,19 @@ Fixes to code new in this release are not listed.
   itself still read `true` there.
 - A URL port too large for an `Int` is refused the same way on every target.
 - IPv6 addresses are written in RFC 5952 form on every target.
+- On the jvm, a TLS client no longer takes a certificate past its
+  validity period because it was pinned as its own authority (a
+  self-signed `certAuthority`): PKIX checks no trust anchor's dates. Every
+  certificate a peer presents is held to its dates, as natively and on
+  Node, and a server checks a client's the same way.
+- On Node, `close()` on a `ServerSocket` that never listened no longer
+  throws.
+- On the interpreter a plain TCP send no longer waits for the peer to read:
+  what the system has no room for waits in the socket's buffer, where
+  `maxOutputBufferSize`, the high and low water marks and
+  `RPCSession.maxOutputPending` see it, as on the other targets. A slow
+  peer held up the whole runtime, and a client and server in one
+  interpreter could wait on each other for good.
 
 #### UDP
 
@@ -2021,6 +2159,9 @@ Fixes to code new in this release are not listed.
 - A contract may name a method `input` or `requestId`, and an argument
   `requestId` or `framed`: the build failed ("ByteArrayInput cannot be
   called", a duplicate argument, or the frame written as the argument).
+- The first `RPCSession.sessionId` is 1 on every target, so 0 is never a
+  session: natively and on the jvm it was 0, the counter there answering
+  its value from before the add.
 - `onHandlerError`'s default report says a handler that ran out of time
   (its `answerTimeout`, or a call it forwarded) did not answer in time,
   where it said the handler threw.
@@ -2086,6 +2227,23 @@ Fixes to code new in this release are not listed.
   rather than reopening the database; `autoCompact` shrinks the file;
   `SQLiteMode.READ` cannot write (Upgrading); a failed statement no longer
   fails the next; and rowids past 2^31 read back whole.
+- SQLite on PHP runs a statement that returns no rows once, where it ran
+  every one twice. PHP's `SQLite3Result`, read for a statement with no
+  result columns, runs it again, and a statement read its result to count
+  the rows it changed: an INSERT inserted twice and a BEGIN failed with
+  "cannot start a transaction within a transaction". Such a result is now
+  answered from SQLite's `changes()` and never read.
+  `SQLiteConnection.isSupported` is true on PHP, and `docs/data.md` says
+  what SQLite does there.
+- An SQLite connection opening a file another connection is writing waits
+  for it, up to `lockWaitTimeout` (5 s), as its statements do once open.
+  The open's own pragmas ran before that wait was set, and failed at once
+  with "database is locked": a pool's connections opening together on one
+  file did.
+- `JournalMode.fromString` throws an `ArgumentError` for a name it does not
+  know, as the other modes' `fromString` do, where it read it as `DELETE`:
+  a misspelt journal mode in a configuration file turned the journal mode
+  it named into SQLite's default without a word. (Upgrading)
 - A transaction begun as SQL text, or by turning autocommit off, is seen by
   `inTransaction`, so a pool can roll it back.
 - A failed COMMIT is no longer reported as committed.
@@ -2108,6 +2266,13 @@ Fixes to code new in this release are not listed.
   backends stop at `maxOutputSize`.
 - BCrypt adds the key's terminating NUL, so its hashes verify elsewhere and
   others verify here; hashes made before still verify. A cost of 31 runs.
+- `BCrypt` on PHP answers what every other target answers. It wrote new
+  hashes as `$2y$`, which `needsRehash` on any other target flags, and
+  asked PHP whether a hash needed rehashing, so it never flagged `$2y$`;
+  hashes stored by earlier versions natively did not verify there; and the
+  Haxe implementation's arithmetic overflowed PHP's integers. New hashes on
+  PHP are written `$2b$` (the same algorithm), `needsRehash` is the same
+  everywhere, earlier versions' hashes verify, and the vectors pass.
 - JWT times past 2038 are judged the same on every target; `verifyToken`
   accepts any `typ` in `acceptedTypes` (`JWT` and `at+jwt`) and none;
   `secureCompare` answers `false` for a null; a header with `crit` is
@@ -2181,6 +2346,31 @@ Fixes to code new in this release are not listed.
 - Native builds on Linux and macOS compile cleanly, and `-D final` builds
   compile.
 - No `trace` calls remain in library code.
+- Hash and Random gave different numbers on PHP: 64-bit integers did not
+  wrap where 32-bit ones do.
+- `ByteArray` on PHP reads and writes what every other target does: a big-endian `readInt`, `readUnsignedInt` or
+  `readFloat` (and so an object's length) came back with bits past 32 set,
+  `readVarUInt` read a value from 2^31 up as the unsigned number it holds
+  (-1 as 4294967295), and `writeVarUInt`, and `ByteArrayOutput`'s
+  `writeVarUInt` and `writeVarInt`, of an `Int` past 32 bits
+  (`0x7FFFFFFF + 1` there) wrote a fifth byte no reader takes. Text read
+  from a `ByteArray`
+  reads a malformed UTF-8 sequence as U+FFFD, as on JavaScript, where it
+  kept the bytes as they were, which Haxe's string operations there then
+  misread or threw over. Reading a JSON object no longer takes time that
+  grows with the square of its text (15 seconds for 229 KB). `FileStream`
+  builds for PHP, which has no threads, so as on
+  Node a file opens asynchronously only to read; and its big-endian
+  `readInt`, `readUnsignedInt`, `readFloat` and `readDouble` (and so an
+  object's length) read what was written.
+- RPC on PHP sends and reads what every other target does. `crossbyte.rpc`
+  did not compile there; an `Int8` or `Int16` came back unsigned; a
+  negative `VarUInt` or `RPCError` id arrived as the unsigned number it
+  holds (-1 as 4294967295); request ids did not wrap past 2^31 - 1; a patch
+  whose structure's 32nd field changed hung counting its changes; and a map
+  patch key past 2^31 - 1 was taken. PHP has no sockets in CrossByte, and
+  `DatagramSocket.isSupported` and `ServerSocket.isSupported` now say so;
+  `docs/targets.md` says what RPC does there.
 
 ### Upgrading from 1.0.0-rc.1
 
@@ -2226,6 +2416,8 @@ an API added in this release has is not listed here.
 - A jvm build that adds CrossByte with `-cp` rather than `-lib crossbyte`
   adds `--macro crossbyte._internal.macro.StdOverrides.use()` before any
   other macro, as `extraParams.hxml` does for `-lib`.
+- CrossByte depends on the `emitter` haxelib, 2.0.0, which haxelib installs
+  with it; a build that adds CrossByte with `-cp` adds `-lib emitter`.
 - Natively on Linux and macOS a process raises its soft limit on open
   descriptors to its hard limit as it starts, and the children it starts
   inherit that: build with `-D crossbyte_keep_nofile` to keep the limit it
@@ -2296,6 +2488,22 @@ A member's name spells an acronym after its first word as a word, as
   ...)` compiles, `(e:IOErrorEvent) -> ...` no longer does; the same for a
   `ServerSocket`'s listeners. Read `UncaughtErrorEvent.origin`, now `Any`,
   through a type test and a cast.
+- An event's `target` and `currentTarget` are `emitter.EventTarget`s, not
+  `Object`s: `var socket:Socket = event.target` compiles as it did, but a
+  field read through one untyped (`event.target.localPort`), and an
+  assignment to a type that is no dispatcher, no longer do. Assign it to
+  its class first.
+- A listener added again for a type it already listens for is not added
+  again (but on the runtime): code that added one function twice to have it
+  called twice adds two functions, or sets `allowDuplicates`.
+- `addEventListener`, `removeEventListener`, `hasEventListener`,
+  `removeAllListeners` and `dispatchEvent` are inline, so a subclass cannot
+  override them: override `listenersChanged`, `listenerAdded` or
+  `listenerRemoved` to act on listeners coming and going. A class
+  implementing `IEventDispatcher` implements `events`, the verbs of the
+  dispatcher it holds, in place of `dispatchEvent`.
+- A type parameter that names an event type (`EventType<T>`, as in a method
+  of your own that forwards `addEventListener`) needs `T:emitter.Event`.
 - `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
   handler threw during the step: listen for
   `UncaughtErrorEvent.UNCAUGHT_ERROR` where code caught failures around
@@ -2498,13 +2706,19 @@ A member's name spells an acronym after its first word as a word, as
   listening endpoint answers `canDial` false, throws
   `IllegalOperationError` from `dial`, `dialRelayed` and
   `permitRelayedPeer`, and fails the `Future`s of `discoverPublicAddress`
-  and `allocateRelay`.
+  and `allocateRelay`. It adds `setCertificate(certificate, key)` too,
+  throwing `IllegalOperationError` where it terminates no TLS, and
+  `maxConnectionsPerAddress` and `maxPendingHandshakesPerAddress`
+  (`Int`s, `(get, set)`).
 - A `NetConnection` whose TCP connect fails calls `onClose` after
   `onError`, and `onClose` after an error is given the error's reason; a
   WebSocket connection closed by its peer reports `Reason.Code` with the
   close frame's code and reason, where it reported `Reason.Closed`. Code
   that took `onClose` to mean a connection had been up checks for
   `onReady` instead.
+- `Reason` has a fifth case, `Overflow`, for a connection closed because
+  what waited for its peer passed its limit. A `switch` on `Reason` that
+  lists every case adds it.
 - A host name given to `Socket.connect()`, `WebSocket.connect()`,
   `ReliableDatagramSocket.connect()`, `DatagramSocket.connect()` or
   `DatagramSocket.send()` is looked up off the runtime's thread, and one
@@ -2840,6 +3054,9 @@ A member's name spells an acronym after its first word as a word, as
   `CLOSE`.
 - An SQLite connection opened with `SQLiteMode.READ` refuses to write:
   open with `UPDATE` to write.
+- `JournalMode.fromString` throws an `ArgumentError` for a name it does
+  not know, where it returned `DELETE`. Code that read an unchecked value
+  through it catches the error, or checks the value first.
 - A `SQLiteConnection` waits up to 5 seconds for another connection's
   write lock, `lockWaitTimeout` as it opens, where it failed at once with
   "database is locked". On a synchronous connection the wait is on the
@@ -2859,8 +3076,8 @@ A member's name spells an acronym after its first word as a word, as
   `crossbyte.db.IsolationLevel`, with the same four values: import that
   instead. It no longer takes a `String`: `isolationLevel =
   "SERIALIZABLE"` is `isolationLevel = IsolationLevel.SERIALIZABLE`, and
-  `IsolationLevel.ofString` reads one from text, refusing anything but the
-  four.
+  `IsolationLevel.fromString` reads one from text, refusing anything but
+  the four.
 - `PostgresConfig.sslMode` is a `PostgresSSLMode`, where it was a
   `String`: `sslMode: "require"` is `sslMode: PostgresSSLMode.REQUIRE`,
   and the other modes are libpq's in capitals (`VERIFY_FULL` for

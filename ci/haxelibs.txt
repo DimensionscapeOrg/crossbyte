@@ -31,4 +31,4 @@ utest     1.13.2  https://github.com/haxe-utest/utest         6fcfec9964d4e87630
 hxjava    4.2.0   https://github.com/HaxeFoundation/hxjava    f8c7dc6c56f4bf8f5912b4844a1b55ab094ee0cf
 hxnodejs  12.2.0  https://github.com/HaxeFoundation/hxnodejs  c9450595b2337587bcdaeacf159019531925f25d
 dox       1.6.0   https://github.com/HaxeFoundation/dox       aeb7f9dff43772a7c61ae9b190d3648edaf29f77
-emitter   2.0.0   https://github.com/dimensionscape/emitter   61a0fe25788ee5425824103287b66ff5c06c0db4
+emitter   2.0.0   https://github.com/dimensionscape/emitter   06b396f584271e24a7dc18dcfadfd020c567cc6a
