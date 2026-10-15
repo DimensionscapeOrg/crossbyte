@@ -73,6 +73,12 @@ Runtimes take turns rather than run at once, so a spread server is served correc
 (`DatagramSocket.isSupported` is false), no secure random source, and no child processes: `NativeProcess` is not
 supported, since the interpreter's process calls hold every thread while they wait.
 
+**A TLS send waits for room.** The interpreter's sockets cannot be made non-blocking. A plain TCP send is kept from
+waiting all the same: CrossByte asks the system first and hands it no more than it has room for, so what a slow peer
+has not taken waits in CrossByte's buffer, where the output limits see it, as on the other targets. A TLS send writes
+whole records and waits until the system has taken them, so a peer that reads slowly over TLS holds up the whole
+runtime meanwhile.
+
 **A `Float` that holds an `Int`.** The interpreter and Neko keep a `Float` given an `Int` (`var total:Float = 0`, or
 an `Int` passed for a `Float` argument) an `Int` at run time, and add two of them in 32 bits: two billion plus two
 billion is -294,967,296. Only a number written as a class field's initialiser (`var sent:Float = 0;`) is converted.

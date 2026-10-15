@@ -137,7 +137,7 @@ class NetConnectionOutputTest extends utest.Test {
 	#end
 	#end
 
-	#if (cpp || java || jvm || nodejs)
+	#if (cpp || java || jvm || nodejs || eval)
 	/**
 		A peer that stops reading holds the connection above its high water,
 		with no drain told, until it reads again; one that never does is
@@ -218,6 +218,11 @@ class NetConnectionOutputTest extends utest.Test {
 		});
 	}
 
+	#end
+
+	// Not eval: a WebSocket client masks what it sends with secure random
+	// bytes, which the interpreter has not got.
+	#if (cpp || java || jvm || nodejs)
 	/**
 		The same over a WebSocket, whose frames wait in its session: held
 		high while the peer reads nothing, drained once it reads, and closed
@@ -329,7 +334,9 @@ class NetConnectionOutputTest extends utest.Test {
 		});
 	}
 	#end
+	#end
 
+	#if (cpp || java || jvm || nodejs || eval)
 	// The marks and the limit the stalled cases use, and the most they send.
 	// Node cannot size a socket's buffers, so its kernel holds more.
 	private static inline var HIGH:Int = #if nodejs 8 * 1024 * 1024 #else 512 * 1024 #end;
@@ -354,7 +361,7 @@ class NetConnectionOutputTest extends utest.Test {
 	}
 }
 
-#if (cpp || java || jvm || nodejs)
+#if (cpp || java || jvm || nodejs || eval)
 /**
 	A server that accepts one connection (answering a WebSocket upgrade
 	first, if asked) and then reads nothing, with small buffers, until told

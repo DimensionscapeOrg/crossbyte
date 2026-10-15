@@ -1602,15 +1602,65 @@ class Socket {
 		}
 	}
 
-	/** Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a full send buffer. **/
+	/**
+		The most CrossByte's writes hand a plain socket between asking
+		whether it is writable: what every system has free in a send buffer
+		that `select` calls writable. macOS promises its send low-water mark,
+		2,048 bytes; Linux a third of the buffer, 5,461 bytes at the smallest
+		default. A write that fits in what is free returns at once.
+	**/
+	@:noCompletion public static inline var WRITE_SLICE:Int = 2048;
+
+	/**
+		Writes from `buf` as `__tryRead` reads: the bytes taken, or -1 for a
+		full send buffer.
+
+		eval's sends wait until the system has taken every byte, so a write
+		the send buffer has no room for waited for the peer to read, holding
+		the interpreter's one thread: a slow peer held up every other
+		connection, and one in the same interpreter, which could not read
+		until the send returned, never did. So a plain socket is handed no
+		more than `WRITE_SLICE` bytes after a `select` has found it
+		writable, and refuses when it is not: what it will not take waits in
+		CrossByte's buffer, as on the other targets, where the output limits
+		see it. A TLS socket writes whole records through its own output and
+		still waits.
+	**/
 	@:noCompletion private function __tryWrite(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		// The counter is a plain socket's: a TLS socket's init is its own.
+		var plain:Bool = Std.isOfType(output, SocketOutput);
+		if (plain && __unconfirmed + len > WRITE_SLICE) {
+			if (!__writable()) {
+				return -1;
+			}
+			__unconfirmed = 0;
+			if (len > WRITE_SLICE) {
+				len = WRITE_SLICE;
+			}
+		}
 		try {
-			return output.writeBytes(buf, pos, len);
+			var sent:Int = output.writeBytes(buf, pos, len);
+			if (plain) {
+				__unconfirmed += sent;
+			}
+			return sent;
 		} catch (e:Dynamic) {
 			if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 				return -1;
 			}
 			throw e;
+		}
+	}
+
+	/**
+		Whether a send would find room now. A socket `select` refuses is one
+		already closed, which the write that follows reports.
+	**/
+	private function __writable():Bool {
+		try {
+			return NativeSocket.select([], [this], [], 0).write.length > 0;
+		} catch (_:Dynamic) {
+			return true;
 		}
 	}
 
@@ -1630,9 +1680,14 @@ class Socket {
 	// read. Null, as false, until one has.
 	@:noCompletion private var __seenReadable:Null<Bool>;
 
+	// What `__tryWrite` has handed the socket since a select last found it
+	// writable, or since it was made, with its send buffer empty.
+	@:noCompletion private var __unconfirmed:Int;
+
 	private function init(socket:NativeSocket):Void {
 		this.socket = socket;
 		__closed = false;
+		__unconfirmed = 0;
 		input = new SocketInput(socket, this);
 		output = new SocketOutput(socket, this);
 	}
@@ -1773,9 +1828,10 @@ class Socket {
 		results therefore do NOT cover: `connect()` blocks the whole runtime
 		thread for the duration of the TCP handshake; reads block instead of
 		raising `Blocked`, so read loops must gate on a zero-timeout `select`
-		rather than drain until a Blocked error; and the write-side
-		backpressure machinery (Blocked -> flushFull -> writable queue) never
-		engages, because a blocking send just waits.
+		rather than drain until a Blocked error; and writes are kept from
+		waiting the same way, by `select` and a send no larger than the
+		buffer then has free (see `__tryWrite`), which a TLS socket's records
+		are not.
 	**/
 	public function setBlocking(b:Bool):Void {}
 
