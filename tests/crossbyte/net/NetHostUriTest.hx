@@ -64,6 +64,18 @@ class NetHostUriTest extends utest.Test {
 	}
 
 	/** Dialling: port 0 is nowhere to connect to. **/
+	/** A tcp:// host's address limits are its server's, on every target with one: Node too. **/
+	public function testAHostSaysItsServersAddressLimits():Void {
+		var host = new NetHost("tcp://127.0.0.1:0");
+		Assert.equals(0, host.maxConnectionsPerAddress, "a host limits each address before it is told to");
+		Assert.equals(ServerSocket.DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS, host.maxPendingHandshakesPerAddress);
+		host.maxConnectionsPerAddress = 3;
+		host.maxPendingHandshakesPerAddress = 5;
+		Assert.equals(3, host.maxConnectionsPerAddress);
+		Assert.equals(5, host.maxPendingHandshakesPerAddress);
+		host.close();
+	}
+
 	public function testAUriToDialOnPortZeroIsStillRefused():Void {
 		var refused:Bool = false;
 		try {

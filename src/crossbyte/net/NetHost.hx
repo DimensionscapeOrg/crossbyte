@@ -263,6 +263,25 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 		return __server.refusedConnections;
 	}
 
+	public var maxConnectionsPerAddress(get, set):Int;
+	public var maxPendingHandshakesPerAddress(get, set):Int;
+
+	@:noCompletion private inline function get_maxConnectionsPerAddress():Int {
+		return __server.maxConnectionsPerAddress;
+	}
+
+	@:noCompletion private inline function set_maxConnectionsPerAddress(value:Int):Int {
+		return __server.maxConnectionsPerAddress = value;
+	}
+
+	@:noCompletion private inline function get_maxPendingHandshakesPerAddress():Int {
+		return __server.maxPendingHandshakesPerAddress;
+	}
+
+	@:noCompletion private inline function set_maxPendingHandshakesPerAddress(value:Int):Int {
+		return __server.maxPendingHandshakesPerAddress = value;
+	}
+
 	@:noCompletion private var __server:TServer;
 	@:noCompletion private var __onAccept:INetConnection->Void = __noopAccept;
 	@:noCompletion private var __onDisconnect:DisconnectHandler = __noopDisconnect;
@@ -501,9 +520,38 @@ private class RUDPHost implements INetHost {
 	public var maxConnections(get, set):Int;
 	public var refusedConnections(get, never):Float;
 
+	/**
+		The most sessions one address keeps open, counted here as
+		`maxConnections` is: see `INetHost.maxConnectionsPerAddress`.
+	**/
+	public var maxConnectionsPerAddress(get, set):Int;
+	/** Kept, and of no use here: see `INetHost.maxPendingHandshakesPerAddress`. **/
+	public var maxPendingHandshakesPerAddress(get, set):Int;
+
 	@:noCompletion private var __maxConnections:Int = ServerSocket.DEFAULT_MAX_CONNECTIONS;
 	@:noCompletion private var __open:Int = 0;
 	@:noCompletion private var __refused:Float = 0.0;
+	@:noCompletion private var __maxPerAddress:Int = 0;
+	@:noCompletion private var __pendingPerAddress:Int = ServerSocket.DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS;
+	// The sessions open from each address, by RateLimiter.addressKey, while
+	// maxConnectionsPerAddress is set.
+	@:noCompletion private var __perAddress:Map<String, Int> = new Map();
+
+	@:noCompletion private inline function get_maxConnectionsPerAddress():Int {
+		return __maxPerAddress;
+	}
+
+	@:noCompletion private inline function set_maxConnectionsPerAddress(value:Int):Int {
+		return __maxPerAddress = value;
+	}
+
+	@:noCompletion private inline function get_maxPendingHandshakesPerAddress():Int {
+		return __pendingPerAddress;
+	}
+
+	@:noCompletion private inline function set_maxPendingHandshakesPerAddress(value:Int):Int {
+		return __pendingPerAddress = value;
+	}
 
 	@:noCompletion private inline function get_maxConnections():Int {
 		return __maxConnections;
@@ -607,7 +655,14 @@ private class RUDPHost implements INetHost {
 	}
 
 	@:noCompletion private function __onConnect(event:ReliableDatagramSocketConnectEvent):Void {
-		if (__maxConnections > 0 && __open >= __maxConnections) {
+		var key:Null<String> = null;
+		var refuse:Bool = __maxConnections > 0 && __open >= __maxConnections;
+		if (!refuse && __maxPerAddress > 0) {
+			key = RateLimiter.addressKey(event.socket.remoteAddress);
+			var held:Null<Int> = __perAddress.get(key);
+			refuse = held != null && held >= __maxPerAddress;
+		}
+		if (refuse) {
 			__refused++;
 			try {
 				event.socket.close();
@@ -615,11 +670,25 @@ private class RUDPHost implements INetHost {
 			return;
 		}
 		__open++;
+		if (key != null) {
+			var held:Null<Int> = __perAddress.get(key);
+			__perAddress.set(key, held == null ? 1 : held + 1);
+		}
 		var connection = NetConnection.fromReliableDatagramSocket(event.socket);
 		var wrapped:INetConnection = connection;
+		var counted:Null<String> = key;
 		connection.onClose = reason -> {
 			if (__open > 0) {
 				__open--;
+			}
+			if (counted != null) {
+				var held:Null<Int> = __perAddress.get(counted);
+				if (held == null || held <= 1) {
+					__perAddress.remove(counted);
+				} else {
+					__perAddress.set(counted, held - 1);
+				}
+				counted = null;
 			}
 			__onDisconnect(wrapped, reason);
 		};

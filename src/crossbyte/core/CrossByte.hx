@@ -224,7 +224,7 @@ final class CrossByte extends EventDispatcher {
 	 */
 	public static function make(loopType:MainLoopType = DEFAULT, timers:TimerStrategy = HEAP, ?configure:CrossByte->Void):CrossByte {
 		if (__primordial == null) {
-			throw new IllegalOperationError("CrossByte.make() requires a primordial CrossByte instance. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before creating child runtimes.");
+			throw new IllegalOperationError("CrossByte.make() requires a primordial CrossByte instance. Create an Application, HostApplication or ServerApplication before creating child runtimes.");
 		}
 
 		var instance:CrossByte = new CrossByte(false, loopType, false, timers);

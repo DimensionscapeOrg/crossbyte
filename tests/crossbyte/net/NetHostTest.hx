@@ -147,6 +147,71 @@ class NetHostTest extends utest.Test {
 	}
 
 	/**
+		`maxConnectionsPerAddress` and `maxPendingHandshakesPerAddress` on a
+		host: a TCP host's are its server's, and a reliable datagram host
+		counts its own sessions by address, closing one past the limit
+		before `onAccept`.
+	**/
+	public function testAHostHoldsAnAddressToItsLimit():Void {
+		var server = new ServerSocket();
+		var accepted:Int = 0;
+		var host = NetHost.fromServerSocket(server, _ -> accepted++);
+		Assert.equals(ServerSocket.DEFAULT_MAX_PENDING_HANDSHAKES_PER_ADDRESS, host.maxPendingHandshakesPerAddress);
+		host.maxPendingHandshakesPerAddress = 4;
+		Assert.equals(4, server.maxPendingHandshakesPerAddress);
+		host.maxConnectionsPerAddress = 1;
+		Assert.equals(1, server.maxConnectionsPerAddress);
+		var first = new Socket();
+		var second = new Socket();
+		try {
+			server.bind(0, "127.0.0.1");
+			host.listen();
+			first.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> accepted == 1, 2.0);
+			second.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> host.refusedConnections >= 1, 2.0);
+			Assert.equals(1, accepted, "a second connection from one address got past a limit of one");
+			Assert.equals(1.0, host.refusedConnections);
+		} catch (e:Dynamic) {
+			try first.close() catch (_:Dynamic) {}
+			try second.close() catch (_:Dynamic) {}
+			closeHostQuietly(host);
+			throw e;
+		}
+		try first.close() catch (_:Dynamic) {}
+		try second.close() catch (_:Dynamic) {}
+		closeHostQuietly(host);
+
+		if (!ReliableDatagramSocket.isSupported) {
+			return;
+		}
+		var datagrams = new ReliableDatagramServerSocket();
+		var sessions:Int = 0;
+		var reliable = NetHost.fromReliableDatagramServerSocket(datagrams, _ -> sessions++);
+		reliable.maxConnectionsPerAddress = 1;
+		var one = new ReliableDatagramSocket();
+		var two = new ReliableDatagramSocket();
+		try {
+			datagrams.bind(0, "127.0.0.1");
+			reliable.listen();
+			one.connect("127.0.0.1", datagrams.localPort);
+			pumpUntil(() -> sessions == 1, 2.0);
+			two.connect("127.0.0.1", datagrams.localPort);
+			pumpUntil(() -> reliable.refusedConnections >= 1, 2.0);
+			Assert.equals(1, sessions, "a second session from one address got past a limit of one");
+			Assert.equals(1.0, reliable.refusedConnections);
+		} catch (e:Dynamic) {
+			closeReliableSocketQuietly(one);
+			closeReliableSocketQuietly(two);
+			closeHostQuietly(reliable);
+			throw e;
+		}
+		closeReliableSocketQuietly(one);
+		closeReliableSocketQuietly(two);
+		closeHostQuietly(reliable);
+	}
+
+	/**
 		The candidate a peer on the same network can actually use.
 
 		`discoverPublicAddress` describes the outside of the NAT, which is the
@@ -430,6 +495,27 @@ private class RelayingHost implements INetHost {
 
 	public function setCertificate(certificate:Certificate, key:Key):Void {
 		calls.push("setCertificate");
+	}
+
+	public var maxConnectionsPerAddress(get, set):Int;
+	public var maxPendingHandshakesPerAddress(get, set):Int;
+	private var __perAddress:Int = 0;
+	private var __pendingPerAddress:Int = 16;
+
+	private function get_maxConnectionsPerAddress():Int {
+		return __perAddress;
+	}
+
+	private function set_maxConnectionsPerAddress(value:Int):Int {
+		return __perAddress = value;
+	}
+
+	private function get_maxPendingHandshakesPerAddress():Int {
+		return __pendingPerAddress;
+	}
+
+	private function set_maxPendingHandshakesPerAddress(value:Int):Int {
+		return __pendingPerAddress = value;
 	}
 
 	private var __maxConnections:Int = 0;

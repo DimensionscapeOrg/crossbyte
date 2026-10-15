@@ -37,6 +37,26 @@ interface INetHost {
 	**/
 	public var maxConnections(get, set):Int;
 	/**
+		The most connections one address may hold open at once; `0` or less,
+		the default, sets no limit. A TCP or WebSocket host's is its server's
+		`maxConnectionsPerAddress`, which see: its TLS handshakes included,
+		and an IPv6 address counted by its /64, as `RateLimiter.addressKey`
+		keys it. A reliable datagram host counts its sessions by address the
+		same way, and closes one past the limit as it is accepted, before
+		`onAccept`. Either way the refusal is counted in `refusedConnections`.
+		Set it before `listen()`.
+	**/
+	public var maxConnectionsPerAddress(get, set):Int;
+	/**
+		The TLS handshakes one address may have under way once half of its
+		server's `maxPendingHandshakes` are taken, 16 unless set: a TCP or
+		WebSocket host's is its server's `maxPendingHandshakesPerAddress`,
+		which see. A reliable datagram host keeps the value and has no use
+		for it: a join holds nothing until its cookie comes back, so there
+		is nothing under way to bound.
+	**/
+	public var maxPendingHandshakesPerAddress(get, set):Int;
+	/**
 		Connections the host closed for its own limits: `maxConnections`,
 		and a TCP or WebSocket host's server's other limits (see
 		`ServerSocket.refusedConnections`). A `Float`, exact to 2^53, so a
