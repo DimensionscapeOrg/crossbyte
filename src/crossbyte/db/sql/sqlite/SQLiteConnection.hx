@@ -1649,22 +1649,31 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		connection that is not open, when the connection has `closed`.
 	**/
 	@:noCompletion private function __refuseJob(job:SQLiteJob, reason:String, closed:Bool, worker:Worker):Void {
-		var error:SQLError = new SQLError(job.operation, reason, reason);
-
 		#if !php
 		if (job.call != null) {
-			job.call.refuse(closed ? new IllegalOperationError("The SQLiteConnection is not open.") : error);
+			job.call.refuse(closed ? new IllegalOperationError("The SQLiteConnection is not open.") : new SQLError(job.operation, reason, reason));
 			return;
 		}
 		#end
 
+		worker.sendProgress(__refusalOf(job, reason));
+	}
+
+	/**
+		What tells whoever queued `job`, which no caller waits on, that it
+		will not run: its statement's failure, or the connection's
+		`SQLErrorEvent` for its operation.
+	**/
+	@:noCompletion private function __refusalOf(job:SQLiteJob, reason:String):Dynamic {
+		var error:SQLError = new SQLError(job.operation, reason, reason);
+
 		if (job.statement != null) {
 			var answer:SQLiteStatementMessage = new SQLiteStatementMessage(job.statement, false, job.statementEpoch);
 			answer.fail(error);
-			worker.sendProgress(answer);
-		} else {
-			worker.sendProgress(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+			return answer;
 		}
+
+		return new SQLErrorEvent(SQLErrorEvent.ERROR, error);
 	}
 
 	/**
@@ -1701,9 +1710,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/**
 		Queues `job` for the worker, and answers true. When the worker has
 		stopped (an open that failed, not yet heard of), nothing would ever
-		run it: what would have waited for ever is refused, as on a
-		connection that is not open, and what keeps has nothing left to do,
-		and answers false.
+		run it: a caller waiting on it is refused, as on a connection that is
+		not open, other work by the event the worker would have sent it, and
+		what keeps has nothing left to do, and answers false.
 	**/
 	@:noCompletion private function __enqueue(job:SQLiteJob):Bool {
 		var queue:SQLiteQueue = __sqlQueue;
@@ -1725,6 +1734,18 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 		if (job.keep) {
 			return false;
+		}
+
+		if (job.call == null) {
+			// Work no caller waits on, asked for once the worker had stopped
+			// (an open that failed, not yet heard of here): refused as the
+			// worker refuses what it finds queued as it stops, with the same
+			// event, delivered after the worker's own. Thrown here, a call
+			// made just after a failed open threw or was refused by event
+			// as one thread or the other came first.
+			var refusal:Dynamic = __refusalOf(job, "The connection is closed.");
+			crossbyte.core.CrossByte.current().post(() -> __onSQLWorkerProgress(new ThreadEvent(ThreadEvent.PROGRESS, refusal)));
+			return true;
 		}
 
 		throw new IllegalOperationError("The SQLiteConnection is not open.");

@@ -33,6 +33,12 @@ says how.
 
 #### Data
 
+- Work asked of an asynchronous `SQLiteConnection` after its open failed,
+  before that failure is dispatched, is refused by its `SQLErrorEvent`
+  (a statement's by its own), after the open's, as work asked a moment
+  earlier is. Once the worker had stopped it threw `IllegalOperationError`
+  instead, so the same call threw or reported by event as one thread or
+  the other came first. A synchronous call still throws, without waiting.
 - On PHP, `KVCodecs.text` refuses a value that is not well-formed UTF-8
   as it is written, with an `ArgumentError`, as such a key is refused. It
   was stored and then refused when it was read.

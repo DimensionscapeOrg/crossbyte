@@ -807,6 +807,50 @@ class SQLiteNativeTest extends utest.Test {
 		__pumpUntil(() -> false, 0.2);
 	}
 
+	/**
+		Work asked for once a failed asynchronous open has stopped the worker,
+		before the failure is heard of here, is refused as work queued in time
+		is: by its error event, after the open's. It threw instead, so a call
+		made just after a failed open threw or was refused by event as one
+		thread or the other came first (macOS's worker, quicker, made
+		`begin()` throw).
+	**/
+	public function testWorkAskedForOnceAFailedOpenStoppedTheWorkerIsRefusedByEvent():Void {
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		connection.addEventListener(SQLEvent.OPEN, _ -> events.push("open"));
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error:" + e.error.operation));
+		connection.openAsync(missing, SQLiteMode.CREATE, false, 4096);
+
+		// Nothing pumped meanwhile, so the failure is not yet heard of here.
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (!@:privateAccess connection.__sqlQueue.gone && haxe.Timer.stamp() < deadline) {
+			crossbyte.sys.System.sleep(0.01);
+		}
+		Assert.isTrue(@:privateAccess connection.__sqlQueue.gone, "the worker did not stop");
+
+		var queued:SQLiteStatement = __watched(connection, "queued", "SELECT 1", events, new Map());
+		var thrown:Dynamic = null;
+		try {
+			queued.execute();
+			connection.begin();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		Assert.isNull(thrown, "work asked for after the worker stopped threw rather than being refused by event");
+
+		__pumpUntil(() -> events.length >= 3);
+		Assert.same(["error:" + SQLEvent.OPEN, "queued:error", "error:" + SQLEvent.BEGIN], events);
+		Assert.isFalse(queued.executing);
+
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		__pumpUntil(() -> events.indexOf("open") >= 0);
+		Assert.isTrue(events.indexOf("open") >= 0, "the connection could not be opened again");
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
+	}
+
 	public function testAPagedStatementKeepsItsRowsWhenAnotherRunsBetweenPages():Void {
 		// hxcpp's glue keeps one live result per connection and finalizes it
 		// as the next request starts. A statement read a page at a time while
@@ -1478,12 +1522,13 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 	}
 
-	public function testWorkAskedOfAWorkerThatHasStoppedIsRefusedAtOnce():Void {
+	public function testWorkAskedOfAWorkerThatHasStoppedIsRefusedWithoutWaiting():Void {
 		// An asynchronous open that fails stops the worker, which tells what
 		// was queued behind it that it will not run; but the calling thread
 		// learns of the failure only when its event is dispatched. A call made
 		// in between must not wait out queueTimeout for a worker that is gone,
-		// nor a statement executed then go unanswered.
+		// nor a statement executed then go unanswered: it is refused by its
+		// error event, as one executed before the worker stopped is.
 		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
 		var connection:SQLiteConnection = new SQLiteConnection();
 		var failures:Int = 0;
@@ -1502,7 +1547,11 @@ class SQLiteNativeTest extends utest.Test {
 		var statement:SQLiteStatement = new SQLiteStatement();
 		statement.sqlConnection = connection;
 		statement.text = "SELECT 1";
-		Assert.raises(() -> statement.execute(), IllegalOperationError);
+		var refused:Bool = false;
+		statement.addEventListener(SQLErrorEvent.ERROR, _ -> refused = true);
+		statement.execute();
+		__pumpUntil(() -> refused);
+		Assert.isTrue(refused, "a statement executed after the worker stopped was never answered");
 		Assert.isFalse(statement.executing);
 
 		// close() and cancel() have nothing to do, and the open's failure is
@@ -1521,12 +1570,14 @@ class SQLiteNativeTest extends utest.Test {
 	}
 
 	public function testWorkAskedAsTheWorkerStopsIsAnswered():Void {
-		// Work asked for is refused at once once the worker has marked its
-		// queue gone, and otherwise queued; and work that finds the queue not
-		// yet gone, and reaches it only after the worker's last pass has found
-		// it empty, must not sit there with nothing left to run it: a statement
-		// or a begin() neither refused nor answered, ever, and a close() leaving
-		// the connection refusing every open after it. Each round opens a
+		// Work asked for is refused by its error event once the worker has
+		// marked its queue gone, and otherwise queued and refused by the
+		// worker's last pass, the same event either way, never thrown; and
+		// work that finds the queue not yet gone, and reaches it only after
+		// the worker's last pass has found it empty, must not sit there with
+		// nothing left to run it: a statement or a begin() neither refused nor
+		// answered, ever, and a close() leaving the connection refusing every
+		// open after it. Each round opens a
 		// missing file, waits for the open to fail, and asks a moment later,
 		// swept across the worker's last pass. Everything the worker sends comes
 		// before its Complete, so once it has completed, work it took has been
@@ -1577,7 +1628,9 @@ class SQLiteNativeTest extends utest.Test {
 				cpp.vm.Gc.safePoint();
 			}
 
-			var queued:Bool = true;
+			// Which side of the worker's last pass this asks on.
+			var queued:Bool = !queue.gone;
+			var thrown:Null<String> = null;
 
 			try {
 				switch (kind) {
@@ -1589,7 +1642,7 @@ class SQLiteNativeTest extends utest.Test {
 						connection.close();
 				}
 			} catch (e:crossbyte.errors.IllegalOperationError) {
-				queued = false;
+				thrown = e.message;
 			}
 
 			if (kind != 2) {
@@ -1608,7 +1661,9 @@ class SQLiteNativeTest extends utest.Test {
 
 			var what:String = ["a statement", "a begin()", "a close()"][kind] + ' asked $delay spins after the open failed';
 
-			if (kind != 2 && queued && !answered) {
+			if (kind != 2 && thrown != null) {
+				lost.push(what + " threw rather than being refused by its event: " + thrown);
+			} else if (kind != 2 && !answered) {
 				lost.push(what + " was never answered");
 			}
 
@@ -1631,9 +1686,9 @@ class SQLiteNativeTest extends utest.Test {
 			round++;
 		}
 
-		Assert.same([], lost.slice(0, 3), '${lost.length} of $round rounds lost what they asked for; $queuedCount statements and begin()s queued, $refusedCount refused');
+		Assert.same([], lost.slice(0, 3), '${lost.length} of $round rounds lost what they asked for; $queuedCount statements and begin()s asked before the worker stopped, $refusedCount after');
 		// Both sides of the worker's last pass were reached.
-		Assert.isTrue(queuedCount > 0 && refusedCount > 0, '$queuedCount queued, $refusedCount refused');
+		Assert.isTrue(queuedCount > 0 && refusedCount > 0, '$queuedCount asked before the worker stopped, $refusedCount after');
 	}
 
 	public function testCodeTheWorkerRunsCanAskTheConnection():Void {
