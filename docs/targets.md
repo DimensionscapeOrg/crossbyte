@@ -62,8 +62,8 @@ that is not a socket, such as one of your own carrying frames however the applic
 `DatagramSocket.isSupported` are false.
 
 **An `Int` is 64 bits.** On PHP a Haxe `Int` is PHP's own integer, which does not wrap where a 32-bit one does:
-`0x7FFFFFFF + 1` is 2147483648 there. CrossByte's hashes, random numbers and RPC wrap where a 32-bit `Int` would, so
-they give the numbers every target does; arithmetic of your own does not.
+`0x7FFFFFFF + 1` is 2147483648 there. CrossByte's hashes, random numbers, `ByteArray` and RPC wrap where a 32-bit
+`Int` would, so they give the numbers and bytes every target does; arithmetic of your own does not.
 
 ## The interpreter
 

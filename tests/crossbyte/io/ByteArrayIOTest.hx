@@ -233,6 +233,67 @@ class ByteArrayIOTest extends utest.Test {
 		Assert.equals(0, back.bytesAvailable);
 	}
 
+	/**
+		An `Int` past 32 bits, which PHP's 64-bit integer holds where every
+		other target wraps (`0x7FFFFFFF + 1` is 2^31 there), goes as its low
+		32 bits, as `writeInt` sends them, and reads back as the `Int` every
+		other target had: on PHP `writeVarInt` zigzagged it past 32 bits, and
+		`writeVarUInt` wrote it whole, each into a fifth byte no reader takes.
+	**/
+	public function testAVarintOfAnIntPast32BitsGoesAsItsLow32Bits():Void {
+		// Added at run time: a constant sum is folded to 32 bits by the compiler.
+		var top:Int = __widest;
+		var past:Int = top + 1;
+		var wider:Int = top * 2 + 3;
+		var output = new ByteArrayOutput();
+		output.writeVarInt(past);
+		output.writeVarUInt(wider);
+		output.writeVarInt(wider);
+		var ofByteArray = new ByteArray();
+		ofByteArray.writeVarUInt(past);
+		ofByteArray.writeVarUInt(wider);
+
+		var bytes:Bytes = output;
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.equals(-2147483647 - 1, input.readVarInt(), "0x7FFFFFFF + 1 as a VarInt");
+		Assert.equals(1, input.readVarUInt(), "0x7FFFFFFF * 2 + 3 as a VarUInt");
+		Assert.equals(1, input.readVarInt(), "0x7FFFFFFF * 2 + 3 as a VarInt");
+		Assert.isTrue(input.eof());
+		ofByteArray.position = 0;
+		var first:Int = ofByteArray.readVarUInt();
+		var second:Int = ofByteArray.readVarUInt();
+		Assert.equals(-2147483647 - 1, first, "ByteArray: 0x7FFFFFFF + 1");
+		Assert.equals(1, second, "ByteArray: 0x7FFFFFFF * 2 + 3");
+		Assert.equals(0, ofByteArray.bytesAvailable);
+	}
+
+	static var __widest:Int = 0x7FFFFFFF;
+
+	/**
+		Big-endian 32-bit reads give back what was written, a sign bit
+		included: on PHP the byte swap kept the bits it shifted past 32, so a
+		4 read back as 4 + 2^50, and an object's length as more than it held.
+	**/
+	public function testBigEndianIntsReadBackAsWritten():Void {
+		var out = new ByteArray();
+		out.endian = Endian.BIG_ENDIAN;
+		var values:Array<Int> = [0, 1, 4, 0x7F, 0x80, 0x12345678, 0x7FFFFFFF, -1, -2147483647 - 1, -0x12345678];
+		for (value in values) {
+			out.writeInt(value);
+			out.writeUnsignedInt(value);
+		}
+		out.writeFloat(1.5);
+		out.writeFloat(-0.25);
+		out.position = 0;
+		for (value in values) {
+			Assert.equals(value, out.readInt(), 'readInt of $value');
+			var unsigned:Int = out.readUnsignedInt();
+			Assert.equals(value, unsigned, 'readUnsignedInt of $value');
+		}
+		Assert.equals(1.5, out.readFloat());
+		Assert.equals(-0.25, out.readFloat());
+	}
+
 	public function testReadBytesDefaultLengthFillsDestination():Void {
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("abcdef"));
 		input.position = 2;
@@ -267,7 +328,10 @@ class ByteArrayIOTest extends utest.Test {
 		thousand records).
 	**/
 	public function testAMegabyteObjectRoundTrips():Void {
-		var text:String = StringTools.lpad("", "abcdefgh", 1 << 20);
+		// On PHP 64 KiB, still past 65,535 bytes: Haxe's Unserializer takes
+		// time there that grows with the square of its text, ten minutes
+		// for a megabyte of HXSF.
+		var text:String = StringTools.lpad("", "abcdefgh", #if php 1 << 16 #else 1 << 20 #end);
 		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
 			for (endian in [Endian.LITTLE_ENDIAN, Endian.BIG_ENDIAN]) {
 				var out = new ByteArray();

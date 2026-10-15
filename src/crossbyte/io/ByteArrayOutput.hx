@@ -447,7 +447,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeVarUInt(value:Int, reserved:Bool = false):Void {
-		var v:Int = value;
+		// wrap32 is `value` but on PHP, whose 64-bit Int can hold more than
+		// 32 bits: its low 32 go, as `writeInt` sends them, in five bytes.
+		var v:Int = crossbyte.utils.Hash.wrap32(value);
 
 		if (!reserved) {
 			reserve(varUIntSize(v));
@@ -606,7 +608,9 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeVarInt(value:Int, reserved:Bool = false):Void {
-		var u:Int = __zzEnc(value);
+		// Zigzagged from its low 32 bits, as `writeVarUInt` takes them: on
+		// PHP 2^31, which an Int reaches there unwrapped, zigzags past 32 bits.
+		var u:Int = __zzEnc(crossbyte.utils.Hash.wrap32(value));
 		writeVarUInt(u, reserved); // uses your existing varUInt writer
 	}
 

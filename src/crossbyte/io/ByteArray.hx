@@ -1404,7 +1404,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			shift += 7;
 		}
 		position = at;
-		return result;
+		// wrap32 is `result` but on PHP, whose 64-bit Int keeps the fifth
+		// byte's top bit a positive one: from 2^31 up negative, as elsewhere.
+		return crossbyte.utils.Hash.wrap32(result);
 	}
 
 	/**
@@ -2047,8 +2049,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		// Tested and shifted as the unsigned value it is: a signed `v > 0x7F`
 		// is false for anything with bit 31 set, which would go out as one
 		// byte (0x80000000 reading back as 0, 0xFFFFFFFF as a varint that
-		// never ends).
-		var v:Int = value;
+		// never ends). wrap32 is `value` but on PHP, whose 64-bit Int can
+		// hold more than 32 bits: its low 32 go, as `writeInt` sends them.
+		var v:Int = crossbyte.utils.Hash.wrap32(value);
 		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
 			v >>>= 7;
@@ -2292,7 +2295,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:noCompletion private inline function __swap32(value:Int):Int {
-		return ((value >>> 24) & 0xFF) | ((value >>> 8) & 0xFF00) | ((value << 8) & 0xFF0000) | (value << 24);
+		// wrap32 is the swap but on PHP, where `value << 24` keeps the bits
+		// it shifts past 32, and a big-endian 4 read back as 4 + 2^50.
+		return crossbyte.utils.Hash.wrap32(((value >>> 24) & 0xFF) | ((value >>> 8) & 0xFF00) | ((value << 8) & 0xFF0000) | (value << 24));
 	}
 
 	@:noCompletion private inline function set_endian(value:Endian):Endian {
