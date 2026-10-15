@@ -94,8 +94,12 @@ class HTTPStaticPathTest extends utest.Test {
 		__write(root, "kept.txt", "first version");
 		var keptBytes:Int = -1;
 
-		var settled:Float = haxe.Timer.stamp() + 2.5;
-		HTTPTestSupport.pumpWallUntilAsync(() -> haxe.Timer.stamp() >= settled, 10, _ -> {
+		// Settled by the clock the server asks, the time of day against the
+		// file's modification time, rather than by 2.5 s on the monotonic
+		// clock: a Linux VM just started steps its time of day as it syncs,
+		// and the file was then not two seconds old when it was served.
+		var modified:Float = root.resolvePath("kept.txt").modificationDate.getTime();
+		HTTPTestSupport.pumpWallUntilAsync(() -> Sys.time() * 1000 - modified > 2500, 10, _ -> { // time of day: as the server's
 			HTTPTestSupport.exchangeEach(server, ["GET /kept.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(first):Void {
 				keptBytes = @:privateAccess server.__config.__keptFiles.bytes;
 				// The same length, so only the modification time can tell.

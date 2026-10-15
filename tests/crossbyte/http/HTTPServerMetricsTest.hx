@@ -64,12 +64,16 @@ class HTTPServerMetricsTest extends utest.Test {
 		Two connections that each say they hold 1.5 GB stand in for them.
 	**/
 	public function testTheOutputBufferTotalCountsPastTwoGigabytes():Void {
-		var server = new HTTPServer(new HTTPServerConfig());
+		// On a port of its own: the default, 30000, is anyone's, and the
+		// server binds as it is made.
+		var server = new HTTPServer(new HTTPServerConfig("127.0.0.1", 0));
 		@:privateAccess {
 			server.__active.set(new HeldOutputSocket(1500000000), null);
 			server.__active.set(new HeldOutputSocket(1500000000), null);
 			Assert.equals(3000000000.0, server.__totalOutputBuffer());
+			server.__active.clear();
 		}
+		server.close();
 	}
 
 	public function testMetricsEndpointServesRegistry(async:Async):Void {
