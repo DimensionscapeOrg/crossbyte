@@ -202,7 +202,7 @@ final class RPCStringMapPatch<V> {
 		baselines `RPCStringMapBaseline`s: the view's entries in its order of
 		priority until the patch is `maxBytes`, removals always, and into
 		`sent` what the observer holds once it arrives. A key is written whole,
-		so each entry weighs its key and its patch, measured by writing them.
+		so each entry weighs its key and its patch, sized without writing them.
 	**/
 	public function diffKeysWithin(baseValues:Null<StringMap<V>>, base:Null<RPCStringMapBaseline<V>>, currentValues:StringMap<V>,
 			currentKeys:Array<String>, maxBytes:Int, sent:RPCStringMapBaseline<V>):RPCStringMapPatch<V> {

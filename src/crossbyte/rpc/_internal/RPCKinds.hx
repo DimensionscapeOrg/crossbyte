@@ -114,6 +114,35 @@ class RPCKinds {
 		};
 	}
 
+	/**
+		The bytes `write` writes for `value`, as an expression of it, worked
+		out without writing anything. It throws where `write` throws for a
+		`null` that cannot be sent, but for a kind of fixed size, whose size it
+		answers without looking at the value.
+	**/
+	public static function sizeOf(kind:RPCKind, optional:Bool, value:Expr):Expr {
+		if (optional) {
+			final held:String = local();
+			final inner:Expr = sizeOf(kind, false, macro $i{held});
+			return macro {
+				final $held = $value;
+				$i{held} == null ? 1 : 1 + $inner;
+			};
+		}
+		if (kind.measure != null) {
+			return kind.measure(value);
+		}
+		if (kind.size < 0) {
+			throw 'RPC ${kind.name} is not written whole, and has no size of its own';
+		}
+		return macro $v{kind.size};
+	}
+
+	/** Whether every value of `kind` that is there takes `kind.size` bytes. **/
+	public static inline function fixedSize(kind:RPCKind):Bool {
+		return kind.measure == null && kind.size >= 0;
+	}
+
 	/** Reads a value from `input`, a `ByteArrayInput`, in a frame ending at `end`. **/
 	public static function read(kind:RPCKind, optional:Bool, input:Expr, end:Expr):Expr {
 		final get:Expr = kind.read(input, end);
@@ -283,7 +312,8 @@ class RPCKinds {
 		zero: macro 0,
 		compound: false,
 		write: (frame, value) -> macro $frame.putVarUInt($value),
-		read: (input, end) -> macro(cast $input.readVarUInt() : crossbyte.rpc.VarUInt)
+		read: (input, end) -> macro(cast $input.readVarUInt() : crossbyte.rpc.VarUInt),
+		measure: value -> macro crossbyte.rpc._internal.RPCSizes.varUInt($value)
 	};
 
 	/**
@@ -299,7 +329,8 @@ class RPCKinds {
 		zero: macro 0,
 		compound: false,
 		write: (frame, value) -> macro $frame.putVarInt($value),
-		read: (input, end) -> macro(cast $input.readVarInt() : crossbyte.rpc.VarInt)
+		read: (input, end) -> macro(cast $input.readVarInt() : crossbyte.rpc.VarInt),
+		measure: value -> macro crossbyte.rpc._internal.RPCSizes.varInt($value)
 	};
 
 	/**
@@ -315,6 +346,7 @@ class RPCKinds {
 		final put = inner.put;
 		final get = inner.get;
 		final roomOf = inner.roomOf;
+		final measure = inner.measure;
 		return {
 			name: name,
 			token: inner.token,
@@ -326,7 +358,8 @@ class RPCKinds {
 			write: (frame, value) -> inner.write(frame, asInner(value)),
 			read: (input, end) -> asAbstract(inner.read(input, end)),
 			put: put == null ? null : (data, at, value) -> put(data, at, asInner(value)),
-			get: get == null ? null : (data, at) -> asAbstract(get(data, at))
+			get: get == null ? null : (data, at) -> asAbstract(get(data, at)),
+			measure: measure == null ? null : value -> measure(asInner(value))
 		};
 	}
 
@@ -339,7 +372,8 @@ class RPCKinds {
 		zero: macro null,
 		compound: false,
 		write: (frame, value) -> macro $frame.putString($value),
-		read: (input, end) -> macro $input.readVarUtf()
+		read: (input, end) -> macro $input.readVarUtf(),
+		measure: value -> macro crossbyte.rpc._internal.RPCSizes.string($value)
 	};
 
 	static final BYTES:RPCKind = {
@@ -356,7 +390,8 @@ class RPCKinds {
 			var __bytes = haxe.io.Bytes.alloc(__len);
 			$input.readBytes(__bytes, 0, __len);
 			__bytes;
-		}
+		},
+		measure: value -> macro crossbyte.rpc._internal.RPCSizes.bytes($value)
 	};
 
 	/**
@@ -392,7 +427,8 @@ class RPCKinds {
 				elementType: elementType,
 				valueType: arrayOfType,
 				write: (frame, value) -> RPCBits.runWrite(info, frame, value, name),
-				read: (input, end) -> RPCBits.runRead(info, input, end, macro null)
+				read: (input, end) -> RPCBits.runRead(info, input, end, macro null),
+				measure: value -> RPCBits.runSize(info, value, name)
 			};
 		}
 		return {
@@ -493,6 +529,34 @@ class RPCKinds {
 					$fill;
 					$i{list};
 				};
+			},
+			measure: value -> {
+				final list:String = local();
+				final name:Expr = macro $v{"Array<" + element.name + ">"};
+				final count:Expr = macro crossbyte.rpc._internal.RPCSizes.varUInt($i{list}.length);
+				if (!optional && fixedSize(element)) {
+					return macro {
+						final $list = $value;
+						if ($i{list} == null) {
+							throw crossbyte.rpc._internal.RPCFrame.nullValue($name);
+						}
+						$count + $i{list}.length * $v{element.size};
+					};
+				}
+				final item:String = local();
+				final total:String = local();
+				final each:Expr = sizeOf(element, optional, macro $i{item});
+				macro {
+					final $list = $value;
+					if ($i{list} == null) {
+						throw crossbyte.rpc._internal.RPCFrame.nullValue($name);
+					}
+					var $total:Int = $count;
+					for ($i{item} in $i{list}) {
+						$i{total} += $each;
+					}
+					$i{total};
+				};
 			}
 		};
 	}
@@ -577,6 +641,29 @@ class RPCKinds {
 						$i{map}.set($i{key}, $i{held});
 					}
 					$i{map};
+				};
+			},
+			measure: value -> {
+				final map:String = local();
+				final key:String = local();
+				final count:String = local();
+				final total:String = local();
+				final nameExpr:Expr = macro $v{name};
+				final keySize:Expr = stringKeys ? macro crossbyte.rpc._internal.RPCSizes.string($i{key}) : macro 4;
+				final entry:Expr = !optional && fixedSize(element) ? macro $keySize + $v{element.size} : macro $keySize + ${sizeOf(element, optional,
+					macro $i{map}.get($i{key}))};
+				macro {
+					var $map:$mapType = cast $value;
+					if ($i{map} == null) {
+						throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+					}
+					var $count:Int = 0;
+					var $total:Int = 0;
+					for ($i{key} in $i{map}.keys()) {
+						$i{count}++;
+						$i{total} += $entry;
+					}
+					crossbyte.rpc._internal.RPCSizes.varUInt($i{count}) + $i{total};
 				};
 			}
 		};
@@ -788,6 +875,9 @@ class RPCKinds {
 	  them at once, then puts or gets each where it goes.
 	- `most`, for a number of varying size (a varint), which is never null:
 	  the most bytes a value takes, which a frame is begun with room for.
+	- `measure`, for a kind whose values do not all take `size` bytes: the
+	  bytes `write` writes for a value that is there, as an expression of it,
+	  worked out without writing (see `sizeOf`).
 **/
 typedef RPCKind = {
 	final name:String;
@@ -801,6 +891,7 @@ typedef RPCKind = {
 	@:optional final put:(Expr, Expr, Expr) -> Expr;
 	@:optional final get:(Expr, Expr) -> Expr;
 	@:optional final most:Int;
+	@:optional final measure:Expr->Expr;
 	@:optional final struct:RPCStructs.StructInfo;
 	@:optional final element:RPCKind;
 	@:optional final elementOptional:Bool;

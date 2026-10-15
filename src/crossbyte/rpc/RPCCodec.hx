@@ -120,4 +120,8 @@ interface RPCCodec<T> {
 	@:noCompletion function __readMapPatch(input:ByteArrayInput, end:Int, patch:RPCMapPatch<T>):Void;
 	@:noCompletion function __writeStringMapPatch(frame:crossbyte.rpc._internal.RPCFrame, patch:RPCStringMapPatch<T>):Void;
 	@:noCompletion function __readStringMapPatch(input:ByteArrayInput, end:Int, patch:RPCStringMapPatch<T>):Void;
+	/** The bytes the patch from `base` to `current` whose fields the masks name takes, `flag` its full bit (0 or 1) or -1 for none, as `__writePatch` writes it. **/
+	@:noCompletion function __patchSize(base:T, current:T, mask:Int, maskHigh:Int, flag:Int):Int;
+	/** The bytes `write` writes for `value`. **/
+	@:noCompletion function __size(value:T):Int;
 }

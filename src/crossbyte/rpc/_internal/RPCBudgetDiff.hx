@@ -149,11 +149,11 @@ class RPCBudgetDiff {
 		Weighs the adds and updates in the priority order of `order` against
 		`room` bytes (past the head's empty counts and the removals), each
 		exactly: its key as its group will code it, the group's count, and its
-		patch, measured by writing it. The first that does not fit fills the
-		budget, as a connection's saturation does in Unreal's replication: it
-		and everything after it wait, unweighed, so an entry never goes ahead
-		of one its caller ranked higher. Then the lists keep only what was
-		chosen, and what was left out is noted for the baseline.
+		patch, sized by the codec without writing it. The first that does not
+		fit fills the budget, as a connection's saturation does in Unreal's
+		replication: it and everything after it wait, unweighed, so an entry
+		never goes ahead of one its caller ranked higher. Then the lists keep
+		only what was chosen, and what was left out is noted for the baseline.
 	**/
 	static function choose<V>(patch:RPCMapPatch<V>, budget:RPCBudget<V>, order:IdList, room:Int):Void {
 		final added:IdList = patch.__added;
@@ -169,6 +169,7 @@ class RPCBudgetDiff {
 		final deferred:IdList = budget.deferred;
 		// The least an entry's patch can be: its mask.
 		final least:Int = (patch.codec.fieldCount + 7) >> 3;
+		final initial:V = patch.codec.__default();
 		var left:Int = room;
 		var filled:Bool = false;
 		for (p in 0...order.length) {
@@ -194,7 +195,7 @@ class RPCBudgetDiff {
 			final run:RPCKeyRun = isAdd ? adds : updates;
 			final keyCost:Int = run.cost(at);
 			// Measured only when it might fit.
-			final cost:Int = keyCost + least > left ? left + 1 : keyCost + measure(patch, budget, isAdd, at);
+			final cost:Int = keyCost + least > left ? left + 1 : keyCost + measure(patch, initial, isAdd, at);
 			if (cost <= left) {
 				left -= cost;
 				run.choose(at);
@@ -256,48 +257,15 @@ class RPCBudgetDiff {
 		}
 	}
 
-	/** The bytes the `at`-th add (or update) takes past its key: written alone into the budget's frame. **/
-	static function measure<V>(patch:RPCMapPatch<V>, budget:RPCBudget<V>, isAdd:Bool, at:Int):Int {
-		var one:Null<RPCMapPatch<V>> = budget.mapMeasure;
-		if (one == null) {
-			one = budget.mapMeasure = new RPCMapPatch<V>(patch.codec);
-			one.__sending = true;
-			one.isFull = false;
-		}
+	/**
+		The bytes the `at`-th add (or update) takes past its key: its patch,
+		as the codec's generated size of it says, exactly what it writes.
+	**/
+	static inline function measure<V>(patch:RPCMapPatch<V>, initial:V, isAdd:Bool, at:Int):Int {
 		final wide:Bool = patch.__wide;
-		var key:Int = 0;
-		if (isAdd) {
-			key = patch.__added.__ids[at];
-			one.__updated.length = 0;
-			one.__added.length = 0;
-			one.__added.push(key);
-			one.__addedMasks.length = 0;
-			one.__addedMasks.push(patch.__addedMasks.__ids[at]);
-			if (wide) {
-				one.__addedMasksHigh.length = 0;
-				one.__addedMasksHigh.push(patch.__addedMasksHigh.__ids[at]);
-			}
-			RPCBudget.keep(one.__sentAdded, 0, patch.__sentAdded[at]);
-		} else {
-			key = patch.__updated.__ids[at];
-			one.__added.length = 0;
-			one.__updated.length = 0;
-			one.__updated.push(key);
-			one.__updatedMasks.length = 0;
-			one.__updatedMasks.push(patch.__updatedMasks.__ids[at]);
-			if (wide) {
-				one.__updatedMasksHigh.length = 0;
-				one.__updatedMasksHigh.push(patch.__updatedMasksHigh.__ids[at]);
-			}
-			RPCBudget.keep(one.__sentBase, 0, patch.__sentBase[at]);
-			RPCBudget.keep(one.__sentCurrent, 0, patch.__sentCurrent[at]);
-		}
-		final frame:RPCFrame = budget.frame;
-		frame.beginScratch();
-		patch.codec.__writeMapPatch(frame, one);
-		// Past the head (three counts below 128, a byte each) and the key, a
-		// group's first as a zigzag varint.
-		return frame.position - 3 - RPCBudget.varIntSize(key);
+		return isAdd ? patch.codec.__patchSize(initial, patch.__sentAdded[at], patch.__addedMasks.__ids[at], wide ? patch.__addedMasksHigh.__ids[at] : 0,
+			-1) : patch.codec.__patchSize(patch.__sentBase[at], patch.__sentCurrent[at], patch.__updatedMasks.__ids[at],
+				wide ? patch.__updatedMasksHigh.__ids[at] : 0, -1);
 	}
 
 	/**
@@ -481,16 +449,12 @@ class RPCBudgetDiff {
 			}
 		}
 
-		// The head with no entries, and the removed keys: what any budget carries.
-		final frame:RPCFrame = budget.frame;
-		frame.beginScratch();
-		frame.putVarUInt((patch.removed.length << 1) | (full ? 1 : 0));
-		frame.putVarUInt(0);
-		frame.putVarUInt(0);
+		// The head with no entries (two counts of 0, a byte each), and the
+		// removed keys: what any budget carries.
+		var fixed:Int = RPCSizes.varUInt((patch.removed.length << 1) | (full ? 1 : 0)) + 2;
 		for (key in patch.removed) {
-			frame.putString(key);
+			fixed += RPCSizes.string(key);
 		}
-		final fixed:Int = frame.position;
 		final candidates:Int = patch.__added.length + patch.__updated.length;
 		var all:Bool = candidates == 0;
 		final each:Int = patch.codec.__patchBound();
@@ -518,7 +482,7 @@ class RPCBudgetDiff {
 
 	/**
 		As `choose`: the entries weighed in the order of `order` against
-		`room`, each by writing it, until one does not fit; the lists kept to
+		`room`, each by its size, until one does not fit; the lists kept to
 		those chosen.
 	**/
 	static function chooseStrings<V>(patch:RPCStringMapPatch<V>, budget:RPCBudget<V>, order:Array<String>, room:Int):Void {
@@ -531,6 +495,7 @@ class RPCBudgetDiff {
 		final deferred:Array<String> = budget.deferredStrings;
 		// The least an entry can be: a key of no characters and its mask.
 		final least:Int = 1 + ((patch.codec.fieldCount + 7) >> 3);
+		final initial:V = patch.codec.__default();
 		var adds:Int = 0;
 		var updates:Int = 0;
 		var left:Int = room;
@@ -555,7 +520,7 @@ class RPCBudgetDiff {
 			}
 			final count:Int = isAdd ? adds : updates;
 			final head:Int = RPCBudget.varUIntSize(count + 1) - RPCBudget.varUIntSize(count);
-			final cost:Int = head + least > left ? left + 1 : head + measureStrings(patch, budget, isAdd, at);
+			final cost:Int = head + least > left ? left + 1 : head + measureStrings(patch, initial, isAdd, at);
 			if (cost <= left) {
 				left -= cost;
 				if (isAdd) {
@@ -618,44 +583,14 @@ class RPCBudgetDiff {
 		}
 	}
 
-	/** The bytes the `at`-th add (or update) takes, its key included: written alone into the budget's frame. **/
-	static function measureStrings<V>(patch:RPCStringMapPatch<V>, budget:RPCBudget<V>, isAdd:Bool, at:Int):Int {
-		var one:Null<RPCStringMapPatch<V>> = budget.stringMeasure;
-		if (one == null) {
-			one = budget.stringMeasure = new RPCStringMapPatch<V>(patch.codec);
-			one.__sending = true;
-			one.isFull = false;
-		}
+	/** The bytes the `at`-th add (or update) takes, its key included, as the codec's generated size of its patch says. **/
+	static inline function measureStrings<V>(patch:RPCStringMapPatch<V>, initial:V, isAdd:Bool, at:Int):Int {
 		final wide:Bool = patch.__wide;
-		if (isAdd) {
-			one.__updated.resize(0);
-			one.__added.resize(1);
-			one.__added[0] = patch.__added[at];
-			one.__addedMasks.length = 0;
-			one.__addedMasks.push(patch.__addedMasks.__ids[at]);
-			if (wide) {
-				one.__addedMasksHigh.length = 0;
-				one.__addedMasksHigh.push(patch.__addedMasksHigh.__ids[at]);
-			}
-			RPCBudget.keep(one.__sentAdded, 0, patch.__sentAdded[at]);
-		} else {
-			one.__added.resize(0);
-			one.__updated.resize(1);
-			one.__updated[0] = patch.__updated[at];
-			one.__updatedMasks.length = 0;
-			one.__updatedMasks.push(patch.__updatedMasks.__ids[at]);
-			if (wide) {
-				one.__updatedMasksHigh.length = 0;
-				one.__updatedMasksHigh.push(patch.__updatedMasksHigh.__ids[at]);
-			}
-			RPCBudget.keep(one.__sentBase, 0, patch.__sentBase[at]);
-			RPCBudget.keep(one.__sentCurrent, 0, patch.__sentCurrent[at]);
-		}
-		final frame:RPCFrame = budget.frame;
-		frame.beginScratch();
-		patch.codec.__writeStringMapPatch(frame, one);
-		// Past the head: three counts below 128, a byte each.
-		return frame.position - 3;
+		return isAdd ? RPCSizes.string(patch.__added[at])
+			+ patch.codec.__patchSize(initial, patch.__sentAdded[at], patch.__addedMasks.__ids[at], wide ? patch.__addedMasksHigh.__ids[at] : 0,
+				-1) : RPCSizes.string(patch.__updated[at])
+			+ patch.codec.__patchSize(patch.__sentBase[at], patch.__sentCurrent[at], patch.__updatedMasks.__ids[at],
+				wide ? patch.__updatedMasksHigh.__ids[at] : 0, -1);
 	}
 
 	/** As `commit`: into `sent` what the observer holds once the patch arrives. **/

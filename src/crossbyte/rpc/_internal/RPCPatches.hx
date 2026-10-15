@@ -16,7 +16,8 @@ import haxe.macro.TypeTools;
 
 	- `R<hash>`, statics: `make`, `copy`, `equals`, `mask` (a bit for each
 	  field that differs, at the precision it is sent; `maskHigh` for fields
-	  32 to 63), `writePatch`, `readPatch` (into a state), `apply` (a state
+	  32 to 63), `writePatch`, `patchSize` (the bytes `writePatch` writes,
+	  added up without writing), `readPatch` (into a state), `apply` (a state
 	  onto a base), `readInto` (a whole value read into one held), and the
 	  arguments' forms of them.
 	- `S<hash>`: a patch as read, before it is applied: its mask, the values
@@ -545,6 +546,59 @@ class RPCPatches {
 			}
 		}
 
+		// patchSize: the bytes writePatch writes, added up as it writes them.
+		final sizes:Array<Expr> = [];
+		var maskBits:Int = n;
+		for (i in 0...n) {
+			final field = info.fields[i];
+			final fname:String = field.name;
+			final set:Expr = bitTest(i);
+			if (nested(field)) {
+				final cr:Expr = replicationOf(field.kind.struct, pos).r;
+				final fieldName:Expr = macro $v{field.kind.name};
+				sizes.push(macro if ($set) {
+					var __b = base.$fname;
+					if (__b == null) {
+						__b = $cr.defaultValue();
+					}
+					final __c = current.$fname;
+					if (__c == null) {
+						throw crossbyte.rpc._internal.RPCFrame.nullValue($fieldName);
+					}
+					__size += $cr.patchSize(__b, __c, $cr.mask(__b, __c), $cr.maskHigh(__b, __c), -1);
+				});
+			} else if (field.kind.bits != null) {
+				final width:Int = field.kind.bits.width;
+				if (field.optional) {
+					// Its presence bit, and its bits when it is there.
+					sizes.push(macro if ($set) __bits += (current.$fname != null ? $v{1 + width} : 1));
+				} else if (width > 0) {
+					sizes.push(macro if ($set) __bits += $v{width});
+				}
+			} else if (bitLayout && field.optional) {
+				// Its presence bit, and its value in the byte section when it is there.
+				final value:Expr = RPCKinds.sizeOf(field.kind, false, macro __v);
+				sizes.push(macro if ($set) {
+					__bits++;
+					final __v = current.$fname;
+					if (__v != null) {
+						__size += $value;
+					}
+				});
+			} else {
+				sizes.push(macro if ($set) __size += ${RPCKinds.sizeOf(field.kind, field.optional, macro current.$fname)});
+			}
+		}
+		final patchSizeBody:Expr = macro {
+			if (current == null) {
+				throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+			}
+			var __bits:Int = flag >= 0 ? $v{maskBits + 1} : $v{maskBits};
+			var __size:Int = 0;
+			$b{sizes};
+			return ((__bits + 7) >> 3) + __size;
+		};
+
 		// readInto: a whole value, as the codec reads one, into `into`.
 		final readsInto:Array<Expr> = [];
 		if (bitLayout) {
@@ -727,6 +781,16 @@ class RPCPatches {
 		for (field in mapPatchFields(info, rep, true, pos)) {
 			fields.push(field);
 		}
+		// Last, after the writers and readers, so their code is laid out as
+		// it was without it.
+		fields.push(fn("patchSize", [
+			arg("base", type),
+			arg("current", type),
+			arg("mask", macro :Int),
+			arg("maskHigh", macro :Int),
+			arg("flag", macro :Int)
+		], macro :Int, patchSizeBody, pos,
+			"The bytes `writePatch` writes for the same arguments, worked out without writing: what a budgeted map patch weighs an entry by."));
 		return {
 			pack: pack,
 			name: name,
@@ -928,7 +992,16 @@ class RPCPatches {
 				macro $r.writeStringMapPatchArg(frame, patch), pos),
 			method("__readStringMapPatch", [arg("input", macro :crossbyte.io.ByteArrayInput), arg("end", macro :Int), arg("patch", stringMapType)], macro :Void, macro {
 				$r.readStringMapPatchArg(input, end, patch);
-			}, pos)
+			}, pos),
+			// Last, as in the interface, after what every patch calls.
+			method("__patchSize", [
+				arg("base", type),
+				arg("current", type),
+				arg("mask", macro :Int),
+				arg("maskHigh", macro :Int),
+				arg("flag", macro :Int)
+			], macro :Int, macro return $r.patchSize(base, current, mask, maskHigh, flag), pos),
+			method("__size", [arg("value", type)], macro :Int, macro return ${RPCStructs.valueSize(info, macro value)}, pos)
 		];
 		for (each in [
 			{name: "name", type: macro :String, value: macro $v{info.name}},

@@ -309,8 +309,9 @@ final class RPCMapPatch<V> {
 		writes, and `sent` holds the view. A budget that fits everything is
 		known from the values' largest patch, measuring nothing; one that
 		binds weighs the entries up to the first that does not fit exactly,
-		each by writing it, so the patch is never more than `maxBytes` and
-		stops only at an entry that would pass it.
+		each by the size its codec works out without writing it, so the
+		patch is never more than `maxBytes` and stops only at an entry that
+		would pass it.
 		Allocates nothing once its lists, and the baselines' values, have
 		grown.
 

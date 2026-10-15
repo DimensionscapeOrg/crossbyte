@@ -36,6 +36,11 @@ import haxe.macro.TypeTools;
 	an anonymous structure is read into locals and made as an object
 	literal, which natively gives it its fields as fixed slots, where `{}`
 	and a set for each would make a field table.
+
+	The bytes a whole value takes, worked out without writing it, are a
+	constant for a structure whose every value takes the same, and else the
+	`size` of a class of its own, made the first time a size is asked for
+	(see `valueSize`): what a patch's size adds up for a field sent whole.
 **/
 class RPCStructs {
 	/** The kinds made so far, by the structure's key. **/
@@ -357,11 +362,82 @@ class RPCStructs {
 			read: (input, end) -> macro $ref.read($input, $end),
 			put: simple ? (data, at, value) -> macro $ref.put($data, $at, $value) : null,
 			get: simple ? (data, at) -> macro $ref.get($data, $at) : null,
+			measure: simple ? null : value -> enumSize(key, path, ctors, enumType, enumPath, width, en.module, pos, value),
 			isEnum: true,
 			valueType: enumType
 		};
 		codecs.set(key, kind);
 		return kind;
+	}
+
+	/**
+		The bytes an enum's writer writes for `value`, as an expression of it:
+		a call of the `size` of its size class (see `valueSize`), made the
+		first time one is asked for. Its index, and its constructor's
+		arguments as their kinds write them.
+	**/
+	static function enumSize(key:String, path:String, ctors:Array<EnumCtor>, enumType:ComplexType, enumPath:Array<String>, width:Int,
+			module:String, pos:Position, value:Expr):Expr {
+		var ref:Null<Expr> = sizers.get(key);
+		if (ref == null) {
+			final name:String = codecName(key, "Z");
+			final sizePath:Array<String> = ["crossbyte", "rpc", "_internal", "codec", name];
+			ref = macro $p{sizePath};
+			sizers.set(key, ref);
+			if (!exists(sizePath.join("."))) {
+				final cases:Array<Case> = [];
+				for (ctor in ctors) {
+					if (ctor.args.length == 0) {
+						continue;
+					}
+					var fixed:Int = width;
+					var sum:Null<Expr> = null;
+					final names:Array<Expr> = [];
+					for (i in 0...ctor.args.length) {
+						final arg = ctor.args[i];
+						if (!arg.optional && RPCKinds.fixedSize(arg.kind)) {
+							fixed += arg.kind.size;
+							names.push(macro _);
+							continue;
+						}
+						final local:String = "__a" + i;
+						names.push(macro $i{local});
+						final each:Expr = RPCKinds.sizeOf(arg.kind, arg.optional, macro $i{local});
+						sum = sum == null ? each : macro $sum + $each;
+					}
+					final ctorRef:Expr = macro $p{enumPath.concat([ctor.name])};
+					cases.push({values: [{expr: ECall(ctorRef, names), pos: pos}], expr: sum == null ? macro $v{fixed} : macro $v{fixed} + $sum});
+				}
+				final nullName:Expr = macro $v{path};
+				final pick:Expr = {expr: ESwitch(macro value, cases, macro $v{width}), pos: pos};
+				Context.defineType({
+					pack: sizePath.slice(0, sizePath.length - 1),
+					name: name,
+					pos: pos,
+					meta: [{name: ":noCompletion", params: [], pos: pos}],
+					kind: TDClass(),
+					fields: [
+						{
+							name: "size",
+							doc: 'The bytes $path takes as its codec writes it.',
+							access: [APublic, AStatic],
+							kind: FFun({
+								args: [{name: "value", type: enumType}],
+								ret: macro :Int,
+								expr: macro {
+									if (value == null) {
+										throw crossbyte.rpc._internal.RPCFrame.nullValue($nullName);
+									}
+									return $pick;
+								}
+							}),
+							pos: pos
+						}
+					]
+				}, module);
+			}
+		}
+		return macro $ref.size($value);
 	}
 
 	/** Every field's kind, in wire order, checked. **/
@@ -698,7 +774,31 @@ class RPCStructs {
 			Context.defineType(definition, module);
 		}
 
+		// Every value the same bytes: none of its fields may be absent, and each
+		// takes the same bytes whatever it holds.
+		var exact:Bool = size >= 0;
+		for (field in fields) {
+			if (field.optional || (field.kind.bits == null && !RPCKinds.fixedSize(field.kind))) {
+				exact = false;
+			}
+		}
 		final ref:Expr = macro $p{codecPath};
+		final info:StructInfo = {
+			key: key,
+			name: name,
+			fields: fields,
+			type: type,
+			access: access,
+			isClass: isClass,
+			module: module,
+			codec: codec,
+			token: token,
+			size: size,
+			exact: exact,
+			bitLayout: bitLayout,
+			bitsOnly: bitLayout && RPCBits.bitsOnly(fields) && RPCBits.leastBits(fields) > 0,
+			pos: pos
+		};
 		final kind:RPCKind = {
 			name: name,
 			token: token,
@@ -710,25 +810,113 @@ class RPCStructs {
 			read: (input, end) -> macro $ref.read($input, $end),
 			put: packed ? (data, at, value) -> macro $ref.put($data, $at, $value) : null,
 			get: packed ? (data, at) -> macro $ref.get($data, $at) : null,
+			measure: exact ? null : value -> valueSize(info, value),
 			valueType: type,
-			struct: {
-				key: key,
-				name: name,
-				fields: fields,
-				type: type,
-				access: access,
-				isClass: isClass,
-				module: module,
-				codec: codec,
-				token: token,
-				size: size,
-				bitLayout: bitLayout,
-				bitsOnly: bitLayout && RPCBits.bitsOnly(fields) && RPCBits.leastBits(fields) > 0,
-				pos: pos
-			}
+			struct: info
 		};
 		codecs.set(key, kind);
 		return kind;
+	}
+
+	/** The size classes made so far, by the structure's or enum's key. **/
+	static var sizers:Map<String, Expr> = new Map();
+
+	/**
+		The bytes the codec of `info` writes for `value`, a whole value of the
+		structure, as an expression of it, worked out without writing: its
+		size when every value takes the same, or else a call of the `size` of
+		a class of its own, `Z<hash>` in `crossbyte.rpc._internal.codec`, made
+		the first time a size is asked for, so a structure whose size nothing
+		asks for has none.
+	**/
+	public static function valueSize(info:StructInfo, value:Expr):Expr {
+		if (info.exact) {
+			return macro $v{info.size};
+		}
+		var ref:Null<Expr> = sizers.get(info.key);
+		if (ref == null) {
+			final name:String = codecName(info.key, "Z");
+			final path:Array<String> = ["crossbyte", "rpc", "_internal", "codec", name];
+			ref = macro $p{path};
+			sizers.set(info.key, ref);
+			if (!exists(path.join("."))) {
+				final meta:Metadata = [{name: ":noCompletion", params: [], pos: info.pos}];
+				for (owner in info.access) {
+					meta.push({name: ":access", params: [Context.parse(owner, info.pos)], pos: info.pos});
+				}
+				Context.defineType({
+					pack: path.slice(0, path.length - 1),
+					name: name,
+					pos: info.pos,
+					meta: meta,
+					kind: TDClass(),
+					fields: [
+						{
+							name: "size",
+							doc: 'The bytes ${info.name} takes as its codec writes it.',
+							access: [APublic, AStatic],
+							kind: FFun({
+								args: [{name: "value", type: info.type}],
+								ret: macro :Int,
+								expr: sizeBody(info)
+							}),
+							pos: info.pos
+						}
+					]
+				}, info.module);
+			}
+		}
+		return macro $ref.size($value);
+	}
+
+	/**
+		The body of a structure's `size(value)`: what `define`'s writer writes,
+		added up. In the bit layout, its bit section's bits (a presence bit for
+		each field that may be absent, and each bit field's that is there) in
+		whole bytes, and the byte fields that are there.
+	**/
+	static function sizeBody(info:StructInfo):Expr {
+		final nullName:Expr = macro $v{info.name};
+		final adds:Array<Expr> = [];
+		var bytes:Int = 0;
+		var bits:Int = 0;
+		for (field in info.fields) {
+			final fname:String = field.name;
+			final get:Expr = macro value.$fname;
+			if (!info.bitLayout) {
+				if (!field.optional && RPCKinds.fixedSize(field.kind)) {
+					bytes += field.kind.size;
+				} else {
+					adds.push(macro __size += ${RPCKinds.sizeOf(field.kind, field.optional, get)});
+				}
+				continue;
+			}
+			if (field.optional) {
+				bits++;
+			}
+			if (field.kind.bits != null) {
+				if (field.optional) {
+					adds.push(macro if ($get != null) __bits += $v{field.kind.bits.width});
+				} else {
+					bits += field.kind.bits.width;
+				}
+			} else if (field.optional) {
+				adds.push(macro if ($get != null) __size += ${RPCKinds.sizeOf(field.kind, false, get)});
+			} else if (RPCKinds.fixedSize(field.kind)) {
+				bytes += field.kind.size;
+			} else {
+				adds.push(macro __size += ${RPCKinds.sizeOf(field.kind, false, get)});
+			}
+		}
+		return macro {
+			if (value == null) {
+				throw crossbyte.rpc._internal.RPCFrame.nullValue($nullName);
+			}
+			var __size:Int = $v{bytes};
+			var __bits:Int = $v{bits};
+			$b{adds};
+			return ((__bits + 7) >> 3) + __size;
+		};
 	}
 
 	/** A class name for the codec of `key`, the same each build, and no other key's. **/
@@ -835,6 +1023,8 @@ typedef StructInfo = {
 	final bitsOnly:Bool;
 	/** The bytes a whole value takes, or -1 when that depends on the value. **/
 	final size:Int;
+	/** Whether every value takes exactly `size` bytes: none of its fields may be absent, and each takes the same bytes whatever it holds. **/
+	final exact:Bool;
 	final pos:Position;
 }
 #end

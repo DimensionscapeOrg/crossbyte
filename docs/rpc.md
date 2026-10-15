@@ -896,10 +896,11 @@ waited a tick more, and those carried (`addedKey`, `updatedKey`) none.
 A budget that fits everything (known from the values' largest patch) writes
 the bytes `diffKeys` writes and measures nothing. One that binds weighs the
 entries up to the first that does not fit exactly, its key as its group
-codes it and its patch by writing it, so the patch is never over the budget
-and stops only at an entry that would pass it: one more write of each entry
-carried. Neither allocates once its lists and the baselines' values have
-grown. `RPCStringMapPatch` has the same, with `RPCStringMapBaseline`.
+codes it and its patch by a size the codec generates beside its writer,
+which adds up what the writer would write without writing it, so the patch
+is never over the budget and stops only at an entry that would pass it.
+Neither allocates once its lists and the baselines' values have grown.
+`RPCStringMapPatch` has the same, with `RPCStringMapBaseline`.
 
 ### Fewer bits
 

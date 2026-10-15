@@ -53,14 +53,6 @@ final class RPCBudget<V> {
 	public final staleMade:Array<V> = [];
 	public final kept:IdList = new IdList();
 
-	/** The frame entries are written into to be measured. **/
-	public final frame:RPCFrame = new RPCFrame(128);
-
-	/** A patch of one entry at a time, written to be measured. **/
-	public var mapMeasure:Null<crossbyte.rpc.RPCMapPatch<V>> = null;
-
-	public var stringMeasure:Null<crossbyte.rpc.RPCStringMapPatch<V>> = null;
-
 	public function new() {}
 
 	/** Sets `list[at]`, growing it by one when `at` is its length. **/
@@ -82,12 +74,12 @@ final class RPCBudget<V> {
 
 	/** The bytes `putVarUInt` writes for `value`, a negative `Int` as the unsigned value it holds. **/
 	public static inline function varUIntSize(value:Int):Int {
-		return value < 0 ? 5 : (value < 0x80 ? 1 : (value < 0x4000 ? 2 : (value < 0x200000 ? 3 : (value < 0x10000000 ? 4 : 5))));
+		return RPCSizes.varUInt(value);
 	}
 
 	/** The bytes `putVarInt` writes for `value`: zigzagged, then a varint. **/
 	public static inline function varIntSize(value:Int):Int {
-		return varUIntSize((value << 1) ^ (value >> 31));
+		return RPCSizes.varInt(value);
 	}
 
 	/** The bytes a group of keys, ascending, takes on the wire, as `RPCKeys.putKeys` writes it. **/

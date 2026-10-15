@@ -397,6 +397,54 @@ class RPCBits {
 	}
 
 	/**
+		The bytes `runWrite` writes for `list`, worked out without writing: its
+		count, and every element's bits to a whole byte. Its elements are
+		looked at only for the fields that may be absent.
+	**/
+	public static function runSize(info:RPCStructs.StructInfo, list:Expr, name:String):Expr {
+		final held:String = RPCKinds.local();
+		final item:String = RPCKinds.local();
+		final bits:String = RPCKinds.local();
+		final nameExpr:Expr = macro $v{name};
+		final elementName:Expr = macro $v{info.name};
+		var fixed:Int = 0;
+		final each:Array<Expr> = [];
+		for (field in info.fields) {
+			final width:Int = field.kind.bits.width;
+			if (field.optional) {
+				final fname:String = field.name;
+				fixed += 1;
+				each.push(macro if ($i{item}.$fname != null) $i{bits} += $v{width});
+			} else {
+				fixed += width;
+			}
+		}
+		if (each.length == 0) {
+			return macro {
+				final $held = $list;
+				if ($i{held} == null) {
+					throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+				}
+				crossbyte.rpc._internal.RPCSizes.varUInt($i{held}.length) + (($i{held}.length * $v{fixed} + 7) >> 3);
+			};
+		}
+		return macro {
+			final $held = $list;
+			if ($i{held} == null) {
+				throw crossbyte.rpc._internal.RPCFrame.nullValue($nameExpr);
+			}
+			var $bits:Int = $i{held}.length * $v{fixed};
+			for ($i{item} in $i{held}) {
+				if ($i{item} == null) {
+					throw crossbyte.rpc._internal.RPCFrame.nullValue($elementName);
+				}
+				$b{each};
+			}
+			crossbyte.rpc._internal.RPCSizes.varUInt($i{held}.length) + (($i{bits} + 7) >> 3);
+		};
+	}
+
+	/**
 		Reads a run `runWrite` wrote into `held` (`null`: a new array), its
 		element instances kept and read into, and answers the array. The count
 		is checked first against what the frame has left, at the fewest bits

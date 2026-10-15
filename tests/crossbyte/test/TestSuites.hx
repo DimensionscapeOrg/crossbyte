@@ -611,6 +611,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCPatchTest());
 		runner.addCase(new crossbyte.rpc.RPCMapPatchTest());
 		runner.addCase(new crossbyte.rpc.RPCMapBudgetTest());
+		runner.addCase(new crossbyte.rpc.RPCPatchSizeTest());
 		runner.addCase(new crossbyte.rpc.RPCBitsTest());
 		runner.addCase(new crossbyte.rpc.RPCReuseTest());
 		runner.addCase(new crossbyte.rpc.RPCStructTest());

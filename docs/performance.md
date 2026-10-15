@@ -316,20 +316,23 @@ and 1.07 against 0.25 and 0.56; Node 1.23 and 1.51 against 0.59 and 0.84). Two s
 in the bits takes `@:range` or `@:quantize`.
 
 **Within a budget.** The other ships' map patch alone (`ReplicationBench --diffs`: each observer's diffed against the
-tick acknowledged two before and written, with no call around it), medians of three interleaved runs:
+tick acknowledged two before and written, with no call around it), medians of five interleaved runs (on the JVM the
+last of four passes in each process):
 
 | Map patch | Bytes | Native | JVM |
 | --- | --- | --- | --- |
-| `diffKeys` | 374.9 | 0.71 us (0.71-0.73) | 0.39 us (0.39-0.42) |
-| `diffKeysWithin`, a budget that fits everything | 374.9, the same bytes | 0.75 us (0.74-0.76) | 0.42 us (0.42-0.43) |
-| `diffKeysWithin`, 180 bytes | 168.4 | 1.59 us (1.57-1.66) | 0.70 us (0.70-0.71) |
+| `diffKeys` | 374.9 | 0.71 us (0.70-0.74) | 0.40 us (0.39-0.40) |
+| `diffKeysWithin`, a budget that fits everything | 374.9, the same bytes | 0.74 us (0.73-0.75) | 0.42 us (0.41-0.42) |
+| `diffKeysWithin`, 180 bytes | 168.4 | 1.29 us (1.26-1.33) | 0.61 us (0.58-0.70) |
 
 Within the fitting budget the patch is `diffKeys`' to the byte (the same hash over every byte written, natively and
 on the JVM) and the cost is the baseline, filed in a `SequenceRing` each tick. Within 180 bytes, 8.9 of the 16 ships
 wait each message: the bots change most fields every tick, so every ship has something to send. That costs an
-exact weighing of each entry carried, a second write of it, which a size generated with the codec would save. The
-whole message within those budgets (`--systems AW,AD`) is made in 0.93 and 1.80 us natively against A's 0.84, and
-read in 0.82 and 0.72 us against 0.82: the client's side does not change.
+exact weighing of each entry carried, by a size the RPC macros generate beside the codec's writer, which adds up what
+it would write without writing it: weighed by writing each entry once more, the same patch took 1.58 us natively and
+0.71 on the JVM. The rest is choosing in the caller's order and keeping a copy of each update left out, in the
+baseline. The whole message within those budgets (`--systems AW,AD`) is made in 0.93 and 1.48 us natively against
+A's 0.82, and read in 0.88 and 0.73 us against 0.84: the client's side does not change.
 
 ## RPC over local IPC
 
