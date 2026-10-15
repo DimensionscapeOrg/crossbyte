@@ -52,7 +52,12 @@ class KVCodecs {
 		return new RPCKVCodec<T>(codec);
 	}
 
-	/** Values as UTF-8 text. **/
+	/**
+		Values as UTF-8 text. On PHP, whose strings are bytes, a value that
+		is not UTF-8 is refused with an `ArgumentError` as it is written, as
+		its key would be, rather than stored and refused when it is read:
+		keep bytes with `bytes`.
+	**/
 	public static function text(schema:Int = 0):KVCodec<String> {
 		return new TextKVCodec(schema);
 	}
@@ -131,6 +136,11 @@ private final class TextKVCodec implements KVCodec<String> {
 	}
 
 	public function encode(value:String):Bytes {
+		#if php
+		if (value != null && !php.Global.mb_check_encoding(value, "UTF-8")) {
+			throw new crossbyte.errors.ArgumentError("KVCodecs.text: the value is not well-formed UTF-8. Keep bytes with KVCodecs.bytes.");
+		}
+		#end
 		return Utf8.bytesOf(value);
 	}
 

@@ -109,5 +109,16 @@ class KVRepoTest extends utest.Test {
 		var tight = new KVRepo<String>(new MemoryKVStore({maxKeyBytes: 7}), "abcde/", KVCodecs.text());
 		tight.put("f", "fits");
 		Assert.raises(() -> tight.put("fg", "does not"), ArgumentError);
+
+		// On PHP, whose strings are bytes, text that is not UTF-8 is refused as
+		// it is written, where it was stored and then refused on reading.
+		#if php
+		var names = new KVRepo<String>(store, "names/", KVCodecs.text());
+		var cut:String = Bytes.ofHex("41e282").toString();
+		Assert.raises(() -> names.put("cut", cut), ArgumentError);
+		Assert.isNull(names.get("cut"));
+		names.put("whole", "A\u{20AC}");
+		Assert.equals("A\u{20AC}", Require.notNull(names.get("whole")).value);
+		#end
 	}
 }

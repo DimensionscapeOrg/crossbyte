@@ -31,6 +31,12 @@ says how.
   structure still takes a local per field, so on neko one of more than
   about a hundred fields is refused: `docs/targets.md` says so.
 
+#### Data
+
+- On PHP, `KVCodecs.text` refuses a value that is not well-formed UTF-8
+  as it is written, with an `ArgumentError`, as a key that is not is
+  refused. It was stored and then refused when it was read.
+
 #### Platform
 
 - Reading an HXSF object on PHP takes time in proportion to its text. It
