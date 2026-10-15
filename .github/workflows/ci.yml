@@ -234,7 +234,12 @@ jobs:
       - name: Build the PHP suite
         run: haxe ci/php-tests.hxml
 
+      # The runner's PHP loads Xdebug, whose default mode aborts a script
+      # 256 frames deep. PHP has no such limit, and the suite reads values
+      # nested deeper than that to see them refused, so Xdebug is off.
       - name: Run the PHP suite
+        env:
+          XDEBUG_MODE: "off"
         run: php export/php-tests/index.php
 
   # The jvm target, smoke and full suites, on Java 8 and 17. Java 8 is the
@@ -387,6 +392,9 @@ jobs:
         uses: krdlab/setup-haxe@v1
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
 
       - name: Install hxcpp
         uses: ./.github/actions/hxcpp
@@ -990,8 +998,12 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      # Nothing from lib.haxe.org: the samples reach the same native externs
-      # as the suites, and need only hxcpp and this checkout registered.
+      # The samples reach the same native externs as the suites, and need
+      # hxcpp, this checkout registered, and CrossByte's one dependency,
+      # Emitter.
+      - name: Install Haxe libraries
+        uses: ./.github/actions/haxelibs
+
       - name: Install hxcpp
         uses: ./.github/actions/hxcpp
         with:
