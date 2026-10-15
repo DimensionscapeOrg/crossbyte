@@ -15,15 +15,16 @@ import utest.Async;
 
 	A peer that can offer nothing newer than TLS 1.0 or 1.1 is refused, by a
 	secure `Socket` dialling one and by a TLS `ServerSocket` one dials:
-	both versions are long broken, and natively, on the jvm, on Node and on
-	neko the TLS underneath leaves them out unless told otherwise. Natively
-	that was the one place it was checked, against Node. Each sits beside the
-	same peer offering TLS 1.2, which has to be let in. The old versions are
+	both versions are long broken, and natively, on the jvm and on Node the
+	TLS underneath leaves them out unless told otherwise. Natively that was
+	the one place it was checked, against Node. Each sits beside the same
+	peer offering TLS 1.2, which has to be let in. The old versions are
 	offered at `SECLEVEL=0`, without which OpenSSL 3 will not speak them.
 
-	Not on HashLink or the interpreter, whose TLS still negotiates TLS 1.0
-	and 1.1, either way, and gives a program no way to set the lowest
-	version it takes.
+	Not on HashLink, neko or the interpreter, whose TLS gives a program no
+	way to set the lowest version it takes: HashLink's and the
+	interpreter's negotiate TLS 1.0 and 1.1, and neko's does as the
+	`ssl.ndll` it runs with was built (Neko 2.3's does, 2.4.1's does not).
 
 	And on eval, which cannot run a TLS server of its own, a `Socket` and an
 	`https` `URLLoader` dialling `s_server` are held to the certificates
@@ -34,7 +35,7 @@ import utest.Async;
 	the cases warn and do not run.
 **/
 class OpenSslPeerTest extends utest.Test {
-	#if (cpp || neko || java || jvm || nodejs)
+	#if (cpp || java || jvm || nodejs)
 	/** A secure `Socket` refuses a server offering nothing newer than TLS 1.1. **/
 	@:timeout(60000)
 	public function testASocketRefusesAServerOfferingOnlyAnOldVersion(async:Async):Void {
@@ -61,7 +62,7 @@ class OpenSslPeerTest extends utest.Test {
 	}
 	#end
 
-	#if (cpp || neko || java || jvm || nodejs)
+	#if (cpp || java || jvm || nodejs)
 	/**
 		A TLS `ServerSocket` refuses a client offering nothing newer than TLS
 		1.1: it never dispatches the connection. Not on eval, which cannot run
@@ -159,7 +160,7 @@ class OpenSslPeerTest extends utest.Test {
 	}
 	#end
 
-	#if (cpp || neko || java || jvm || nodejs)
+	#if (cpp || java || jvm || nodejs)
 	/** TLS 1.2, which is let in, then TLS 1.1 and 1.0, which are not. **/
 	private static function __eachVersion(each:(OldVersion, Void->Void) -> Void, done:Void->Void):Void {
 		var versions:Array<OldVersion> = [

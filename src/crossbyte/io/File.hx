@@ -99,8 +99,8 @@ final class File extends EventDispatcher {
 
 		@throws IOError               The file does not exist or cannot be
 									  examined.
-		@throws IllegalOperationError On the interpreter, neko and HashLink
-									  under Linux or macOS, whose `stat`
+		@throws IllegalOperationError On the interpreter, neko, HashLink and
+									  PHP under Linux or macOS, whose `stat`
 									  reports no creation time.
 	**/
 	public var creationDate(get, null):Date;
@@ -2735,7 +2735,7 @@ final class File extends EventDispatcher {
 			return __stat().ctime;
 		}
 		__stat();
-		throw new IllegalOperationError("A file's creation time cannot be read on " + #if eval "the interpreter" #elseif neko "neko" #elseif hl "HashLink" #else "this target" #end
+		throw new IllegalOperationError("A file's creation time cannot be read on " + #if eval "the interpreter" #elseif neko "neko" #elseif hl "HashLink" #elseif php "PHP" #else "this target" #end
 			+ " on " + System.PLATFORM + ": its stat reports when the file's status last changed, which is not when it was made. Natively, on the jvm and on Node it is read.");
 		#end
 	}

@@ -1466,7 +1466,7 @@ class FileTest extends utest.Test {
 		var file = File.createTempFile();
 		HaxeFile.saveContent(file.nativePath, "a");
 
-		#if (eval || neko || hl)
+		#if (eval || neko || hl || php)
 		if (!System.isWindows) {
 			// Their stat has no creation time, so they say so.
 			Assert.raises(() -> new File(file.nativePath).creationDate, crossbyte.errors.IllegalOperationError);
