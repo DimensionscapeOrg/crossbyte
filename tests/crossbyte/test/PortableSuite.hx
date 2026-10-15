@@ -97,6 +97,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.CertificateExpiryTest());
 		// And a certificate nothing vouches for refused.
 		runner.addCase(new crossbyte.net.CertificateTrustTest());
+		// And TLS 1.0 and 1.1 refused, against openssl's own s_server and s_client.
+		runner.addCase(new crossbyte.net.OpenSslPeerTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// A message's call, every way to send it back, and what a listener keeps.
 		runner.addCase(new crossbyte.net.WebSocketArrivalTest());

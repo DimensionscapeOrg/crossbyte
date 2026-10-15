@@ -1,6 +1,6 @@
 package crossbyte.net;
 
-#if (cpp || hl || neko || java || jvm || nodejs)
+#if (cpp || hl || neko || java || jvm || nodejs || eval)
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
@@ -120,21 +120,7 @@ class TlsRefusalSupport {
 				__dialNetConnection(name, scheme, host, tried, then);
 			case LoaderClient(version, pinned):
 				__serveHttps(tried, version, function(port, served, close) {
-					var outcome:DialOutcome = {connected: false, failure: null};
-					var loader = new URLLoader();
-					loader.addEventListener(Event.COMPLETE, _ -> outcome.connected = true);
-					loader.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> outcome.failure = e.text);
-					var request = new URLRequest('https://$host:$port/');
-					request.httpVersion = version;
-					request.readTimeout = 5.0;
-					request.certAuthority = tried.authority;
-					if (pinned) {
-						// The key presented, so the pin passes and only the
-						// certificate's own check can refuse it.
-						request.pinnedPublicKeys = [crossbyte._internal.http.PublicKeyPins.pinOf(tried.certificate.der)];
-					}
-					loader.load(request);
-					NetPump.until(() -> outcome.connected || outcome.failure != null, 20.0, function(_) {
+					load('https://$host:$port/', tried.authority, version, pinned ? tried.certificate : null, function(outcome) {
 						var answered:Int = served();
 						close();
 						judge(name, tried, outcome, answered);
@@ -142,6 +128,28 @@ class TlsRefusalSupport {
 					});
 				});
 		}
+	}
+
+	/**
+		A `URLLoader`'s load of `url` over `version`, trusting `trust`, and
+		pinning the key of `pinning` when given (the key presented, so the
+		pin passes and only the certificate's own check can refuse it): what
+		it made of the server.
+	**/
+	public static function load(url:String, trust:Null<Certificate>, version:HTTPVersion, pinning:Null<Certificate>, then:DialOutcome->Void):Void {
+		var outcome:DialOutcome = {connected: false, failure: null};
+		var loader = new URLLoader();
+		loader.addEventListener(Event.COMPLETE, _ -> outcome.connected = true);
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> outcome.failure = e.text);
+		var request = new URLRequest(url);
+		request.httpVersion = version;
+		request.readTimeout = 5.0;
+		request.certAuthority = trust;
+		if (pinning != null) {
+			request.pinnedPublicKeys = [crossbyte._internal.http.PublicKeyPins.pinOf(pinning.der)];
+		}
+		loader.load(request);
+		NetPump.until(() -> outcome.connected || outcome.failure != null, 20.0, _ -> then(outcome));
 	}
 
 	/**
@@ -215,17 +223,21 @@ class TlsRefusalSupport {
 	/**
 		What a client made of `tried`: let in, when it should be, and
 		otherwise refused over the certificate, with the server (which
-		`accepted` connections) never reached.
+		`accepted` connections, when it can say) never reached.
 	**/
-	public static function judge(client:String, tried:TlsCase, outcome:DialOutcome, accepted:Int):Void {
+	public static function judge(client:String, tried:TlsCase, outcome:DialOutcome, accepted:Null<Int>):Void {
 		if (tried.accepted) {
 			Assert.isTrue(outcome.connected, '$client refused ${tried.what}: ' + outcome.failure);
-			Assert.equals(1, accepted, 'the server never saw $client given ${tried.what}');
+			if (accepted != null) {
+				Assert.equals(1, accepted, 'the server never saw $client given ${tried.what}');
+			}
 			return;
 		}
 		Assert.isFalse(outcome.connected, '$client accepted ${tried.what}');
 		Assert.isTrue(isCertificateRefusal(outcome.failure), '$client failed on ${tried.what}, but not over the certificate: ' + outcome.failure);
-		Assert.equals(0, accepted, 'the server was reached by $client, which should have refused ${tried.what}');
+		if (accepted != null) {
+			Assert.equals(0, accepted, 'the server was reached by $client, which should have refused ${tried.what}');
+		}
 	}
 
 	/**

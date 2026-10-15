@@ -1,7 +1,7 @@
+#if (cpp || hl || neko || java || jvm || nodejs || eval)
 package crossbyte.net;
 
 #if !(js && !nodejs)
-#if (cpp || hl || neko || java || jvm || nodejs)
 import crossbyte.net.TlsRefusalSupport.TlsCase;
 import crossbyte.net.TlsRefusalSupport.TlsClient;
 import utest.Assert;
@@ -89,6 +89,10 @@ class CertificateTrustTest extends utest.Test {
 			authority, authority, cases, () -> async.done());
 	}
 
+	#end
+
+	// The cases, on eval too, where OpenSslPeerTest holds a Socket to them.
+	#if (cpp || hl || neko || java || jvm || nodejs || eval)
 	/**
 		A server's certificate, what the client trusts and what it dials:
 		vouched for, then not.

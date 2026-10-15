@@ -415,6 +415,10 @@ class TestSuites {
 		// for another name), refused by each client and by a server asking
 		// for a client's; also in PortableSuite.
 		runner.addCase(new crossbyte.net.CertificateTrustTest());
+		// TLS 1.0 and 1.1 refused either way against openssl's own s_server and
+		// s_client, and on the interpreter a Socket held to the certificates
+		// above through s_server; also in PortableSuite.
+		runner.addCase(new crossbyte.net.OpenSslPeerTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded

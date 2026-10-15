@@ -1,7 +1,7 @@
+#if (cpp || hl || neko || java || jvm || nodejs || eval)
 package crossbyte.net;
 
 #if !(js && !nodejs)
-#if (cpp || hl || neko || java || jvm || nodejs)
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.TlsRefusalSupport.TlsCase;
 import crossbyte.net.TlsRefusalSupport.TlsClient;
@@ -110,6 +110,10 @@ class CertificateExpiryTest extends utest.Test {
 		});
 	}
 
+	#end
+
+	// The cases, on eval too, where OpenSslPeerTest holds a Socket to them.
+	#if (cpp || hl || neko || java || jvm || nodejs || eval)
 	/**
 		Each certificate, beside what the other end trusts: issued by
 		`AUTHORITY`, then self-signed and pinned. Only those in their dates
