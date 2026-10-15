@@ -3,6 +3,7 @@ package crossbyte.io;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.EOFError;
 import crossbyte.errors.RangeError;
+import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import haxe.io.FPHelper;
 
@@ -110,7 +111,10 @@ final class BitReader {
 			return value;
 		}
 		var shift:Int = 32 - bits;
-		return (value << shift) >> shift;
+		// wrap32 is the shifted value but on PHP, whose 64-bit Int a shift
+		// left does not carry into a sign bit at 31: a negative came back
+		// as the unsigned number its bits make.
+		return Hash.wrap32(value << shift) >> shift;
 	}
 
 	/**
@@ -191,7 +195,10 @@ final class BitReader {
 		var need:Int = bits - have;
 		var loaded:Int = __load();
 		var next:Int = __scratch;
-		var value:Int = have == 0 ? next : low | (next << have);
+		// wrap32 is the value but on PHP, where `next << have` keeps the bits
+		// it moves past 32: a 32-bit field across two words came back as
+		// the unsigned number it holds, or with bits past 32 set.
+		var value:Int = have == 0 ? next : Hash.wrap32(low | (next << have));
 		if (bits < 32) {
 			value &= (1 << bits) - 1;
 		}

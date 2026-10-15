@@ -1,6 +1,7 @@
 package crossbyte.io;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import haxe.io.FPHelper;
 
@@ -239,8 +240,10 @@ final class BitWriter {
 	public static function bitsFor(min:Int, max:Int):Int {
 		// `| 0` because JavaScript does not wrap Int arithmetic: the full Int
 		// range there comes out as 4294967295 rather than negative, and would
-		// be taken for 32 bits where every other target refuses it.
-		var span:Int = (max - min) | 0;
+		// be taken for 32 bits where every other target refuses it. wrap32
+		// because PHP's 64-bit Int does not wrap either, and `| 0` does
+		// nothing there; it is the span itself on every other target.
+		var span:Int = Hash.wrap32((max - min) | 0);
 		// Negative when max is below min, or when the subtraction overflowed.
 		if (max < min || span < 0) {
 			throw new ArgumentError('$min to $max is not a range of at most 2^31 - 1.');
@@ -294,7 +297,9 @@ final class BitWriter {
 			var used:Int = 32 - __scratchBits;
 			// `>>> 32` is `>>> 0` on the targets that mask the count, which
 			// would bring the whole value back: none of it is left over then.
-			__scratch = used == 32 ? 0 : value >>> used;
+			// ushr32 is `>>>` but on PHP, whose 64-bit Int can hold more than
+			// the 32 bits a field takes: only those carry into the next word.
+			__scratch = used == 32 ? 0 : Hash.ushr32(value, used);
 			__scratchBits = total - 32;
 		}
 	}

@@ -6,7 +6,8 @@
 	Secret from CrossByte there, and the key/value store is built for it, so
 	those are what this runs, and RPC: its
 	contracts, its codec and its sessions over in-process connections, the
-	ByteArray reads and writes its bytes go through, and the spatial grids a
+	ByteArray reads and writes its bytes go through, BitWriter and
+	BitReader, whose layout its bit fields share, and the spatial grids a
 	server picks each observer's entries with. PHP
 	has no sockets in CrossByte, so the RPC cases that open one are left out
 	there, each in its class; RPCSlowPeerTest has no other, and is not here.
@@ -48,6 +49,7 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.core.ConfigTreeTest());
 			runner.addCase(new crossbyte.utils.UtilsTest());
 			runner.addCase(new crossbyte.io.ByteArrayIOTest());
+			runner.addCase(new crossbyte.io.BitPackingTest());
 			runner.addCase(new crossbyte.ds.SpatialGridTest());
 			runner.addCase(new crossbyte.ds.SparseSpatialGridTest());
 			addRPC(runner);

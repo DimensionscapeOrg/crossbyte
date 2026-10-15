@@ -3,6 +3,7 @@ package crossbyte.io;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.EOFError;
 import crossbyte.errors.RangeError;
+import crossbyte.utils.Hash;
 import haxe.io.FPHelper;
 import utest.Assert;
 
@@ -14,9 +15,11 @@ class BitPackingTest extends utest.Test {
 	}
 
 	private function next():Int {
-		seed ^= seed << 13;
+		// wrap32 is the value but on PHP, whose 64-bit Int a shift left
+		// carries past 32 bits: the same 32-bit numbers on every target.
+		seed = Hash.wrap32(seed ^ (seed << 13));
 		seed ^= seed >>> 17;
-		seed ^= seed << 5;
+		seed = Hash.wrap32(seed ^ (seed << 5));
 		return seed;
 	}
 
@@ -89,6 +92,33 @@ class BitPackingTest extends utest.Test {
 		Assert.same([], wrong);
 		Assert.isTrue(reader.bitsRemaining < 8, "more than a byte's padding was left");
 	}
+
+	/**
+		A 32-bit field across two words reads back as the Int written, and an
+		Int past 32 bits, which PHP's 64-bit integer holds where every other
+		target wraps (`0x7FFFFFFF + 1` is 2^31 there), goes as its low 32
+		bits. On PHP the reader gave back a field with its top bit set as
+		the unsigned number it holds, and the writer carried the bits past
+		32 into the field after it.
+	**/
+	public function testA32BitFieldAcrossTwoWordsIsItsLow32Bits():Void {
+		// Added at run time: a constant sum is folded to 32 bits by the compiler.
+		var top:Int = __widest;
+		var wider:Int = top * 2 + 3;
+		var writer = new BitWriter();
+		writer.writeBool(true);
+		writer.writeBits(-2147483647 - 1, 32);
+		writer.writeBits(wider, 32);
+		writer.writeBits(0, 2);
+
+		var reader = new BitReader(writer.finish());
+		Assert.isTrue(reader.readBool());
+		Assert.equals(-2147483647 - 1, reader.readBits(32), "the lowest Int");
+		Assert.equals(1, reader.readBits(32), "0x7FFFFFFF * 2 + 3");
+		Assert.equals(0, reader.readBits(2), "the field after it");
+	}
+
+	static var __widest:Int = 0x7FFFFFFF;
 
 	public function testSignedValuesKeepTheirSign():Void {
 		var writer = new BitWriter();
