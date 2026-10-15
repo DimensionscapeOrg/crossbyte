@@ -9,8 +9,8 @@ package crossbyte.events;
 	Emitter itself, or a framework built on it, has one kind of event.
 
 	`target` is the dispatcher the event was dispatched on, and
-	`currentTarget` the one whose listeners are running: each an
-	`emitter.IEmitter`. Cast either to the class it is to use it as one:
+	`currentTarget` the one whose listeners are running. Assign either to
+	the class it is to use it as one:
 
 	```haxe
 	// Given server:crossbyte.net.ServerSocket.
@@ -18,14 +18,19 @@ package crossbyte.events;
 	import crossbyte.net.ServerSocket;
 
 	server.addEventListener(Event.CLOSE, function(event:Event):Void {
-		var closed:ServerSocket = cast event.target;
+		var closed:ServerSocket = event.target;
 		trace("closed: " + closed.localPort);
 	});
 	```
 
-	`cast(event.target, ServerSocket)` checks what it is, and throws on
-	every target if it is not one. CrossByte's events do not bubble and are
-	not cancelable: each is dispatched on the object it is about.
+	The object is the same one, and the assignment tells the compiler what
+	it is. Nothing checks it, so it is for a listener that knows what it
+	listens to: given another class, the variable holds that object on
+	JavaScript, eval and Neko, is null natively, and the assignment throws
+	on the jvm and HashLink. `cast(event.target, ServerSocket)` checks, and
+	throws on every target if it is not one. A type that is no dispatcher
+	does not compile. CrossByte's events do not bubble and are not
+	cancelable: each is dispatched on the object it is about.
 
 	## Copy it to keep it
 

@@ -220,28 +220,52 @@ class ObjectTest extends utest.Test {
 	}
 
 	/**
-		An event's target, an `emitter.IEmitter`, cast to its type in a
-		listener is the dispatcher, read through its type, on every target,
-		and `cast(event.target, T)` checks.
+		The idiom itself, in a listener: the target assigned to its type is
+		the dispatcher, read through its type, on every target, and
+		`cast(event.target, T)` checks. Assigned to a dispatcher class it is
+		not, it is what the documentation says: kept as it is on JavaScript,
+		eval and Neko, null natively, and a throw on the jvm and HashLink. A
+		type that is no dispatcher does not compile.
 	**/
-	public function testAnEventsTargetIsCastToItsType():Void {
+	public function testAnEventsTargetIsAssignedToItsType():Void {
 		var socket:Socket = new Socket();
 		var seen:Socket = null;
 		var current:Socket = null;
 		var checked:Socket = null;
 		var connected:Null<Bool> = null;
+		var wrong:OtherDispatcher = null;
+		var threw:Bool = false;
+		var refused:Null<String> = null;
 		socket.addEventListener("probe", (event:Event) -> {
-			var target:Socket = cast event.target;
+			var target:Socket = event.target;
 			seen = target;
 			connected = target.connected;
-			current = cast event.currentTarget;
+			current = event.currentTarget;
 			checked = cast(event.target, Socket);
+			try {
+				wrong = event.target;
+			} catch (_:Dynamic) {
+				threw = true;
+			}
+			refused = crossbyte.ds.TypeCheck.errorOf({
+				var count:Int = event.target;
+			});
 		});
 		socket.dispatchEvent(new Event("probe"));
 		Assert.isTrue(seen == socket, "the target was not the socket");
 		Assert.isTrue(current == socket, "the current target was not the socket");
 		Assert.isTrue(checked == socket, "the checked cast was not the socket");
 		Assert.isFalse(connected);
+		#if cpp
+		Assert.isFalse(threw);
+		Assert.isNull(wrong);
+		#elseif (jvm || hl)
+		Assert.isTrue(threw, "the target was assigned to a class it is not");
+		#else
+		Assert.isFalse(threw);
+		Assert.isTrue((wrong : Dynamic) == (socket : Dynamic), "the target was not kept");
+		#end
+		Assert.notNull(refused, "the target was assigned to an Int");
 	}
 
 	/**
@@ -388,4 +412,10 @@ private class Other {
 	public var other:Int = 2;
 
 	public function new() {}
+}
+
+private class OtherDispatcher extends crossbyte.events.EventDispatcher {
+	public function new() {
+		super();
+	}
 }

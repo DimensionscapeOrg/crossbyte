@@ -50,7 +50,7 @@ The ActionScript names, `addEventListener`, `removeEventListener`, `hasEventList
 ## The target
 
 `event.target` is the dispatcher the event was dispatched on, and `event.currentTarget` the one whose listeners are
-running. Each is an `emitter.IEmitter`: cast it to the class it is to use it as one.
+running. Assign either to the class it is to use it as one:
 
 ```haxe
 // Given server:crossbyte.net.ServerSocket.
@@ -58,12 +58,14 @@ import crossbyte.events.Event;
 import crossbyte.net.ServerSocket;
 
 server.addEventListener(Event.CLOSE, function(event:Event):Void {
-	var closed:ServerSocket = cast event.target;
+	var closed:ServerSocket = event.target;
 	trace("closed: " + closed.localPort);
 });
 ```
 
-`cast(event.target, ServerSocket)` checks what it is first, and throws if it is not one.
+Nothing checks the assignment: given another class, the variable holds that object on JavaScript, eval and Neko, is
+null natively, and the assignment throws on the jvm and HashLink. `cast(event.target, ServerSocket)` checks what it
+is first, and throws if it is not one. A type that is no dispatcher does not compile.
 
 ## Keeping an event
 

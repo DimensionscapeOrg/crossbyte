@@ -4,7 +4,7 @@ package crossbyte.events;
 	What an event can be dispatched on: `emitter.IEmitter`, which every
 	`EventDispatcher` is, and a class that holds one and hands its calls on
 	(a `Future`) implements. An event's `target` and `currentTarget` are
-	typed by it.
+	one, and are assigned to the class each is (`emitter.EventTarget`).
 
 	It declares `events`, the emitter's verbs (`events.dispatch(event)`
 	and the rest): a class holding a dispatcher answers with that
