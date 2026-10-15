@@ -91,7 +91,7 @@ class PortableSuite {
 		// A running TLS server given a new certificate.
 		runner.addCase(new crossbyte.net.ServerCertificateRenewalTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
-		// And an expired certificate refused, even pinned.
+		// And a certificate expired or not yet valid refused, even pinned.
 		runner.addCase(new crossbyte.net.CertificateExpiryTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// A message's call, every way to send it back, and what a listener keeps.

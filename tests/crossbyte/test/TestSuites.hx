@@ -408,9 +408,10 @@ class TestSuites {
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.ServerCertificateRenewalTest());
 		#end
-		// A child runtime's real POLL loop, so every threaded target.
-		// An expired certificate refused, even pinned; also in PortableSuite.
+		// A certificate expired or not yet valid, refused by each client and
+		// by a server asking for a client's, even pinned; also in PortableSuite.
 		runner.addCase(new crossbyte.net.CertificateExpiryTest());
+		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded
 		// target, its TLS cases natively and on the jvm.
