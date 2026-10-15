@@ -182,6 +182,8 @@ interface INetHost {
 	 */
 	public function close():Void;
 
+	// Not in a page, which serves nothing and has no certificates to present.
+	#if !(js && !nodejs)
 	/**
 		Replaces the certificate a `tls://` or `wss://` host presents, with
 		its key, for every handshake from then on: each connection already up
@@ -196,4 +198,5 @@ interface INetHost {
 			key is missing.
 	**/
 	public function setCertificate(certificate:Certificate, key:Key):Void;
+	#end
 }
