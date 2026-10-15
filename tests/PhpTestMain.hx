@@ -33,6 +33,8 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.db.kv.KVRepoTest());
 			runner.addCase(new crossbyte.db.kv.KVRepoRPCTest());
 			runner.addCase(new crossbyte.db.kv.SQLiteKVStoreTest());
+			runner.addCase(new crossbyte.net.RateLimitStoreTest());
+			runner.addCase(new crossbyte.net.TrustedProxiesTest());
 			runner.addCase(new crossbyte.db.kv.KVSupportTest());
 			runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 			runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());

@@ -22,6 +22,36 @@ server.admit = (address, _) -> joins.tryAcquire(RateLimiter.addressKey(address))
 
 `RateLimiter.addressKey` keys an IPv6 client by its /64, which is what one subscriber is given.
 
+Behind a proxy or a load balancer a connection comes from the proxy. `TrustedProxies` reads the client's address from
+`Forwarded` or `X-Forwarded-For`, believing only what trusted proxies wrote, as Express's `trust proxy` does:
+
+```haxe
+import crossbyte.net.RateLimiter;
+import crossbyte.net.TrustedProxies;
+
+var proxies = new TrustedProxies(["loopback", "10.0.0.0/8"]);
+var logins = new RateLimiter(5, 60);
+function mayTry(peer:String, forwarded:Null<String>, forwardedFor:Null<String>):Bool {
+	return logins.tryAcquire(RateLimiter.addressKey(proxies.clientAddress(peer, forwarded, forwardedFor)));
+}
+```
+
+A limiter keeps its buckets in memory, which is what one long-running server wants. Where several processes serve the
+requests (PHP, which starts one for each, or a server run behind a load balancer), give each limiter the same
+`RateLimitStore` and they limit together. `KVRateLimitStore` keeps the buckets in a key/value store, SQLite on PHP and
+natively:
+
+```haxe
+import crossbyte.db.kv.KVRateLimitStore;
+import crossbyte.db.kv.SQLiteKVStore;
+import crossbyte.net.RateLimiter;
+
+var shared = new RateLimiter(5, 60, new KVRateLimitStore(SQLiteKVStore.open("data/limits.db", {table: "rate_limits"})));
+```
+
+`consume` says what a `429 Too Many Requests` says: `limit`, `remaining`, `retryAfter` and `resetAfter`, for the
+`RateLimit` and `Retry-After` headers.
+
 ## TCP servers
 
 A `ServerSocket`, and a `NetHost` built on one, and the `HTTPServer` and `ServerWebSocket` built on it, hold each of

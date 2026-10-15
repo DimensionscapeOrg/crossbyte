@@ -31,6 +31,26 @@ package crossbyte.net;
  * so a flood of new keys is throttled as if it were one client while the keys
  * already held keep their own buckets. An optional injectable clock makes
  * behavior deterministic in tests.
+ *
+ * **Shared buckets.** Given a `RateLimitStore`, the limiter keeps its
+ * buckets there instead, and every limiter on that store limits together: on
+ * PHP, where each request is a process of its own and buckets in memory would
+ * be gone with it, and for a service run as several processes or behind a
+ * load balancer. The API is the same either way; a check is then one read
+ * and one compare-and-set in the store, and its time is the time of day,
+ * which processes share. `crossbyte.db.kv.KVRateLimitStore` is one, over
+ * SQLite on PHP and natively:
+ *
+ * ```haxe
+ * var store = new crossbyte.db.kv.KVRateLimitStore(crossbyte.db.kv.SQLiteKVStore.open("limits.db"));
+ * var logins = new RateLimiter(5, 60, store);
+ * if (!logins.tryAcquire(RateLimiter.addressKey(address))) {
+ * 	// 429, with logins.secondsUntil(...) as its Retry-After.
+ * }
+ * ```
+ *
+ * `maxKeys` and `activeKeyCount` are about buckets held in memory; a store
+ * holds as many as it is given, and forgets those full again.
  */
 class RateLimiter {
 	/** Keys held at most by default: 8 to 13 MB of buckets, by target. */
@@ -53,6 +73,14 @@ class RateLimiter {
 	@:noCompletion private var __previousUsedAt:Float;
 	@:noCompletion private var __rotateAt:Float;
 	@:noCompletion private var __overflow:Bucket = null;
+	@:noCompletion private var __store:Null<RateLimitStore>;
+
+	/**
+		How often a check on a store reads its bucket again because another
+		wrote it between the read and the write, before it refuses the
+		request rather than let it through.
+	**/
+	@:noCompletion private static inline var STORE_ATTEMPTS:Int = 16;
 
 	/**
 	 * @param maxRequests Bucket capacity and sustained request budget.
@@ -61,8 +89,11 @@ class RateLimiter {
 	 * `haxe.Timer.stamp`. Intended for tests.
 	 * @param maxKeys Most keys held at once; a key arriving past it shares the
 	 * overflow bucket. See the class notes.
+	 * @param store Where the buckets are kept, shared with every limiter on
+	 * it, instead of in memory: see the class notes. Its clock is the time of
+	 * day, in seconds since the epoch, unless `clock` is given.
 	 */
-	public function new(maxRequests:Int = 10, perSeconds:Float = 60.0, ?clock:() -> Float, maxKeys:Int = DEFAULT_MAX_KEYS) {
+	public function new(maxRequests:Int = 10, perSeconds:Float = 60.0, ?clock:() -> Float, maxKeys:Int = DEFAULT_MAX_KEYS, ?store:RateLimitStore) {
 		if (maxRequests < 1) {
 			throw new crossbyte.errors.ArgumentError("maxRequests must be at least 1");
 		}
@@ -78,6 +109,7 @@ class RateLimiter {
 		__period = perSeconds;
 		__clock = clock;
 		__maxKeys = maxKeys;
+		__store = store;
 		__current = new Map();
 		__previous = new Map();
 		var now:Float = __now();
@@ -87,7 +119,13 @@ class RateLimiter {
 	}
 
 	@:noCompletion private inline function __now():Float {
-		return __clock == null ? haxe.Timer.stamp() : __clock();
+		return __clock != null ? __clock() : (__store != null ? __timeOfDay() : haxe.Timer.stamp());
+	}
+
+	// time of day: a store's buckets are read by other processes, which share
+	// no monotonic clock with this one.
+	@:noCompletion private static inline function __timeOfDay():Float {
+		return Date.now().getTime() / 1000;
 	}
 
 	/**
@@ -115,7 +153,52 @@ class RateLimiter {
 		if (cost > __capacity) {
 			return false;
 		}
+		if (__store != null) {
+			return __stored(key, cost, true).allowed;
+		}
 
+		var bucket:Bucket = __bucketNow(key);
+		if (bucket.tokens >= cost) {
+			bucket.tokens -= cost;
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+		Attempts to consume `cost` tokens for `key`, as `tryAcquire` does,
+		and answers what a server tells the client either way: the limit,
+		what is left, and how long until it could try again (see
+		`RateLimitResult`).
+	**/
+	public function consume(key:String, cost:Int = 1):RateLimitResult {
+		if (cost < 1) {
+			throw new crossbyte.errors.ArgumentError("cost must be at least 1");
+		}
+		if (key == null) {
+			key = "";
+		}
+		if (__store != null) {
+			return cost > __capacity ? __stored(key, 1, false).refused(cost) : __stored(key, cost, true).result();
+		}
+		if (cost > __capacity) {
+			return __result(false, __tokensNow(key), cost);
+		}
+
+		var bucket:Bucket = __bucketNow(key);
+		var allowed:Bool = bucket.tokens >= cost;
+		if (allowed) {
+			bucket.tokens -= cost;
+		}
+		return __result(allowed, bucket.tokens, cost);
+	}
+
+	/**
+		The bucket `key` spends from now, refilled to now: carried forward
+		into the newer generation, made, or past the cap the overflow bucket.
+	**/
+	@:noCompletion private inline function __bucketNow(key:String):Bucket {
 		var now:Float = __now();
 		if (now >= __rotateAt) {
 			__rotate(now);
@@ -128,13 +211,70 @@ class RateLimiter {
 			__currentUsedAt = now;
 		}
 		__refill(bucket, now);
+		return bucket;
+	}
 
-		if (bucket.tokens >= cost) {
-			bucket.tokens -= cost;
-			return true;
+	/** The tokens `key` holds now in memory, without carrying its bucket forward. **/
+	@:noCompletion private function __tokensNow(key:String):Float {
+		var bucket:Null<Bucket> = __peek(key);
+		if (bucket == null) {
+			return __capacity;
 		}
+		var now:Float = __now();
+		return now > bucket.updatedAt ? Math.min(__capacity, bucket.tokens + (now - bucket.updatedAt) * __refillPerSecond) : bucket.tokens;
+	}
 
-		return false;
+	/** What a check that found `tokens` tells its caller about a request costing `cost`. **/
+	@:noCompletion private function __result(allowed:Bool, tokens:Float, cost:Int):RateLimitResult {
+		var retryAfter:Float = if (cost > __capacity) {
+			Math.POSITIVE_INFINITY;
+		} else if (allowed || tokens >= cost) {
+			0.0;
+		} else {
+			(cost - tokens) / __refillPerSecond;
+		}
+		return new RateLimitResult(allowed, __capacity, Math.floor(tokens), retryAfter, Math.max(0, (__capacity - tokens) / __refillPerSecond));
+	}
+
+	/**
+		A check on the store: the bucket read, refilled to now, and with
+		`spend` its tokens spent and written back if nobody wrote it
+		meanwhile, read again when somebody did. A refusal, or a check that
+		spends nothing, writes nothing: what is stored, and the time since,
+		already say it.
+	**/
+	@:noCompletion private function __stored(key:String, cost:Int, spend:Bool):StoredCheck {
+		for (_ in 0...STORE_ATTEMPTS) {
+			var now:Float = __now();
+			var bucket:Null<RateLimitBucket> = __store.get(key);
+			var tokens:Float = __capacity;
+			var counted:Float = now;
+			var expected:Float = 0;
+			if (bucket != null) {
+				expected = bucket.revision;
+				tokens = bucket.tokens;
+				counted = bucket.updatedAt;
+				// Never back: a process whose clock is behind another's must
+				// not count the same seconds' tokens twice.
+				if (now > counted) {
+					tokens = Math.min(__capacity, tokens + (now - counted) * __refillPerSecond);
+					counted = now;
+				}
+			}
+			if (!spend) {
+				return new StoredCheck(this, tokens >= cost, tokens, cost);
+			}
+			if (tokens < cost) {
+				return new StoredCheck(this, false, tokens, cost);
+			}
+			var left:Float = tokens - cost;
+			if (__store.compareAndSet(key, left, counted, counted + (__capacity - left) / __refillPerSecond, expected)) {
+				return new StoredCheck(this, true, left, cost);
+			}
+		}
+		// Written by others between every read and write: refused, which is
+		// the side a limiter errs on.
+		return new StoredCheck(this, false, 0, cost);
 	}
 
 	/**
@@ -151,6 +291,9 @@ class RateLimiter {
 		}
 		if (key == null) {
 			key = "";
+		}
+		if (__store != null) {
+			return __stored(key, cost, false).result().retryAfter;
 		}
 
 		var bucket:Null<Bucket> = __peek(key);
@@ -309,6 +452,9 @@ class RateLimiter {
 		if (key == null) {
 			key = "";
 		}
+		if (__store != null) {
+			return Math.floor(__stored(key, 1, false).tokens);
+		}
 
 		var bucket:Null<Bucket> = __peek(key);
 		if (bucket == null) {
@@ -333,6 +479,10 @@ class RateLimiter {
 		if (key == null) {
 			key = "";
 		}
+		if (__store != null) {
+			__store.delete(key);
+			return;
+		}
 		if (__current.remove(key)) {
 			__currentSize--;
 		}
@@ -342,8 +492,9 @@ class RateLimiter {
 	}
 
 	/**
-	 * Number of keys currently holding bucket state, never more than
-	 * `maxKeys`. Useful for monitoring and for verifying idle eviction.
+	 * Number of keys currently holding bucket state in memory, never more
+	 * than `maxKeys`: `0` for a limiter on a store, which holds them instead.
+	 * Useful for monitoring and for verifying idle eviction.
 	 */
 	public function activeKeyCount():Int {
 		return __currentSize + __previousSize;
@@ -423,6 +574,31 @@ class RateLimiter {
 
 		bucket.tokens = Math.min(__capacity, bucket.tokens + elapsed * __refillPerSecond);
 		bucket.updatedAt = now;
+	}
+}
+
+/** What a check on the store found: its tokens, and whether its cost was spent. **/
+@:noCompletion private class StoredCheck {
+	public final allowed:Bool;
+	public final tokens:Float;
+
+	final __limiter:RateLimiter;
+	final __cost:Int;
+
+	public function new(limiter:RateLimiter, allowed:Bool, tokens:Float, cost:Int) {
+		__limiter = limiter;
+		this.allowed = allowed;
+		this.tokens = tokens;
+		__cost = cost;
+	}
+
+	public function result():RateLimitResult {
+		return @:privateAccess __limiter.__result(allowed, tokens, __cost);
+	}
+
+	/** As refused for `cost`, which this check did not spend. **/
+	public function refused(cost:Int):RateLimitResult {
+		return @:privateAccess __limiter.__result(false, tokens, cost);
 	}
 }
 

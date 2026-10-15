@@ -87,6 +87,10 @@ class ServerSuite {
 		// none of it.
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte.net.RateLimiterTest());
+		// Buckets in a store limiters share, and the client behind trusted
+		// proxies; also on PHP, through PhpTestMain.
+		runner.addCase(new crossbyte.net.RateLimitStoreTest());
+		runner.addCase(new crossbyte.net.TrustedProxiesTest());
 		runner.addCase(new crossbyte.net.ConcurrencyLimiterTest());
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 		runner.addCase(new crossbyte.http.RouterTest());
