@@ -49,8 +49,7 @@ class HTTPServerTLSTest extends utest.Test {
 		// Names 127.0.0.1, so the client can check it once told to trust it.
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -170,8 +169,7 @@ class HTTPServerTLSTest extends utest.Test {
 		// Names 127.0.0.1, so the client can verify it once told to trust it.
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -247,8 +245,7 @@ class HTTPServerTLSTest extends utest.Test {
 	public function testARequestTrustsTheAuthorityItNames():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -311,7 +308,7 @@ class HTTPServerTLSTest extends utest.Test {
 	public function testAConnectionIsReusedOnlyUnderTheSameTls():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -347,7 +344,7 @@ class HTTPServerTLSTest extends utest.Test {
 	public function testAPinnedRequestChecksTheServersKey():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -389,7 +386,7 @@ class HTTPServerTLSTest extends utest.Test {
 		// an expired client certificate, and `selfSignedFor`'s often is.
 		var clientFixture = TLSTestFixture.trusted(["crossbyte-client"]);
 		if (serverFixture == null || clientFixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -613,7 +610,12 @@ class HTTPServerTLSTest extends utest.Test {
 	**/
 	public function testClosingAnHttp2SessionLeavesItsSocketToTheReader():Void {
 		var fixture = TLSTestFixture.trusted();
-		if (fixture == null || !FlexSocket.alpnSupported) {
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+		if (!FlexSocket.alpnSupported) {
+			// No HTTP/2 without ALPN, so no session to close.
 			Assert.pass();
 			return;
 		}

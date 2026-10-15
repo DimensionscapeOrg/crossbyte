@@ -148,8 +148,7 @@ class ServerSocketAcceptTest extends utest.Test {
 	public function testFailedHandshakesAreCounted(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}
@@ -194,8 +193,7 @@ class ServerSocketAcceptTest extends utest.Test {
 	public function testAHandshakeTimeoutOfZeroWaits(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}

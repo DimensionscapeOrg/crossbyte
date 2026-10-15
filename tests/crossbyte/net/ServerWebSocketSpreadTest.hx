@@ -588,7 +588,7 @@ class ServerWebSocketSpreadTest extends utest.Test {
 	public function testSecureSessionsUpgradeOnTheRuntimes():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

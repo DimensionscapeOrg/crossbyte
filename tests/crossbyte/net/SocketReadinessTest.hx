@@ -133,8 +133,7 @@ class SocketReadinessTest extends utest.Test {
 	public function testAPollLoopHandshakesAsFlightsArrive():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

@@ -57,8 +57,7 @@ class TlsProtocolTest extends utest.Test {
 	public function testBothEndsOfANativeConnectionRunTheNewestVersion():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -126,8 +125,7 @@ class TlsProtocolTest extends utest.Test {
 	public function testAReturningClientResumesOverTheNewestVersion():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -186,8 +184,7 @@ class TlsProtocolTest extends utest.Test {
 	public function testANativeClientRunsTheNewestVersionAgainstOpenSsl():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -364,8 +361,7 @@ class TlsProtocolTest extends utest.Test {
 	public function testAnAcceptedConnectionOutlivesItsListener():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -451,8 +447,7 @@ class TlsProtocolTest extends utest.Test {
 	public function testAnAcceptedConnectionKeepsItsProtocolAfterItsListenerCloses():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

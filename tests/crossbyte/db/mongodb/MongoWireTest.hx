@@ -355,7 +355,7 @@ class MongoWireTest extends utest.Test {
 		var fixture = crossbyte.net.TLSTestFixture.trusted();
 
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -394,7 +394,7 @@ class MongoWireTest extends utest.Test {
 		var fixture = crossbyte.net.TLSTestFixture.trusted();
 
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

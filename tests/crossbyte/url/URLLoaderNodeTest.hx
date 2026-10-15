@@ -84,7 +84,7 @@ class URLLoaderNodeTest extends utest.Test {
 	public function testARequestTrustsTheAuthorityItNames(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}
@@ -118,7 +118,7 @@ class URLLoaderNodeTest extends utest.Test {
 	public function testAPinIsCheckedWithOrWithoutTheChain(async:Async):Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}
@@ -165,7 +165,7 @@ class URLLoaderNodeTest extends utest.Test {
 		var fixture = TLSTestFixture.trusted();
 		var client = TLSTestFixture.trusted(["crossbyte-client"]);
 		if (fixture == null || client == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}

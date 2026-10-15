@@ -28,7 +28,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAServerPresentsTheWholeChainOfItsFile():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -52,7 +52,7 @@ class JvmTlsTest extends utest.Test {
 	public function testACertificateFileMayCarryItsKeyToo():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -72,7 +72,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAnSniCertificatePresentsItsWholeChain():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -100,7 +100,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAClientTrustsEveryAuthorityOfABundle():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -129,7 +129,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAServerTrustsEveryAuthorityOfItsClientBundle():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -163,7 +163,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAClientPresentsItsCertificateToAServerThatAsks():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -287,7 +287,7 @@ class JvmTlsTest extends utest.Test {
 	public function testARecordLargerThanTheReadBufferIsStillRead():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -338,7 +338,7 @@ class JvmTlsTest extends utest.Test {
 	public function testATlsReadTakesEveryRecordAlreadyReceived():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -394,7 +394,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAnIdleTlsConnectionHoldsNoEngineBuffers():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -448,7 +448,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAListenerResumesTheSessionsItIssued():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -478,7 +478,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAClientResumesItsSessionWithAServer():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -505,7 +505,7 @@ class JvmTlsTest extends utest.Test {
 	public function testASessionMadeWithoutVerificationIsNotResumedByOneThatVerifies():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -534,7 +534,7 @@ class JvmTlsTest extends utest.Test {
 	public function testATls12RenegotiationIsCarriedThrough():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -579,7 +579,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAServerRefusesRenegotiationsPastItsLimit():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -617,7 +617,7 @@ class JvmTlsTest extends utest.Test {
 	public function testARefusedHandshakeSendsItsAlert():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -656,7 +656,7 @@ class JvmTlsTest extends utest.Test {
 	public function testARefusedConnectionClosesRatherThanResets():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -713,7 +713,7 @@ class JvmTlsTest extends utest.Test {
 	public function testAClientRefusingACertificateSendsItsAlert():Void {
 		var chain = TLSChainFixture.get();
 		if (chain == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

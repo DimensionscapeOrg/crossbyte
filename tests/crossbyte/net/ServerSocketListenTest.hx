@@ -103,7 +103,7 @@ class ServerSocketListenTest extends utest.Test {
 	public function testAHandshakeNeverSentIsDroppedAtTheHandshakeTimeout(async:Async):Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}
@@ -135,7 +135,7 @@ class ServerSocketListenTest extends utest.Test {
 	public function testAHandshakeFinishingAfterCloseIsLetGoOf(async:Async):Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}

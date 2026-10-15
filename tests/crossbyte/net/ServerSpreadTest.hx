@@ -921,7 +921,7 @@ class ServerSpreadTest extends utest.Test {
 	public function testTlsHandshakesRunOnTheRuntimes():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -986,7 +986,7 @@ class ServerSpreadTest extends utest.Test {
 	public function testHandshakeLimitHoldsAcrossRuntimes():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -1044,7 +1044,7 @@ class ServerSpreadTest extends utest.Test {
 	public function testARuntimeThatExitsGivesUpItsHandshakes():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		var acceptor:CrossByte = SpreadSupport.runtime();

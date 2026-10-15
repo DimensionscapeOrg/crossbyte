@@ -455,8 +455,7 @@ class AllocationBudgetTest extends utest.Test {
 
 	public function testAnHttpGetOverTls():Void {
 		if (TLSTestFixture.trusted() == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		__httpRequest(TLS_GET, true, "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", null);
@@ -1260,8 +1259,7 @@ class AllocationBudgetTest extends utest.Test {
 	public function testAnRpcCallOverWebSocketWithTls():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			// No openssl to make a certificate with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		var runtime = __start();

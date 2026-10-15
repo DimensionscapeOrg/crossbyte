@@ -211,8 +211,7 @@ class ServerSocketAdmissionTest extends utest.Test {
 	public function testHandshakesInFlightAreCapped():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 

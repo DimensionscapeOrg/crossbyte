@@ -41,7 +41,7 @@ class NetHostTLSTest extends utest.Test {
 		Assert.raises(() -> new NetHost('tls://$ELSEWHERE'), ArgumentError);
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		Assert.raises(() -> new NetHost('tls://$ELSEWHERE', null, null, null, false, {certificate: fixture.certificate}), ArgumentError);
@@ -52,7 +52,7 @@ class NetHostTLSTest extends utest.Test {
 	public function testAConnectionGivenTlsOptionsItWouldNotUseIsRefused():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		var tls:TLSOptions = {certAuthority: fixture.certificate};
@@ -65,7 +65,7 @@ class NetHostTLSTest extends utest.Test {
 	public function testACertificateForAHostThatWouldNotUseItIsRefused():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 		Assert.raises(() -> new NetHost('tcp://$ELSEWHERE', null, null, null, false, {certificate: fixture.certificate, key: fixture.key}),

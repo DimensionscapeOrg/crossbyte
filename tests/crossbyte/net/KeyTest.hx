@@ -17,8 +17,7 @@ class KeyTest extends utest.Test {
 	public function testAKeyShowsNothingOfItselfWhenPrinted():Void {
 		var forms = KeyFormFixture.make();
 		if (forms == null) {
-			// No openssl to make a key with.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -63,7 +62,7 @@ class KeyTest extends utest.Test {
 	public function testEveryFormOfAKeyLoads():Void {
 		var forms = KeyFormFixture.make();
 		if (forms == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -99,7 +98,7 @@ class KeyTest extends utest.Test {
 		#else
 		var forms = KeyFormFixture.make();
 		if (forms == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -142,7 +141,7 @@ class KeyTest extends utest.Test {
 			}
 		}
 		if (fallback == null || encrypted == null || forms.rsaCertificate == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			async.done();
 			return;
 		}

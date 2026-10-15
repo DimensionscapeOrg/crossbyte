@@ -74,8 +74,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testSecureServerAcceptsCertificateAndListens():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No certificate toolchain available on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -103,8 +102,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testSecureServerAcceptsAlpnBeforeBind():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No certificate toolchain available on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -187,7 +185,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testAClientWithNoCertificateIsRefusedWhenOneIsRequired():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -204,7 +202,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testAClientWithTheRightCertificateIsAccepted():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -231,8 +229,7 @@ class ServerSocketTLSTest extends utest.Test {
 		var alternate = TLSTestFixture.selfSignedFor("alt.example");
 
 		if (fallback == null || alternate == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -356,7 +353,7 @@ class ServerSocketTLSTest extends utest.Test {
 	}> {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return null;
 		}
 
@@ -443,7 +440,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testTlsCarriesDataAndNotJustAHandshake():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -538,7 +535,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testTheJvmClientCanBeToldNotToVerify():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -568,7 +565,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testTheJvmClientTerminatesTlsAndVerifies():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -677,8 +674,7 @@ class ServerSocketTLSTest extends utest.Test {
 			?serverName:String):Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			// No certificate toolchain on this machine.
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -824,7 +820,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testAlpnIsNegotiatedOverARealHandshake():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -884,7 +880,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testAReturningClientResumesItsSession():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
@@ -972,7 +968,7 @@ class ServerSocketTLSTest extends utest.Test {
 	public function testATlsConnectionOutlivesItsServersClose():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
-			Assert.pass();
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
 			return;
 		}
 
