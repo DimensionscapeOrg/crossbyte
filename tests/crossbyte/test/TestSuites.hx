@@ -457,14 +457,6 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
-		// Needs real sockets: these drive the server with a hand-written
-		// client rather than CrossByte's own, which is the only way a fault
-		// specific to a foreign peer shows up.
-		runner.addCase(new crossbyte.net.WebSocketConformanceTest());
-		// Beside it on purpose: the conformance cases cover the violations
-		// someone named, and this covers the ones nobody did. Same hand-written
-		// client, same gate: both drive the server through a real socket.
-		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		// Not on eval, whose TLS handshake cannot be made non-blocking.
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
 		// The server's half: its certificate, SNI, ALPN and client
@@ -502,6 +494,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ServerWebSocketTLSTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
+		// The server driven by a hand-written client rather than CrossByte's
+		// own, which is the only way a fault specific to a foreign peer shows
+		// up: on every target this group runs on, the interpreter included.
+		runner.addCase(new crossbyte.net.WebSocketConformanceTest());
+		// Beside it on purpose: the conformance cases cover the violations
+		// someone named, and this covers the ones nobody did. Same hand-written
+		// client, same reach.
+		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		// Unguarded here for the interpreter above all, where none of the
 		// server suite runs, and where every upgrade must succeed too.
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());

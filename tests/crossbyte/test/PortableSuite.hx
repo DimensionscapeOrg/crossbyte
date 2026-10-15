@@ -54,6 +54,8 @@ class PortableSuite {
 		// No socket in it: the cipher an encrypted reliable UDP session seals
 		// with, Node's crypto on Node, and the Haxe one in the browser.
 		runner.addCase(new crossbyte.net.ReliableDatagramCipherTest());
+		// What a transport URI says: its parts, and the ones refused.
+		runner.addCase(new crossbyte.net.EndpointTest());
 		// The one guarded entry here, and not the kind of guard that makes a
 		// case run nowhere: it still runs on Node through this list and on cpp,
 		// jvm and the interpreter through `addNet`. The browser is excluded
@@ -113,6 +115,21 @@ class PortableSuite {
 		// Encrypted sessions attacked through memory, Node's crypto opening the
 		// large datagrams.
 		runner.addCase(new crossbyte.net.ReliableDatagramTamperTest());
+		// RPC calls in a mode of their own over reliable UDP, whose datagrams
+		// go through memory; a page has no UDP.
+		runner.addCase(new crossbyte.rpc.RPCDeliveryTest());
+		// The reliable protocol's delivery window and its cache cap, driven
+		// directly: sequence arithmetic, where js differs, on a session no
+		// page has.
+		runner.addCase(new crossbyte.net.RUDPHardeningTest());
+		// The frames a WebSocket session reads and writes, and the ones it
+		// refuses; a page's WebSocket is the browser's own.
+		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
+		// A call larger than the other side can take, refused at once: over
+		// connections in memory here, its cases over sockets left to the
+		// threaded targets. Its pairs are made with a NetHost, which a page
+		// has not got.
+		runner.addCase(new crossbyte.rpc.RPCOversizeTest());
 		// The frames a reliable message is kept in, given back for the next.
 		runner.addCase(new crossbyte.net.ReliableDatagramFramePoolTest());
 		// What an idle reliable session holds.
@@ -244,6 +261,10 @@ class PortableSuite {
 		// Times past 2038 and a 32-bit Int are where the targets would disagree.
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTRevocationTest());
+		// A key set read, written and resolved; its RSA and EC keys natively.
+		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
+		// The helpers behind the authentication classes.
+		runner.addCase(new crossbyte.auth.AuthSupportTest());
 		// PKCE everywhere; the token exchange itself against Node's own http
 		// server, where a provider that never answers must still end the
 		// exchange. The browser has no server to run it against and skips that part.
@@ -253,6 +274,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
 		// A certificate's public key read for a pin, the same on every target.
 		runner.addCase(new crossbyte._internal.http.PublicKeyPinsTest());
+		// A URL taken apart and put back together.
+		runner.addCase(new crossbyte.url.URLTest());
 		#if (js && !nodejs)
 		// And refused in a page, which cannot see the key to check it.
 		runner.addCase(new crossbyte.url.URLLoaderBrowserTest());

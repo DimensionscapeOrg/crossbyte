@@ -23,8 +23,9 @@ import utest.Assert;
 	waited. And a frame past the reader's `maxFrameSize` ended the
 	connection.
 
-	Not in the portable suite: these pump real sockets until something has
-	happened, and on Node nothing happens until the pump returns.
+	The cases over real sockets pump them until something has happened, and
+	on JavaScript nothing happens until the pump returns, so there only the
+	cases over connections in memory run.
 **/
 class RPCOversizeTest extends utest.Test {
 	public function setup():Void {
@@ -136,8 +137,9 @@ class RPCOversizeTest extends utest.Test {
 		Assert.equals(7, small.result);
 	}
 
-	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws there).
-	#if !php
+	// Not on PHP, where CrossByte has no TCP socket (its sys.net.Socket throws
+	// there), nor on JavaScript, for the reason above.
+	#if !(php || js)
 	public function testACallPastWhatATcpSocketHoldsIsRefusedNotWaitedFor():Void {
 		final pair = Pair.over("tcp", connection -> NetConnection.toSocket(connection).maxInputBufferSize = 64 * 1024);
 		final told = new SizeReceiver();
@@ -166,6 +168,7 @@ class RPCOversizeTest extends utest.Test {
 		#end
 	}
 
+	#if !js
 	public function testACallPastAReliableUdpSessionsQueueFailsAsItIsMade():Void {
 		if (!crossbyte.net.DatagramSocket.isSupported) {
 			Assert.pass();
@@ -184,6 +187,7 @@ class RPCOversizeTest extends utest.Test {
 		pair.stillAnswers();
 		pair.close();
 	}
+	#end
 
 	public function testACallAndAnAnswerPastALocalMessageFailNotWaitedFor():Void {
 		#if (cpp && (windows || linux || mac || macos))

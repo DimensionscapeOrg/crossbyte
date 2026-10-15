@@ -190,6 +190,10 @@ class RawWebSocketClient {
 		var scratch:Bytes = Bytes.alloc(256);
 
 		while (haxe.Timer.stamp() < deadline) {
+			if (!__readable()) {
+				__pump();
+				continue;
+			}
 			try {
 				if (__socket.input.readBytes(scratch, 0, scratch.length) <= 0) {
 					return true;
@@ -255,13 +259,53 @@ class RawWebSocketClient {
 		runtime.pump(step, 0);
 	}
 
+	/**
+		Whether a read would find something, or the end. Always, but on eval,
+		whose sockets block whatever they are told: there a read with nothing
+		to say would wait for good on the thread the server answers on, so
+		it is asked of `select` first.
+	**/
+	private function __readable():Bool {
+		#if eval
+		return sys.net.Socket.select([__socket], [], [], 0).read.length > 0;
+		#else
+		return true;
+		#end
+	}
+
+	/** Whether a write would be taken; on eval, asked of `select` as a read is. **/
+	private function __writable():Bool {
+		#if eval
+		return sys.net.Socket.select([], [__socket], [], 0).write.length > 0;
+		#else
+		return true;
+		#end
+	}
+
+	/**
+		How much of `remaining` to write at once: all of it, but on eval, where
+		a writable socket is sure of room for 2 KB and no more, and a blocking
+		write past that would wait on a server that only reads when pumped.
+	**/
+	private static inline function __slice(remaining:Int):Int {
+		#if eval
+		return remaining < 2048 ? remaining : 2048;
+		#else
+		return remaining;
+		#end
+	}
+
 	private function __writeAll(bytes:Bytes):Void {
 		var sent:Int = 0;
 		var deadline:Float = haxe.Timer.stamp() + 15;
 
 		while (sent < bytes.length && haxe.Timer.stamp() < deadline) {
+			if (!__writable()) {
+				__pump();
+				continue;
+			}
 			try {
-				sent += __socket.output.writeBytes(bytes, sent, bytes.length - sent);
+				sent += __socket.output.writeBytes(bytes, sent, __slice(bytes.length - sent));
 			} catch (e:Dynamic) {
 				if (Std.string(e).indexOf("Block") < 0) {
 					throw e;
@@ -281,6 +325,10 @@ class RawWebSocketClient {
 		var got:Int = 0;
 
 		while (got < count && haxe.Timer.stamp() < deadline) {
+			if (!__readable()) {
+				__pump();
+				continue;
+			}
 			try {
 				var read:Int = __socket.input.readBytes(out, got, count - got);
 				if (read <= 0) {
@@ -307,6 +355,10 @@ class RawWebSocketClient {
 		var deadline:Float = haxe.Timer.stamp() + 15;
 
 		while (haxe.Timer.stamp() < deadline) {
+			if (!__readable()) {
+				__pump();
+				continue;
+			}
 			try {
 				var c:Int = __socket.input.readByte();
 				if (c == 10) {
