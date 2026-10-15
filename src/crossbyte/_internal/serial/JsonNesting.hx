@@ -34,9 +34,9 @@ class JsonNesting {
 		var depth:Int = 0;
 		var inString:Bool = false;
 		var i:Int = 0;
-		var length:Int = json.length;
+		var length:Int = __length(json);
 		while (i < length) {
-			var code:Int = StringTools.fastCodeAt(json, i);
+			var code:Int = __at(json, i);
 			if (inString) {
 				if (code == "\\".code) {
 					// Whatever is escaped, a quote included, is not structure.
@@ -76,9 +76,9 @@ class JsonNesting {
 		var inString:Bool = false;
 		var inWord:Bool = false;
 		var i:Int = 0;
-		var length:Int = json.length;
+		var length:Int = __length(json);
 		while (i < length) {
-			var code:Int = StringTools.fastCodeAt(json, i);
+			var code:Int = __at(json, i);
 			if (inString) {
 				if (code == "\\".code) {
 					i++;
@@ -110,5 +110,24 @@ class JsonNesting {
 			i++;
 		}
 		return count;
+	}
+
+	// Every character these look for is ASCII, and UTF-8 never puts an ASCII byte
+	// inside another character, so on PHP the text is read as its bytes:
+	// charCodeAt there is mb_substr from the start, which made a walk quadratic.
+	@:noCompletion private static inline function __length(json:String):Int {
+		#if php
+		return php.Global.strlen(json);
+		#else
+		return json.length;
+		#end
+	}
+
+	@:noCompletion private static inline function __at(json:String, i:Int):Int {
+		#if php
+		return php.Syntax.code("ord({0}[{1}])", json, i);
+		#else
+		return StringTools.fastCodeAt(json, i);
+		#end
 	}
 }
