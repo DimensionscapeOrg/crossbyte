@@ -46,7 +46,7 @@ runs:
         repo="${repo%$'\r'}"
         repo="${repo//\\//}"
         repo="${repo%/}"
-        key="haxelibs-v1-$RUNNER_OS-$RUNNER_ARCH"
+        key="haxelibs-v2-$RUNNER_OS-$RUNNER_ARCH"
         paths=""
         # A Windows checkout ends each line with CR LF.
         while read -r name version source commit extra || [ -n "$name" ]; do
@@ -70,7 +70,7 @@ runs:
           echo "list=$list"
           echo "repo=$repo"
           echo "key=$key"
-          echo "restore-key=haxelibs-v1-$RUNNER_OS-$RUNNER_ARCH-"
+          echo "restore-key=haxelibs-v2-$RUNNER_OS-$RUNNER_ARCH-"
           echo "paths<<EOF"
           printf '%s' "$paths"
           echo "EOF"
@@ -104,14 +104,30 @@ runs:
           { haxelib path "$name" 2> /dev/null || true; } | tr -d '\r' | sed -n "s/^-D $name=//p"
         }
         # Whether $name $version is installed as pinned: from GitHub at
-        # $commit (haxelib's "git" version), or from the registry.
+        # $commit (registered under its version, with the commit beside it),
+        # or from the registry.
         held() {
           [ "$(resolved)" = "$version" ] || return 1
-          if [ "$(cat "$REPO/$name/.current" 2> /dev/null)" = git ]; then
-            [ "$(git -C "$REPO/$name/git" rev-parse HEAD 2> /dev/null)" = "$commit" ]
-          else
-            [ -d "$REPO/$name/${version//./,}" ]
+          local dir="$REPO/$name/${version//./,}"
+          [ "$(cat "$REPO/$name/.current" 2> /dev/null)" = "$version" ] && [ -d "$dir" ] || return 1
+          if [ -f "$dir/.pinned-commit" ]; then
+            [ "$(cat "$dir/.pinned-commit")" = "$commit" ]
           fi
+        }
+        # haxelib git installs a library as version "git", which does not
+        # satisfy another library naming it at a version (crossbyte's
+        # haxelib.json names emitter 2.0.0, and `haxelib path crossbyte`,
+        # which every native build asks through hxcpp, then fails). So the
+        # checkout is registered under the version it declares, as the
+        # registry would install it, with its commit noted beside it.
+        register() {
+          local dir="$REPO/$name/${version//./,}"
+          [ "$(cat "$REPO/$name/.current" 2> /dev/null)" = git ] || return 1
+          [ "$(git -C "$REPO/$name/git" rev-parse HEAD 2> /dev/null)" = "$commit" ] || return 1
+          rm -rf "$dir"
+          mv "$REPO/$name/git" "$dir"
+          printf '%s' "$version" > "$REPO/$name/.current"
+          printf '%s' "$commit" > "$dir/.pinned-commit"
         }
 
         while read -r name version source commit extra || [ -n "$name" ]; do
@@ -124,7 +140,7 @@ runs:
             # Whatever an older list's cache left of it goes first: haxelib
             # git over an installed library updates it rather than cloning.
             rm -rf "$REPO/$name"
-            if haxelib git "$name" "$source" "$commit" && held; then
+            if haxelib git "$name" "$source" "$commit" && register && held; then
               from="GitHub, $source at ${commit:0:10}"
             else
               got="$(resolved)"
