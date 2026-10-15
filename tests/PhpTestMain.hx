@@ -49,6 +49,8 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.core.ConfigTreeTest());
 			runner.addCase(new crossbyte.utils.UtilsTest());
 			runner.addCase(new crossbyte.io.ByteArrayIOTest());
+			runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
+			runner.addCase(new crossbyte.io.ByteArrayInputTest());
 			runner.addCase(new crossbyte.io.BitPackingTest());
 			runner.addCase(new crossbyte.ds.SpatialGridTest());
 			runner.addCase(new crossbyte.ds.SparseSpatialGridTest());

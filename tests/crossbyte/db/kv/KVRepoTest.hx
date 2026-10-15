@@ -89,6 +89,14 @@ class KVRepoTest extends utest.Test {
 		// The same bytes are a value of a codec that reads any.
 		var raw = new KVRepo<Bytes>(store, "profiles/", KVCodecs.bytes());
 		Assert.equals("{\"name\":", Require.notNull(raw.get("broken")).value.toString());
+
+		// Text that is not UTF-8, where the decoder tells: natively and on the
+		// jvm it reads leniently instead. On PHP it read as the bytes it was.
+		#if (js || hl || eval || php)
+		var names = new KVRepo<String>(store, "names/", KVCodecs.text());
+		store.put("names/cut", Bytes.ofHex("41e282"));
+		Assert.equals(KVErrorKind.Undecodable, Require.notNull(KVStoreChecks.kvError(() -> names.get("cut"))).kind);
+		#end
 	}
 
 	public function testRefusesWhatItCannotUse():Void {

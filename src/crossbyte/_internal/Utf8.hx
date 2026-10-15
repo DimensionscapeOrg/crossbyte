@@ -27,10 +27,11 @@ import haxe.io.Bytes;
 	(HashLink's encoder ran past the end and crashed the process), but one
 	elsewhere HashLink's encoder takes the character after it into it;
 	finding those would cost every string a pass. A malformed sequence
-	reads as U+FFFD on HashLink and eval too:
-	HashLink's decoder dropped everything from the first bad byte, and eval
+	reads as U+FFFD on HashLink, eval and PHP too:
+	HashLink's decoder dropped everything from the first bad byte, eval
 	kept the bytes as they were, which the next operation on the string then
-	aborted the process over. Natively hxcpp decodes leniently (a stray
+	aborted the process over, and PHP kept them too, a PHP string being
+	bytes. Natively hxcpp decodes leniently (a stray
 	continuation byte takes the next byte with it, an overlong form is
 	accepted), and the jvm writes an unpaired surrogate as `?`: neither
 	crashes, and neither is checked for, as that would cost every string.
@@ -282,8 +283,9 @@ class Utf8 {
 	/**
 		`len` bytes of `bytes` from `pos`, as UTF-8; `Bytes.getString` elsewhere.
 
-		`strict` makes a malformed sequence throw on JavaScript rather than read
-		as U+FFFD, for a caller that reports bytes that are not text.
+		`strict` makes a malformed sequence throw on JavaScript, HashLink, eval
+		and PHP rather than read as U+FFFD, for a caller that reports bytes
+		that are not text.
 	**/
 	public static inline function stringOf(bytes:Bytes, pos:Int, len:Int, strict:Bool = false):String {
 		#if js
@@ -292,10 +294,29 @@ class Utf8 {
 		return __decodeHl(bytes, pos, len, strict);
 		#elseif eval
 		return __decodeChecked(bytes, pos, len, strict);
+		#elseif (php && !macro)
+		return __decodePhp(bytes, pos, len, strict);
 		#else
 		return bytes.getString(pos, len);
 		#end
 	}
+
+	#if (php && !macro)
+	/**
+		PHP's own substring for well-formed UTF-8, which nearly all of it is,
+		found by one call to `mb_check_encoding`; the rest decoded here. A
+		PHP string is bytes, so `getString` kept a malformed sequence as the
+		bytes it was. Not inline, though the call costs PHP about as much as
+		the check: inlined into `ByteArray.toString`, Haxe 4.3's PHP
+		generator failed on `bytes.toString().length` ("Unexpected field
+		access static(php.Boot.deref)").
+	**/
+	static function __decodePhp(bytes:Bytes, pos:Int, len:Int, strict:Bool):String {
+		// getString refuses a range outside the bytes, before anything is read.
+		var text:String = bytes.getString(pos, len);
+		return php.Global.mb_check_encoding(text, "UTF-8") ? text : __decodeReplacing(bytes, pos, len, strict);
+	}
+	#end
 
 	#if hl
 	/**
@@ -474,7 +495,9 @@ class Utf8 {
 		}
 		return true;
 	}
+	#end
 
+	#if (eval || (php && !macro))
 	/**
 		UTF-8 decoded as the Encoding Standard decodes it: each maximal
 		subpart of a malformed sequence is one U+FFFD (or, `strict`, an
