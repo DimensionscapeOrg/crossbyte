@@ -234,6 +234,30 @@ class HTTPServer extends ServerSocket {
 	public var draining(default, null):Bool = false;
 
 	/**
+		Reads `tlsCertificatePath` and `tlsKeyPath` again, and presents what
+		they hold from now on: each handshake from then on gets that
+		certificate, and each connection already up keeps its own. How a
+		server takes a certificate renewed on disk without a restart, as
+		`nginx -s reload` does; call it from the renewal's hook, a watch on
+		the files, or a daily timer. See `ServerSocket.setCertificate`.
+
+		@throws crossbyte.errors.IllegalOperationError On a server with no
+			TLS.
+		@throws Error When a file cannot be read or holds no certificate or
+			key; the server goes on presenting the one it had.
+	**/
+	public function reloadCertificate():Void {
+		if (!__config.tlsEnabled) {
+			throw new crossbyte.errors.IllegalOperationError("reloadCertificate needs a server with TLS: tlsCertificatePath and tlsKeyPath are not set.");
+		}
+		// Both read before either is presented, so a file that cannot be
+		// read changes nothing.
+		var certificate = crossbyte.net.Certificate.fromFile(__config.tlsCertificatePath);
+		var key = crossbyte.net.Key.fromFile(__config.tlsKeyPath);
+		setCertificate(certificate, key);
+	}
+
+	/**
 		Gracefully shuts the server down: stops accepting new connections,
 		lets in-flight requests finish, then closes.
 

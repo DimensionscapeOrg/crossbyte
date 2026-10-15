@@ -181,4 +181,19 @@ interface INetHost {
 	 * open: close each, as a server that is stopping does.
 	 */
 	public function close():Void;
+
+	/**
+		Replaces the certificate a `tls://` or `wss://` host presents, with
+		its key, for every handshake from then on: each connection already up
+		keeps the one it began with, so a certificate renewed while the host
+		runs (every 60 to 90 days, from Let's Encrypt) is taken without a
+		restart and without dropping anyone. A host spread over runtimes
+		presents it on every one. See `ServerSocket.setCertificate`.
+
+		@throws crossbyte.errors.IllegalOperationError On a host that
+			terminates no TLS: `tcp://`, `ws://` or `rudp://`.
+		@throws crossbyte.errors.ArgumentError When the certificate or the
+			key is missing.
+	**/
+	public function setCertificate(certificate:Certificate, key:Key):Void;
 }

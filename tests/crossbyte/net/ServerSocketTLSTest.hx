@@ -88,9 +88,11 @@ class ServerSocketTLSTest extends utest.Test {
 		Assert.isTrue(server.localPort > 0);
 		Assert.equals(0, server.pendingHandshakeCount());
 
-		// TLS material is materialized during bind(), so later changes would
-		// silently not apply and must be rejected instead.
-		Assert.raises(() -> server.setCertificate(fixture.certificate, fixture.key), CBError);
+		// A running server takes a new certificate for the handshakes from then
+		// on (ServerCertificateRenewalTest). The client authority and ALPN are
+		// fixed when the listener is bound, so later ones would silently not
+		// apply and are rejected instead.
+		server.setCertificate(fixture.certificate, fixture.key);
 		Assert.raises(() -> server.requireClientCertificate(fixture.certificate), CBError);
 		Assert.raises(() -> server.setAlpn(["h2"]), CBError);
 

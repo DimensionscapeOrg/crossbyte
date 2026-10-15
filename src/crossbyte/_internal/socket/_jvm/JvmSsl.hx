@@ -188,6 +188,12 @@ class JvmSslSocket extends sys.net.Socket {
 		__listenerContext = null;
 	}
 
+	/** Drops every certificate `addSNICertificate` added. **/
+	public function clearSNICertificates():Void {
+		__sni = null;
+		__listenerContext = null;
+	}
+
 	public function peerCertificate():JvmSslCertificate {
 		if (__engine == null) {
 			return null;
@@ -243,8 +249,9 @@ class JvmSslSocket extends sys.net.Socket {
 	/**
 		The context a listener hands every connection it accepts: made on the
 		first accept and kept, and made again only if what it was made from has
-		changed. `ServerSocket` refuses new material once it is bound, so in
-		practice that is never.
+		changed: a server given a new certificate once bound, whose next
+		accept makes the context it hands from then on. A connection already
+		accepted keeps the one it was made with.
 	**/
 	@:noCompletion private function __serverContext():SSLContext {
 		var verifies:Null<Bool> = __verifies();

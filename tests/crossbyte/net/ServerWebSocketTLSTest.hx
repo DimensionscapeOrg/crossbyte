@@ -23,11 +23,13 @@ class ServerWebSocketTLSTest extends utest.Test {
 		A certificate assigned once the server is bound is refused, and a
 		secure server will not listen without one.
 
-		Natively the TLS configuration is built in `bind()`, so a `cert`
-		assigned afterwards would be taken without a word and never presented,
-		and a server listening with none would fail every handshake silently.
+		A server listening with no certificate would fail every handshake
+		silently, so it does not listen. A `cert` given once bound is taken,
+		and presented from then on (ServerCertificateRenewalTest); the
+		client authority is fixed when the listener is bound, and refused
+		after.
 	**/
-	public function testTheCertificateIsWantedBeforeBind():Void {
+	public function testTheCertificateIsWantedBeforeListening():Void {
 		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
 			Assert.warn("no certificate toolchain on this machine; the case did not run");
@@ -36,10 +38,11 @@ class ServerWebSocketTLSTest extends utest.Test {
 
 		var server = new ServerWebSocket(true);
 		server.bind(0, "127.0.0.1");
-		Assert.raises(() -> server.cert = {certificate: fixture.certificate, key: fixture.key}, CBError);
 		Assert.raises(() -> server.certAuthority = fixture.certificate, CBError);
 		Assert.raises(() -> server.listen(), IOError);
 		Assert.isFalse(server.listening, "a secure server with no certificate listened");
+		server.cert = {certificate: fixture.certificate, key: fixture.key};
+		Assert.equals(fixture.certificate, server.cert.certificate, "a certificate given once bound was not taken");
 		try server.close() catch (_:Dynamic) {}
 	}
 

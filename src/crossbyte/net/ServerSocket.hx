@@ -806,9 +806,29 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	@:noCompletion private var __tlsAuthority:Certificate;
 	@:noCompletion private var __tlsSni:Array<{match:String->Bool, certificate:Certificate, key:Key}> = [];
 	@:noCompletion private var __tlsAlpn:Array<String>;
+	// Each SNI name's secure context, as the server's SNICallback reads them:
+	// made in listen(), and as names are added after it.
+	@:noCompletion private var __nodeSni:Array<{match:String->Bool, context:Dynamic}> = [];
 	// Whether Node has said the server is listening: an error before that is
 	// the listen failing, and one after it a connection it could not take.
 	@:noCompletion private var __nodeListening:Bool = false;
+
+	/**
+		What a secure context for `certificate` is made from, for the
+		server's default and for each SNI name: the authority clients must
+		be issued by, with `requireClientCertificate()`, belongs to each, and
+		Node verifies a client against the context its handshake chose.
+	**/
+	@:noCompletion private function __nodeContextOptions(certificate:Certificate, key:Key):Dynamic {
+		var options:Dynamic = {key: key.__pem, cert: certificate.__pem};
+		if (key.__passphrase != null) {
+			options.passphrase = key.__passphrase;
+		}
+		if (__tlsAuthority != null) {
+			options.ca = [__tlsAuthority.__pem];
+		}
+		return options;
+	}
 	#end
 
 	/**
@@ -911,24 +931,49 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Installs the certificate chain and private key this server presents to
-		clients. Must be called on a secure server before `bind()`: the TLS
-		configuration is made when the listener is bound, and material
-		installed afterwards would never be presented. `listen()` refuses a
-		secure server that has none.
+		clients. `listen()` refuses a secure server that has none.
+
+		Called again on a server already bound or listening, it replaces
+		them: each handshake from then on presents the new certificate, and
+		each connection already up keeps the one it began with. So a
+		certificate renewed while the server runs (every 60 to 90 days, from
+		Let's Encrypt) is taken without a restart and without dropping
+		anyone:
+
+		```hx
+		server.setCertificate(Certificate.fromFile("fullchain.pem"), Key.fromFile("privkey.pem"));
+		```
+
+		A server spread over `runtimes` presents it on every one; with
+		`reusePort`, each runtime's listener takes it on its own runtime, at
+		that runtime's next pass, together with any other certificate change
+		made in the same pass here.
 
 		@param cert The certificate chain to present.
 		@param key The matching private key.
 		@throws Error When this server was not constructed with `secure` set,
-			or when it is already bound.
+			or is closed.
+		@throws ArgumentError When the certificate or the key is missing.
 	**/
 	public function setCertificate(cert:Certificate, key:Key):Void {
-		__requireSecure("setCertificate");
+		__requireSecureOpen("setCertificate");
+		if (cert == null || key == null) {
+			throw new ArgumentError("setCertificate needs a certificate and its key.");
+		}
 
 		#if nodejs
+		if (__serverSocket != null) {
+			// Node's own way to renew: the handshakes from here on use this
+			// context, and each connection keeps the one it began with.
+			// Material Node cannot read throws here, before anything changes.
+			(cast __serverSocket : Dynamic).setSecureContext(__nodeContextOptions(cert, key));
+		}
 		__tlsCertificate = cert;
 		__tlsKey = key;
 		#else
-		__applyTls(socket -> (cast socket : SSLSocket).setCertificate(cert.__native, key.__native));
+		var setting:Socket->Void = socket -> (cast socket : SSLSocket).setCertificate(cert.__native, key.__native);
+		__applyTls(setting);
+		__certificatesChanged(setting);
 		#end
 		__hasCertificate = true;
 	}
@@ -942,28 +987,131 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		setting(__listenerSocket());
 		__tlsReplay.push(setting);
 	}
+
+	// The certificate changes made on a bound server and not yet handed to
+	// the listeners of its runtimes, with reusePort; see __certificatesChanged.
+	@:noCompletion private var __certificatesPending:Null<Array<Socket->Void>> = null;
+
+	/**
+		After `setting`, already made on this server's listener by
+		`__applyTls`: on a server already bound, the listener's next accepts
+		use what is set now, and with `reusePort` each runtime's listener is
+		given the change on its own runtime. Every change made in one pass
+		goes to a runtime as one, so a handshake there never meets SNI
+		certificates cleared and not yet added again.
+	**/
+	@:noCompletion private function __certificatesChanged(setting:Socket->Void):Void {
+		if (!bound && !listening) {
+			// Built at bind(), from everything set before it.
+			return;
+		}
+		crossbyte._internal.socket.TlsListeners.refresh(__listenerSocket());
+		#if (target.threaded && !js)
+		if (!reusePort || __spread == null) {
+			// Without reusePort every connection is accepted here, from the
+			// listener just refreshed, whichever runtime then serves it.
+			return;
+		}
+		if (__certificatesPending != null) {
+			__certificatesPending.push(setting);
+			return;
+		}
+		__certificatesPending = [setting];
+		var posted:Bool = __cbInstance.post(__handCertificatesOn);
+		if (!posted) {
+			__handCertificatesOn();
+		}
+		#end
+	}
+
+	#if (target.threaded && !js)
+	/** The changes of a pass, to each runtime's listener, with `reusePort`. **/
+	@:noCompletion private function __handCertificatesOn():Void {
+		var settings:Null<Array<Socket->Void>> = __certificatesPending;
+		__certificatesPending = null;
+		if (settings == null || __spread == null) {
+			return;
+		}
+		for (replica in __spread.replicas) {
+			var listener:Null<Socket> = replica.__listenerSocket();
+			if (listener == null) {
+				continue;
+			}
+			var runtime:CrossByte = replica.__cbInstance;
+			runtime.post(() -> {
+				var own:Null<Socket> = replica.__listenerSocket();
+				if (own == null) {
+					return;
+				}
+				for (setting in settings) {
+					setting(own);
+				}
+				crossbyte._internal.socket.TlsListeners.refresh(own);
+			});
+		}
+	}
+	#end
 	#end
 
 	/**
 		Adds an additional certificate selected by Server Name Indication,
-		allowing one listener to serve several hostnames. Before `bind()`,
-		as `setCertificate()`.
+		allowing one listener to serve several hostnames. On a server already
+		bound, as `setCertificate()` does: for the handshakes from then on.
+
+		A name two entries accept gets the first one's certificate, so to
+		replace these, `clearSniCertificates()` and add them again, in the
+		same pass.
 
 		@param serverNameMatch Predicate matching the client-offered hostname.
 		@param cert The certificate chain to present on a match.
 		@param key The matching private key.
 		@throws Error When this server was not constructed with `secure` set,
-			or when it is already bound.
+			or is closed.
+		@throws ArgumentError When the predicate, the certificate or the key
+			is missing.
 	**/
 	public function addSniCertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
-		__requireSecure("addSniCertificate");
+		__requireSecureOpen("addSniCertificate");
+		if (serverNameMatch == null || cert == null || key == null) {
+			throw new ArgumentError("addSniCertificate needs a predicate, a certificate and its key.");
+		}
 
 		#if nodejs
+		if (__serverSocket != null) {
+			// Made now, as listen() made the others: material Node cannot
+			// read throws here, before anything changes.
+			__nodeSni.push({match: serverNameMatch, context: Tls.createSecureContext(__nodeContextOptions(cert, key))});
+		}
 		__tlsSni.push({match: serverNameMatch, certificate: cert, key: key});
 		#else
-		__applyTls(socket -> (cast socket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native));
+		var setting:Socket->Void = socket -> (cast socket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native);
+		__applyTls(setting);
+		__certificatesChanged(setting);
 		#end
 		__hasCertificate = true;
+	}
+
+	/**
+		Removes every certificate `addSniCertificate()` added, so that each
+		name is presented `setCertificate()`'s, until others are added. On a
+		server already bound, for the handshakes from then on: replacing a
+		set of SNI certificates is clearing them and adding the new ones in
+		the same pass, which every runtime takes as one change.
+
+		@throws Error When this server was not constructed with `secure` set,
+			or is closed.
+	**/
+	public function clearSniCertificates():Void {
+		__requireSecureOpen("clearSniCertificates");
+
+		#if nodejs
+		__tlsSni = [];
+		__nodeSni = [];
+		#else
+		var setting:Socket->Void = crossbyte._internal.socket.TlsListeners.clearSni;
+		__applyTls(setting);
+		__certificatesChanged(setting);
+		#end
 	}
 
 	/**
@@ -1026,6 +1174,16 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		#elseif (java || jvm)
 		__applyTls(socket -> (cast socket : SSLSocket).setAlpn(protocols));
 		#end
+	}
+
+	/** For the certificates, which a server takes before `bind()` or after: a secure server not yet closed. **/
+	@:noCompletion private function __requireSecureOpen(field:String):Void {
+		if (!secure) {
+			throw new CBError('$field is only available on a server constructed with secure = true.');
+		}
+		if (__closed || __listenerReleased) {
+			throw new CBError('$field was called on a server already closed.');
+		}
 	}
 
 	@:noCompletion private function __requireSecure(field:String):Void {
@@ -1199,17 +1357,13 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		};
 
 		if (secure) {
-			var options:Dynamic = {key: __tlsKey.__pem, cert: __tlsCertificate.__pem};
-
-			if (__tlsKey.__passphrase != null) {
-				options.passphrase = __tlsKey.__passphrase;
-			}
+			var options:Dynamic = __nodeContextOptions(__tlsCertificate, __tlsKey);
 
 			if (__tlsAuthority != null) {
 				// Both flags, deliberately. requestCert on its own asks for a
 				// certificate and then accepts a client that declines to send
 				// one, which is not what requireClientCertificate() promises.
-				options.ca = [__tlsAuthority.__pem];
+				// The authority itself is in the context's options.
 				options.requestCert = true;
 				options.rejectUnauthorized = true;
 			}
@@ -1218,37 +1372,35 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 				options.ALPNProtocols = __tlsAlpn;
 			}
 
-			if (__tlsSni.length > 0) {
-				// Each name's context made once, here, with its key's
-				// passphrase, rather than at every handshake for the name
-				// without it: an encrypted key (which the default certificate's
-				// could be) would fail every handshake that asked for its name,
-				// and an unencrypted one would be parsed again for each. A key
-				// or certificate Node cannot read throws from listen(), as the
-				// default certificate's does.
-				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
-				for (entry in __tlsSni) {
-					var material:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
-					if (entry.key.__passphrase != null) {
-						material.passphrase = entry.key.__passphrase;
-					}
-					sni.push({match: entry.match, context: Tls.createSecureContext(material)});
-				}
-				options.SNICallback = function(servername:String, callback:Dynamic):Void {
-					for (entry in sni) {
-						var matched:Bool = try entry.match(servername) catch (_:Dynamic) false;
-						if (matched) {
-							callback(null, entry.context);
-							return;
-						}
-					}
-
-					// An unmatched name is not a failure: the connection falls
-					// back to the default certificate, which is what a native
-					// server does with one too.
-					callback(null, null);
-				};
+			// Each name's context made once, here, with its key's passphrase,
+			// rather than at every handshake for the name without it: an
+			// encrypted key (which the default certificate's could be) would
+			// fail every handshake that asked for its name, and an unencrypted
+			// one would be parsed again for each. A key or certificate Node
+			// cannot read throws from listen(), as the default certificate's
+			// does; one added once the server listens, from
+			// addSniCertificate().
+			__nodeSni = [];
+			for (entry in __tlsSni) {
+				__nodeSni.push({match: entry.match, context: Tls.createSecureContext(__nodeContextOptions(entry.certificate, entry.key))});
 			}
+			// Asked whether or not there are names yet: the list is read at
+			// each handshake, so names added once the server listens are
+			// presented from then on.
+			options.SNICallback = function(servername:String, callback:Dynamic):Void {
+				for (entry in __nodeSni) {
+					var matched:Bool = try entry.match(servername) catch (_:Dynamic) false;
+					if (matched) {
+						callback(null, entry.context);
+						return;
+					}
+				}
+
+				// An unmatched name is not a failure: the connection falls
+				// back to the default certificate, which is what a native
+				// server does with one too.
+				callback(null, null);
+			};
 
 			// Half-open, so a peer's FIN is the accepted socket's to act on,
 			// by its peerShutdownPolicy, rather than Node's to answer with its

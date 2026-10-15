@@ -428,6 +428,10 @@ private class RelayingHost implements INetHost {
 
 	public function close():Void {}
 
+	public function setCertificate(certificate:Certificate, key:Key):Void {
+		calls.push("setCertificate");
+	}
+
 	private var __maxConnections:Int = 0;
 
 	private function get_maxConnections():Int {

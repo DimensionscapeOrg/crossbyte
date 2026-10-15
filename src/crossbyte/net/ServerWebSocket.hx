@@ -1741,12 +1741,15 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		The certificate this server presents to clients, with its private key.
+		A secure server will not `listen()` without one.
 
-		Set it before `bind()`, where a native server builds its TLS
-		configuration: it is refused afterwards, since it would never be
-		presented. A secure server will not `listen()` without one.
+		Set again on a server already bound or listening, it replaces them
+		as `ServerSocket.setCertificate()` does: each handshake from then on
+		presents the new certificate, and each session already up keeps the
+		one it began with, so a renewed certificate is taken without a
+		restart.
 
-		@throws Error When this server is not secure, or is already bound.
+		@throws Error When this server is not secure, or is closed.
 		@throws ArgumentError When the certificate or the key is missing.
 	**/
 	public var cert(default, set):{certificate:Certificate, key:Key};
@@ -1760,7 +1763,7 @@ class ServerWebSocket extends ServerSocket {
 		Installs the certificate this server presents, with its private key:
 		the same as setting `cert`, which see.
 
-		@throws Error When this server is not secure, or is already bound.
+		@throws Error When this server is not secure, or is closed.
 		@throws ArgumentError When the certificate or the key is missing.
 	**/
 	override public function setCertificate(certificate:Certificate, key:Key):Void {
@@ -1773,22 +1776,31 @@ class ServerWebSocket extends ServerSocket {
 		Name Indication, for a name `serverNameMatch` accepts: one listener
 		for several host names. A name no entry claims gets `cert`.
 
-		Before `bind()`, as `cert` is.
+		On a server already bound, for the handshakes from then on, as `cert`
+		is; to replace these, `clearSniCertificates()` and add them again in
+		the same pass.
 
-		@throws Error When this server is not secure, or is already bound.
+		@throws Error When this server is not secure, or is closed.
 		@throws ArgumentError When the predicate, the certificate or the key
 			is missing.
 	**/
 	override public function addSniCertificate(serverNameMatch:String->Bool, certificate:Certificate, key:Key):Void {
-		__requireUnboundTls("addSniCertificate");
+		__requireSecureOpen("addSniCertificate");
 		if (serverNameMatch == null || certificate == null || key == null) {
 			throw new ArgumentError("addSniCertificate needs a predicate, a certificate and its key.");
 		}
 
 		#if nodejs
+		if (__webServerSocket != null) {
+			// Made now, as listen() made the others: material Node cannot
+			// read throws here, before anything changes.
+			__nodeSni.push({match: serverNameMatch, context: Tls.createSecureContext(__nodeContextOptions(certificate, key))});
+		}
 		__tlsSni.push({match: serverNameMatch, certificate: certificate, key: key});
 		#else
-		__applyTls(socket -> (socket : FlexSocket).addSNICertificate(serverNameMatch, certificate.__native, key.__native));
+		var setting:sys.net.Socket->Void = socket -> (socket : FlexSocket).addSNICertificate(serverNameMatch, certificate.__native, key.__native);
+		__applyTls(setting);
+		__certificatesChanged(setting);
 		#end
 		__hasCertificate = true;
 	}
@@ -1824,16 +1836,23 @@ class ServerWebSocket extends ServerSocket {
 		read. They are overridden here, each onto this class's own listener.
 	**/
 	@:noCompletion private function __installCertificate(field:String, certificate:Certificate, key:Key):Void {
-		__requireUnboundTls(field);
+		__requireSecureOpen(field);
 		if (certificate == null || key == null) {
 			throw new ArgumentError('$field needs a certificate and its key.');
 		}
 
 		#if nodejs
+		if (__webServerSocket != null) {
+			// Node's own way to renew, as ServerSocket does: material Node
+			// cannot read throws here, before anything changes.
+			(cast __webServerSocket : Dynamic).setSecureContext(__nodeContextOptions(certificate, key));
+		}
 		__tlsCertificate = certificate;
 		__tlsKey = key;
 		#else
-		__applyTls(socket -> (socket : FlexSocket).setCertificate(certificate.__native, key.__native));
+		var setting:sys.net.Socket->Void = socket -> (socket : FlexSocket).setCertificate(certificate.__native, key.__native);
+		__applyTls(setting);
+		__certificatesChanged(setting);
 		#end
 		__hasCertificate = true;
 	}
@@ -1949,15 +1968,7 @@ class ServerWebSocket extends ServerSocket {
 			// Everything the TLS methods were given, not only `cert` and the
 			// authority: a certificate installed with setCertificate(), the SNI
 			// entries and the ALPN list.
-			var options:Dynamic = {};
-
-			if (__tlsCertificate != null && __tlsKey != null) {
-				options.key = __tlsKey.__pem;
-				options.cert = __tlsCertificate.__pem;
-				if (__tlsKey.__passphrase != null) {
-					options.passphrase = __tlsKey.__passphrase;
-				}
-			}
+			var options:Dynamic = __tlsCertificate != null && __tlsKey != null ? __nodeContextOptions(__tlsCertificate, __tlsKey) : {};
 
 			if (__tlsAuthority != null) {
 				options.ca = [__tlsAuthority.__pem];
@@ -1969,37 +1980,35 @@ class ServerWebSocket extends ServerSocket {
 				options.ALPNProtocols = __tlsAlpn;
 			}
 
-			if (__tlsSni.length > 0) {
-				// Each entry's context made once, here, rather than for every
-				// handshake that asks for its name: making one parses the
-				// certificate and the key, which is the costly part. And with
-				// the key's passphrase, which a context made from the key alone
-				// could not open.
-				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
-				for (entry in __tlsSni) {
-					var settings:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
-					if (entry.key.__passphrase != null) {
-						settings.passphrase = entry.key.__passphrase;
+			// Each entry's context made once, here, rather than for every
+			// handshake that asks for its name: making one parses the
+			// certificate and the key, which is the costly part. And with the
+			// key's passphrase, which a context made from the key alone could
+			// not open. One added once the server listens is made as it is
+			// added.
+			__nodeSni = [];
+			for (entry in __tlsSni) {
+				__nodeSni.push({match: entry.match, context: Tls.createSecureContext(__nodeContextOptions(entry.certificate, entry.key))});
+			}
+
+			// Asked whether or not there are names yet: the list is read at
+			// each handshake, so names added once the server listens are
+			// presented from then on.
+			options.SNICallback = function(servername:String, callback:Dynamic):Void {
+				for (entry in __nodeSni) {
+					// A predicate that throws claims nothing: this runs from
+					// Node's own loop, where a throw ends the process.
+					var claimed:Bool = try entry.match(servername) catch (_:Dynamic) false;
+					if (claimed) {
+						callback(null, entry.context);
+						return;
 					}
-					sni.push({match: entry.match, context: Tls.createSecureContext(settings)});
 				}
 
-				options.SNICallback = function(servername:String, callback:Dynamic):Void {
-					for (entry in sni) {
-						// A predicate that throws claims nothing: this runs from
-						// Node's own loop, where a throw ends the process.
-						var claimed:Bool = try entry.match(servername) catch (_:Dynamic) false;
-						if (claimed) {
-							callback(null, entry.context);
-							return;
-						}
-					}
-
-					// A name no entry claims gets the default certificate, as it
-					// does natively.
-					callback(null, null);
-				};
-			}
+				// A name no entry claims gets the default certificate, as it
+				// does natively.
+				callback(null, null);
+			};
 
 			// Node's own bound on the TLS handshake, which is two minutes
 			// unless handshakeTimeout is passed, so a peer that said nothing

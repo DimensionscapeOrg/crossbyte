@@ -403,6 +403,11 @@ class TestSuites {
 		// on the interpreter, what a certificate says of itself. Also in
 		// PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.SocketClientCertificateTest());
+		// A running TLS server given a new certificate: every server kind,
+		// spread over runtimes too. Also in PortableSuite, for Node.
+		#if !(js && !nodejs)
+		runner.addCase(new crossbyte.net.ServerCertificateRenewalTest());
+		#end
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded

@@ -35,8 +35,8 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 
 		A `tls://` host (TCP with TLS) or a `wss://` one terminates TLS, and
 		needs the certificate it presents and its key in `tls`, which are
-		installed before the host binds, as a TLS server's material has to
-		be. `tls.clientAuthority` requires every client to present a
+		installed before the host binds; `setCertificate` replaces them on a
+		host already running. `tls.clientAuthority` requires every client to present a
 		certificate that authority issued (mutual TLS); a host reads nothing
 		else in `TLSOptions`, so the options its own connections dial with
 		can be the same object. For anything more (SNI, ALPN), make the
@@ -295,6 +295,14 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 		__server.close();
 	}
 
+	public function setCertificate(certificate:Certificate, key:Key):Void {
+		if (!__server.secure) {
+			throw new crossbyte.errors.IllegalOperationError("A " + (protocol == WEBSOCKET ? "ws://" : "tcp://")
+				+ " host presents no certificate: only a tls:// or wss:// host terminates TLS.");
+		}
+		__server.setCertificate(certificate, key);
+	}
+
 	@:noCompletion private function __ensureListeningHooks():Void {
 		if (__listeningHooked) {
 			return;
@@ -536,6 +544,10 @@ private class RUDPHost implements INetHost {
 	public function close():Void {
 		__removeListeningHooks();
 		__server.close();
+	}
+
+	public function setCertificate(certificate:Certificate, key:Key):Void {
+		throw new crossbyte.errors.IllegalOperationError("An rudp:// host presents no certificate: it terminates no TLS.");
 	}
 
 	@:noCompletion private function __ensureListeningHooks():Void {

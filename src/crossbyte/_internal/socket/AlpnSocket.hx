@@ -106,6 +106,34 @@ class AlpnSocket extends SSLSocket {
 		}
 	}
 
+	/**
+		A listener's TLS configuration, built again from what is set on it
+		now, for the connections it accepts from here on: how a server takes
+		a certificate once it is bound. Does nothing before `bind()`, which
+		builds the first.
+
+		A connection already accepted holds the configuration it was made
+		with until it closes: the fork counts each one's reference, and the
+		listener lets go of only its own here. The SNI callback goes on
+		being kept, since mbedTLS holds it as a bare pointer that a
+		handshake still under way would call.
+	**/
+	public function rebuildConfig():Void {
+		if (conf == null) {
+			return;
+		}
+		if (sniCallback != null) {
+			__retiredSniCallbacks.push(sniCallback);
+		}
+		var previous:Dynamic = conf;
+		conf = buildSSLConfig(true);
+		cpp.NativeSsl.conf_close(previous);
+	}
+
+	// What rebuildConfig keeps alive: one callback each time a server with
+	// SNI certificates takes new ones.
+	@:noCompletion private var __retiredSniCallbacks:Array<Dynamic> = [];
+
 	@:noCompletion private override function buildSSLConfig(server:Bool):Dynamic {
 		var conf:Dynamic = super.buildSSLConfig(server);
 
