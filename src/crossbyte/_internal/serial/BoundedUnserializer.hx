@@ -122,7 +122,10 @@ class BoundedUnserializer extends Unserializer {
 		if (get(pos++) != ":".code || length - pos < len) {
 			throw "Invalid string length";
 		}
-		var s:String = buf.substr(pos, len);
+		// By bytes on PHP, as the standard library reads there: `pos` and
+		// `length` count bytes, and `substr` would count characters from the
+		// start, each string a walk of all the text before it.
+		var s:String = #if php php.Global.substr(buf, pos, len) #else buf.substr(pos, len) #end;
 		pos += len;
 		s = StringTools.urlDecode(s);
 		scache.push(s);

@@ -33,6 +33,11 @@ says how.
 
 #### Platform
 
+- Reading an HXSF object on PHP takes time in proportion to its text. It
+  cut each string it held by characters counted from the start of the
+  text, so an object of many strings took time that grew with the square
+  of its size: three seconds for half a megabyte of them. Two megabytes
+  now read in a fifth of a second.
 - On PHP, a `File`, `FileStream`, file `Store` or SQLite error says why in
   one line. Its message carried PHP's stack trace as well, the exception's
   text, after the reason.

@@ -328,10 +328,7 @@ class ByteArrayIOTest extends utest.Test {
 		thousand records).
 	**/
 	public function testAMegabyteObjectRoundTrips():Void {
-		// On PHP 64 KiB, still past 65,535 bytes: Haxe's Unserializer takes
-		// time there that grows with the square of its text, ten minutes
-		// for a megabyte of HXSF.
-		var text:String = StringTools.lpad("", "abcdefgh", #if php 1 << 16 #else 1 << 20 #end);
+		var text:String = StringTools.lpad("", "abcdefgh", 1 << 20);
 		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
 			for (endian in [Endian.LITTLE_ENDIAN, Endian.BIG_ENDIAN]) {
 				var out = new ByteArray();
@@ -347,6 +344,30 @@ class ByteArrayIOTest extends utest.Test {
 				Assert.equals(3, back.count);
 				Assert.equals(0x5EED, out.readInt(), 'encoding $encoding, $endian: the object was not read to its end');
 			}
+		}
+	}
+
+	/**
+		An object is read in time in proportion to its text. On PHP a string
+		counts its characters from its start, and HXSF cut each string it
+		held by them, so an object of many strings took time that grew with
+		the square of its text: three seconds for half a megabyte of them, a
+		minute for two. Two megabytes of strings read in well under a second
+		on every target; ten are allowed.
+	**/
+	public function testAnObjectOfManyStringsIsReadInTimeInProportionToItsText():Void {
+		final items:Array<String> = [for (i in 0...160000) "item" + i];
+		for (encoding in [ObjectEncoding.HXSF, ObjectEncoding.JSON]) {
+			final out = new ByteArray();
+			out.objectEncoding = encoding;
+			out.writeObject(items);
+			out.position = 0;
+			final started:Float = haxe.Timer.stamp();
+			final back:Array<String> = out.readObject();
+			final took:Float = haxe.Timer.stamp() - started;
+			Assert.equals(items.length, back.length, 'encoding $encoding');
+			Assert.equals("item159999", back[159999], 'encoding $encoding');
+			Assert.isTrue(took < 10, 'encoding $encoding: ${Math.round(took * 1000)} ms for ${out.length} bytes');
 		}
 	}
 
