@@ -2,9 +2,7 @@ package crossbyte.db.kv;
 
 import crossbyte._internal.Utf8;
 import crossbyte.io.ByteArray;
-#if !php
 import crossbyte.rpc.RPCCodec;
-#end
 import haxe.Json;
 import haxe.io.Bytes;
 
@@ -40,13 +38,11 @@ class KVCodecs {
 		return new JsonKVCodec<T>(schema);
 	}
 
-	#if !php
 	/**
 		Values of an `RPCStruct` class in the RPC lane's binary form, through
 		its generated codec: `KVCodecs.rpc(RPCCodecs.of(Ship))`. Its schema is
 		the codec's `RPCCodec.layout`, which changes exactly when the bytes it
-		writes do: a field added, removed, renamed or retyped. Wherever RPC
-		is built: not on PHP.
+		writes do: a field added, removed, renamed or retyped.
 	**/
 	public static function rpc<T>(codec:RPCCodec<T>):KVCodec<T> {
 		if (codec == null) {
@@ -55,7 +51,6 @@ class KVCodecs {
 
 		return new RPCKVCodec<T>(codec);
 	}
-	#end
 
 	/** Values as UTF-8 text. **/
 	public static function text(schema:Int = 0):KVCodec<String> {
@@ -92,7 +87,6 @@ private final class JsonKVCodec<T> implements KVCodec<T> {
 	}
 }
 
-#if !php
 @:noCompletion
 private final class RPCKVCodec<T> implements KVCodec<T> {
 	public var schema(get, never):Int;
@@ -125,7 +119,6 @@ private final class RPCKVCodec<T> implements KVCodec<T> {
 		return __codec.layout;
 	}
 }
-#end
 
 @:noCompletion
 private final class TextKVCodec implements KVCodec<String> {

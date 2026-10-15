@@ -1,6 +1,5 @@
 package crossbyte.db.kv;
 
-#if !php
 import crossbyte.db.kv.KVStoreChecks.bytes;
 import crossbyte.errors.ArgumentError;
 import crossbyte.rpc.Float32;
@@ -30,8 +29,8 @@ class KVShipWithShield implements RPCStruct {
 }
 
 /**
-	`KVRepo` with an `RPCStruct` class's codec, wherever RPC is built (not on
-	PHP): the value as the RPC lane's binary, its layout kept beside it, and
+	`KVRepo` with an `RPCStruct` class's codec, on every target, PHP among
+	them: the value as the RPC lane's binary, its layout kept beside it, and
 	a record of another layout, written before a field was added, refused.
 **/
 class KVRepoRPCTest extends utest.Test {
@@ -107,4 +106,3 @@ class KVRepoRPCTest extends utest.Test {
 		Assert.raises(() -> KVCodecs.rpc(null), ArgumentError);
 	}
 }
-#end

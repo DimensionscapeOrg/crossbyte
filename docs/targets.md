@@ -56,7 +56,8 @@ and in SQLite (`MemoryKVStore`, `SQLiteKVStore`; see [data.md](data.md#a-keyvalu
 needs one is there.
 
 RPC is there too, without sockets: contracts and handlers build as anywhere, the codec (`RPCCodecs`, `RPCPatch`,
-`RPCMapPatch`) writes and reads the same bytes as every other target, and a session runs over an `INetConnection`
+`RPCMapPatch`) writes and reads the same bytes as every other target (and `KVCodecs.rpc` keeps a structure in the
+key/value store in them), and a session runs over an `INetConnection`
 that is not a socket, such as one of your own carrying frames however the application does. There are no sockets:
 `NetConnection` and `NetHost` cannot open TCP, WebSocket or UDP, and `ServerSocket.isSupported` and
 `DatagramSocket.isSupported` are false.
