@@ -64,10 +64,15 @@ class RPCPatchSizeTest extends utest.Test {
 		check(RPCCodecs.of(SizeBits), randomBits, "SizeBits");
 	}
 
+	// Not on neko: the readers generated for forty fields, half of them optional, take
+	// more stack than neko's loader allows one function, and it then refuses the whole
+	// module. docs/targets.md says so.
+	#if !neko
 	public function testAWideStructureInTheBitLayoutIsSizedAsWritten():Void {
 		seed = 7;
 		check(RPCCodecs.of(SizeWide), randomWide, "SizeWide");
 	}
+	#end
 
 	public function testTheOtherSuitesStructuresAreSizedAsWritten():Void {
 		seed = 8;
@@ -116,9 +121,11 @@ class RPCPatchSizeTest extends utest.Test {
 			sizer(RPCCodecs.of(SizeText), randomText),
 			sizer(RPCCodecs.of(SizeEnums), randomEnums),
 			sizer(RPCCodecs.of(SizeNest), randomNest),
-			sizer(RPCCodecs.of(SizeBits), randomBits),
-			sizer(RPCCodecs.of(SizeWide), randomWide)
+			sizer(RPCCodecs.of(SizeBits), randomBits)
 		];
+		#if !neko
+		sizers.push(sizer(RPCCodecs.of(SizeWide), randomWide));
+		#end
 		final op = () -> {
 			for (each in sizers) {
 				each();
@@ -370,6 +377,7 @@ class RPCPatchSizeTest extends utest.Test {
 		return v;
 	}
 
+	#if !neko
 	function randomWide(base:Null<SizeWide>):SizeWide {
 		final v = new SizeWide();
 		final b:SizeWide = base == null ? new SizeWide() : base;
@@ -396,6 +404,7 @@ class RPCPatchSizeTest extends utest.Test {
 		}
 		return v;
 	}
+	#end
 
 	function randomPatchWide(base:Null<PatchWide>):PatchWide {
 		final v = new PatchWide();
@@ -839,6 +848,7 @@ class SizeBits implements RPCStruct {
 	public function new() {}
 }
 
+#if !neko
 /** Forty fields in the bit layout: two masks. **/
 class SizeWide implements RPCStruct {
 	@:range(0, 1000) public var f00:Int = 0;
@@ -884,3 +894,4 @@ class SizeWide implements RPCStruct {
 
 	public function new() {}
 }
+#end

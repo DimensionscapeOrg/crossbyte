@@ -120,6 +120,11 @@ On Linux, HashLink polls its sockets through `select`, which cannot watch a desc
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
 
+**Very wide RPC structures, on neko.** Neko's loader limits the stack one function may use, and refuses the whole
+program when one function exceeds it, before `main` runs. The readers RPC generates for an `RPCStruct` grow with its
+fields, more with each optional one: a structure of forty fields, twenty of them optional, is past the limit. Split
+one that wide into nested structures. Every other target takes it.
+
 **Half a surrogate pair, on HashLink.** A string can hold half of a surrogate pair on its own (a string cut in the
 middle of an emoji does). A `ByteArray` writes one as U+FFFD, as every target does, and so do HTTP text responses,
 which go through one. Everything else that turns text into UTF-8 there (WebSocket and data channel text, RPC string
