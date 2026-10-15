@@ -93,6 +93,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		// And a certificate expired or not yet valid refused, even pinned.
 		runner.addCase(new crossbyte.net.CertificateExpiryTest());
+		// And a certificate nothing vouches for refused.
+		runner.addCase(new crossbyte.net.CertificateTrustTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// A message's call, every way to send it back, and what a listener keeps.
 		runner.addCase(new crossbyte.net.WebSocketArrivalTest());

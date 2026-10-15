@@ -411,6 +411,10 @@ class TestSuites {
 		// A certificate expired or not yet valid, refused by each client and
 		// by a server asking for a client's, even pinned; also in PortableSuite.
 		runner.addCase(new crossbyte.net.CertificateExpiryTest());
+		// A certificate nothing vouches for (another authority's, self-signed,
+		// for another name), refused by each client and by a server asking
+		// for a client's; also in PortableSuite.
+		runner.addCase(new crossbyte.net.CertificateTrustTest());
 		// A child runtime's real POLL loop, so every threaded target.
 		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// One listener's connections on several runtimes: every threaded
