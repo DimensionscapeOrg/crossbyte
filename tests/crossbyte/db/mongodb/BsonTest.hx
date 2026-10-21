@@ -149,10 +149,11 @@ class BsonTest extends utest.Test {
 	}
 
 	public function testASmallInt64IsAnInt64WhenWrapped():Void {
-		// hxcpp boxes an Int64 from -1 to 255 as the Int of the same value, so
-		// held in a Dynamic it is an Int there, and goes out as one.
+		// hxcpp before libhxcpp boxes an Int64 from -1 to 255 as the Int of the
+		// same value, so held in a Dynamic it is an Int there, and goes out as
+		// one. libhxcpp keeps it an Int64, as the other targets do.
 		var small:Int64 = Int64.ofInt(5);
-		#if cpp
+		#if (cpp && !libhxcpp)
 		Assert.equals(0x10, Bson.encode({n: small}).get(4));
 		#else
 		Assert.equals(0x12, Bson.encode({n: small}).get(4));
