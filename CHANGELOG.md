@@ -2,23 +2,12 @@
 
 All notable changes to CrossByte will be documented in this file.
 
-## 1.0.1 - Unreleased
+## 2.0.0 - Unreleased
 
 ### Changed
 
 Entries marked "(Upgrading)" can need code changed; the Upgrading section
 says how.
-
-#### Runtime
-
-- A failed start ends the program. An `Event.INIT` listener that throws
-  leaves its runtime half started, so once INIT's other listeners have
-  run the runtime exits with code 1, as a program whose startup fails
-  does, and an application whose main loop CrossByte runs exits the
-  process with it, where a server could run on with nothing listening.
-  Failures after startup are contained as before. `CrossByte.exit(code)`
-  takes the program's exit code, and every runtime keeps it as
-  `exitCode`. (Upgrading)
 
 #### Platform
 
@@ -43,6 +32,39 @@ says how.
   `native-ipc-shm-…` where it was `CrossByteSharedObject_…` (Windows) or
   `crossbyte_shared_object_…` (Linux), and on macOS `/nipc_<hash>` with
   `/tmp/nipc_<hash>.lock` where it was `cbso_`. (Upgrading)
+
+### Upgrading from 1.0
+
+#### Platform
+
+- Install the native-ipc haxelib, which CrossByte's native IPC is compiled
+  from: `haxelib install native-ipc`.
+- A program built with CrossByte 2.0.0 and one built with 1.0 cannot
+  meet over a local name: their names differ, and 1.0 sends no hello.
+  Rebuild both ends.
+- A program of your own that opened a local name's pipe or socket
+  directly must follow the new names, and send and answer the hello
+  (native-ipc's `PROTOCOL.md`).
+- Handle a `connect` that throws `IOError` for a listener of another
+  protocol version as you would one that found nothing listening.
+
+## 1.0.1 - Unreleased
+
+### Changed
+
+Entries marked "(Upgrading)" can need code changed; the Upgrading section
+says how.
+
+#### Runtime
+
+- A failed start ends the program. An `Event.INIT` listener that throws
+  leaves its runtime half started, so once INIT's other listeners have
+  run the runtime exits with code 1, as a program whose startup fails
+  does, and an application whose main loop CrossByte runs exits the
+  process with it, where a server could run on with nothing listening.
+  Failures after startup are contained as before. `CrossByte.exit(code)`
+  takes the program's exit code, and every runtime keeps it as
+  `exitCode`. (Upgrading)
 
 ### Fixed
 
@@ -69,10 +91,6 @@ says how.
 
 #### Platform
 
-- A local connection's frames are little-endian whatever
-  `ByteArray.defaultEndian` is. Their lengths were written and read in
-  that order, so a program that set it to `BIG_ENDIAN` could not talk to
-  one that had not.
 - Reading an HXSF object on PHP takes time in proportion to its text. It
   cut each string it held by characters counted from the start of the
   text, so an object of many strings took time that grew with the square
@@ -104,19 +122,6 @@ says how.
   and an application's process with it, where it was logged and the
   runtime ran on. To carry on past a failure in startup, catch it inside
   the listener.
-
-#### Platform
-
-- Install the native-ipc haxelib, which CrossByte's native IPC is compiled
-  from: `haxelib install native-ipc`.
-- A program built with CrossByte 1.0.1 and one built with 1.0.0 cannot
-  meet over a local name: their names differ, and 1.0.0 sends no hello.
-  Rebuild both ends.
-- A program of your own that opened a local name's pipe or socket
-  directly must follow the new names, and send and answer the hello
-  (native-ipc's `PROTOCOL.md`).
-- Handle a `connect` that throws `IOError` for a listener of another
-  protocol version as you would one that found nothing listening.
 
 ## 1.0.0 - 2026-10-15
 

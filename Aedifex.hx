@@ -9,14 +9,15 @@ class Aedifex {
 		.library("crossbyte")
 		.tags(["crossbyte", "networking", "http", "rpc", "server", "ipc", "tools"])
 		.description("Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.")
-		.version("1.0.1")
+		.version("2.0.0")
 		.github("dimensionscapeorg/crossbyte")
 		.license("Apache")
-		.releaseNote("1.0.1, fixes to 1.0.0: a runtime whose startup fails exits with code 1.")
+		.releaseNote("2.0.0, in development: local IPC runs on native-ipc, and a 2.0.0 program and a 1.0 one cannot meet over a local name.")
 		.contributor("Dimensionscape")
 		.classPath("src")
 		.source("src")
 		.dependency(LibrarySpec.haxelib("emitter", null, "2.0.0"))
+		.dependency(LibrarySpec.haxelib("native-ipc", null, "1.0.0"))
 		.task("interp-tests", "haxe", ["ci/interp-tests.hxml"], null, "Run the fast interpreted CrossByte test suite.")
 		.task("native-tests", "haxe", ["ci/native-tests.hxml"], null, "Build the native CrossByte smoke test executable.")
 		.task("jvm-smoke-tests", "haxe", ["ci/jvm-smoke.hxml"], null, "Build the jvm smoke test jar (core non-networking suites). Run with: java -jar export/jvm/CrossByteJvmSmoke.jar")
@@ -40,7 +41,7 @@ class Aedifex {
 			"\\._internal(\\.|$)",
 			"-D",
 			"version",
-			"1.0.1",
+			"2.0.0",
 			"-D",
 			"source-path",
 			"https://github.com/dimensionscapeorg/crossbyte/blob/main/src/",

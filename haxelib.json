@@ -19,8 +19,8 @@
 	"contributors": [
 		"Dimensionscape"
 	],
-	"releasenote": "1.0.1, fixes to 1.0.0: a runtime whose startup fails exits with code 1.",
-	"version": "1.0.1",
+	"releasenote": "2.0.0, in development: local IPC runs on native-ipc, and a 2.0.0 program and a 1.0 one cannot meet over a local name.",
+	"version": "2.0.0",
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
 	"dependencies": {
 		"emitter": "2.0.0",
