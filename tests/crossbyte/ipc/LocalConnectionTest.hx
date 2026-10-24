@@ -872,6 +872,57 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	public function testFramesAreLittleEndianWhateverDefaultEndianIs():Void {
+		// A frame's length was written and read in `ByteArray.defaultEndian`'s
+		// order, so a program that set it to BIG_ENDIAN could not talk to one
+		// that had not. This process sets it; the raw client is the one that
+		// had not, framing little-endian.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("endian");
+		var server = new LocalConnection();
+		var received:String = null;
+		var reply:Array<Int> = [];
+		server.readEnabled = true;
+		server.onData = input -> received = input.readUtfBytes(input.length);
+		var previous = ByteArray.defaultEndian;
+		ByteArray.defaultEndian = BIG_ENDIAN;
+
+		try {
+			server.listen(name);
+			var raw = LocalConnection.__connect(name, 2000);
+			Assert.notNull(raw, "the raw client did not connect");
+			pumpUntil(() -> server.connected, 2.0);
+			var frame = Bytes.alloc(4 + 5);
+			frame.setInt32(0, 5);
+			frame.blit(4, Bytes.ofString("hello"), 0, 5);
+			LocalConnection.__write(raw, frame.getData(), frame.length);
+			pumpUntil(() -> received != null || !server.connected, 2.0);
+			server.send(bytesOf("hi"));
+			// __read takes exactly what it is asked for, 0 when it has.
+			var deadline = haxe.Timer.stamp() + 2.0;
+			while (LocalConnection.__getBytesAvailable(raw) < 6 && haxe.Timer.stamp() < deadline) {
+				pumpUntil(() -> false, 0.005);
+			}
+			var buffer = Bytes.alloc(6);
+			if (LocalConnection.__read(raw, buffer.getData(), 6) == 0) {
+				reply = [for (i in 0...6) buffer.get(i)];
+			}
+			LocalConnection.__close(raw);
+		} catch (e:Dynamic) {
+			closeQuietly(server);
+			ByteArray.defaultEndian = previous;
+			throw e;
+		}
+
+		closeQuietly(server);
+		ByteArray.defaultEndian = previous;
+		Assert.equals("hello", received, "a little-endian frame was not read as one");
+		Assert.same([2, 0, 0, 0, "h".code, "i".code], reply, "the frame sent was not little-endian");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAClientThatWritesAndLeavesBeforeItIsTakenIsHeard():Void {
 		// On Windows a client that has come and gone before the listener next
 		// looks leaves the pipe closing: ConnectNamedPipe answers ERROR_NO_DATA,
