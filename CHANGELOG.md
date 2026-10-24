@@ -45,6 +45,11 @@ says how.
 
 #### Platform
 
+- A local connection's frames are little-endian whatever
+  `ByteArray.defaultEndian` is. Their lengths were written and read in
+  that order, so a program that set it to `BIG_ENDIAN` could not talk to
+  one that had not. Little-endian is its default, so programs that left
+  it alone meet as before. (Upgrading)
 - Reading an HXSF object on PHP takes time in proportion to its text. It
   cut each string it held by characters counted from the start of the
   text, so an object of many strings took time that grew with the square
@@ -76,6 +81,12 @@ says how.
   and an application's process with it, where it was logged and the
   runtime ran on. To carry on past a failure in startup, catch it inside
   the listener.
+
+#### Platform
+
+- Programs that set `ByteArray.defaultEndian` to `BIG_ENDIAN` and talk
+  over a local name to each other: rebuild both ends with 1.0.1, since a
+  1.0.0 one frames in that order and a 1.0.1 one does not.
 
 ## 1.0.0 - 2026-10-15
 

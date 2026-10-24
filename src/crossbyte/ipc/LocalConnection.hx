@@ -489,9 +489,10 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		if (__outBuffer == null) {
 			__outBuffer = new ByteArray();
 		}
-		// In the byte order a frame always had: `ByteArray.defaultEndian`'s,
-		// as the reader's own buffer reads it.
-		__outBuffer.endian = ByteArray.defaultEndian;
+		// Little-endian, `ByteArray.defaultEndian`'s own default, whatever an
+		// application has set it to: it took that, and two programs that set
+		// it differently could not read each other.
+		__outBuffer.endian = LITTLE_ENDIAN;
 		__outBuffer.position = __outBuffer.length;
 		__outBuffer.writeInt(length);
 		if (length > 0) {
@@ -678,6 +679,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		// This session's framing, and this thread's alone: no reader shares
 		// one with another, and close() never clears one being written to.
 		var framing = new ByteArray();
+		// As frames are written: see __frameOutput.
+		framing.endian = LITTLE_ENDIAN;
 		var idle:Float = POLL_MIN;
 		// Whether the last wait ended because the socket was ready.
 		var wokeForWork = false;
