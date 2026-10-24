@@ -422,7 +422,7 @@ class SharedObjectTest extends utest.Test {
 				|| c == "_".code;
 			safe.addChar(kept ? c : "_".code);
 		}
-		return "/dev/shm/crossbyte_shared_object_" + safe.toString() + "_" + nameHash(name);
+		return "/dev/shm/native-ipc-shm-" + safe.toString() + "_" + nameHash(name);
 	}
 	#end
 
@@ -434,7 +434,7 @@ class SharedObjectTest extends utest.Test {
 	**/
 	private static function leftBehind(name:String):Array<String> {
 		var hash:String = nameHash(name);
-		var paths:Array<String> = ["/dev/shm/cbso_" + hash, "/tmp/cbso_" + hash + ".lock"];
+		var paths:Array<String> = ["/dev/shm/nipc_" + hash, "/tmp/nipc_" + hash + ".lock"];
 		#if linux
 		paths.push(posixRegionPath(name));
 		#end
@@ -633,7 +633,7 @@ class SharedObjectTest extends utest.Test {
 	**/
 	public function testWhatAnotherUserMadeUnderTheNameIsNotUsed():Void {
 		var name:String = uniqueName("theirs");
-		var region:String = __usesLockFile() ? "/dev/shm/cbso_" + nameHash(name) : #if linux posixRegionPath(name) #else null #end;
+		var region:String = __usesLockFile() ? "/dev/shm/nipc_" + nameHash(name) : #if linux posixRegionPath(name) #else null #end;
 		var paths:Array<String> = region != null && sys.FileSystem.exists("/dev/shm") ? [region] : [];
 		if (__usesLockFile()) {
 			paths.push(lockFileOf(name));
@@ -665,7 +665,7 @@ class SharedObjectTest extends utest.Test {
 
 	/** macOS's lock file for `name`. **/
 	private static function lockFileOf(name:String):String {
-		return "/tmp/cbso_" + nameHash(name) + ".lock";
+		return "/tmp/nipc_" + nameHash(name) + ".lock";
 	}
 
 	private static var __lockFileMode:Null<Bool> = null;

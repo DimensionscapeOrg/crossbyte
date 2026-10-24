@@ -399,7 +399,9 @@ class LocalConnectionTest extends utest.Test {
 		// maxQueuedBytes unread is closed, with an error that says so.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("stuck");
-		var peer = LocalConnection.__createInboundPipe(name);
+		var peer = LocalConnection.__listen(name);
+		var taking = acceptInBackground(peer, 2.0);
+		var taken:crossbyte.ipc._internal.VoidPointer = null;
 		var client = new LocalConnection();
 		var errors:Array<crossbyte.net.Reason> = [];
 		var closed = false;
@@ -415,10 +417,7 @@ class LocalConnectionTest extends utest.Test {
 		try {
 			Assert.notNull(peer, "the peer did not listen");
 			client.connect(name);
-			var acceptBy = haxe.Timer.stamp() + 2.0;
-			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
-				crossbyte.sys.System.sleep(0.001);
-			}
+			taken = taking.pop(true);
 			var frame = new ByteArray();
 			frame.length = 1024 * 1024;
 			var began = haxe.Timer.stamp();
@@ -434,11 +433,17 @@ class LocalConnectionTest extends utest.Test {
 			pumpUntil(() -> closed, 1.0);
 		} catch (e:Dynamic) {
 			closeQuietly(client);
+			if (taken != null) {
+				LocalConnection.__close(taken);
+			}
 			LocalConnection.__close(peer);
 			throw e;
 		}
 
 		closeQuietly(client);
+		if (taken != null) {
+			LocalConnection.__close(taken);
+		}
 		LocalConnection.__close(peer);
 		// A send held by the peer waits five seconds on Windows and for good
 		// elsewhere; a second tells that apart from a slow machine, where a
@@ -481,14 +486,16 @@ class LocalConnectionTest extends utest.Test {
 	public function testAConnectToAListenerTakingNobodyEndsAtItsDeadline():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("backlog");
-		var peer = LocalConnection.__createInboundPipe(name);
+		var peer = LocalConnection.__listen(name);
 		var results = new sys.thread.Deque<String>();
 		var finished = new sys.thread.Lock();
 		sys.thread.Thread.create(() -> {
 			var slowest = 0.0;
 			// Past any backlog: Linux queues 17 for a listen(16), macOS 16
-			// and Windows' one instance one. A client closed at once still
-			// holds its place until the listener takes it.
+			// and Windows' one waiting instance one. A client closed at once
+			// still holds its place until the listener takes it, and one that
+			// has connected waits for the hello a listener taking nobody never
+			// sends.
 			for (_ in 0...40) {
 				var started = haxe.Timer.stamp();
 				var handle = LocalConnection.__connect(name, 300);
@@ -779,7 +786,8 @@ class LocalConnectionTest extends utest.Test {
 		// before it went looks open until that is read.
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("gone");
-		var peer = LocalConnection.__createInboundPipe(name);
+		var peer = LocalConnection.__listen(name);
+		var taking = acceptInBackground(peer, 2.0);
 		var client = new LocalConnection();
 		var closed = false;
 		client.onClose = _ -> closed = true;
@@ -787,14 +795,13 @@ class LocalConnectionTest extends utest.Test {
 		try {
 			Assert.notNull(peer, "the peer did not listen");
 			client.connect(name);
-			var acceptBy = haxe.Timer.stamp() + 2.0;
-			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
-				crossbyte.sys.System.sleep(0.001);
-			}
+			var taken = taking.pop(true);
+			Assert.notNull(taken, "the peer did not take the client");
 			var parting = new ByteArray();
 			parting.writeInt(3);
 			parting.writeUtfBytes("bye");
-			LocalConnection.__write(peer, (cast parting : Bytes).getData(), parting.length);
+			LocalConnection.__write(taken, (cast parting : Bytes).getData(), parting.length);
+			LocalConnection.__close(taken);
 			LocalConnection.__close(peer);
 			// At once, while what the peer said is still unread here.
 			for (_ in 0...200) {
@@ -1321,7 +1328,7 @@ class LocalConnectionTest extends utest.Test {
 		var directory = ensureUserDirectory();
 		var decoy = uniqueName("decoy");
 		var victim = uniqueName("victim");
-		var listener = LocalConnection.__createInboundPipe(decoy);
+		var listener = LocalConnection.__listen(decoy);
 		var links = [
 			['/tmp/crossbyte_local_connection_$victim', '/tmp/crossbyte_local_connection_$decoy'],
 			['$directory/$victim', '$directory/$decoy']
@@ -1450,7 +1457,7 @@ class LocalConnectionTest extends utest.Test {
 
 	/** Where this user's names live on Linux and macOS. **/
 	private static function userDirectory():String {
-		return "/tmp/crossbyte-" + userId();
+		return "/tmp/native-ipc-" + userId();
 	}
 
 	/** userDirectory(), made 0700 if it is not there yet. **/
@@ -1471,6 +1478,31 @@ class LocalConnectionTest extends utest.Test {
 		try {
 			sys.FileSystem.deleteFile(path);
 		} catch (_:Dynamic) {}
+	}
+	#end
+
+	/**
+		Takes the first client `listener` has, for up to `seconds`, on a thread
+		of its own: a connect waits for the listener's hello, which only an
+		accept sends, so a case that connects on this thread accepts on
+		another. Null in the queue when none came.
+	**/
+	#if cpp
+	private static function acceptInBackground(listener:crossbyte.ipc._internal.VoidPointer, seconds:Float):sys.thread.Deque<crossbyte.ipc._internal.VoidPointer> {
+		var taken = new sys.thread.Deque<crossbyte.ipc._internal.VoidPointer>();
+		sys.thread.Thread.create(() -> {
+			var connection:crossbyte.ipc._internal.VoidPointer = null;
+			var until = haxe.Timer.stamp() + seconds;
+			while (listener != null && haxe.Timer.stamp() < until) {
+				connection = LocalConnection.__accept(listener);
+				if (connection != null) {
+					break;
+				}
+				crossbyte.sys.System.sleep(0.001);
+			}
+			taken.add(connection);
+		});
+		return taken;
 	}
 	#end
 

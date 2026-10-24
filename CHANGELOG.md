@@ -20,6 +20,30 @@ says how.
   takes the program's exit code, and every runtime keeps it as
   `exitCode`. (Upgrading)
 
+#### Platform
+
+- `LocalConnection`, `SharedChannel`, `local://` and `SharedObject` run
+  on native-ipc, a library of their native code that CrossByte now
+  depends on, which other frameworks share: a Lime application's
+  `LocalSocket` and a CrossByte program can be either end of one
+  connection. Its `PROTOCOL.md` says what goes over one, and what each
+  OS object is called. (Upgrading)
+- A local connection begins with a hello from each end, carrying the
+  protocol's version, so two programs that cannot understand each other
+  say so: a `connect` to a listener of another version throws an
+  `IOError` that names it, where the two read each other's bytes as
+  frames until one looked invalid. A `connect` now waits, within
+  `connectTimeout`, for the listener to answer, where on Linux and macOS
+  it returned once the socket connected, before a listener busy with
+  another peer had taken it. (Upgrading)
+- A local name's socket is `/tmp/native-ipc-<uid>/<name>` on Linux and
+  macOS, where it was `/tmp/crossbyte-<uid>/<name>`, and its pipe
+  `\\.\pipe\native-ipc-<SID>-<name>` on Windows, where it was
+  `\\.\pipe\crossbyte-<SID>-<name>`. A `SharedObject` region is
+  `native-ipc-shm-…` where it was `CrossByteSharedObject_…` (Windows) or
+  `crossbyte_shared_object_…` (Linux), and on macOS `/nipc_<hash>` with
+  `/tmp/nipc_<hash>.lock` where it was `cbso_`. (Upgrading)
+
 ### Fixed
 
 #### RPC
@@ -45,6 +69,10 @@ says how.
 
 #### Platform
 
+- A local connection's frames are little-endian whatever
+  `ByteArray.defaultEndian` is. Their lengths were written and read in
+  that order, so a program that set it to `BIG_ENDIAN` could not talk to
+  one that had not.
 - Reading an HXSF object on PHP takes time in proportion to its text. It
   cut each string it held by characters counted from the start of the
   text, so an object of many strings took time that grew with the square
@@ -76,6 +104,19 @@ says how.
   and an application's process with it, where it was logged and the
   runtime ran on. To carry on past a failure in startup, catch it inside
   the listener.
+
+#### Platform
+
+- Install the native-ipc haxelib, which CrossByte's native IPC is compiled
+  from: `haxelib install native-ipc`.
+- A program built with CrossByte 1.0.1 and one built with 1.0.0 cannot
+  meet over a local name: their names differ, and 1.0.0 sends no hello.
+  Rebuild both ends.
+- A program of your own that opened a local name's pipe or socket
+  directly must follow the new names, and send and answer the hello
+  (native-ipc's `PROTOCOL.md`).
+- Handle a `connect` that throws `IOError` for a listener of another
+  protocol version as you would one that found nothing listening.
 
 ## 1.0.0 - 2026-10-15
 

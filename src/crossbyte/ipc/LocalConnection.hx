@@ -25,9 +25,6 @@ import haxe.io.BytesData;
 #if cpp
 import cpp.Pointer;
 import crossbyte.ipc._internal.NativeLocalConnection;
-#if windows
-import crossbyte.ipc._internal.win.HANDLE;
-#end
 import crossbyte.ipc._internal.VoidPointer;
 #end
 #if (cpp || neko || hl)
@@ -37,11 +34,7 @@ import sys.thread.Thread;
 #end
 
 #if cpp
-#if windows
-private typedef LocalConnectionHandle = HANDLE;
-#else
 private typedef LocalConnectionHandle = VoidPointer;
-#end
 #else
 private typedef LocalConnectionHandle = Dynamic;
 #end
@@ -70,10 +63,15 @@ private enum LocalConnectionDispatch {
  * `SharedChannel` builds on top of this transport when you want the older
  * method-name plus serialized-arguments message model.
  *
+ * The transport is native-ipc's, whose `PROTOCOL.md` says what goes over it:
+ * any program that speaks it (a Lime application's `LocalSocket` among them)
+ * can be either end. A listener here takes one peer at a time; others that
+ * connect meanwhile wait, within their connect timeout, for it to be free.
+ *
  * A name is its user's own: processes of one user meet over it, and those of
  * two users never do, nor can another user listen on it, or put anything in
  * its place, to take its clients. On Linux and macOS the name's socket lives
- * in `/tmp/crossbyte-<uid>`, which is made 0700 and must be a directory the
+ * in `/tmp/native-ipc-<uid>`, which is made 0700 and must be a directory the
  * user owns that nobody else can enter (not a link, and not one another
  * user made first); a client also refuses anything at the socket's path that
  * is not a socket of the user's, a link included. On Windows the name's pipe
@@ -277,7 +275,7 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		Thread.create(() -> {
 			var handle:LocalConnectionHandle = null;
 			try {
-				handle = __createInboundPipe(connectionName);
+				handle = __listen(connectionName);
 				if (handle == null) {
 					notOwned = __notOwned();
 				}
@@ -332,11 +330,15 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		if (handle == null) {
 			// Read at once, on the thread that tried.
 			var notOwned = __notOwned();
+			var refused = __protocolRefused();
 			__mode = NONE;
-			var reason = Reason.Error(notOwned ? "What is under the local name is not this user's own." : "Failed to connect to local endpoint.");
+			var reason = Reason.Error(notOwned ? "What is under the local name is not this user's own." : refused ? "The local endpoint does not speak this protocol version." : "Failed to connect to local endpoint.");
 			__dispatchLifecycle(Error(reason));
 			if (notOwned) {
 				throw __notOwnedError(connectionName);
+			}
+			if (refused) {
+				throw new IOError('LocalConnection "$connectionName": the listener does not speak native-ipc\'s protocol, or this version of it');
 			}
 			throw new ArgumentError("Connection name is unavailable or invalid");
 		}
@@ -489,9 +491,10 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		if (__outBuffer == null) {
 			__outBuffer = new ByteArray();
 		}
-		// In the byte order a frame always had: `ByteArray.defaultEndian`'s,
-		// as the reader's own buffer reads it.
-		__outBuffer.endian = ByteArray.defaultEndian;
+		// Little-endian, as native-ipc's frames are, whatever
+		// `ByteArray.defaultEndian` an application has set: it took that, and
+		// two programs that set it differently could not read each other.
+		__outBuffer.endian = LITTLE_ENDIAN;
 		__outBuffer.position = __outBuffer.length;
 		__outBuffer.writeInt(length);
 		if (length > 0) {
@@ -678,6 +681,8 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		// This session's framing, and this thread's alone: no reader shares
 		// one with another, and close() never clears one being written to.
 		var framing = new ByteArray();
+		// As frames are written: see __frameOutput.
+		framing.endian = LITTLE_ENDIAN;
 		var idle:Float = POLL_MIN;
 		// Whether the last wait ended because the socket was ready.
 		var wokeForWork = false;
@@ -702,16 +707,20 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 			// Published with the connected state under __handleLock, so send()
 			// sees a consistent (handle, connected) pair.
 			var accepted = false;
-			if (__mode == SERVER && __activePipe == null && __listeningPipe != null && __accept(__listeningPipe)) {
-				__activePipe = __listeningPipe;
-				__listeningPipe = null;
-				__connected = true;
-				accepted = true;
-				busy = true;
+			if (__mode == SERVER && __activePipe == null && __listeningPipe != null) {
+				// The listener stays as it is, holding the name; the client is
+				// a connection of its own.
+				var taken = __accept(__listeningPipe);
+				if (taken != null) {
+					__activePipe = taken;
+					__connected = true;
+					accepted = true;
+					busy = true;
+				}
 			}
 			if (__mode == SERVER) {
 				// The name's lock file kept from looking unused, hourly.
-				__keepName(__activePipe != null ? __activePipe : __listeningPipe);
+				__keepName(__listeningPipe);
 			}
 
 			// Polled and read under the lock too: both are immediate, and a
@@ -918,27 +927,12 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		__connected = false;
 		// Queued for a peer that has gone.
 		__dropOutput();
-		var relistenFailed = false;
 		if (__mode == SERVER && __running) {
-			// The same listener takes the next client: the one that went is
-			// let go and the name is kept, never anyone's in between.
-			if (__activePipe != null && __disconnect(__activePipe)) {
-				__listeningPipe = __activePipe;
+			// The listener takes the next client: the one that went is let
+			// go, and the name was the listener's throughout.
+			if (__activePipe != null) {
+				__close(__activePipe);
 				__activePipe = null;
-			} else {
-				if (__activePipe != null) {
-					__close(__activePipe);
-					__activePipe = null;
-				}
-				try {
-					__listeningPipe = __createInboundPipe(__connectionName);
-				} catch (_:Dynamic) {
-					__listeningPipe = null;
-				}
-				if (__listeningPipe == null) {
-					__running = false;
-					relistenFailed = true;
-				}
 			}
 		} else {
 			if (__activePipe != null) {
@@ -959,10 +953,6 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 
 		if (wasConnected) {
 			__dispatchFromReader(Close(Reason.Closed), session);
-		}
-
-		if (relistenFailed) {
-			__dispatchFromReader(Error(Reason.Error("Failed to recreate the local listener.")), session);
 		}
 	}
 
@@ -1416,27 +1406,18 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		#end
 	}
 
-	/** Lets a listener's client go, keeping it listening for the next; `false` if it cannot. **/
-	@:noCompletion private static function __disconnect(pipe:LocalConnectionHandle):Bool {
-		#if cpp
-		return NativeLocalConnection.__disconnect(pipe);
-		#else
-		return false;
-		#end
-	}
-
 	/** Connects to a native local endpoint handle. SharedChannel forwards through these helpers for tests. */
 	@:noCompletion private static function __connect(name:String, timeoutMs:Int = 5000):LocalConnectionHandle {
 		#if cpp
-		return NativeLocalConnection.__connectWithTimeout(name, timeoutMs);
+		return NativeLocalConnection.__connect(name, timeoutMs);
 		#else
 		return null;
 		#end
 	}
 
-	@:noCompletion private static function __createInboundPipe(name:String):LocalConnectionHandle {
+	@:noCompletion private static function __listen(name:String):LocalConnectionHandle {
 		#if cpp
-		return NativeLocalConnection.__createInboundPipe(name);
+		return NativeLocalConnection.__listen(name);
 		#else
 		return null;
 		#end
@@ -1451,9 +1432,18 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		#end
 	}
 
+	/** Whether the last connect on this thread found a listener that does not speak native-ipc's protocol, or this version of it. **/
+	@:noCompletion private static function __protocolRefused():Bool {
+		#if cpp
+		return NativeLocalConnection.__lastError() == NativeLocalConnection.ERROR_PROTOCOL;
+		#else
+		return false;
+		#end
+	}
+
 	@:noCompletion private static function __notOwnedError(name:String):IOError {
 		return new IOError('LocalConnection "$name": what is under the name is not this user\'s own, and is not used'
-			+ ': another user made it, or others can reach it (on Linux and macOS, /tmp/crossbyte-<uid> must be a directory '
+			+ ': another user made it, or others can reach it (on Linux and macOS, /tmp/native-ipc-<uid> must be a directory '
 			+ 'of this user\'s with mode 0700)');
 	}
 
@@ -1506,11 +1496,12 @@ class LocalConnection implements INetConnection implements CloseObservable imple
 		#end
 	}
 
-	@:noCompletion private static function __accept(pipe:LocalConnectionHandle):Bool {
+	/** A client `listener` has taken, as a connection of its own; null when there is none yet. **/
+	@:noCompletion private static function __accept(listener:LocalConnectionHandle):LocalConnectionHandle {
 		#if cpp
-		return NativeLocalConnection.__accept(pipe);
+		return NativeLocalConnection.__accept(listener);
 		#else
-		return false;
+		return null;
 		#end
 	}
 

@@ -42,7 +42,7 @@ private typedef SharedObjectHandle = Dynamic;
  * capacity in shared memory, until `remove(name)` takes it away or the machine
  * restarts: `clear()` only empties it. Name regions so that a fixed set is reused
  * rather than a new one made for each run, or remove each when done with it. On
- * macOS each name also has a small lock file, `/tmp/cbso_<hash>.lock`, which
+ * macOS each name also has a small lock file, `/tmp/nipc_<hash>.lock`, which
  * stays with the region and goes with it: macOS cannot lock a region itself.
  * `remove(name)` is the only thing that takes it away; `close()` leaves it,
  * since other participants may hold it. If something else does (macOS
