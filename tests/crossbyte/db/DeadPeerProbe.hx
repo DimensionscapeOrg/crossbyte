@@ -21,6 +21,8 @@ package crossbyte.db;
 #ifdef __linux__
 #include <sys/socket.h>
 #include <linux/filter.h>
+#include <errno.h>
+#include <string.h>
 
 // hxcpp's socket handle: the socket is the wrapper's one field.
 struct crossbyte_dead_peer_wrapper : public hx::Object {
@@ -28,9 +30,10 @@ struct crossbyte_dead_peer_wrapper : public hx::Object {
 	int socket;
 };
 
-static bool crossbyte_dead_peer_silence(Dynamic handle) {
+// Null once the filter is on; otherwise why it is not.
+static String crossbyte_dead_peer_silence(Dynamic handle) {
 	if (handle.mPtr == 0) {
-		return false;
+		return String(\"the socket has no handle\");
 	}
 	int fd = reinterpret_cast<crossbyte_dead_peer_wrapper*>(handle.mPtr)->socket;
 	// One instruction, BPF_RET | BPF_K with 0: keep none of the packet.
@@ -38,11 +41,15 @@ static bool crossbyte_dead_peer_silence(Dynamic handle) {
 	struct sock_fprog program;
 	program.len = 1;
 	program.filter = code;
-	return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0;
+	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0) {
+		return String();
+	}
+	int error = errno;
+	return String(\"SO_ATTACH_FILTER on descriptor \") + String(fd) + String(\": errno \") + String(error) + String(\" \") + String(strerror(error));
 }
 #else
-static bool crossbyte_dead_peer_silence(Dynamic handle) {
-	return false;
+static String crossbyte_dead_peer_silence(Dynamic handle) {
+	return String(\"not Linux\");
 }
 #endif
 ")
@@ -51,16 +58,21 @@ class DeadPeerProbe {
 	/** Whether `silence` can work here: natively on Linux. **/
 	public static var isSupported(get, never):Bool;
 
+	/** Why the last `silence` did not take, or null when it did. **/
+	public static var refused(default, null):Null<String> = null;
+
 	/**
 		Drops everything that arrives on `socket` from now on. Answers
-		whether the system took the filter.
+		whether the system took the filter, and when it did not, `refused`
+		says why: the call's errno and its text.
 	**/
 	public static function silence(socket:sys.net.Socket):Bool {
 		#if cpp
-		return untyped __cpp__("crossbyte_dead_peer_silence({0})", @:privateAccess socket.__s);
+		refused = untyped __cpp__("crossbyte_dead_peer_silence({0})", @:privateAccess socket.__s);
 		#else
-		return false;
+		refused = "not native";
 		#end
+		return refused == null;
 	}
 
 	private static function get_isSupported():Bool {

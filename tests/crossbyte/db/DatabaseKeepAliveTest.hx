@@ -121,7 +121,7 @@ class DatabaseKeepAliveTest extends utest.Test {
 		var answered:Bool = connection.ping();
 		var took:Float = haxe.Timer.stamp() - started;
 
-		Assert.isTrue(silenced, "the probe could not silence the server");
+		Assert.isTrue(silenced, "the probe could not silence the server: " + DeadPeerProbe.refused);
 		Assert.isFalse(answered, "a silent server answered");
 		Assert.isTrue(took < 10, 'a silent server was noticed after ${took}s, past its keepalive window of about 3 s');
 		Assert.isFalse(connection.connected);
@@ -180,7 +180,7 @@ class DatabaseKeepAliveTest extends utest.Test {
 		connection.close();
 		server.stop();
 
-		Assert.isTrue(silenced, "the probe could not silence the server");
+		Assert.isTrue(silenced, "the probe could not silence the server: " + DeadPeerProbe.refused);
 		Require.notNull(error);
 		Assert.equals(2013, error.code, error.message);
 		Assert.isTrue(took < 10, 'a silent server was noticed after ${took}s, past its keepalive window of about 3 s');
