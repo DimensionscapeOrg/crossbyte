@@ -91,6 +91,71 @@ class HTTPRequestFramingTest extends utest.Test {
 		}, true);
 	}
 
+	/**
+		A body refused as too large while the client is still sending it is
+		answered all the same, as an upload from curl or a browser is: the
+		client reads the `413`. Closed over the bytes still arriving, the
+		connection was reset, and a reset throws away what the client has
+		not read yet, the answer with it.
+	**/
+	public function testA413ReachesAClientStillSendingItsBody(async:Async):Void {
+		var server:HTTPServer = __serve([], config -> config.maxRequestBodySize = 1024);
+		var client:crossbyte.net.Socket = new crossbyte.net.Socket();
+		var total:Int = 4 * 1024 * 1024;
+		var piece:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+		for (_ in 0...64 * 1024) {
+			piece.writeByte("x".code);
+		}
+		var sent:Int = 0;
+		var raw:String = "";
+		var failure:Null<String> = null;
+		var closed:Bool = false;
+
+		// The body as fast as the connection takes it, as an uploader sends.
+		function feed():Void {
+			try {
+				while (sent < total && client.connected && client.bytesPending < 256 * 1024) {
+					client.writeBytes(piece, 0, piece.length);
+					sent += piece.length;
+				}
+				client.flush();
+			} catch (e:Dynamic) {
+				if (failure == null) {
+					failure = Std.string(e);
+				}
+			}
+		}
+
+		client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
+			client.writeUtfBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $total\r\n\r\n');
+			feed();
+		});
+		client.addEventListener(crossbyte.events.OutputProgressEvent.OUTPUT_PROGRESS, _ -> feed());
+		client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
+			while (client.bytesAvailable > 0) {
+				raw += String.fromCharCode(client.readUnsignedByte());
+			}
+		});
+		client.addEventListener(crossbyte.events.IOErrorEvent.IO_ERROR, function(e:crossbyte.events.IOErrorEvent):Void {
+			if (failure == null) {
+				failure = e.text;
+			}
+		});
+		client.addEventListener(crossbyte.events.Event.CLOSE, _ -> closed = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> closed || raw.indexOf("\r\n\r\n") >= 0, 10.0, function(_):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+
+				var read:String = raw.length == 0 ? "nothing" : raw.split("\r\n")[0];
+				var failed:String = failure != null ? ", and failed: " + failure : "";
+				Assert.isTrue(StringTools.startsWith(raw, "HTTP/1.1 413"), 'the client read $read after sending $sent bytes$failed');
+				async.done();
+			});
+		});
+	}
+
 	/** The limit is the application's to set, both ways. **/
 	public function testTheBodyLimitIsConfigurable(async:Async):Void {
 		var seen:Array<String> = [];

@@ -33,6 +33,18 @@ says how.
 
 ### Fixed
 
+#### HTTP
+
+- A client still sending a request the server has answered already (an
+  upload refused `413` on its `Content-Length`, or requests pipelined
+  behind one the connection was closed after) reads the answer. The
+  connection was closed over the bytes still arriving, which resets it,
+  and a reset throws away what the client has not read: curl or a browser
+  reported a reset, not the `413`. Now the server ends its side (a TLS
+  connection leaves that to its client) and reads and drops what arrives
+  until the client closes, or five seconds pass, as Go's `net/http` and
+  nginx's lingering close do.
+
 #### RPC
 
 - A wide `RPCStruct` loads on neko. Its reader held every field's locals

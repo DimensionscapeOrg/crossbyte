@@ -134,6 +134,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	@:noCompletion private static inline var STREAM_STALL_SECONDS:Float = 30;
 
+	/**
+	 * How long a connection closed over a request it did not read whole goes
+	 * on reading, and dropping, what its client still sends, before it is
+	 * closed all the same: see `__closeOrLinger`.
+	 */
+	@:noCompletion private static inline var LINGER_SECONDS:Float = 5;
+
 	@:noCompletion private var __origin:Socket;
 	@:noCompletion private var __writer:HTTPResponseWriter;
 	@:noCompletion private var __incomingBuffer:ByteArray;
@@ -249,6 +256,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __heldWatch:Bool = false;
 	@:noCompletion private var __heldMark:Float = 0;
 	@:noCompletion private var __heldDeadline:Float = 0;
+
+	// Whether the connection, closed after its response, should linger
+	// (__closeOrLinger): set as the response settles, when part of a request
+	// it did not read whole had arrived, or pipelined requests were given up.
+	// Kept, since what arrives meanwhile is dropped as it is read.
+	@:noCompletion private var __lingerWanted:Bool = false;
+	// When a lingering close gives up waiting for the client to close; 0
+	// while the connection is not lingering.
+	@:noCompletion private var __lingerUntil:Float = 0;
 
 	// Set once requests pipelined behind the one being answered outgrew what
 	// the connection holds: they are dropped, and so is what arrives after,
@@ -2855,6 +2871,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// dispatches Event.CLOSE even when locally initiated, so the
 			// server's cleanupSocket accounting fires as for any close.
 			if (__origin.connected) {
+				// The client may still be sending: see __closeOrLinger.
+				__lingerWanted = __surplusDropped
+					|| (!__requestConsumed && __incomingBuffer != null && __incomingBuffer.length > 0);
 				// Once what the response sent has gone: closed now, the rest
 				// of it (whatever the system had not taken yet) would be
 				// thrown away, and a response larger than that, with
@@ -2865,8 +2884,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 					if (__holdOutput()) {
 						return;
 					}
+					__origin.close();
+					return;
 				}
-				__origin.close();
+				__closeOrLinger();
 			}
 			return;
 		}
@@ -2977,6 +2998,52 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __heldWatch;
 	}
 
+	/**
+	 * Closes the connection, its response sent; or, when its client may
+	 * still be sending (the request was answered before it was read whole,
+	 * a `413` to an upload say, or requests pipelined behind it were given
+	 * up), lingers first: what keeps arriving is read and dropped until the
+	 * client closes, or `LINGER_SECONDS` pass. Closed over bytes still
+	 * arriving, the connection is reset, and a reset throws away what the
+	 * client has not read yet: the response with it. As Go's `net/http` and
+	 * nginx's lingering close, a plain connection's own side is ended first
+	 * (FIN), so a client reading to the end sees it; a TLS one, which would
+	 * end without TLS's own close, is left for its client to close, as the
+	 * response's `Connection: close` asks.
+	 */
+	@:noCompletion private function __closeOrLinger():Void {
+		if (!__origin.connected) {
+			return;
+		}
+		if (!__lingerWanted || __lingerUntil > 0 || __writer.ownsConnection) {
+			__origin.close();
+			return;
+		}
+		// What arrives from now on is dropped as it is read (__onData).
+		__closeWhenSent = true;
+		__lingerUntil = haxe.Timer.stamp() + LINGER_SECONDS;
+		if (!__writer.sweepWith(__checkLinger)) {
+			__origin.close();
+			return;
+		}
+		if (!__origin.secure) {
+			// Closes the socket itself when the peer has gone already.
+			__origin.shutdown(false, true);
+		}
+	}
+
+	/** The sweep's visit while a connection lingers (`__closeOrLinger`). **/
+	@:noCompletion private function __checkLinger(now:Float):Void {
+		if (!__origin.connected) {
+			__writer.sweepWith(null);
+			return;
+		}
+		if (now >= __lingerUntil) {
+			__writer.sweepWith(null);
+			__origin.close();
+		}
+	}
+
 	@:noCompletion private function __releaseHeldOutput():Void {
 		if (__heldWatch) {
 			__heldWatch = false;
@@ -3000,7 +3067,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__writer.bufferedBytes <= 0) {
 			__releaseHeldOutput();
 			if (__closeWhenSent || (__idle && __closeAfterResponse)) {
-				__origin.close();
+				__closeOrLinger();
 				return;
 			}
 			if (__idle) {
