@@ -95,6 +95,13 @@ says how.
   `FileStream`: as on Node, the file can be moved and deleted, and a
   directory with one inside it is then refused as not empty until it is
   closed. `FileTest` runs in the PHP lane.
+- On the interpreter and PHP, `haxe.Timer.stamp()`, which everything in
+  CrossByte waits and measures by, reads a monotonic clock: libuv's on
+  the interpreter, `hrtime` on PHP. It read the time of day there, so
+  setting the clock, or a virtual machine resyncing it, moved every
+  deadline with it: a step forwards made timeouts fall due at once.
+  HashLink and Neko have no monotonic clock, and `docs/targets.md` says
+  so.
 
 ### Upgrading from 1.0.0
 

@@ -130,6 +130,9 @@ On Linux, HashLink polls its sockets through `select`, which cannot watch a desc
 HashLink has no poll natives to move to: a server there fails its polling once that many descriptors are open. Neko
 polls through its own natives and is not held to it.
 
+Neither has a monotonic clock, so `haxe.Timer.stamp()`, which everything in CrossByte waits and measures by, is the
+time of day there: setting the system clock, or a virtual machine resyncing it, moves every timeout with it.
+
 **TLS 1.0 and 1.1.** Neither target's TLS has a lowest version to set, so what a secure socket, client or server,
 agrees to is what the TLS library underneath allows. HashLink's agrees to TLS 1.0 or 1.1 with a peer that offers
 nothing newer, and so does Neko 2.3's `ssl.ndll`; Neko 2.4.1's refuses them, as native, jvm and Node connections

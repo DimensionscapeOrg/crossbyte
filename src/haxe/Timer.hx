@@ -329,10 +329,11 @@ class Timer {
 		Monotonic wherever the platform offers one: QueryPerformanceCounter
 		on Windows native, CLOCK_MONOTONIC on Linux, macOS and other native
 		POSIX, `System.nanoTime` on the jvm, `performance.now()` on both
-		JavaScript targets. A clock that is the time of day moves when the time
-		of day is set: stepped backwards, every deadline measured against it
-		waits out the step; stepped forwards, they all fall due at once. hl,
-		neko and eval have no monotonic source here and use `Sys.time()`.
+		JavaScript targets, libuv's `uv_hrtime` on eval, `hrtime` on PHP. A
+		clock that is the time of day moves when the time of day is set:
+		stepped backwards, every deadline measured against it waits out the
+		step; stepped forwards, they all fall due at once. hl and neko have no
+		monotonic source here and use `Sys.time()`.
 
 		Everything in CrossByte that waits or measures reads this and nothing
 		else, which is what keeps any two times it compares on one clock. An
@@ -357,6 +358,16 @@ class Timer {
 			low += 4294967296.0;
 		}
 		return (haxe.Int64.getHigh(nanos) * 4294967296.0 + low) / 1000000000.0;
+		#elseif eval
+		// Nanoseconds as a UInt64, joined from its halves as on the jvm.
+		var nanos = eval.luv.Time.hrTime();
+		var low:Float = nanos.toInt();
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return ((nanos >> 32).toInt() * 4294967296.0 + low) / 1000000000.0;
+		#elseif php
+		return php.Syntax.code("hrtime(true)") / 1000000000.0;
 		#elseif python
 		return Sys.cpuTime();
 		#elseif sys
