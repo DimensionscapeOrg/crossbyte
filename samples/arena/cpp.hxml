@@ -1,6 +1,7 @@
 --cwd ../..
 -cp src
 -lib emitter
+-lib wsproto
 -cp samples/arena
 -main ArenaSample
 --cpp export/arena

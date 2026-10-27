@@ -12,6 +12,7 @@
 # experiment, not a gate.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/soak
 -D windows
 -D HXCPP_M64

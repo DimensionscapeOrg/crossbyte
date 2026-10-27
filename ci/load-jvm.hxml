@@ -3,6 +3,7 @@
 # LoadMain so the clients are native and only the server is the jvm's.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/load
 -main LoadMain
 --jvm export/load-jvm/LoadMain.jar

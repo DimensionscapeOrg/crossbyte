@@ -2,6 +2,7 @@
 # ci/rudp-interop.hxml.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/rudp-interop
 -lib hxnodejs
 -main RudpInteropPeer

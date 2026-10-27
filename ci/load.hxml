@@ -11,6 +11,7 @@
 # gate. For the crossbyte-libuv backend, add its defines (README).
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/load
 -D HXCPP_M64
 -main LoadMain

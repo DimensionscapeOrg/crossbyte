@@ -12,5 +12,6 @@
 --next
 -cp src
 -lib emitter
+-lib wsproto
 -D perf_new
 --js export/perf-core-node/b.js

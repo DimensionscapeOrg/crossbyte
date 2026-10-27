@@ -3,6 +3,7 @@
 # tests/crossbyte/db/mongodb/MongoBenchMain.hx for what each case measures.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -cp tests/bench
 -lib utest

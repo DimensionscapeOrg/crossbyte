@@ -9,6 +9,7 @@
 #   hl export/hl/CrossByteTests.hl
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -D hl-ver=1.13.0

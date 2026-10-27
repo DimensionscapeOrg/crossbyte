@@ -3,6 +3,7 @@
 -cp tests/perf/http
 -cp src
 -lib emitter
+-lib wsproto
 -D windows
 -D HXCPP_M64
 -D HXCPP_STACK_TRACE

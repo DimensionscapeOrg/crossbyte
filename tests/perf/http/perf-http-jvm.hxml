@@ -5,6 +5,7 @@
 -cp tests/perf/http
 -cp src
 -lib emitter
+-lib wsproto
 -lib hxjava
 -main PerfHttpServer
 --jvm export/perf-http/jvm/PerfHttpServer.jar

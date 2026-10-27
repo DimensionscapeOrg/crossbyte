@@ -8,10 +8,10 @@ What a release needs, in the order it needs it.
    `production` branch of `dimensionscape/hxcpp` adds, and CI builds that
    branch from GitHub. Push the fork's `production` before CrossByte, or
    native CI builds against the old fork and fails.
-2. **Emitter, if CrossByte needs a version of it not yet on lib.haxe.org.**
-   `haxelib install crossbyte` installs the `emitter` version `haxelib.json`
-   names, from the registry, and CI installs the commit `ci/haxelibs.txt`
-   names, from GitHub: publish Emitter (its tag on GitHub, and
+2. **Emitter and wsproto, if CrossByte needs a version of either not yet on lib.haxe.org.**
+   `haxelib install crossbyte` installs the version of each that
+   `haxelib.json` names, from the registry, and CI installs the commit `ci/haxelibs.txt`
+   names, from GitHub: publish it (its tag on GitHub, and
    `haxelib submit`) before CrossByte, and check that commit is the
    release.
 3. **The extensions next**, if they changed: `crossbyte-libuv`,
@@ -59,7 +59,7 @@ waits for the registry.
 
 ## How CI gets its libraries
 
-- **The Haxe libraries** (utest, hxjava, hxnodejs, dox, emitter) are listed in
+- **The Haxe libraries** (utest, hxjava, hxnodejs, dox, emitter, native-ipc, wsproto) are listed in
   `ci/haxelibs.txt`, each with its exact version, its GitHub repository and
   the commit of that version. `.github/actions/haxelibs` installs them from
   a cache keyed on that list; on a miss, from GitHub at the commit

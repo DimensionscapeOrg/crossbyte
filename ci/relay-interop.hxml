@@ -9,6 +9,7 @@
 # Run it with `node ci/relay/run.js` once built.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -cp tests/relay
 -D windows

@@ -5,6 +5,7 @@
 # class path first, so a shadow listed before src is silently ignored.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/perf/core
 -D windows
 -D HXCPP_M64

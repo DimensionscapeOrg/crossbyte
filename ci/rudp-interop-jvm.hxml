@@ -2,6 +2,7 @@
 # ci/rudp-interop.hxml.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/rudp-interop
 --macro crossbyte._internal.macro.StdOverrides.use()
 -main RudpInteropPeer

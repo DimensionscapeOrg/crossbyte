@@ -13,6 +13,7 @@
 -cp tests/perf/http
 -cp src
 -lib emitter
+-lib wsproto
 -D windows
 -D HXCPP_M64
 -main PerfHttpServer

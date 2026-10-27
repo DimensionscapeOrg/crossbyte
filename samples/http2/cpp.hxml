@@ -1,6 +1,7 @@
 --cwd ../..
 -cp src
 -lib emitter
+-lib wsproto
 -cp samples/http2
 -main Http2Sample
 --cpp export/http2

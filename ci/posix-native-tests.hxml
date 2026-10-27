@@ -8,6 +8,7 @@
 # datagram port sharing, does not pass CI without being looked at.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -D HXCPP_M64

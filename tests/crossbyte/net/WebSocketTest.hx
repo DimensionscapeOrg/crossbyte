@@ -5,6 +5,7 @@ import crossbyte._internal.websocket.WebSocket as InternalWebSocket;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import utest.Assert;
+import wsproto.Handshake;
 import crossbyte.test.Require;
 
 @:access(crossbyte.core.CrossByte)
@@ -13,7 +14,7 @@ import crossbyte.test.Require;
 class WebSocketTest extends utest.Test {
 	public function testRequestHandshakeValidationIsCaseInsensitive():Void {
 		var ws = emptyWebSocket();
-		var headers = ws.__parseHeaders([
+		var headers = Handshake.parseHeaderLines([
 			"GET /chat HTTP/1.1",
 			"Host: example.com",
 			"uPgRaDe: WebSocket",
@@ -23,9 +24,9 @@ class WebSocketTest extends utest.Test {
 			""
 		]);
 
-		Assert.isTrue(ws.__validateRequestHandshake(headers));
+		Assert.isTrue(Handshake.isValidRequest(headers));
 
-		var response = ws.__generateResponseHandshake(headers).toString();
+		var response = Handshake.serverResponse(headers.get("sec-websocket-key")).toString();
 		Assert.isTrue(response.indexOf("HTTP/1.1 101 Switching Protocols") == 0);
 		Assert.isTrue(response.indexOf("HTTPS/1.1") == -1);
 	}
@@ -33,8 +34,8 @@ class WebSocketTest extends utest.Test {
 	public function testResponseHandshakeValidationIsCaseInsensitive():Void {
 		var ws = emptyWebSocket();
 		ws.__key = "test-key";
-		var accept = ws.__generateWebSocketAccept(ws.__key);
-		var headers = ws.__parseHeaders([
+		var accept = Handshake.accept(ws.__key);
+		var headers = Handshake.parseHeaderLines([
 			"HTTP/1.1 101 Switching Protocols",
 			"Upgrade: WebSocket",
 			"Connection: keep-alive, Upgrade",
@@ -48,14 +49,14 @@ class WebSocketTest extends utest.Test {
 
 	public function testRequestHandshakeRejectsMissingOrInvalidRequiredHeaders():Void {
 		var ws = emptyWebSocket();
-		var missingKey = ws.__parseHeaders([
+		var missingKey = Handshake.parseHeaderLines([
 			"GET /chat HTTP/1.1",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
 			"Sec-WebSocket-Version: 13",
 			""
 		]);
-		var oldVersion = ws.__parseHeaders([
+		var oldVersion = Handshake.parseHeaderLines([
 			"GET /chat HTTP/1.1",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
@@ -63,7 +64,7 @@ class WebSocketTest extends utest.Test {
 			"Sec-WebSocket-Version: 12",
 			""
 		]);
-		var noUpgradeToken = ws.__parseHeaders([
+		var noUpgradeToken = Handshake.parseHeaderLines([
 			"GET /chat HTTP/1.1",
 			"Upgrade: websocket",
 			"Connection: keep-alive",
@@ -72,15 +73,15 @@ class WebSocketTest extends utest.Test {
 			""
 		]);
 
-		Assert.isFalse(ws.__validateRequestHandshake(missingKey));
-		Assert.isFalse(ws.__validateRequestHandshake(oldVersion));
-		Assert.isFalse(ws.__validateRequestHandshake(noUpgradeToken));
+		Assert.isFalse(Handshake.isValidRequest(missingKey));
+		Assert.isFalse(Handshake.isValidRequest(oldVersion));
+		Assert.isFalse(Handshake.isValidRequest(noUpgradeToken));
 	}
 
 	public function testResponseHandshakeRejectsBadAccept():Void {
 		var ws = emptyWebSocket();
 		ws.__key = "test-key";
-		var headers = ws.__parseHeaders([
+		var headers = Handshake.parseHeaderLines([
 			"HTTP/1.1 101 Switching Protocols",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
@@ -572,7 +573,7 @@ class WebSocketTest extends utest.Test {
 			"HTTP/1.1 101 Switching Protocols",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
-			"Sec-WebSocket-Accept: " + ws.__generateWebSocketAccept(ws.__key),
+			"Sec-WebSocket-Accept: " + Handshake.accept(ws.__key),
 			"",
 			""
 		].join("\r\n");
@@ -598,7 +599,7 @@ class WebSocketTest extends utest.Test {
 			"HTTP/1.1 101 Switching Protocols",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
-			"Sec-WebSocket-Accept: " + ws.__generateWebSocketAccept(ws.__key),
+			"Sec-WebSocket-Accept: " + Handshake.accept(ws.__key),
 			"",
 			""
 		].join("\r\n");

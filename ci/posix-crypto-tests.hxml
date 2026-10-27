@@ -1,5 +1,6 @@
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -main PosixCryptoMain

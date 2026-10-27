@@ -5,6 +5,7 @@
 # the others': libsodium, the jvm's Haxe ChaCha20-Poly1305, Node's crypto.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/rudp-interop
 -D windows
 -D HXCPP_M64

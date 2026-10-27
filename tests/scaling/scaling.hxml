@@ -5,6 +5,7 @@
 --each
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/scaling
 -D HXCPP_M64
 --macro crossbyte._internal.macro.HostPlatform.define()

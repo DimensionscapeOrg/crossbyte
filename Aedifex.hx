@@ -18,6 +18,7 @@ class Aedifex {
 		.source("src")
 		.dependency(LibrarySpec.haxelib("emitter", null, "2.0.0"))
 		.dependency(LibrarySpec.haxelib("native-ipc", null, "1.0.0"))
+		.dependency(LibrarySpec.haxelib("wsproto", null, "1.0.0"))
 		.task("interp-tests", "haxe", ["ci/interp-tests.hxml"], null, "Run the fast interpreted CrossByte test suite.")
 		.task("native-tests", "haxe", ["ci/native-tests.hxml"], null, "Build the native CrossByte smoke test executable.")
 		.task("jvm-smoke-tests", "haxe", ["ci/jvm-smoke.hxml"], null, "Build the jvm smoke test jar (core non-networking suites). Run with: java -jar export/jvm/CrossByteJvmSmoke.jar")

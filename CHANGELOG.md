@@ -32,6 +32,13 @@ says how.
   `native-ipc-shm-…` where it was `CrossByteSharedObject_…` (Windows) or
   `crossbyte_shared_object_…` (Linux), and on macOS `/nipc_<hash>` with
   `/tmp/nipc_<hash>.lock` where it was `cbso_`. (Upgrading)
+- WebSocket's protocol (the opening handshake, framing, the closing
+  handshake, permessage-deflate's negotiation and the heartbeat's
+  decisions) is wsproto's, a Haxe library CrossByte now depends on, which
+  other frameworks share: Lime's `lime.net.WebSocket` speaks it from the
+  same code. CrossByte's sessions extend wsproto's and keep their own
+  transport, buffers and pooling, so a message costs what it did.
+  (Upgrading)
 
 ### Upgrading from 1.0
 
@@ -39,6 +46,10 @@ says how.
 
 - Install the native-ipc haxelib, which CrossByte's native IPC is compiled
   from: `haxelib install native-ipc`.
+- Install the wsproto haxelib, which CrossByte's WebSocket is built on:
+  `haxelib install wsproto`. A build that adds CrossByte's `src` to its
+  class path rather than `-lib crossbyte` adds `-lib wsproto` beside
+  `-lib emitter`.
 - A program built with CrossByte 2.0.0 and one built with 1.0 cannot
   meet over a local name: their names differ, and 1.0 sends no hello.
   Rebuild both ends.

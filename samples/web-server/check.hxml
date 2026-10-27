@@ -1,6 +1,7 @@
 --cwd ../..
 -cp src
 -lib emitter
+-lib wsproto
 -cp samples/web-server
 -main SimpleWebServerSample
 --cpp export/sample-web-server-check

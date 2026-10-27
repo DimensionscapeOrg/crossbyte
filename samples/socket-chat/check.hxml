@@ -1,6 +1,7 @@
 --cwd ../..
 -cp src
 -lib emitter
+-lib wsproto
 -cp samples/socket-chat
 -main SocketChatSampleCheck
 --cpp export/sample-socket-chat-check

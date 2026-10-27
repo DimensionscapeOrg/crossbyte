@@ -9,6 +9,7 @@
 # the rest of the suite still runs on cpp, interp and jvm.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -lib hxnodejs

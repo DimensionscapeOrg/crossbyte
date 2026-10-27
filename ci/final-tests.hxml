@@ -3,6 +3,7 @@
 #   export/ci-final-tests/FinalBuildMain
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -D final

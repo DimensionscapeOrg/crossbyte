@@ -2,6 +2,7 @@
 #   php export/php-tests/index.php
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -main PhpTestMain

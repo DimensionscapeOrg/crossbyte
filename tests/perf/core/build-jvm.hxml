@@ -10,5 +10,6 @@
 --next
 -cp src
 -lib emitter
+-lib wsproto
 -D perf_new
 --jvm export/perf-core-jvm/b.jar

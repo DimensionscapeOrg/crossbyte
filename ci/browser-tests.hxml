@@ -10,6 +10,7 @@
 # Run it with `node ci/browser/run.js`.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -main BrowserTestMain

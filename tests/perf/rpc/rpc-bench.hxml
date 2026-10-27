@@ -5,6 +5,7 @@
 # Natively: export/rpc-bench/native/RpcCallBench.exe; Node: export/rpc-bench/node/bench.js.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -cp tests/load
 -cp tests/perf/rpc

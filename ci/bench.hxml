@@ -8,6 +8,7 @@
 # and why these numbers gate nothing in CI.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests/bench
 -D windows
 -D HXCPP_M64

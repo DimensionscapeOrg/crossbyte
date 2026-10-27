@@ -66,8 +66,9 @@ CrossByte builds on; hxcpp 4.3.2 from haxelib does not.
 haxelib git hxcpp https://github.com/dimensionscape/hxcpp.git production
 ```
 
-CrossByte's events are [Emitter](https://github.com/dimensionscape/emitter)'s: haxelib installs `emitter` with it, and
-a build that adds CrossByte's sources with `-cp` adds `-lib emitter`. The other targets need nothing more, except
+CrossByte's events are [Emitter](https://github.com/dimensionscape/emitter)'s, and its WebSocket protocol is
+[wsproto](https://github.com/DimensionscapeOrg/wsproto)'s: haxelib installs `emitter` and `wsproto` with it, and a
+build that adds CrossByte's sources with `-cp` adds `-lib emitter -lib wsproto`. The other targets need nothing more, except
 Node, which needs `hxnodejs`. The repository's tasks (tests, samples, docs) run through the `aedifex` task runner:
 `haxelib install aedifex`.
 

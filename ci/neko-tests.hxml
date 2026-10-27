@@ -4,6 +4,7 @@
 #   neko export/neko/CrossByteTests.n
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -lib utest
 -main TestMain

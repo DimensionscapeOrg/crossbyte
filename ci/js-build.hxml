@@ -11,6 +11,7 @@
 # meaningful: everything not excluded has to compile.
 -cp src
 -lib emitter
+-lib wsproto
 --macro include('crossbyte')
 --js export/js/crossbyte.js
 -D js-flatten

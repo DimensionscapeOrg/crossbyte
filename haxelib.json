@@ -24,6 +24,7 @@
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
 	"dependencies": {
 		"emitter": "2.0.0",
-		"native-ipc": "1.0.0"
+		"native-ipc": "1.0.0",
+		"wsproto": "1.0.0"
 	}
 }

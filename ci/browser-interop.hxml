@@ -8,6 +8,7 @@
 # Run it with `node ci/interop/run.js` once built.
 -cp src
 -lib emitter
+-lib wsproto
 -cp tests
 -cp tests/interop
 -D windows

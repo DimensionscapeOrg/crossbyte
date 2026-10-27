@@ -163,7 +163,7 @@ class UncaughtErrorTest extends utest.Test {
 		var root:String = haxe.io.Path.directory(haxe.io.Path.directory(Sys.programPath()));
 
 		function run(defines:Array<String>):{code:Int, output:String} {
-			var args:Array<String> = ["--cwd", root, "-cp", "src", "-lib", "emitter", "-cp", "tests/fixtures/startfail", "-main", "StartFail", "--interp"].concat(defines);
+			var args:Array<String> = ["--cwd", root, "-cp", "src", "-lib", "emitter", "-lib", "wsproto", "-cp", "tests/fixtures/startfail", "-main", "StartFail", "--interp"].concat(defines);
 			var process = new sys.io.Process("haxe", args);
 			var output:String = process.stdout.readAll().toString() + process.stderr.readAll().toString();
 			var code:Int = process.exitCode();
