@@ -152,10 +152,16 @@ class BsonTest extends utest.Test {
 		// hxcpp before libhxcpp boxes an Int64 from -1 to 255 as the Int of the
 		// same value, so held in a Dynamic it is an Int there, and goes out as
 		// one; libhxcpp keeps it an Int64, as the other targets do. Which one a
-		// build links is not visible to Haxe code, so ask the runtime.
+		// build links is not visible to Haxe code, so ask the runtime. Only
+		// hxcpp's: on jvm a boxed Int64 is a Long, which Std.isOfType takes
+		// for an Int.
 		var small:Int64 = Int64.ofInt(5);
+		#if cpp
 		var boxed:Dynamic = small;
 		Assert.equals(Std.isOfType(boxed, Int) ? 0x10 : 0x12, Bson.encode({n: small}).get(4));
+		#else
+		Assert.equals(0x12, Bson.encode({n: small}).get(4));
+		#end
 
 		// Wrapped, it is an int64 everywhere, and decoding with wrapInt64 keeps
 		// it one through a round trip.
