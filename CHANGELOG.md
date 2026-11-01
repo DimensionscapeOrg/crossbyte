@@ -19,6 +19,17 @@ says how.
   Failures after startup are contained as before. `CrossByte.exit(code)`
   takes the program's exit code, and every runtime keeps it as
   `exitCode`. (Upgrading)
+- An HXSF object makes instances only of the classes and enums the
+  program allows with `ByteArray.allowObjectClass` and
+  `ByteArray.allowObjectEnum`, and one naming any other is refused with
+  an `IOError`. It made an instance of any class it named, without the
+  class's constructor and with the fields the sender chose, so a peer's
+  object, read through a socket, could make one of a class whose methods
+  trust what its constructor checked. This holds wherever HXSF is read:
+  `readObject`, a socket's too, `FileStream`, `SharedObject` and
+  `SharedChannel`. Arrays, structures, strings, numbers, `Date`, `Bytes`,
+  `List` and maps need nothing allowed, and AMF and JSON make no class
+  instances. (Upgrading)
 
 ### Fixed
 
@@ -81,6 +92,11 @@ says how.
   and an application's process with it, where it was logged and the
   runtime ran on. To carry on past a failure in startup, catch it inside
   the listener.
+- A program that sends or stores instances of its own classes or enums as
+  HXSF objects allows each as it starts, before reading any:
+  `ByteArray.allowObjectClass(Point)`, `ByteArray.allowObjectEnum(Shape)`.
+  Allow only classes that are plain data, since an instance is made
+  without its constructor.
 
 #### Platform
 

@@ -39,6 +39,7 @@ import crossbyte._internal.serial.BoundedAMF.BoundedAMF3Reader;
 #end
 import crossbyte._internal.serial.BoundedJson;
 import crossbyte._internal.serial.BoundedUnserializer;
+import crossbyte._internal.serial.ObjectTypes;
 import crossbyte.errors.IOError;
 
 /**
@@ -125,6 +126,43 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		as small objects or strings, and on the jvm up to 65 MB.
 	**/
 	public static var maxObjectValues(get, set):Int;
+
+	/**
+		Lets HXSF objects hold instances of `type`, wherever they are read in
+		this process: `readObject` (a socket's too), `FileStream`,
+		`SharedObject` and `SharedChannel`. An object naming a class not
+		allowed is refused with an `IOError` before anything is made of it,
+		so a peer cannot have an instance made of any class the program
+		holds. Arrays, anonymous structures, strings, numbers, `Date`,
+		`Bytes`, `List` and maps need nothing allowed.
+
+		An instance is made without its constructor, its fields set to what
+		the sender wrote, so allow classes that are plain data: nothing in
+		one should rely on its constructor having checked them. A class with
+		`hxUnserialize` reads itself. Each class is allowed by itself: a
+		subclass is not allowed with its parent.
+
+		One setting for the whole process. Allow classes as the program
+		starts, from one thread, before objects holding them are read.
+		`AMF0`, `AMF3` and `JSON` make no class instances, and need nothing
+		allowed.
+
+		@throws ArgumentError `type` is null.
+	**/
+	public static inline function allowObjectClass(type:Class<Dynamic>):Void {
+		ObjectTypes.allowClass(type);
+	}
+
+	/**
+		Lets HXSF objects hold values of enum `type`, wherever they are read
+		in this process, as `allowObjectClass` does for a class. An object
+		naming an enum not allowed is refused with an `IOError`.
+
+		@throws ArgumentError `type` is null.
+	**/
+	public static inline function allowObjectEnum(type:Enum<Dynamic>):Void {
+		ObjectTypes.allowEnum(type);
+	}
 
 	/**
 		The number of bytes of data available for reading from the current
@@ -445,7 +483,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				stack or memory: a peer's object, read through a socket's
 				`readObject`, nested a few thousand deep would end the
 				process, and twelve bytes of HXSF would make an array of
-				800 MB. An `HXSF` or `JSON` object's bytes are consumed.
+				800 MB. Or an `HXSF` object names a class or an enum that
+				`allowObjectClass` or `allowObjectEnum` has not allowed. An
+				`HXSF` or `JSON` object's bytes are consumed.
 	**/
 	public inline function readObject():Dynamic {
 		return this.readObject();

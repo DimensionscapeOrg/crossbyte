@@ -521,6 +521,84 @@ class ByteArrayIOTest extends utest.Test {
 		ByteArray.maxObjectValues = saved;
 	}
 
+	/**
+		An HXSF object naming a class or an enum the program has not allowed
+		is refused with an IOError and its bytes are consumed. Unrefused, a
+		peer could have an instance made of any class the program holds,
+		without its constructor, its fields whatever the peer chose.
+	**/
+	public function testAnObjectNamingATypeNotAllowedIsRefused():Void {
+		var refused:Array<{name:String, value:Dynamic}> = [
+			{name: "a class", value: new HxsfRefused(1)},
+			{name: "a class that reads itself", value: new HxsfRefusedCustom(1)},
+			{name: "an enum", value: HxsfRefusedKind.Two(2)},
+			{name: "a class inside an array", value: [1, new HxsfRefused(2)]},
+			{name: "a class inside a structure", value: {inner: new HxsfRefused(3)}},
+		];
+		for (each in refused) {
+			var out = new ByteArray();
+			out.writeObject(each.value);
+			out.writeInt(0x5EED);
+			out.position = 0;
+			Assert.raises(() -> out.readObject(), IOError, each.name);
+			Assert.equals(0x5EED, out.readInt(), '${each.name}: the refused object was not consumed');
+		}
+
+		// An enum by its index names the enum too.
+		var serializer = new haxe.Serializer();
+		serializer.useEnumIndex = true;
+		serializer.serialize(HxsfRefusedKind.One);
+		Assert.raises(() -> __framed(serializer.toString()).readObject(), IOError, "an enum by index");
+	}
+
+	/**
+		A class or an enum allowed reads back as itself. A subclass is not
+		allowed with its parent.
+	**/
+	public function testAnAllowedClassAndEnumReadBack():Void {
+		ByteArray.allowObjectClass(HxsfPoint);
+		ByteArray.allowObjectEnum(HxsfShape);
+
+		var out = new ByteArray();
+		out.writeObject({at: new HxsfPoint(3, 4), shape: HxsfShape.Circle(2.5), plain: HxsfShape.Dot});
+		out.position = 0;
+		var back:Dynamic = out.readObject();
+		Assert.isTrue(Std.isOfType(back.at, HxsfPoint));
+		Assert.equals(3, (back.at : HxsfPoint).x);
+		Assert.equals(4, (back.at : HxsfPoint).y);
+		Assert.isTrue(Type.enumEq(HxsfShape.Circle(2.5), back.shape));
+		Assert.isTrue(Type.enumEq(HxsfShape.Dot, back.plain));
+
+		var sub = new ByteArray();
+		sub.writeObject(new HxsfPointBelow(1, 2));
+		sub.position = 0;
+		Assert.raises(() -> sub.readObject(), IOError, "a subclass of an allowed class");
+
+		Assert.raises(() -> ByteArray.allowObjectClass(null), crossbyte.errors.ArgumentError);
+		Assert.raises(() -> ByteArray.allowObjectEnum(null), crossbyte.errors.ArgumentError);
+	}
+
+	/** The standard library's values HXSF writes a tag of their own for need nothing allowed. **/
+	public function testStandardValuesNeedNothingAllowed():Void {
+		var strings = new haxe.ds.StringMap<Int>();
+		strings.set("a", 1);
+		var ints = new haxe.ds.IntMap<String>();
+		ints.set(7, "seven");
+		var list = new haxe.ds.List<Int>();
+		list.add(5);
+		var date = new Date(2026, 10, 1, 12, 0, 0);
+
+		var out = new ByteArray();
+		out.writeObject({strings: strings, ints: ints, list: list, date: date, bytes: Bytes.ofString("xy")});
+		out.position = 0;
+		var back:Dynamic = out.readObject();
+		Assert.equals(1, (back.strings : haxe.ds.StringMap<Int>).get("a"));
+		Assert.equals("seven", (back.ints : haxe.ds.IntMap<String>).get(7));
+		Assert.equals(5, (back.list : haxe.ds.List<Int>).first());
+		Assert.equals(date.getTime(), (back.date : Date).getTime());
+		Assert.equals("xy", (back.bytes : Bytes).toString());
+	}
+
 	#if format
 	/**
 		AMF0 and AMF3 are bounded as HXSF is: a value at a time, and a length
@@ -668,4 +746,52 @@ class ByteArrayIOTest extends utest.Test {
 		input.objectEncoding = encoding;
 		Assert.raises(() -> input.readObject());
 	}
+}
+
+// Never allowed: testAnObjectNamingATypeNotAllowedIsRefused needs them refused.
+private class HxsfRefused {
+	public var value:Int;
+
+	public function new(value:Int) {
+		this.value = value;
+	}
+}
+
+private class HxsfRefusedCustom {
+	public var value:Int;
+
+	public function new(value:Int) {
+		this.value = value;
+	}
+
+	@:keep function hxSerialize(s:haxe.Serializer):Void {
+		s.serialize(value);
+	}
+
+	@:keep function hxUnserialize(u:haxe.Unserializer):Void {
+		value = u.unserialize();
+	}
+}
+
+private enum HxsfRefusedKind {
+	One;
+	Two(value:Int);
+}
+
+// Allowed by testAnAllowedClassAndEnumReadBack, HxsfPointBelow excepted.
+private class HxsfPoint {
+	public var x:Int;
+	public var y:Int;
+
+	public function new(x:Int, y:Int) {
+		this.x = x;
+		this.y = y;
+	}
+}
+
+private class HxsfPointBelow extends HxsfPoint {}
+
+private enum HxsfShape {
+	Dot;
+	Circle(radius:Float);
 }
