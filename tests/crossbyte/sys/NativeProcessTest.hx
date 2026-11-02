@@ -677,12 +677,19 @@ class NativeProcessTest extends utest.Test {
 		return new NativeProcessStartupInfo("sh", ["-c", "echo nativeprocess_smoke"]);
 	}
 
-	/** A child that prints nothing and ends after about `seconds`. **/
+	/**
+		A child that prints nothing and ends after about `seconds`.
+
+		`exec`, so the shell becomes the `sleep` rather than starting it. dash
+		(Ubuntu's `sh`) sometimes forks a lone command instead of becoming it:
+		up to a fifth of the time. Ending the shell then left the `sleep` holding
+		the output for its minute, and `EXIT` waits for the output to close.
+	**/
 	@:noCompletion private static function getQuietInfo(seconds:Int):NativeProcessStartupInfo {
 		if (System.isWindows) {
 			return new NativeProcessStartupInfo("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds " + seconds]);
 		}
-		return new NativeProcessStartupInfo("sh", ["-c", "sleep " + seconds]);
+		return new NativeProcessStartupInfo("sh", ["-c", "exec sleep " + seconds]);
 	}
 
 	@:noCompletion private static function pumpUntil(predicate:Void->Bool, timeoutSeconds:Float):Void {

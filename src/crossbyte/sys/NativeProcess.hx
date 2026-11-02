@@ -342,6 +342,11 @@ class NativeProcess extends EventDispatcher {
 		return maxLineLength = value;
 	}
 
+	/**
+		Ends the child, and only the child: not processes it started. One of
+		those still holding the output delays `EXIT`, as it would after an
+		ordinary end.
+	**/
 	public function exit():Void {
 		if (!__running) {
 			return;

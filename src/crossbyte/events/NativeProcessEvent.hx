@@ -22,7 +22,11 @@ class NativeProcessEvent extends TextEvent {
 	public static inline var STANDARD_OUTPUT_CLOSE:EventType<NativeProcessEvent> = "standardOutputClose";
 	/** Fired when the stderr stream closes. */
 	public static inline var STANDARD_ERROR_CLOSE:EventType<NativeProcessEvent> = "standardErrorClose";
-	/** Fired after the process exits. */
+	/**
+	 * Fired once the process has exited and both its output streams have
+	 * closed, after their close events. A process the child started that
+	 * still holds the output delays it until that process lets go.
+	 */
 	public static inline var EXIT:EventType<NativeProcessEvent> = "exit";
 
 	/** Exit code reported by the child process. */
