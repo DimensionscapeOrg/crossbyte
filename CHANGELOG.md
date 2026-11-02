@@ -45,6 +45,18 @@ says how.
   until the client closes, or five seconds pass, as Go's `net/http` and
   nginx's lingering close do.
 
+#### TCP
+
+- A server spread over `runtimes` serves a burst of connections larger
+  than its runtimes can take up at once. Once every runtime had 256
+  connections handed to it and not yet taken up, the server accepted
+  each further connection and closed it at once, counted in
+  `refusedConnections`: of 1,000 HTTP clients connecting together to a
+  server with `runtimeCount = 1`, hundreds read an end of stream. Now it
+  takes nothing more from the listen queue until a runtime catches up,
+  so the rest wait in the kernel's queue, as at `maxPendingHandshakes`,
+  and are served late rather than refused.
+
 #### RPC
 
 - A wide `RPCStruct` loads on neko. Its reader held every field's locals

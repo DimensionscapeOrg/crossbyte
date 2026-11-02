@@ -565,14 +565,18 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		closed, and the places its connections held under `maxConnections`
 		are given back.
 
-		A runtime takes up what it is handed at its next pass, so only one
-		that is stalled (a handler that blocks, a long collection) falls
-		behind. One with 256 connections handed to it and not yet taken up
-		is passed over for the next in turn, and once every runtime is that
-		far behind, each connection is closed as it is accepted, counted in
-		`refusedConnections`, and that is logged once: a stalled runtime
-		holds a bounded number of sockets, rather than every connection that
-		came its way for as long as the stall lasted.
+		A runtime takes up what it is handed at its next pass, so one falls
+		behind only when it is stalled (a handler that blocks, a long
+		collection) or busy with a burst of arrivals. One with 256
+		connections handed to it and not yet taken up is passed over for
+		the next in turn, and once every runtime is that far behind, the
+		server takes no more from the listen queue until one catches up:
+		the rest wait in the kernel's queue (as many as `listen()`'s
+		backlog), as at `maxPendingHandshakes`, and are served once there
+		is room. A stalled runtime holds a bounded number of sockets, rather
+		than every connection that came its way for as long as the stall
+		lasted, and a burst larger than the runtimes can take up at once is
+		served late rather than refused.
 
 		`admit`, `maxAcceptsPerTick` and `maxPendingHandshakes` hold for the
 		server as a whole: `admit` is asked, and `maxAcceptsPerTick` counted,
@@ -3106,7 +3110,8 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 
 	/**
 		Whether as many connections are still arriving as `maxPendingHandshakes`
-		allows, so the rest are left in the kernel's queue.
+		allows, or on a spread server as many as its runtimes can hold
+		waiting, so the rest are left in the kernel's queue.
 	**/
 	@:noCompletion private function __handshakesFull():Bool {
 		#if (target.threaded && !js)
@@ -3121,13 +3126,19 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	/**
 		On a spread server's listener (the front's, or with `reusePort` a
 		replica's own): whether the handshakes under way on every runtime, and
-		on their way to one, reach the front's `maxPendingHandshakes`. If they
-		do, this listener is set aside until a runtime says one has ended.
+		on their way to one, reach the front's `maxPendingHandshakes`; and on
+		the front, which hands its connections on, whether every runtime has
+		as many handed to it and not yet taken up as it may hold. Either
+		way, this listener is set aside until a runtime makes room, and
+		meanwhile its connections wait in the kernel's listen queue.
 	**/
 	@:noCompletion private function __spreadFull():Bool {
 		var spread:ServerSpread = __spread != null ? __spread : __shared;
 		var front:ServerSocket = __front != null ? __front : this;
-		return front.__tracksHandshakes() && spread.parkIfFull(front.maxPendingHandshakes, this);
+		if (front.__tracksHandshakes() && spread.parkIfFull(front.maxPendingHandshakes, this)) {
+			return true;
+		}
+		return __spread != null && __spread.parkIfBehind(this);
 	}
 	#end
 
