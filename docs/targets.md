@@ -17,6 +17,43 @@ Only native builds have IPC (`LocalConnection`, `SharedChannel`, `SharedObject`)
 SQLite, PostgreSQL through libpq, and the libsodium, BLAKE3 and mbedTLS crypto. A native process can hold about 2 GB
 of objects unless built with `-D HXCPP_GC_BIG_BLOCKS`; see [runtime.md](runtime.md#memory-and-the-native-collector).
 
+### Faster native builds
+
+Two options make a native release build faster to run and slower to build. Neither changes what the program does.
+
+`-D HXCPP_OPTIMIZE_LINK` turns on link-time optimisation. hxcpp writes each class to a file of its own, and without
+it the compiler cannot inline one class's code into another's. On Windows it cut the dense spatial grid's step by a
+third and the replication codecs by 12 to 16%, and the build took about three times as long. With Clang on Linux
+it does not link yet, since hxcpp leaves `-flto` off the link line; `crossbyte_pgo` adds it.
+
+`-D crossbyte_pgo` adds profile-guided optimisation on top, with MSVC, GCC or Clang, for the machine it builds on.
+Build the program instrumented, run it on the work it is for, and build it again from what that run counted:
+
+```sh
+haxe build.hxml -D crossbyte_pgo=generate
+./Main
+haxe build.hxml -D crossbyte_pgo=use
+```
+
+Trained and timed on the replication benchmark, a best case, it took a further 4 to 29% off the codecs' times
+with MSVC, 19 to 43% with GCC and 12 to 46% with Clang.
+
+- The instrumented program is slower, and writes its counts when it exits normally: returning from `main`,
+  `CrossByte.exit`, or a Ctrl+C or `SIGTERM` handled by `ProcessLifecycle.installDefaultHandlers()`. A process that
+  is killed writes none, and with MSVC a program that kills an instrumented copy of itself loses its own counts
+  as well. Several runs add up.
+- Train it on the work that matters. Code no run reached is optimised as usual on GCC, and for size with MSVC and
+  Clang.
+- The counts are in `pgo` in the output folder; MSVC keeps its `.pgd` and `.pgc` files beside the executable. A
+  `generate` build clears them, and a `use` build without any refuses.
+- hxcpp rebuilds a file when its source changes, not its flags, so a build with another mode or other defines than
+  the last (or without the option, after one with it) starts clean.
+- With MSVC the instrumented program needs `pgort140.dll` on the `PATH`, from Visual Studio's
+  `VC\Tools\MSVC\<version>\bin\Hostx64\x64`.
+- With Clang the counts are merged with `llvm-profdata`. Set `LLVM_PROFDATA` if the build cannot find the one that
+  matches the compiler.
+- A debug build ignores the option.
+
 ## JVM
 
 Each runtime is a thread, and they run at once. MySQL goes through Connector/J on the class path, without the TLS or

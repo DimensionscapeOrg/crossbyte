@@ -4,6 +4,16 @@ All notable changes to CrossByte will be documented in this file.
 
 ## 1.0.1 - Unreleased
 
+### Added
+
+#### Platform
+
+- `-D crossbyte_pgo=generate` and `-D crossbyte_pgo=use` build a native
+  program with profile-guided optimisation, which hxcpp has no option
+  for: built instrumented, run on its work, and built again from what
+  the run counted. It turns on link-time optimisation as well, and works
+  with MSVC, GCC and Clang. See docs/targets.md.
+
 ### Changed
 
 Entries marked "(Upgrading)" can need code changed; the Upgrading section

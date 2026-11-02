@@ -1,0 +1,76 @@
+<xml>
+	<pragma once="true"/>
+	<!-- Profile-guided optimisation: crossbyte._internal.macro.NativeProfile
+	     sets the defines. HXCPP_OPTIMIZE_LINK is on as well. Counts are
+	     atomic (EXACT on MSVC): a server runs several runtimes, and plain
+	     counters lose counts between threads. -->
+
+	<!-- MSVC applies the profile at the link, to the -GL objects. A DLL the
+	     same build links stays uninstrumented, which MSVC allows. -->
+	<linker id="exe" if="crossbyte_pgo_msvc crossbyte_pgo_generate">
+		<flag value="/GENPROFILE:EXACT"/>
+	</linker>
+	<linker id="exe" if="crossbyte_pgo_msvc crossbyte_pgo_use">
+		<flag value="/USEPROFILE"/>
+	</linker>
+
+	<!-- GCC and Clang take it at both, for a shared library the build links
+	     as well as the program: every object is instrumented, and the link
+	     brings the runtime that counts, and optimises again under LTO. -->
+	<compiler if="crossbyte_pgo_generate" unless="crossbyte_pgo_msvc">
+		<flag value="-fprofile-generate=${crossbyte_pgo_dir}"/>
+		<flag value="-fprofile-update=atomic"/>
+	</compiler>
+	<linker id="exe" if="crossbyte_pgo_generate" unless="crossbyte_pgo_msvc">
+		<flag value="-fprofile-generate=${crossbyte_pgo_dir}"/>
+	</linker>
+	<linker id="dll" if="crossbyte_pgo_generate" unless="crossbyte_pgo_msvc">
+		<flag value="-fprofile-generate=${crossbyte_pgo_dir}"/>
+	</linker>
+
+	<!-- GCC: code the training never ran is optimised as usual rather than
+	     for size, and a source changed since keeps its warning a warning. -->
+	<compiler if="crossbyte_pgo_gcc crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}"/>
+		<flag value="-fprofile-partial-training"/>
+		<flag value="-Wno-missing-profile"/>
+		<flag value="-Wno-error=coverage-mismatch"/>
+	</compiler>
+	<linker id="exe" if="crossbyte_pgo_gcc crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}"/>
+		<flag value="-fprofile-partial-training"/>
+	</linker>
+	<linker id="dll" if="crossbyte_pgo_gcc crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}"/>
+		<flag value="-fprofile-partial-training"/>
+	</linker>
+	<!-- hxcpp's GCC link line has no -flto: the linker plugin still finds the
+	     LTO objects, but optimises them on one thread. -->
+	<linker id="exe" if="crossbyte_pgo_gcc">
+		<flag value="-flto=auto"/>
+	</linker>
+	<linker id="dll" if="crossbyte_pgo_gcc">
+		<flag value="-flto=auto"/>
+	</linker>
+
+	<!-- Clang reads the merged counts, default.profdata. -->
+	<compiler if="crossbyte_pgo_clang crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}/default.profdata"/>
+		<flag value="-Wno-profile-instr-unprofiled"/>
+		<flag value="-Wno-profile-instr-out-of-date"/>
+	</compiler>
+	<linker id="exe" if="crossbyte_pgo_clang crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}/default.profdata"/>
+	</linker>
+	<linker id="dll" if="crossbyte_pgo_clang crossbyte_pgo_use">
+		<flag value="-fprofile-use=${crossbyte_pgo_dir}/default.profdata"/>
+	</linker>
+	<!-- On Linux the LTO objects are LLVM bitcode, which only a link that
+	     says -flto can read; macOS's linker reads them itself. -->
+	<linker id="exe" if="crossbyte_pgo_clang linux">
+		<flag value="-flto"/>
+	</linker>
+	<linker id="dll" if="crossbyte_pgo_clang linux">
+		<flag value="-flto"/>
+	</linker>
+</xml>

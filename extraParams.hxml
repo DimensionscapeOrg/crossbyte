@@ -1,2 +1,3 @@
 --macro crossbyte._internal.macro.HostPlatform.define()
 --macro crossbyte._internal.macro.StdOverrides.use()
+--macro crossbyte._internal.macro.NativeProfile.use()

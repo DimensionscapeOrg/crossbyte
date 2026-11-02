@@ -774,11 +774,12 @@ class StunMessage {
 
 	@:noCompletion private static function __writeXorAddress(address:String, port:Int, ?transactionId:ByteArray):ByteArray {
 		var octets = ipv4Octets(address);
+		var ipv6:Bytes = null;
 
 		if (octets == null) {
-			var bytes = ipv6Bytes(address);
+			ipv6 = ipv6Bytes(address);
 
-			if (bytes == null) {
+			if (ipv6 == null) {
 				throw new ArgumentError("\"" + address + "\" is neither an IPv4 nor an IPv6 address.");
 			}
 
@@ -786,30 +787,29 @@ class StunMessage {
 				throw new ArgumentError("\"" + address + "\" is an IPv6 address, which is XORed with the message's transaction as well as the cookie, "
 					+ "so writing one needs the transaction id.");
 			}
-
-			var value = new ByteArray();
-			value.endian = Endian.BIG_ENDIAN;
-			value.writeByte(0);
-			value.writeByte(FAMILY_IPV6);
-			value.writeShort(port ^ (MAGIC_COOKIE >>> 16));
-
-			for (i in 0...16) {
-				value.writeByte(bytes.get(i) ^ (i < 4 ? (MAGIC_COOKIE >>> (24 - i * 8)) & 0xFF : transactionId[i - 4]));
-			}
-
-			value.position = 0;
-			return value;
 		}
 
-		var value = new ByteArray();
+		// The family, then the port and the address XORed: the port and the
+		// address's first four bytes with the cookie, an IPv6 address's other
+		// twelve with the transaction. Put together as plain bytes: the same
+		// writes through a ByteArray, each one inlined, made a function MSVC
+		// 14.44 crashed on (C1001) when optimising from a profile.
+		var length:Int = ipv6 == null ? 4 : 16;
+		var bytes = Bytes.alloc(4 + length);
+		var xorPort:Int = (port ^ (MAGIC_COOKIE >>> 16)) & 0xFFFF;
+		bytes.set(0, 0);
+		bytes.set(1, ipv6 == null ? FAMILY_IPV4 : FAMILY_IPV6);
+		bytes.set(2, xorPort >>> 8);
+		bytes.set(3, xorPort & 0xFF);
+
+		for (i in 0...length) {
+			var byte:Int = ipv6 == null ? octets[i] : ipv6.get(i);
+			var mask:Int = i < 4 ? (MAGIC_COOKIE >>> (24 - i * 8)) & 0xFF : transactionId[i - 4];
+			bytes.set(4 + i, byte ^ mask);
+		}
+
+		var value:ByteArray = ByteArray.fromBytes(bytes);
 		value.endian = Endian.BIG_ENDIAN;
-		value.writeByte(0);
-		value.writeByte(FAMILY_IPV4);
-		value.writeShort(port ^ (MAGIC_COOKIE >>> 16));
-		value.writeByte(octets[0] ^ ((MAGIC_COOKIE >>> 24) & 0xFF));
-		value.writeByte(octets[1] ^ ((MAGIC_COOKIE >>> 16) & 0xFF));
-		value.writeByte(octets[2] ^ ((MAGIC_COOKIE >>> 8) & 0xFF));
-		value.writeByte(octets[3] ^ (MAGIC_COOKIE & 0xFF));
 		value.position = 0;
 		return value;
 	}
