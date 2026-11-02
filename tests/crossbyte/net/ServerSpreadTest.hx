@@ -794,9 +794,7 @@ class ServerSpreadTest extends utest.Test {
 		Assert.equals(2, server.__spread.waitingAt(1), "the second stalled runtime was handed past its bound");
 		Assert.equals(0, server.refusedConnections, "a connection was refused while the runtimes were only behind");
 		for (client in queued) {
-			client.setTimeout(0.2);
-			Assert.isFalse(SpreadSupport.ended(client), "a connection that arrived with every runtime behind was closed");
-			client.setTimeout(10.0);
+			Assert.isFalse(SpreadSupport.ended(client, 0.2), "a connection that arrived with every runtime behind was closed");
 		}
 
 		// Caught up: everything handed over is taken up, and what waited in
