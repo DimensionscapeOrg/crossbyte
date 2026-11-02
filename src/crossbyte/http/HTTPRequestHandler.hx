@@ -2120,6 +2120,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (headers != null) {
 			for (h in headers) {
+				// The connection's own header is the server's to write, once:
+				// a caller's `Connection: close` closes it after this
+				// response, as in Go's and Node's servers, rather than going
+				// out beside a `keep-alive` that says otherwise.
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Connection")) {
+					if (h.value != null && !__writer.ownsConnection && __hasToken(h.value, "close")) {
+						__responseKeepAlive = false;
+					}
+					continue;
+				}
 				fields.push(h);
 			}
 		}
@@ -2388,8 +2398,30 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * @param headers Optional additional response headers.
 	 * @param statusMessage Reason phrase; defaults to the standard text
 	 *        for `statusCode`.
+	 *
+	 * A request may be answered from any thread: one a middleware handed to a
+	 * worker pool is answered by the worker, without a round trip of its own.
+	 * Called from a thread other than the runtime serving the connection,
+	 * this hands the response to that runtime and returns at once, the
+	 * response going out as that runtime's next pass ends; from the runtime's
+	 * own thread it goes out as before. The same holds for `respondBytes`,
+	 * `beginResponse` and the stream it returns, and `abort`. Such a call is
+	 * for the request being served when it is made: one that reaches the
+	 * runtime after that request was answered (or its client left) does
+	 * nothing, rather than going out ahead of the connection's next request.
+	 * A handler serves its connection's requests one after another, so a
+	 * call made once its request has been answered is for the next, as on
+	 * the runtime's own thread. Listeners
+	 * (`Event.CLOSE`) are added on the runtime's own thread, as with any
+	 * `EventDispatcher` here.
 	 */
 	public function respond(statusCode:Int, contentType:String, body:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			__hand(runtime, () -> respond(statusCode, contentType, body, fields, statusMessage));
+			return;
+		}
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
 		__dispatchResponse(statusCode, reason, headers, contentType, body, __method == "HEAD");
 	}
@@ -2400,12 +2432,158 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *
 	 * `body` is the caller's again once this returns, to change or reuse:
 	 * what is sent is its bytes as they were at the call, including a body
-	 * past `maxOutputBufferSize`, which goes out over later drains.
+	 * past `maxOutputBufferSize`, which goes out over later drains. From
+	 * another thread too, which copies them.
 	 */
 	public function respondBytes(statusCode:Int, contentType:String, body:ByteArray, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			var copy:Null<ByteArray> = body == null ? null : ByteArray.fromBytes((body : haxe.io.Bytes).sub(0, body.length));
+			__hand(runtime, () -> respondBytes(statusCode, contentType, copy, fields, statusMessage));
+			return;
+		}
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
 		__dispatchResponseBytes(statusCode, reason, headers, contentType, body != null ? body : new ByteArray(), __method == "HEAD", null, false, true, true);
 	}
+
+	/**
+	 * Gives up on this request's response: under HTTP/1.1 the connection is
+	 * closed, the only way left to tell the client a response is cut short,
+	 * and under HTTP/2 the request's stream is reset and the connection's
+	 * other streams go on. For a producer that fails partway through a body,
+	 * or a handler that cannot answer at all. Listeners hear `Event.CLOSE`.
+	 * A request answered in full already is left alone. From any thread, as
+	 * `respond` is.
+	 */
+	public function abort():Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			__hand(runtime, abort);
+			return;
+		}
+		if (__responded && __openStream == null && !__streamPending) {
+			return;
+		}
+		__detachOpenStream();
+		__abandonResponse();
+	}
+
+	/**
+	 * Every request header, by lower-case name, in a map of the caller's own:
+	 * a header sent more than once is there once, its values joined with
+	 * `", "`, as `getHeader` answers it. Taken while the request is being
+	 * served, as the other request fields are.
+	 */
+	public function getAllHeaders():StringMap<String> {
+		var all:StringMap<String> = new StringMap();
+		if (__headers != null) {
+			for (name => value in __headers) {
+				all.set(name, value);
+			}
+		}
+		return all;
+	}
+
+	/**
+	 * The version of HTTP the request came in: `"HTTP/1.0"`, `"HTTP/1.1"` or
+	 * `"HTTP/2"`. `null` before a request has arrived.
+	 */
+	public var httpVersion(get, never):Null<String>;
+
+	@:noCompletion private function get_httpVersion():Null<String> {
+		return __httpVersion;
+	}
+
+	/**
+		The runtime serving this request's connection when the caller is on
+		another thread, which a call is handed to; null on that runtime's own
+		thread, and where there is only one (Node).
+	**/
+	@:noCompletion private function __otherThreadsRuntime():Null<crossbyte.core.CrossByte> {
+		#if (target.threaded && !js)
+		var runtime:Null<crossbyte.core.CrossByte> = @:privateAccess __origin.__cbInstance;
+		return (runtime != null && !__onThreadOf(runtime)) ? runtime : null;
+		#else
+		return null;
+		#end
+	}
+
+	/**
+		Whether the caller is on `runtime`'s thread. Asked on every answer, so
+		by the runtime the thread is running, which costs a thread-local
+		read, rather than by the thread itself, which on hxcpp takes a lock
+		every thread shares; only a thread running no runtime (a worker, or a
+		host's thread between advances) is asked the long way.
+	**/
+	@:noCompletion private static function __onThreadOf(runtime:crossbyte.core.CrossByte):Bool {
+		#if (target.threaded && !js)
+		var here:Null<crossbyte.core.CrossByte> = @:privateAccess crossbyte.core.CrossByte.__threadLocalStorage.value;
+		if (here != null) {
+			return here == runtime;
+		}
+		return runtime.__isOwnThread();
+		#else
+		return true;
+		#end
+	}
+
+	/**
+		Runs `call` on `runtime` for the request being served now, and not for
+		a later one on the same connection: a call that arrives once this
+		request has been answered, or its connection reset for the next one,
+		is dropped. What it sends goes out as the pass ends, with whatever
+		else this thread handed over meanwhile.
+	**/
+	@:noCompletion private function __hand(runtime:crossbyte.core.CrossByte, call:Void->Void):Bool {
+		var slot:Int = __requestGeneration;
+		return runtime.post(() -> {
+			if (slot == __requestGeneration) {
+				__runHanded(call);
+			}
+		});
+	}
+
+	/**
+		On the runtime: `call`, handed over from another thread. What it
+		writes is held, as what a read is answered with is, and sent once as
+		the pass ends, so a head, a body and its end handed over together go
+		out in one write rather than one each.
+	**/
+	@:noCompletion private function __runHanded(call:Void->Void):Void {
+		var outer:Bool = __reading;
+		__reading = true;
+		try {
+			call();
+		} catch (error:Dynamic) {
+			__reading = outer;
+			__flushAsPassEnds();
+			throw error;
+		}
+		__reading = outer;
+		__flushAsPassEnds();
+	}
+
+	/** Sends what a handed-over call held, as the runtime's pass ends. **/
+	@:noCompletion private function __flushAsPassEnds():Void {
+		if (!__streamFlushHeld || __reading || __passFlushQueued) {
+			return;
+		}
+		var runtime:Null<crossbyte.core.CrossByte> = #if (target.threaded && !js) @:privateAccess __origin.__cbInstance #else null #end;
+		if (runtime == null) {
+			__flushHeldStream();
+			return;
+		}
+		if (__passFlush == null) {
+			__passFlush = new HandedFlush(this);
+		}
+		__passFlushQueued = true;
+		runtime.__queuePassFlush(__passFlush);
+	}
+
+	// Asked to flush as the pass ends; see __flushAsPassEnds.
+	@:noCompletion private var __passFlush:Null<HandedFlush> = null;
+	@:noCompletion private var __passFlushQueued:Bool = false;
 
 	/**
 	 * Whether the client can still be written to: false once it has gone,
@@ -2446,11 +2624,57 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * (see `HTTPServerConfig.requestTimeout`), and that is heard the same way.
 	 * A request already answered, or whose client has gone, gets a stream
 	 * that refuses writes from the start.
+	 *
+	 * From another thread (see `respond`) the stream is returned at once and
+	 * the head goes out on the connection's runtime, ahead of what is
+	 * written meanwhile; the stream is `connected` from the start, until it
+	 * turns out the request was answered already or the client has gone.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(null, false);
+			@:privateAccess stream.__owner = runtime;
+			@:privateAccess stream.__pending = true;
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			var slot:Int = __requestGeneration;
+			var posted:Bool = runtime.post(() -> {
+				if (slot == __requestGeneration) {
+					__runHanded(() -> __beginResponse(statusCode, contentType, fields, statusMessage, stream));
+				} else {
+					__streamFor(stream, null, false);
+				}
+			});
+			if (!posted) {
+				__streamFor(stream, null, false);
+			}
+			return stream;
+		}
+		return __beginResponse(statusCode, contentType, headers, statusMessage, null);
+	}
+
+	/**
+		`stream`, or a new one when null, set to write through `handler` (null
+		for one that reaches no client) or to drop what it is given.
+	**/
+	@:noCompletion private function __streamFor(stream:Null<HTTPResponseStream>, handler:Null<HTTPRequestHandler>, discards:Bool):HTTPResponseStream {
+		if (stream == null) {
+			stream = @:privateAccess new HTTPResponseStream(handler, discards);
+		}
+		@:privateAccess {
+			stream.__handler = handler;
+			stream.__discards = discards;
+			stream.__owner = handler != null ? #if (target.threaded && !js) __origin.__cbInstance #else null #end : null;
+			stream.__pending = false;
+		}
+		return stream;
+	}
+
+	@:noCompletion private function __beginResponse(statusCode:Int, contentType:String, headers:Null<Array<URLRequestHeader>>, statusMessage:Null<String>,
+			into:Null<HTTPResponseStream>):HTTPResponseStream {
 		if (__responded || __openStream != null) {
 			// One response to a request, as respond() allows.
-			return @:privateAccess new HTTPResponseStream(null, false);
+			return __streamFor(into, null, false);
 		}
 
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
@@ -2487,15 +2711,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__dispatchResponseBytes(statusCode, reason, fields, contentType, null, bodiless, null, true);
 		if (!__responded) {
 			// Never went out: the client had already gone.
-			return @:privateAccess new HTTPResponseStream(null, false);
+			return __streamFor(into, null, false);
 		}
 		if (bodiless) {
 			// Complete already, and the connection settled with it; the
 			// stream only has to swallow what the producer sends.
-			return @:privateAccess new HTTPResponseStream(null, true);
+			return __streamFor(into, null, true);
 		}
 
-		var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(this, false);
+		var stream:HTTPResponseStream = __streamFor(into, this, false);
 		__openStream = stream;
 		__openEncoder = encoder;
 		__watchClient();
@@ -2600,10 +2824,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __onOpenStreamDrain():Void {
 		var stream:Null<HTTPResponseStream> = __openStream;
-		if (stream == null || !@:privateAccess stream.__blocked || __writer.bufferedBytes >= __openStreamWatermark()) {
+		// Counting what writes from another thread have handed over and not
+		// yet sent, so the producer is not told of room they will take.
+		if (stream == null || !@:privateAccess stream.__drainOwed(__writer.bufferedBytes)) {
 			return;
 		}
-		@:privateAccess stream.__blocked = false;
 		var callback:Null<Void->Void> = stream.onDrain;
 		if (callback != null) {
 			callback();
@@ -2751,16 +2976,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	@:noCompletion private function __hasConnectionToken(token:String):Bool {
 		var header:String = __headers.exists("connection") ? __headers.get("connection") : null;
-		if (header == null) {
-			return false;
-		}
+		return header != null && __hasToken(header, token);
+	}
 
-		for (raw in header.split(",")) {
+	/** Whether the comma-separated `value` carries `token`, as a whole token, in any case. **/
+	@:noCompletion private static function __hasToken(value:String, token:String):Bool {
+		for (raw in value.split(",")) {
 			if (StringTools.trim(raw).toLowerCase() == token) {
 				return true;
 			}
 		}
-
 		return false;
 	}
 
@@ -3313,7 +3538,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (statusCode < 200 || statusCode >= 400 || statusCode == 204 || statusCode == 206 || statusCode == 304) {
 			return false;
 		}
-		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding") || __forbidsTransform(headers)) {
 			return false;
 		}
 		return policy.compresses(contentType);
@@ -3330,7 +3555,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (length <= 0 || length < policy.minimumSize) {
 			return false;
 		}
-		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding") || __forbidsTransform(headers)) {
 			return false;
 		}
 		return policy.compresses(contentType);
@@ -3512,6 +3737,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case CompressionAlgorithm.LZ4: HTTPContentCoding.LZ4;
 			default: null;
 		}
+	}
+
+	/**
+		Whether the response says `Cache-Control: no-transform`, which leaves
+		its body as the caller gave it: not compressed here, as Express's
+		`compression` leaves such a response. How an application that encodes
+		its own bodies, or must not have one encoded, says so for one response.
+	**/
+	@:noCompletion private function __forbidsTransform(headers:Array<URLRequestHeader>):Bool {
+		if (headers == null) {
+			return false;
+		}
+		for (header in headers) {
+			if (header != null && header.name != null && header.value != null && HttpSyntax.equalsIgnoreCase(header.name, "Cache-Control")
+				&& __hasToken(header.value, "no-transform")) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	@:noCompletion private function __hasResponseHeader(headers:Array<URLRequestHeader>, name:String):Bool {
@@ -5041,6 +5285,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return buf;
 		}
 		return buf + safeName + ": " + __sanitizeHeaderValue(value) + "\r\n";
+	}
+}
+
+/** Sends what calls handed over from another thread held, as the runtime's pass ends. */
+private final class HandedFlush implements crossbyte.core._internal.PassFlush {
+	private final handler:HTTPRequestHandler;
+
+	public function new(handler:HTTPRequestHandler) {
+		this.handler = handler;
+	}
+
+	public function __flushPass():Void {
+		@:privateAccess handler.__passFlushQueued = false;
+		@:privateAccess handler.__flushHeldStream();
 	}
 }
 

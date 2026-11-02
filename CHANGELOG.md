@@ -6,6 +6,31 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Added
 
+#### HTTP
+
+- A request can be answered from a thread of the application's own, as
+  a framework that runs its handlers on a worker pool answers them:
+  `respond`, `respondBytes`, `beginResponse` and its stream's `write`,
+  `writeText` and `end` may be called from any thread. Called from
+  another, each is handed to the connection's runtime and returns at
+  once, and what is handed over together goes out in one write as the
+  runtime's pass ends. A stream written from another thread answers
+  `write` from what it has handed over and not yet sent, and calls
+  `onDrain` on the connection's runtime. A call that reaches the runtime
+  after its request was answered does nothing, rather than answering the
+  next request pipelined behind it. On two cores at 1,000 connections,
+  two workers answering with `respond` served about 130,000 requests a
+  second, where workers answering through three blocking round trips to
+  the runtime (head, body, end) served about 7,000, with 0.4 thread
+  switches a request against 4.5. See docs/runtime.md.
+- `HTTPRequestHandler.abort()` gives up on a response, from any thread:
+  the connection closes under HTTP/1.1, the stream is reset under HTTP/2.
+- `HTTPRequestHandler.getAllHeaders()` and `httpVersion`: every request
+  header by lower-case name, and the version the request came in.
+- A response that says `Cache-Control: no-transform` is not compressed,
+  as Express's `compression` leaves one: how an application says, for
+  one response, that its body is to go as given.
+
 #### Platform
 
 - `-D crossbyte_pgo=generate` and `-D crossbyte_pgo=use` build a native
@@ -45,6 +70,10 @@ says how.
 
 #### HTTP
 
+- A response given `Connection: close` closes the connection after it,
+  as Go's and Node's servers do. Over HTTP/1.1 the header went out beside
+  the server's own `Connection: keep-alive`, and the connection stayed
+  open.
 - A client still sending a request the server has answered already (an
   upload refused `413` on its `Content-Length`, or requests pipelined
   behind one the connection was closed after) reads the answer. The
