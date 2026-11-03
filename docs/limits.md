@@ -289,7 +289,21 @@ lookup.
 
 ## HTTP servers and PHP
 
-An `HTTPServer` holds the TCP limits above, with its own `maxConnections` in `HTTPServerConfig`.
+An `HTTPServer` holds the TCP limits above, with its own `maxConnections` in `HTTPServerConfig`, and these on each
+request as it arrives:
+
+| `HTTPServerConfig` | Default | Bounds |
+| --- | --- | --- |
+| `maxRequestBodySize` | 1 MiB | one body, refused `413` on its `Content-Length`, or as it passes the limit |
+| `requestTimeout` | 60 s | the whole request, from its first byte; answered `408` |
+| `requestIdleTimeout` | none | time with nothing arriving on a request still arriving; answered `408` |
+| `keepAliveTimeout` | 5 s | a connection between requests |
+
+`requestTimeout` is also a floor on a client's speed: 100 MiB in 60 seconds is 14 Mbit/s. To take slower uploads, set
+`requestIdleTimeout` and raise `requestTimeout`. As for an HTTP client, an idle timeout alone does not bound a
+request: a client sending a byte at a time resets it with every byte, so keep a `requestTimeout` of some length
+rather than setting it to `0`.
+
 `HTTPServerConfig.phpMaxResponseSize` (8 MiB) bounds a PHP script's response, whose CGI header block is held to
 64 KiB and 100 lines besides. `phpMaxExchanges` (64) bounds the requests a runtime has with its PHP backend at once;
 more wait their turn within `phpTimeout`, and past 1,024 waiting a request is refused.

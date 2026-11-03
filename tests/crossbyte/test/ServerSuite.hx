@@ -48,6 +48,7 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPServerH2Test());
 		runner.addCase(new crossbyte.http.HTTPStaticPathTest());
 		runner.addCase(new crossbyte.http.HTTPRequestFramingTest());
+		runner.addCase(new crossbyte.http.HTTPRequestIdleTimeoutTest());
 		runner.addCase(new crossbyte.http.HTTPRateLimitTest());
 		runner.addCase(new crossbyte.http.HTTPResponseStreamTest());
 		// A request answered from a worker thread; its cases are the threaded

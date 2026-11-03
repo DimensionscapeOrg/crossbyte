@@ -123,6 +123,13 @@ class H2Stream {
 	public var openedAt:Float = 0;
 
 	/**
+		`haxe.Timer.stamp()` when this stream's client last sent a byte of it,
+		kept only with `H2ServerConnection.stampArrivals` on. Starts as
+		`openedAt`.
+	**/
+	public var heardAt:Float = 0;
+
+	/**
 		On the server, the request read from a header section whose body is
 		still to come, as it was admitted. Delivered once the body ends.
 	**/

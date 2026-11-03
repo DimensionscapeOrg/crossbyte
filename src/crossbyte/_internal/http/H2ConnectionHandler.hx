@@ -105,6 +105,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		// What HTTP/1.1 closes after: keepAliveMaxRequests responses, or one
 		// with keepAlive off. A GOAWAY says so here.
 		__connection.maxRequests = config.keepAlive ? config.keepAliveMaxRequests : 1;
+		__connection.stampArrivals = config.requestIdleTimeout > 0;
 		__connection.onRequest = __serve;
 		__connection.onRequestHead = __admit;
 		__connection.onDrained = __onDrained;
@@ -403,9 +404,10 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	 * Holds the connection to its deadlines.
 	 *
 	 * Two, because they bound different things. A request still arriving
-	 * owes the rest of itself within `requestTimeout` of its own HEADERS:
-	 * one that has not is answered `408` on its stream, and the connection
-	 * carries on with the rest. One that has arrived is the application's to
+	 * owes the rest of itself within `requestTimeout` of its own HEADERS,
+	 * and with `requestIdleTimeout` set its next byte within that of its
+	 * last: one that has not is answered `408` on its stream, and the
+	 * connection carries on with the rest. One that has arrived is the application's to
 	 * answer, for as long as that takes (a long poll, a slow upstream), as
 	 * an HTTP/1.1 request stops its clock once read. And a connection with no
 	 * stream open is between requests, which HTTP/2 is designed for, so it
@@ -430,12 +432,13 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		}
 
 		var timeout:Float = __config.requestTimeout;
-		if (timeout > 0 && __connection.receivingStreams > 0) {
+		var quiet:Float = __config.requestIdleTimeout;
+		if ((timeout > 0 || quiet > 0) && __connection.receivingStreams > 0) {
 			// The 408s it writes go out together, as answers to a read do.
 			__receiving = true;
 			var going:Bool;
 			try {
-				going = __connection.expireRequests(now - timeout);
+				going = __connection.expireRequests(timeout > 0 ? now - timeout : 0, quiet > 0 ? now - quiet : 0);
 			} catch (error:Dynamic) {
 				__receiving = false;
 				__flushOut();
@@ -447,7 +450,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			if (!going) {
 				// A header block stalled partway: nothing else can be read
 				// until it ends, and it is not ending.
-				Logger.info('HTTP/2 header block still unfinished after ${timeout}s; closing.');
+				Logger.info('HTTP/2 header block still unfinished after ${timeout > 0 ? timeout : quiet}s; closing.');
 				close();
 				return;
 			}

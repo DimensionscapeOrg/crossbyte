@@ -328,6 +328,13 @@ class H2ServerConnection {
 	private final __streams:Map<Int, H2Stream>;
 	private final __abandoned:Map<Int, Void->Void>;
 
+	/**
+		Whether to note when each stream's client last sent a byte of it
+		(`H2Stream.heardAt`), for `expireRequests`: a clock read per DATA
+		frame, so only for an owner that asks.
+	**/
+	public var stampArrivals:Bool = false;
+
 	// The open streams, in the order they opened, beside the map: what a
 	// drain walks (notifyWritable). The map's iterators made two arrays and
 	// two iterators at every drain, 240 B natively. `__walk` is the copy a
@@ -1045,11 +1052,18 @@ class H2ServerConnection {
 	 * 0.4 s cannot hold a request open past `requestTimeout`; it is answered
 	 * 408, as HTTP/1.1 answers it.
 	 *
+	 * A stream last heard from at or before `quietCutoff`
+	 * (`H2Stream.heardAt`, with `stampArrivals` on) is answered the same way,
+	 * unless its window is spent: it cannot send, and what it waits for is
+	 * this side's.
+	 *
+	 * @param cutoff `0` for no limit on when a request opened.
+	 * @param quietCutoff `0` for no limit on when one was last heard from.
 	 * @return false when one of them is a header block still arriving: no
 	 *         other frame may be read until it ends (6.10), so the connection
 	 *         can go no further, and its owner closes it.
 	 */
-	public function expireRequests(cutoff:Float):Bool {
+	public function expireRequests(cutoff:Float, quietCutoff:Float = 0):Bool {
 		if (closed || __openStreams == __answering) {
 			return true;
 		}
@@ -1057,7 +1071,7 @@ class H2ServerConnection {
 		// Gathered first: answering one removes it from the map being walked.
 		var late:Null<Array<H2Stream>> = null;
 		for (target in __streams) {
-			if (!target.delivered && target.openedAt <= cutoff) {
+			if (!target.delivered && (target.openedAt <= cutoff || (target.heardAt <= quietCutoff && target.recvWindow > 0))) {
 				if (late == null) {
 					late = [];
 				}
@@ -1413,6 +1427,7 @@ class H2ServerConnection {
 			} else {
 				var opened:H2Stream = new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize, false);
 				opened.openedAt = haxe.Timer.stamp();
+				opened.heardAt = opened.openedAt;
 				// Until the client has acknowledged the SETTINGS that made it
 				// smaller, it may be using the protocol's first window (6.9.2).
 				if (!__settingsAcked && opened.recvWindow < HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE) {
@@ -1683,6 +1698,9 @@ class H2ServerConnection {
 			target.recvWindow -= counted;
 			if (target.budgeted) {
 				__promised -= counted;
+			}
+			if (stampArrivals) {
+				target.heardAt = haxe.Timer.stamp();
 			}
 		}
 

@@ -184,6 +184,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __scanC:Int = -1;
 	@:noCompletion private var __scanned:UInt = 0;
 	@:noCompletion private var __receiveDeadline:Float = 0;
+	// When this connection last delivered a byte, read only with
+	// requestIdleTimeout set: a request is given up when that was too long ago.
+	@:noCompletion private var __heardAt:Float = 0;
 	// Waiting between requests on a kept-alive connection. While set,
 	// __receiveDeadline means "how long may this connection sit idle".
 	@:noCompletion private var __idle:Bool = false;
@@ -366,6 +369,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__headers = new Map<String, String>();
 			__setup();
 			__requestStartedAt = haxe.Timer.stamp();
+			__heardAt = __requestStartedAt;
 			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
 		}
 	}
@@ -524,6 +528,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __onRead():Void {
 		__receivedAny = true;
+		if (__config.requestIdleTimeout > 0) {
+			__heardAt = haxe.Timer.stamp();
+		}
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
@@ -698,8 +705,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Enforces whichever deadline the connection's phase gave
-	 * `__receiveDeadline`: mid-request expiry answers `408 Request
-	 * Timeout`, idle expiry just closes.
+	 * `__receiveDeadline`, and `requestIdleTimeout` while a request is
+	 * arriving: mid-request expiry answers `408 Request Timeout`, idle
+	 * expiry just closes.
 	 *
 	 * Called from the owning server's sweep rather than from a data event,
 	 * because the clients this exists for are precisely the ones that stop
@@ -733,7 +741,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		if (__receiveDeadline <= 0 || now < __receiveDeadline) {
+		// Silent for too long, on a request still arriving.
+		var quiet:Float = __config.requestIdleTimeout;
+		var silent:Bool = quiet > 0 && !__idle && !__requestConsumed && now - __heardAt >= quiet;
+
+		if (!silent && (__receiveDeadline <= 0 || now < __receiveDeadline)) {
 			return;
 		}
 
@@ -3398,7 +3410,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// A pipelined request already sits in the buffer: straight
 			// back to receiving, request clock armed immediately.
 			__idle = false;
-			__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
+			__heardAt = haxe.Timer.stamp();
+			__receiveDeadline = __config.requestTimeout > 0 ? __heardAt + __config.requestTimeout : 0;
 		} else {
 			// Between requests. The same deadline field now bounds idle
 			// time; zero when idle reaping is disabled.

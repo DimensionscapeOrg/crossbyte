@@ -555,6 +555,35 @@ class HTTPServerConfig {
 	public var requestTimeout:Float;
 
 	/**
+		Seconds a request still arriving may go without a byte, or `0` for no
+		such limit, the default. A connection that does is answered
+		`408 Request Timeout` and closed, as at `requestTimeout`, and it counts
+		from accept, from a request's first byte and from each one after. It
+		is `URLRequest.readTimeout` for a server, beside `requestTimeout`,
+		which is its `loadTimeout`: how long the whole request may take.
+
+		A deadline for the whole request is also a floor on the client's
+		speed: 100 MiB in 60 seconds is 14 Mbit/s, and a slower upload that
+		is making steady progress is cut off. To take those, set this and
+		raise `requestTimeout`.
+
+		An idle timeout alone does not bound a request: a client sending a
+		byte at a time moves it with every byte, and holds its connection for
+		as long as that takes. Keep a `requestTimeout` (an hour, say, for the
+		slowest upload you will take) rather than setting it to `0`, as Apache's
+		`mod_reqtimeout` and Kestrel's minimum data rate keep a floor, and
+		bound one address with `maxConnectionsPerAddress`.
+
+		Over HTTP/2 it is each stream's, counted from its HEADERS and from
+		each DATA after, and a stream past it is answered `408` on that stream
+		alone. A stream with no window left to send into is not counted: what
+		it waits for is this side's, and `http2MaxRequestBodyBuffer` says how
+		that ends. Enforced by the same sweep as `requestTimeout`, so
+		precision is roughly a quarter second.
+	**/
+	public var requestIdleTimeout:Float = 0;
+
+	/**
 		Offer HTTP/2 on this listener, alongside HTTP/1.1.
 
 		Opt-in but not exclusive: each connection is served as whichever

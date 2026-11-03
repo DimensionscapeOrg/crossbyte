@@ -27,6 +27,11 @@ All notable changes to CrossByte will be documented in this file.
   the connection closes under HTTP/1.1, the stream is reset under HTTP/2.
 - `HTTPRequestHandler.getAllHeaders()` and `httpVersion`: every request
   header by lower-case name, and the version the request came in.
+- `HTTPServerConfig.requestIdleTimeout`, the seconds a request still
+  arriving may go without a byte, off by default, beside
+  `requestTimeout`, which bounds the whole request and so also sets a
+  floor on a client's speed: 100 MiB in its 60 seconds is 14 Mbit/s. On
+  both protocols, and answered `408` as a deadline is. See docs/limits.md.
 - `HTTPRequestHandler.requestTarget`, the request target as it arrived,
   beside `requestPath`, which is decoded and settled: a proxy forwards
   this one, so what is behind it reads a `%2F` as one. And `remotePort`,

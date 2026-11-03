@@ -2113,6 +2113,27 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAStreamThatFallsSilentIs408AndTheOthersGoOn(async:Async):Void {
+		// requestIdleTimeout is each stream's, and answered on that stream.
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.requestIdleTimeout = 0.3;
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "4")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(408, session.status(1), "a silent stream was not timed out");
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			}, 5.0);
+		});
+	}
+
 	public function testTheRequestTargetIsTheStreamsPath(async:Async):Void {
 		// :path as it came, with or without a body to come, on a handler a
 		// connection may keep from stream to stream.
