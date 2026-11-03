@@ -84,6 +84,71 @@ class HTTPRequestFramingTest extends utest.Test {
 		}, true);
 	}
 
+	/**
+		`requestTarget` is what arrived, whatever `requestPath` made of it: an
+		encoded slash and a dot segment stay, a query stays with its path, and
+		the absolute form keeps its scheme and host.
+	**/
+	public function testTheRequestTargetIsAsItArrived(async:Async):Void {
+		var targets:Array<String> = [];
+		var paths:Array<String> = [];
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+			targets.push(handler.requestTarget);
+			paths.push(handler.requestPath);
+			handler.respond(200, "text/plain", "ok");
+		});
+		var server:HTTPServer = new HTTPServer(config);
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /a%2Fb/./c/../d//e?x=%20y HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /plain HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /empty? HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET http://example.com/abs%2Fsolute?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals("/a%2Fb/./c/../d//e?x=%20y", targets[0]);
+			Assert.equals("/a/b/d/e", paths[0]);
+			Assert.equals("/plain", targets[1]);
+			Assert.equals("/empty?", targets[2]);
+			Assert.equals("/empty", paths[2]);
+			Assert.equals("http://example.com/abs%2Fsolute?q=1", targets[3]);
+			Assert.equals("/abs/solute", paths[3]);
+			async.done();
+		});
+	}
+
+	/** `remotePort` is the port the client's connection comes from, and the client's own socket says the same. **/
+	public function testRemotePortIsTheClients(async:Async):Void {
+		var seen:Int = -1;
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+			seen = handler.remotePort;
+			handler.respond(200, "text/plain", "ok");
+		});
+		var server:HTTPServer = new HTTPServer(config);
+
+		var client:crossbyte.net.Socket = new crossbyte.net.Socket();
+		var own:Int = -2;
+		client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
+			own = client.localPort;
+			client.writeUtfBytes("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+			client.flush();
+		});
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> seen >= 0, 10, function(answered:Bool):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(answered, "the request never reached the application");
+				Assert.isTrue(seen > 0, "no port was read");
+				Assert.equals(own, seen, "the port read is not the client's");
+				async.done();
+			});
+		});
+	}
+
 	/** RFC 9112 6.3: repeated lengths that disagree are refused, equal ones read. **/
 	public function testRepeatedLengthsMustAgree(async:Async):Void {
 		var seen:Array<String> = [];

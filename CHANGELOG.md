@@ -27,6 +27,10 @@ All notable changes to CrossByte will be documented in this file.
   the connection closes under HTTP/1.1, the stream is reset under HTTP/2.
 - `HTTPRequestHandler.getAllHeaders()` and `httpVersion`: every request
   header by lower-case name, and the version the request came in.
+- `HTTPRequestHandler.requestTarget`, the request target as it arrived,
+  beside `requestPath`, which is decoded and settled: a proxy forwards
+  this one, so what is behind it reads a `%2F` as one. And `remotePort`,
+  beside `remoteAddress`.
 - A response that says `Cache-Control: no-transform` is not compressed,
   as Express's `compression` leaves one: how an application says, for
   one response, that its body is to go as given.

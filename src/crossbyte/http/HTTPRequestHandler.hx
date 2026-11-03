@@ -152,6 +152,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __php:PHPBridge;
 	@:noCompletion private var __queryString:String = "";
 	@:noCompletion private var __requestPath:String = "/";
+	@:noCompletion private var __requestTarget:Null<String> = null;
 	@:noCompletion private var __requestContentEncodings:Array<CompressionAlgorithm> = null;
 	@:noCompletion private var __awaitingBody:Bool = false;
 	@:noCompletion private var __expectBody:Int = 0;
@@ -299,6 +300,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 	public var requestPath(get, null):String;
 	/** Raw query string without the leading `?`. */
 	public var queryString(get, null):String;
+	/**
+	 * The request target as it arrived, nothing decoded or settled: the
+	 * request line's second word under HTTP/1.1, whichever form it took
+	 * (`/a%2Fb/../c?x=1`, or `http://host/a` from a client that sends the
+	 * absolute form), and `:path` under HTTP/2. `null` before a request has
+	 * arrived.
+	 *
+	 * What a proxy forwards, so the server behind it reads the path the client
+	 * wrote: `requestPath` cannot give that back, since a `%2F` and a `/` read
+	 * the same there, and its `..` steps have been applied. Nothing checked
+	 * `requestPath` has checked this: a guard reads `requestPath`, and a file
+	 * is served under it. A byte past 0x7F reads as the code point of its
+	 * value, as in a header's value.
+	 */
+	public var requestTarget(get, never):Null<String>;
 	/** Fully buffered request body after supported content decoding. */
 	public var requestBody(get, null):ByteArray;
 	/** Convenience UTF-8 string view of `requestBody`. */
@@ -310,6 +326,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * limiter keys on unless `HTTPServerConfig.rateLimitKey` says otherwise.
 	 */
 	public var remoteAddress(get, never):String;
+
+	/**
+	 * The port the request came from, as the connection's socket reports it,
+	 * beside `remoteAddress`: for a proxy's `Forwarded`, and a log that tells
+	 * two clients behind one address apart.
+	 */
+	public var remotePort(get, never):Int;
 
 	/**
 	 * Creates a request handler for one accepted client socket.
@@ -409,6 +432,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __origin.remoteAddress;
 	}
 
+	@:noCompletion private function get_remotePort():Int {
+		return __origin.remotePort;
+	}
+
 	public function get_method():String {
 		return __method;
 	}
@@ -419,6 +446,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	public function get_queryString():String {
 		return __queryString;
+	}
+
+	@:noCompletion private function get_requestTarget():Null<String> {
+		return __requestTarget;
 	}
 
 	public function get_requestBody():ByteArray {
@@ -780,6 +811,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var rawTarget:String = __lineValue;
 		__lineValue = null;
+		__requestTarget = rawTarget;
 
 		if (!HttpSyntax.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
@@ -3342,6 +3374,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__httpVersion = null;
 		__queryString = "";
 		__requestPath = "/";
+		__requestTarget = null;
 		__requestContentEncodings = null;
 		__admitted = false;
 		__awaitingBody = false;

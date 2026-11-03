@@ -2113,6 +2113,35 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testTheRequestTargetIsTheStreamsPath(async:Async):Void {
+		// :path as it came, with or without a body to come, on a handler a
+		// connection may keep from stream to stream.
+		var targets:Array<String> = [];
+		var ports:Array<Int> = [];
+		var session = new H2Session(config -> {
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				targets.push(handler.requestTarget);
+				ports.push(handler.remotePort);
+				handler.respond(200, "text/plain", "ok");
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/a%2Fb/../c?x=1", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/empty?", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals("/a%2Fb/../c?x=1", targets[0]);
+					Assert.equals("/empty?", targets[1]);
+					Assert.isTrue(ports[0] > 0, "no port was read");
+					Assert.equals(ports[0], ports[1], "one connection read two ports");
+					async.done();
+				});
+			});
+		});
+	}
+
 	public function testALengthPastAnIntIs413(async:Async):Void {
 		// As over HTTP/1.1: digits no Int can hold are a length, and too large.
 		// The stream was reset PROTOCOL_ERROR, as though the request were

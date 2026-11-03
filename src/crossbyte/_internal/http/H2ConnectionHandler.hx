@@ -550,6 +550,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		var handler:HTTPRequestHandler = __handlerFor(request);
 		var mark:Int = request.path.indexOf("?");
 		var admitted:Bool = false;
+		handler.__requestTarget = request.path;
 		try {
 			admitted = handler.__admitDecodedRequest(request.method, mark >= 0 ? request.path.substr(0, mark) : request.path,
 				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request, handler), request.startedAt, true, request.declaredLength,
@@ -645,6 +646,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		}
 
 		var handler:HTTPRequestHandler = __handlerFor(request);
+		handler.__requestTarget = request.path;
 		try {
 			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request, handler), body, request.tooLarge, request.headersTooLarge,
 				request.timedOut, request.startedAt);
