@@ -147,6 +147,16 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		return value;
 	}
 
+	public function holdRequestBody(hold:Bool):Void {
+		__connection.holdRequestBody(__streamId, hold);
+		__flush();
+	}
+
+	public function stopRequestBody():Void {
+		__connection.stopRequestBody(__streamId);
+		__flush();
+	}
+
 	/** A HEADERS frame carrying `:status 100` and leaving the stream open: an interim response (RFC 9113 8.1). */
 	public function writeContinue():Void {
 		if (__headSent) {

@@ -108,6 +108,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		__connection.stampArrivals = config.requestIdleTimeout > 0;
 		__connection.onRequest = __serve;
 		__connection.onRequestHead = __admit;
+		__connection.onRequestBody = __onRequestBody;
 		__connection.onDrained = __onDrained;
 		__connection.onConnectionError = __onConnectionError;
 		// Its room is asked of this, the frame sink (outputRoom below).
@@ -571,8 +572,22 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 
 		if (admitted) {
 			request.context = handler;
+			if (handler.__bodyReader != null) {
+				__connection.streamRequestBody(request.streamId);
+				try {
+					handler.__beginBodyStream(true);
+				} catch (error:Dynamic) {
+					__serveFailed(handler, request.streamId, error);
+				}
+			}
 		}
 		return admitted;
+	}
+
+	/** What has arrived of a body being read as it arrives: see `H2ServerConnection.onRequestBody`. */
+	private function __onRequestBody(request:H2ServerRequest, payload:Bytes, offset:Int, length:Int):Bool {
+		var handler:Null<HTTPRequestHandler> = request.context;
+		return handler != null ? handler.__takeBodyData(payload, offset, length) : true;
 	}
 
 	/**
@@ -592,7 +607,8 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	 * `408` or `431`) is a few bytes, answered at once.
 	 */
 	private function __serve(request:H2ServerRequest):Void {
-		if (!request.tooLarge && !request.timedOut && !request.headersTooLarge && (__parked != null || __overBudget())) {
+		// A body read as it arrived has been the application's from its head.
+		if (!request.bodyStreamed && !request.tooLarge && !request.timedOut && !request.headersTooLarge && (__parked != null || __overBudget())) {
 			if (__parked == null) {
 				__parked = [];
 			}
@@ -630,6 +646,11 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		var admitted:Null<HTTPRequestHandler> = request.context;
 		if (admitted != null) {
 			request.context = null;
+			// Its reader was stopped, by the response ending first: nothing is
+			// waiting to hear how the body came out.
+			if (request.bodyStreamed && admitted.__bodyReader == null) {
+				return;
+			}
 			try {
 				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut);
 			} catch (error:Dynamic) {

@@ -93,6 +93,7 @@ const STANDALONE = [
   'src/crossbyte/events/EventDispatcher.hx',
   'src/crossbyte/events/EventType.hx',
   'src/crossbyte/http/HTTP2Backend.hx',
+  'src/crossbyte/http/HTTPBodyReader.hx',
   'src/crossbyte/io/File.hx',
   'src/crossbyte/io/Store.hx',
   'src/crossbyte/math/Rectangle.hx',

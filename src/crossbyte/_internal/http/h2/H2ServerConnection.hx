@@ -329,6 +329,13 @@ class H2ServerConnection {
 	private final __abandoned:Map<Int, Void->Void>;
 
 	/**
+		Called with what arrives of a body `streamRequestBody` chose, as it
+		arrives: `length` bytes of `payload` from `offset`, valid only during
+		the call. Answers whether to go on, as `holdRequestBody` does.
+	**/
+	public var onRequestBody:Null<(request:H2ServerRequest, payload:Bytes, offset:Int, length:Int) -> Bool> = null;
+
+	/**
 		Whether to note when each stream's client last sent a byte of it
 		(`H2Stream.heardAt`), for `expireRequests`: a clock read per DATA
 		frame, so only for an owner that asks.
@@ -1071,7 +1078,8 @@ class H2ServerConnection {
 		// Gathered first: answering one removes it from the map being walked.
 		var late:Null<Array<H2Stream>> = null;
 		for (target in __streams) {
-			if (!target.delivered && (target.openedAt <= cutoff || (target.heardAt <= quietCutoff && target.recvWindow > 0))) {
+			if (!target.delivered && !target.holding
+				&& (target.openedAt <= cutoff || (quietCutoff > 0 && target.heardAt <= quietCutoff && target.recvWindow > 0))) {
 				if (late == null) {
 					late = [];
 				}
@@ -1153,6 +1161,104 @@ class H2ServerConnection {
 				abandoned();
 			}
 		}
+	}
+
+	/**
+		From `onRequestHead`: what arrives of this stream's body goes to
+		`onRequestBody` rather than being held for `onRequest`, which is then
+		called, with no body, once it has all gone. It begins held
+		(`holdRequestBody`).
+
+		The stream stays in the budget, so what it holds while held counts in
+		`http2MaxRequestBodyBuffer`, but sets nothing aside for a body it will
+		not hold, and is never one that gives way with `REFUSED_STREAM`: the
+		application has seen it, so that would not be true.
+	**/
+	public function streamRequestBody(streamId:Int):Void {
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target == null || target.request == null) {
+			return;
+		}
+		target.streamed = true;
+		target.request.bodyStreamed = true;
+		__holdStreamed(target);
+	}
+
+	/**
+		Stops a streamed body, or lets it go on. Stopped, no more window is
+		opened, what the window already open brings is held, and the stream's
+		clocks stop: the wait is not its client's. Let go, what was held is
+		handed over and the window opened again.
+	**/
+	public function holdRequestBody(streamId:Int, hold:Bool):Void {
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target == null || !target.streamed || target.holding == hold) {
+			return;
+		}
+		if (hold) {
+			__holdStreamed(target);
+			return;
+		}
+		target.holding = false;
+		var now:Float = haxe.Timer.stamp();
+		target.openedAt += now - target.heldAt;
+		target.heardAt = now;
+		__passHeldBody(target);
+		__settle();
+	}
+
+	private inline function __holdStreamed(target:H2Stream):Void {
+		target.holding = true;
+		target.heldAt = haxe.Timer.stamp();
+		__stopWaiting(target);
+	}
+
+	/** Hands a streamed body what it held, then ends it, or opens its window. **/
+	private function __passHeldBody(target:H2Stream):Void {
+		var length:Int = target.bodyLength;
+		if (length > 0) {
+			if (target.budgeted) {
+				__bodyHeld -= length;
+				__released = true;
+				__budgetMoves++;
+			}
+			var held:Bytes = target.takeBody();
+			target.streamedLength += length;
+			var more:Bool = onRequestBody(target.request, held, 0, length);
+			if (__streams.get(target.id) != target || target.overflowed) {
+				return;
+			}
+			if (!more) {
+				__holdStreamed(target);
+				return;
+			}
+		}
+		if (target.endOfStream) {
+			__deliver(target.id, target);
+		} else if (target.budgeted) {
+			__offerWindow(target);
+		}
+	}
+
+	/**
+		Gives up on a streamed body before its end. The client is asked to
+		stop sending it, as for a request refused before its body came
+		(`__stopBody`).
+	**/
+	public function stopRequestBody(streamId:Int):Void {
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target == null) {
+			// Its response has ended, so all that is left is to say so.
+			resetStream(streamId, H2ErrorCode.NO_ERROR);
+			return;
+		}
+		if (target.endOfStream || target.overflowed) {
+			return;
+		}
+		target.overflowed = true;
+		__stopWaiting(target);
+		__stopBody(target);
+		__settle();
 	}
 
 	/**
@@ -1603,8 +1709,9 @@ class H2ServerConnection {
 		}
 
 		// Its window opened now to what its body needs, as far as the budget
-		// goes, rather than a round trip into it.
-		if (target.budgeted) {
+		// goes, rather than a round trip into it. A body read as it arrives
+		// has its opened as its reader takes it.
+		if (target.budgeted && !target.holding) {
 			__offerWindow(target);
 		}
 	}
@@ -1637,7 +1744,7 @@ class H2ServerConnection {
 		}
 
 		target.endOfStream = true;
-		if (!target.overflowed && !target.delivered) {
+		if (!target.overflowed && !target.delivered && !target.holding) {
 			__deliver(target.id, target);
 		}
 	}
@@ -1722,8 +1829,10 @@ class H2ServerConnection {
 		if (target != null && !target.overflowed) {
 			// What is left of the limit, not the sum, which wraps where the
 			// limit is within a frame of the largest Int.
-			if (contentLength > __bodyLimit - target.bodyLength) {
+			if (contentLength > __bodyLimit - target.bodyLength - target.streamedLength) {
 				__refuseOversized(target);
+			} else if (target.streamed) {
+				__onStreamedData(target, frame, contentStart, contentLength);
 			} else {
 				target.appendBody(frame.payload, contentStart, contentLength);
 				if (target.budgeted) {
@@ -1742,6 +1851,43 @@ class H2ServerConnection {
 
 		// Padding, and DATA for a stream refused or gone, was never held.
 		__topUpConnection();
+	}
+
+	/** What a DATA frame brings a body read as it arrives: handed over, or held while it waits on its reader. */
+	private function __onStreamedData(target:H2Stream, frame:H2Frame, contentStart:Int, contentLength:Int):Void {
+		target.request.holdToLength(target.streamedLength + target.bodyLength + contentLength, false);
+		var last:Bool = frame.has(H2Flags.END_STREAM);
+		if (last) {
+			target.endOfStream = true;
+		}
+
+		if (target.holding) {
+			target.appendBody(frame.payload, contentStart, contentLength);
+			if (target.budgeted) {
+				__bodyHeld += contentLength;
+				__budgetMoves++;
+			}
+			return;
+		}
+
+		if (contentLength > 0) {
+			target.streamedLength += contentLength;
+			__budgetMoves++;
+			var more:Bool = onRequestBody(target.request, frame.payload, contentStart, contentLength);
+			if (__streams.get(target.id) != target || target.overflowed) {
+				return;
+			}
+			if (!more) {
+				__holdStreamed(target);
+				return;
+			}
+		}
+
+		if (last) {
+			__deliver(frame.streamId, target);
+		} else if (target.budgeted) {
+			__offerWindow(target);
+		}
 	}
 
 	/**
@@ -1820,7 +1966,11 @@ class H2ServerConnection {
 		__release(target);
 		var request:H2ServerRequest;
 		try {
-			if (target.request != null) {
+			if (target.streamed) {
+				// Handed over as it came; only its end is left to say.
+				request = target.request;
+				request.holdToLength(target.streamedLength, true);
+			} else if (target.request != null) {
 				// Read and admitted at its headers; only the body is new.
 				request = target.request;
 				request.attachBody(target.takeBody());
@@ -1951,7 +2101,7 @@ class H2ServerConnection {
 			}
 		}
 		for (target in shrunk) {
-			if (target.budgeted) {
+			if (target.budgeted && !target.holding) {
 				__offerWindow(target);
 			}
 		}
@@ -2198,13 +2348,13 @@ class H2ServerConnection {
 		if (declared >= 0 && declared < whole) {
 			whole = declared;
 		}
-		var need:Int = whole - target.bodyLength;
+		var need:Int = whole - target.bodyLength - target.streamedLength;
 		return need > 0 ? need : 0;
 	}
 
-	/** What `target` may need beyond the window it has open. */
+	/** What `target` may need beyond the window it has open: nothing for a body not held here. */
 	private inline function __reserve(target:H2Stream):Int {
-		var reserve:Int = __need(target) - target.recvWindow;
+		var reserve:Int = target.streamed ? 0 : __need(target) - target.recvWindow;
 		return reserve > 0 ? reserve : 0;
 	}
 
@@ -2395,7 +2545,7 @@ class H2ServerConnection {
 		while (!closed) {
 			var oldest:Null<H2Stream> = null;
 			for (target in __streams) {
-				if (target.budgeted && (oldest == null || target.id < oldest.id)) {
+				if (target.budgeted && !target.streamed && (oldest == null || target.id < oldest.id)) {
 					oldest = target;
 				}
 			}
@@ -2427,7 +2577,7 @@ class H2ServerConnection {
 			// it back.
 			var newest:Null<H2Stream> = null;
 			for (target in __streams) {
-				if (target.budgeted && target != oldest && (!connectionSpent || target.bodyLength > 0)
+				if (target.budgeted && !target.streamed && target != oldest && (!connectionSpent || target.bodyLength > 0)
 					&& (newest == null || target.id > newest.id)) {
 					newest = target;
 				}
@@ -2466,7 +2616,7 @@ class H2ServerConnection {
 		}
 
 		// Gathered first: a reset removes the stream from the map being walked.
-		var stuck:Array<H2Stream> = [for (target in __streams) if (target.waiting && target.recvWindow <= 0) target];
+		var stuck:Array<H2Stream> = [for (target in __streams) if (target.waiting && target.recvWindow <= 0 && !target.streamed) target];
 		for (target in stuck) {
 			if (__streams.get(target.id) == target) {
 				resetStream(target.id, H2ErrorCode.REFUSED_STREAM);

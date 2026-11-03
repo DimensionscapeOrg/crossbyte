@@ -198,6 +198,12 @@ class HTTP1ResponseWriter implements HTTPResponseWriter {
 			__socket.close();
 		}
 	}
+
+	public function holdRequestBody(hold:Bool):Void {
+		__socket.__holdInput(hold);
+	}
+
+	public function stopRequestBody():Void {}
 }
 
 /**

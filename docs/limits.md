@@ -304,6 +304,37 @@ request as it arrives:
 request: a client sending a byte at a time resets it with every byte, so keep a `requestTimeout` of some length
 rather than setting it to `0`.
 
+**A request refused on its head.** `onRequestHead` is asked once a request's head has arrived and its framing is
+sound, before any of its body is read, and ahead of `maxRequestBodySize`, so refusing a request costs what its head
+cost. A request with a body still to come closes its connection once the answer has gone.
+
+**A body read as it arrives.** A request's body is held whole, up to `maxRequestBodySize`, before middleware runs: an
+HTTP/1.1 connection holds one such body, an HTTP/2 connection `http2MaxRequestBodyBuffer` across its streams. Chosen at
+the head, `streamRequestBody` hands it over as it arrives instead, and the server holds none of it past that. Its
+`onData` answering `false` stops the body until `resume`, as `HTTPResponseStream.write` does the other way:
+
+```haxe
+// Given config:crossbyte.http.HTTPServerConfig, upstream:crossbyte.net.Socket.
+config.onRequestHead = handler -> {
+	var body = handler.streamRequestBody();
+	body.onData = (data, offset, length) -> {
+		upstream.writeBytes(data, offset, length);
+		return upstream.bytesPending < 256 * 1024;
+	};
+	body.onEnd = () -> handler.respond(200, "text/plain", "stored");
+	body.onAbort = () -> upstream.close();
+	return true;
+};
+```
+
+Stopped, an HTTP/1.1 connection stops reading, so what it holds is what the last pass read, a megabyte at most, and
+what the client sends next waits in the kernel until TCP's window holds it back. An HTTP/2 stream stops being given
+window, so it holds what the window already open brings, up to a megabyte, counted against
+`http2MaxRequestBodyBuffer`; the connection's other streams go on. `maxRequestBodySize` holds as for any body, and past
+it the reader's `onAbort` is called and the request answered `413`. `requestTimeout` and `requestIdleTimeout` stop
+while a reader has its body stopped, since that wait is the application's, so bounding it is too. While stopped, a
+client that leaves is heard when reading goes on.
+
 `HTTPServerConfig.phpMaxResponseSize` (8 MiB) bounds a PHP script's response, whose CGI header block is held to
 64 KiB and 100 lines besides. `phpMaxExchanges` (64) bounds the requests a runtime has with its PHP backend at once;
 more wait their turn within `phpTimeout`, and past 1,024 waiting a request is refused.

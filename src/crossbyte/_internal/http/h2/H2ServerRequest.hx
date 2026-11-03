@@ -96,6 +96,23 @@ class H2ServerRequest {
 	}
 
 	/**
+		Whether its body went to `H2ServerConnection.onRequestBody` as it
+		arrived, so that delivering this request says only that it has ended.
+	**/
+	public var bodyStreamed:Bool = false;
+
+	/**
+		As `attachBody`, for a body handed over as it arrived, of which there
+		has been `received` so far: throws `H2StreamError` for more than its
+		`content-length` said, or, with `whole` set, for any other length.
+	**/
+	public function holdToLength(received:Int, whole:Bool):Void {
+		if (__declaredLength >= 0 && (received > __declaredLength || (whole && received != __declaredLength))) {
+			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length $__declaredLength does not match the $received bytes of DATA received');
+		}
+	}
+
+	/**
 	 * A request whose header section went past the limit: what arrived of its
 	 * pseudo-header fields, the rest left out as not all there, and
 	 * `headersTooLarge` set. Nothing here is validated, since nothing about it

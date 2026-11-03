@@ -27,6 +27,22 @@ All notable changes to CrossByte will be documented in this file.
   the connection closes under HTTP/1.1, the stream is reset under HTTP/2.
 - `HTTPRequestHandler.getAllHeaders()` and `httpVersion`: every request
   header by lower-case name, and the version the request came in.
+- `HTTPServerConfig.onRequestHead`, asked of each request once its head
+  has arrived and its framing is sound, before any of its body is read
+  and ahead of `maxRequestBodySize`: a request for a host this server
+  does not serve hears `421`, not that its body is too large. Over HTTP/1.1
+  and HTTP/2. See docs/limits.md.
+- `HTTPRequestHandler.streamRequestBody()`, chosen at the head, reads a
+  request's body as it arrives, through an `HTTPBodyReader`, rather than
+  holding it whole before middleware runs. The request goes to the
+  middleware at its head, and a reader's `onData` answering `false`
+  stops the body until `resume`: the connection stops reading, or under
+  HTTP/2 stops opening the stream's window, so a client is held back by
+  flow control and what the server holds for a stopped body stays near
+  one read. `maxRequestBodySize`, `requestTimeout` and
+  `requestIdleTimeout` still hold, and the deadlines stop while a reader
+  has it stopped. A coding is left as it was sent, which is what a proxy
+  passes on, so a coding this server could not undo is not refused.
 - `HTTPServerConfig.requestIdleTimeout`, the seconds a request still
   arriving may go without a byte, off by default, beside
   `requestTimeout`, which bounds the whole request and so also sets a

@@ -449,6 +449,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// Whether reading has stopped at maxInputBufferSize, waiting for the
 	// application to read; see __pauseInput.
 	@:noCompletion private var __inputPaused:Bool = false;
+	// Whether its owner has stopped its reading, whatever it holds; see
+	// __holdInput.
+	@:noCompletion private var __inputHeld:Bool = false;
+	// Whether the registry (on Node the tick) is asking it about a pause, so
+	// a pause that comes and goes between two askings is asked about once.
+	@:noCompletion private var __inputWatched:Bool = false;
 	// The server that counted this connection against its maxConnections,
 	// told once as it closes; null for one no server counts.
 	@:noCompletion private var __openCounter:crossbyte._internal.socket.OpenCounter = null;
@@ -1147,6 +1153,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closeAnnounced = false;
 		__peerShutdown = false;
 		__inputPaused = false;
+		__inputHeld = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -3587,15 +3594,39 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__inputPauseTick == null) {
 			__inputPauseTick = __nodeInputTick;
 		}
-		if (__nodeRuntime != null) {
+		if (__nodeRuntime != null && !__inputWatched) {
+			__inputWatched = true;
 			__nodeRuntime.addEventListener(TickEvent.TICK, __inputPauseTick);
 		}
 		#elseif !js
 		__dropReadInterest();
-		if (__cbInstance != null) {
+		if (__cbInstance != null && !__inputWatched) {
+			__inputWatched = true;
 			@:privateAccess __cbInstance.__socketRegistry.watchInputPause(this);
 		}
 		#end
+	}
+
+	/**
+		Stops this socket's reading for as long as `hold` is set, whatever it
+		holds, and lets it go on. What `__pauseInput` does at the limit, for an
+		owner reading as it goes that has somewhere it cannot put more: an
+		HTTP request's body with its reader paused. Waiting for
+		`maxInputBufferSize` would hold 16 MiB more for each such connection.
+		Reading goes on from here, not from the next time the registry asks.
+	**/
+	@:noCompletion public function __holdInput(hold:Bool):Void {
+		__inputHeld = hold;
+		if (hold) {
+			__pauseInput();
+			return;
+		}
+		if (__inputPaused && __socket != null && __input != null) {
+			var limit:Int = maxInputBufferSize;
+			if (limit <= 0 || __input.length - __input.position < limit) {
+				__resumeInput();
+			}
+		}
 	}
 
 	#if nodejs
@@ -3613,16 +3644,28 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion public function __inputStillPaused():Bool {
 		if (!__inputPaused) {
+			__inputWatched = false;
 			return false;
 		}
 		if (__socket == null || __input == null) {
 			__inputPaused = false;
+			__inputWatched = false;
 			return false;
+		}
+		if (__inputHeld) {
+			return true;
 		}
 		var limit:Int = maxInputBufferSize;
 		if (limit > 0 && __input.length - __input.position >= limit) {
 			return true;
 		}
+		__resumeInput();
+		__inputWatched = false;
+		return false;
+	}
+
+	/** Reading goes on, after `__pauseInput`. **/
+	@:noCompletion private function __resumeInput():Void {
 		__inputPaused = false;
 		#if nodejs
 		(__socket : NodeSocket).resume();
@@ -3635,7 +3678,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			@:privateAccess __cbInstance.__noteMoreToRead();
 		}
 		#end
-		return false;
 	}
 
 	/**

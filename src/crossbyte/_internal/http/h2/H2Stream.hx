@@ -130,6 +130,24 @@ class H2Stream {
 	public var heardAt:Float = 0;
 
 	/**
+		Whether this stream's body goes to `H2ServerConnection.onRequestBody`
+		as it arrives rather than being held for `onRequest`.
+	**/
+	public var streamed:Bool = false;
+
+	/**
+		While a streamed body waits on its reader: what arrives is held here,
+		within the window already open, and no more window is opened.
+	**/
+	public var holding:Bool = false;
+
+	/** `haxe.Timer.stamp()` when `holding` began, whose wait does not count against the client. */
+	public var heldAt:Float = 0;
+
+	/** Bytes of a streamed body handed over so far. */
+	public var streamedLength:Int = 0;
+
+	/**
 		On the server, the request read from a header section whose body is
 		still to come, as it was admitted. Delivered once the body ends.
 	**/
