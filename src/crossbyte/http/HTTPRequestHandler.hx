@@ -980,10 +980,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * follow, and then `__continueDecodedRequest` when it has, so any of
 	 * this can refuse a request before its body is sent.
 	 *
+	 * @param lengthPastInt The `content-length` was more than an `Int` holds,
+	 *        which no `declaredLength` can say.
 	 * @return Whether the request may go on; false once it has been answered.
 	 */
 	@:noCompletion private function __admitDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1):Bool {
+			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1, lengthPastInt:Bool = false):Bool {
 		__takeDecodedRequest(method, queryString, headers, startedAt);
 		__admitted = true;
 
@@ -1013,7 +1015,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// Too big is said before a byte of it is sent, as over HTTP/1.1. The
 		// frame layer read the field already, so it arrives a number.
-		if (bodyToCome && declaredLength > __config.maxRequestBodySize) {
+		if (bodyToCome && (lengthPastInt || declaredLength > __config.maxRequestBodySize)) {
 			__sendErrorResponse(413, "Payload Too Large");
 			return false;
 		}
@@ -4851,7 +4853,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (contentLengthHeader != null) {
 				contentLength = __parseContentLength(contentLengthHeader);
 				if (contentLength < 0) {
-					__sendErrorResponse(400, "Bad Request");
+					// A length past what an Int holds is still a length: too big,
+					// not malformed.
+					if (HttpSyntax.isLengthPastInt(contentLengthHeader)) {
+						__sendErrorResponse(413, "Payload Too Large");
+					} else {
+						__sendErrorResponse(400, "Bad Request");
+					}
 					return true;
 				}
 				// Too big is not malformed: 413, and before a byte of the body
@@ -5107,7 +5115,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * request, so a request carried inside another would reach the
 	 * application unseen by whatever inspected the outer one (the reason a
 	 * request with both framings is refused). On the jvm the same field
-	 * throws. A value too large for an `Int` is simply not a length.
+	 * throws. A value too large for an `Int` answers `-1` here too, and
+	 * `HttpSyntax.isLengthPastInt` says whether it was a length all the same,
+	 * which is `413`, or not one at all, which is `400`.
 	 */
 	@:noCompletion private static function __parseContentLength(header:String):Int {
 		if (header == null) {

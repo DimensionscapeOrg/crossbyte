@@ -33,6 +33,25 @@ class HTTPHardeningTest extends utest.Test {
 		Assert.equals(2147483647, HTTPRequestHandler.__parseContentLength("2147483647"));
 	}
 
+	/**
+		What a field that did not read as a length was: past an `Int`, or not
+		a length at all. Ten digits is the shortest that can pass one, so a
+		shorter number beside something else is never called too large.
+	**/
+	public function testALengthPastAnIntIsToldFromOneThatIsNoLength():Void {
+		Assert.isTrue(crossbyte._internal.http.HttpSyntax.isLengthPastInt("2147483648"));
+		Assert.isTrue(crossbyte._internal.http.HttpSyntax.isLengthPastInt("0002147483648"));
+		Assert.isTrue(crossbyte._internal.http.HttpSyntax.isLengthPastInt("18446744073709551616"));
+		Assert.isTrue(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5000000000, 05000000000"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5000000000, 5000000001"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5000000000, 5"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5, 6"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5000000000x"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("-5000000000"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt("5000000000,"));
+		Assert.isFalse(crossbyte._internal.http.HttpSyntax.isLengthPastInt(""));
+	}
+
 	public function testContentLengthReadsOnlyPlainDigits():Void {
 		Assert.equals(0, HTTPRequestHandler.__parseContentLength("0"));
 		Assert.equals(42, HTTPRequestHandler.__parseContentLength(" 42 "));

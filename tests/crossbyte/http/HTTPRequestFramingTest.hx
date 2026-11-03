@@ -17,15 +17,16 @@ import utest.Async;
 @:timeout(20000)
 class HTTPRequestFramingTest extends utest.Test {
 	/**
-		A `Content-Length` no `Int` can hold is refused rather than read as
-		some smaller number.
+		A `Content-Length` no `Int` can hold is refused as too large, rather
+		than read as some smaller number.
 
 		On Linux and macOS native, `Std.parseInt` is `strtol` cast to an
 		`int`, so 4294967296 reads as 0 and 4294967396 as 100. At 0 the server
 		would read no body and parse the body as the next request: a smuggled
 		request, unseen by anything that inspected the outer one. On the jvm
 		the same field throws, and would be answered 500. The request carried
-		in the body here must never reach the application.
+		in the body here must never reach the application, and the connection
+		closes, so it is never read as a request of its own.
 	**/
 	public function testALengthNoIntCanHoldIsRefused(async:Async):Void {
 		var seen:Array<String> = [];
@@ -41,8 +42,42 @@ class HTTPRequestFramingTest extends utest.Test {
 			try server.close() catch (_:Dynamic) {}
 
 			for (i in 0...responses.length) {
-				Assert.equals(400, responses[i].status, "request " + i + " was not refused as malformed");
+				Assert.equals(413, responses[i].status, "request " + i + " was not refused as too large");
 				Assert.equals(1, HTTPTestSupport.countResponses(responses[i].raw), "request " + i + " drew more than one response");
+			}
+			Assert.equals(0, seen.length, "a request reached the application: " + seen.join(", "));
+			async.done();
+		}, true);
+	}
+
+	/**
+		RFC 9110 8.6 sets `Content-Length` no upper bound, so digits past what
+		an `Int` holds are a length, and too large, not malformed. As for any
+		length, a list counts only when every value agrees, however they are
+		written; a list that disagrees, or anything but digits, stays `400`.
+	**/
+	public function testALengthPastAnIntIs413OnlyWhenItIsOneLength(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen);
+
+		HTTPTestSupport.exchangeEach(server, [
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 2147483648\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 0002147483648\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 05000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000\r\nContent-Length: 5000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 5000000001\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 5\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000x\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: +5000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000,\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			for (i in 0...4) {
+				Assert.equals(413, responses[i].status, "request " + i + " was not refused as too large");
+			}
+			for (i in 4...responses.length) {
+				Assert.equals(400, responses[i].status, "request " + i + " was not refused as malformed");
 			}
 			Assert.equals(0, seen.length, "a request reached the application: " + seen.join(", "));
 			async.done();

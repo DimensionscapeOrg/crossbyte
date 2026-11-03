@@ -70,6 +70,14 @@ says how.
 
 #### HTTP
 
+- A `Content-Length` past what an `Int` holds is answered `413`, before
+  any of the body is read, when it is decimal digits and every value of
+  a list agrees. It was answered `400`, or under HTTP/2 the stream was
+  reset with `PROTOCOL_ERROR`, though RFC 9110 sets the field no upper
+  bound: a client declaring 2 GB to a server taking 100 MB heard that
+  its request was malformed, not that it was too large. A list that
+  disagrees, or anything but digits, is `400` as before, and the field
+  is never read as a smaller number.
 - A response given `Connection: close` closes the connection after it,
   as Go's and Node's servers do. Over HTTP/1.1 the header went out beside
   the server's own `Connection: keep-alive`, and the connection stayed

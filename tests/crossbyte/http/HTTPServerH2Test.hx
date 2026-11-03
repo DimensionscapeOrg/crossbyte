@@ -2113,6 +2113,29 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testALengthPastAnIntIs413(async:Async):Void {
+		// As over HTTP/1.1: digits no Int can hold are a length, and too large.
+		// The stream was reset PROTOCOL_ERROR, as though the request were
+		// malformed. With no body to come it does not match the DATA it
+		// carried, which is malformed whatever the number.
+		var session = new H2Session(_ -> {});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "5000000000")]);
+			session.request(3, "POST", "/upload", true, [new HpackHeader("content-length", "5000000000")]);
+			session.request(5, "POST", "/upload", false, [new HpackHeader("content-length", "5000000000x")]);
+			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5)) || session.ended, () -> {
+				session.close();
+				Assert.equals(413, session.status(1), "a length past an Int was not refused as too large");
+				Assert.equals(-1, session.status(3), "a length with no body behind it was answered");
+				Assert.equals(1, session.resetCode(3), "a length with no body behind it was reset " + session.resetCode(3));
+				Assert.equals(-1, session.status(5), "a field of more than digits was answered");
+				Assert.equals(1, session.resetCode(5), "a field of more than digits was reset " + session.resetCode(5));
+				async.done();
+			});
+		});
+	}
+
 	public function testARefusalIsCompleteBeforeItsStreamIsReset(async:Async):Void {
 		// A refusal at the headers asks the client to stop sending its body
 		// with a reset, NO_ERROR, which §8.1 allows after a complete response.

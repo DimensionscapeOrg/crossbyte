@@ -33,6 +33,44 @@ class HttpSyntax {
 	}
 
 	/**
+	 * Whether a `Content-Length` field no `Int` can hold is a length all the
+	 * same: decimal digits only, past 2,147,483,647, and every value of a
+	 * list the same number. RFC 9110 8.6 sets the field no upper bound, so
+	 * such a request is too large (`413`), not malformed (`400`).
+	 *
+	 * Asked only of a field that did not read as a length, so a list of short
+	 * values that disagree (`5, 6`) stays malformed.
+	 */
+	public static function isLengthPastInt(field:String):Bool {
+		var first:Null<String> = null;
+		for (raw in field.split(",")) {
+			var value:String = StringTools.trim(raw);
+			var start:Int = 0;
+			while (start < value.length - 1 && StringTools.fastCodeAt(value, start) == "0".code) {
+				start++;
+			}
+			value = value.substr(start);
+			if (value.length == 0) {
+				return false;
+			}
+			for (i in 0...value.length) {
+				var code:Int = StringTools.fastCodeAt(value, i);
+				if (code < "0".code || code > "9".code) {
+					return false;
+				}
+			}
+			if (first == null) {
+				first = value;
+			} else if (first != value) {
+				return false;
+			}
+		}
+		// Ten digits or more: anything shorter fits an Int, and is here only
+		// because another value beside it did not read.
+		return first != null && first.length >= 10;
+	}
+
+	/**
 	 * Returns `true` when adding `incoming` bytes to an already-accumulated
 	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
 	 */

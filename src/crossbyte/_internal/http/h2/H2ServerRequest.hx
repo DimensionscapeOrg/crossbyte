@@ -1,5 +1,6 @@
 package crossbyte._internal.http.h2;
 
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.utils.IntParse;
 import haxe.io.Bytes;
@@ -74,6 +75,12 @@ class H2ServerRequest {
 	private inline function get_declaredLength():Int {
 		return __declaredLength;
 	}
+
+	/**
+		Whether a body still to come declared more than an `Int` holds, which
+		`declaredLength` then reads as the largest: too large, not malformed.
+	**/
+	public var lengthPastInt(default, null):Bool = false;
 
 	/**
 		Gives a request read at its headers the body that has since arrived,
@@ -157,6 +164,7 @@ class H2ServerRequest {
 		var regular:Int = 0;
 		var seenRegular:Bool = false;
 		var declaredLength:Int = -1;
+		var lengthPastInt:Bool = false;
 
 		for (index in 0...decoded.length) {
 			var field:HpackHeader = decoded[index];
@@ -227,6 +235,12 @@ class H2ServerRequest {
 					// on Linux native.
 					var declared:Int = IntParse.decimal(field.value);
 					var received:Int = body == null ? 0 : body.length;
+					// Past what an Int holds, with the body still to come, it is
+					// too large to take rather than malformed, as over HTTP/1.1.
+					if (declared < 0 && partial && HttpSyntax.isLengthPastInt(field.value)) {
+						declared = 0x7FFFFFFF;
+						lengthPastInt = true;
+					}
 					if (declared < 0 || (!partial && declared != received)) {
 						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR,
 							'content-length "${field.value}" does not match the $received bytes of DATA received');
@@ -267,6 +281,7 @@ class H2ServerRequest {
 		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, decoded,
 			body == null ? NO_BODY : body);
 		request.__declaredLength = declaredLength;
+		request.lengthPastInt = lengthPastInt;
 		return request;
 	}
 
