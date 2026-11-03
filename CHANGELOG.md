@@ -56,6 +56,15 @@ All notable changes to CrossByte will be documented in this file.
   as Express's `compression` leaves one: how an application says, for
   one response, that its body is to go as given.
 
+#### TCP
+
+- `Socket.bind(localPort, localAddress)` sets where the next `connect()`
+  leaves from, as `ServerSocket.bind` and `DatagramSocket.bind` do: a
+  connection from one of a machine's several addresses, or from one a
+  peer can tell apart. Natively, on the jvm, on Node, and on the
+  interpreter, HashLink and Neko for IPv4. A failure is an `ioError` from
+  `connect()`.
+
 #### Platform
 
 - `-D crossbyte_pgo=generate` and `-D crossbyte_pgo=use` build a native

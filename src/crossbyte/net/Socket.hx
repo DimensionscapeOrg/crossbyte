@@ -1084,6 +1084,66 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	/**
+		Sets where the next `connect()` leaves from, as `ServerSocket.bind` sets
+		where a listener takes connections: a connection from `localAddress`,
+		rather than the one the system picks, and from `localPort`, or a
+		port of the system's choosing at `0`. For a machine with several
+		addresses, or a peer that tells its clients apart by address:
+
+		```haxe
+		// Given port:Int.
+		var socket = new crossbyte.net.Socket();
+		// 127.0.0.2 is this machine too, and nothing else on it uses it.
+		socket.bind(0, "127.0.0.2");
+		socket.connect("127.0.0.1", port);
+		```
+
+		It holds for every `connect()` after it, until it is called again;
+		`bind()` itself, any address and any port, leaves the choice to the
+		system again. Nothing happens until then, so an address this machine
+		does not have, or a port in use, is reported as `connect()` reports
+		any failure, by an `ioError`, and so is an address of one family and
+		a host of the other, since an IPv4 address cannot reach an IPv6 host.
+		A port given here stays taken for a while once a connection closes
+		(`TIME_WAIT`), so a socket that connects again usually wants `0`.
+
+		Natively, on the jvm and on Node, with or without `secure`. On the
+		interpreter, HashLink and Neko too, IPv4 only, as their sockets are.
+		A page's connection is a WebSocket the browser holds, so in a browser
+		this throws an `IllegalOperationError`.
+
+		@param localPort The port to connect from, or 0 for one the system
+		       chooses.
+		@param localAddress The address to connect from, as an IP address.
+		@throws RangeError `localPort` is outside 0-65535.
+		@throws ArgumentError `localAddress` is not an IP address.
+		@throws IllegalOperationError The socket is connected or connecting,
+		        or this is a browser.
+	**/
+	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		#if (js && !nodejs)
+		throw new IllegalOperationError("A socket in a browser is a WebSocket the browser holds, and leaves from wherever it chooses.");
+		#else
+		if (localPort < 0 || localPort > 65535) {
+			throw new RangeError("Invalid socket port number specified.");
+		}
+		if (localAddress == null || #if nodejs js.node.Net.isIP(localAddress) == 0 #else crossbyte._internal.net.Resolver.needsLookup(localAddress) #end) {
+			throw new ArgumentError(localAddress + " is not an IP address, which is what a socket binds to.");
+		}
+		if (__connected || __isConnecting) {
+			throw new IllegalOperationError("bind() sets where the next connect() leaves from, so it is called before one.");
+		}
+		var any:Bool = localPort == 0 && localAddress == "0.0.0.0";
+		__bindAddress = any ? null : localAddress;
+		__bindPort = localPort;
+		#end
+	}
+
+	// Where the next connect leaves from; null for wherever the system picks.
+	@:noCompletion private var __bindAddress:Null<String> = null;
+	@:noCompletion private var __bindPort:Int = 0;
+
+	/**
 		Connects the socket to the specified host and port.
 
 		The outcome is reported by an event, not by this call returning. If the
@@ -1221,7 +1281,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__socket = node;
 			node.on(SocketEvent.Connect, opened);
 			__bindNodeSocket(node);
-			node.connect({port: port, host: host});
+			var options:Dynamic = {port: port, host: host};
+			__nodeBindOptions(options);
+			node.connect(options);
 		}
 		__armNodeConnectDeadline(node);
 
@@ -1280,6 +1342,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#if !js
 	/** Connects to an address already resolved; the rest of `connect()`. **/
 	@:noCompletion private function __beginConnect(h:Host, port:Int):Void {
+		if (__bindAddress != null) {
+			try {
+				var local:Host = new Host(__bindAddress);
+				#if ((java || jvm) && !macro)
+				@:privateAccess __socket.__bindForConnect(local, __bindPort);
+				#else
+				__socket.bind(local, __bindPort);
+				#end
+			} catch (e:Dynamic) {
+				__cleanupFailedConnect();
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed: could not bind to " + __bindAddress + ":" + __bindPort + ": "
+						+ Std.string(e)));
+				}
+				return;
+			}
+		}
+
 		try {
 			__socket.setBlocking(false);
 			// Before the connect rather than once it is under way: Windows
@@ -1457,7 +1537,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				options.passphrase = __key.__passphrase;
 			}
 		}
+		__nodeBindOptions(options);
 		return cast js.node.Tls.connect(options, opened);
+	}
+
+	/** What `bind` asked for, in the options Node connects with. **/
+	@:noCompletion private function __nodeBindOptions(options:Dynamic):Void {
+		if (__bindAddress != null) {
+			options.localAddress = __bindAddress;
+			if (__bindPort > 0) {
+				options.localPort = __bindPort;
+			}
+		}
 	}
 
 	/**
