@@ -22,6 +22,9 @@ final class NativeSocketRegistry {
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
 	@:noCompletion private var __deregisterPending:DenseSet<Socket>;
+	// Set while the poll's writable sockets are told, which the writable queue's
+	// are told by the same call: see Socket.registryOnWritable.
+	@:noCompletion public var __reportingWritable:Bool = false;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
 	@:noCompletion private var __writableSwap:Stack<Socket>;
 	@:noCompletion private var __readSnapshot:Array<Socket>;
@@ -348,12 +351,14 @@ final class NativeSocketRegistry {
 
 		var watched:Array<Socket> = __writeSnapshot;
 		if (watched != null) {
+			__reportingWritable = true;
 			for (i in __poll.writeIndexes) {
 				if (i == -1) {
 					break;
 				}
 				__dispatchWritable(watched[i]);
 			}
+			__reportingWritable = false;
 		}
 	}
 
