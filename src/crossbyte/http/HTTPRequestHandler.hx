@@ -2314,7 +2314,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (handedOut) {
 			fields = [];
 			fields.push(new URLRequestHeader("Date", __formatHttpDate()));
-			fields.push(new URLRequestHeader("Content-Type", contentType));
+			if (contentType != null) {
+				fields.push(new URLRequestHeader("Content-Type", contentType));
+			}
 			fields.push(new URLRequestHeader("X-Content-Type-Options", "nosniff"));
 			fields.push(new URLRequestHeader("Server", "CrossByte"));
 		} else {
@@ -2335,7 +2337,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 					}
 					continue;
 				}
-				fields.push(h);
+				// Framing is the server's too, as for a body written as it goes:
+				// a length beside the one it writes is two answers to where
+				// this response ends. A HEAD has no body to say it, so its
+				// caller may, as what its GET would send.
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Content-Length")) {
+					if (headOnly && contentLength == null && (data == null || data.length == 0)) {
+						var stated:Int = IntParse.decimal(StringTools.trim(h.value));
+						if (stated >= 0) {
+							contentLength = stated;
+						}
+					}
+					continue;
+				}
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Transfer-Encoding")) {
+					continue;
+				}
+				if (h == null || h.name == null || !__replacesOwnField(fields, h)) {
+					fields.push(h);
+				}
 			}
 		}
 
@@ -2544,6 +2564,37 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 
 	/**
+		Puts a caller's field in the place of the server's own of that name,
+		or takes that out when the caller's is empty, and says whether it dealt
+		with the field. Each of these is said once: a proxy passing on another
+		server's `Date` and `Server` went out with two of each. Any other
+		field is the caller's to repeat, as `Set-Cookie` is, so the names decide
+		this and not where a field lies.
+	**/
+	@:noCompletion private static function __replacesOwnField(fields:Array<URLRequestHeader>, field:URLRequestHeader):Bool {
+		var name:String = field.name;
+		if (!HttpSyntax.equalsIgnoreCase(name, "Date") && !HttpSyntax.equalsIgnoreCase(name, "Server") && !HttpSyntax.equalsIgnoreCase(name, "Content-Type")
+			&& !HttpSyntax.equalsIgnoreCase(name, "X-Content-Type-Options")) {
+			return false;
+		}
+
+		var empty:Bool = field.value == null || field.value.length == 0;
+		for (i in 0...fields.length) {
+			var present:Null<URLRequestHeader> = fields[i];
+			if (present != null && present.name != null && HttpSyntax.equalsIgnoreCase(present.name, name)) {
+				if (empty) {
+					fields.splice(i, 1);
+				} else {
+					fields[i] = field;
+				}
+				return true;
+			}
+		}
+		// Not there, and an empty one takes nothing out.
+		return empty;
+	}
+
+	/**
 		`file`'s bytes, `total` of them, last modified at `modified`: from
 		`HTTPServerConfig.fileCacheSize`'s kept files while the file is as it
 		was, and read and kept otherwise. Not kept: a file modified in the last
@@ -2598,9 +2649,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * a second response on the same connection.
 	 *
 	 * @param statusCode HTTP status to send.
-	 * @param contentType Value for the `Content-Type` header.
+	 * @param contentType Value for the `Content-Type` header, or `null` for
+	 *        none, as a proxy passes on an answer that had none.
 	 * @param body Response body, sent as UTF-8. Suppressed for `HEAD`.
-	 * @param headers Optional additional response headers.
+	 * @param headers Optional additional response headers. One named `Date`,
+	 *        `Server`, `X-Content-Type-Options` or `Content-Type` stands in
+	 *        place of the server's own, and with an empty value takes it out.
+	 *        `Content-Length` and `Transfer-Encoding` are the server's to
+	 *        write, and left out, except that a `HEAD` answered with no body
+	 *        may name its `Content-Length`: what the `GET` would say.
 	 * @param statusMessage Reason phrase; defaults to the standard text
 	 *        for `statusCode`.
 	 *
@@ -4282,7 +4339,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__keptType.value = contentType;
 		fields.resize(0);
 		fields.push(__keptDate);
-		fields.push(__keptType);
+		if (contentType != null) {
+			fields.push(__keptType);
+		}
 		fields.push(__NOSNIFF_FIELD);
 		fields.push(__SERVER_FIELD);
 		return fields;

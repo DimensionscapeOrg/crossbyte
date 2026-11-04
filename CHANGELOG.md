@@ -104,6 +104,15 @@ says how.
 
 #### HTTP
 
+- A field a caller gives `respond` or `respondBytes` named `Date`,
+  `Server`, `X-Content-Type-Options` or `Content-Type` stands in place of
+  the server's own, where both went out, which a proxy passing on another
+  server's answer could not avoid; given empty, it takes the server's
+  out. A `contentType` of `null` sends none, where it sent an empty one.
+  A caller's `Content-Length` or `Transfer-Encoding` is left out, since
+  the server frames the response: both went out, two answers to where
+  it ends. Except that a `HEAD` answered with no body may name its
+  `Content-Length`, what its `GET` would say, where it could only say 0.
 - A `Content-Length` past what an `Int` holds is answered `413`, before
   any of the body is read, when it is decimal digits and every value of
   a list agrees. It was answered `400`, or under HTTP/2 the stream was

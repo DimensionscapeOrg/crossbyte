@@ -2113,6 +2113,34 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testACallersFieldsStandInPlaceOfTheServersOverHttp2(async:Async):Void {
+		// One of each, and a HEAD's length, as over HTTP/1.1.
+		var session = new H2Session(config -> {
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				handler.respondBytes(200, null, new ByteArray(), [
+					new crossbyte.url.URLRequestHeader("Server", "origin"),
+					new crossbyte.url.URLRequestHeader("X-Content-Type-Options", ""),
+					new crossbyte.url.URLRequestHeader("Content-Length", "123")
+				]);
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "HEAD", "/a", true);
+			session.request(3, "GET", "/a", true);
+			session.until(() -> (session.finished(1) && session.finished(3)) || session.ended, () -> {
+				session.close();
+				Assert.equals("origin", session.header(1, "server"));
+				Assert.isNull(session.header(1, "x-content-type-options"));
+				Assert.isNull(session.header(1, "content-type"));
+				Assert.equals("123", session.header(1, "content-length"), "a HEAD's length was not taken");
+				Assert.equals(200, session.status(3));
+				Assert.notEquals("123", session.header(3, "content-length"), "a length the body does not have went out");
+				async.done();
+			});
+		});
+	}
+
 	public function testOnRequestHeadIsAskedAheadOfTheBodysLimit(async:Async):Void {
 		// As over HTTP/1.1, on each stream by itself: refused for what it is,
 		// a request hears that, not that its body is too large.
