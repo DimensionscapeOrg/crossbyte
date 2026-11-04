@@ -120,7 +120,9 @@ function select(name, files) {
 	for (const f of hx) {
 		const k = key(f);
 		if (k.startsWith(SRC)) library = true;
-		if (!fs.existsSync(k)) continue; // deleted: whatever used it changed too
+		// Asked of the file as it is spelled: `k` is lower-cased for the graph,
+		// and on a case-sensitive system nothing by that name exists.
+		if (!fs.existsSync(path.resolve(ROOT, f))) continue; // deleted: whatever used it changed too
 		if (!dependants.has(k)) continue; // not built for this graph's target
 		if (isTestCase(k)) chosen.add(k);
 		const seen = new Set([k]);

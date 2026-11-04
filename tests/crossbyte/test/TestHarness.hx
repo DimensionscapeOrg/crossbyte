@@ -27,7 +27,8 @@ import utest.ui.Report;
 	- `-D gc_bisect` makes the suite selectable at runtime, so narrowing it
 	  costs a run rather than a rebuild. `CB_ONLY` is a comma separated list
 	  of substrings matched against case class names, `CB_METHOD` a regex
-	  over method names. A fault that is probabilistic stays probabilistic,
+	  over method names. A list matching nothing ends the run with success,
+	  and says so. A fault that is probabilistic stays probabilistic,
 	  so a subset needs enough runs to mean something: roughly twenty for a
 	  fault seen in one run of five.
 
@@ -58,6 +59,15 @@ class TestHarness {
 		#if gc_bisect
 		Sys.println("[BISECT] only=" + (runner.only == null ? "<everything>" : runner.only) + " kept=" + runner.kept);
 		Sys.stdout().flush();
+		// A selection can name only what this suite does not hold: CI's comes
+		// from one graph for every sys target, and a case can be registered for
+		// some of them. Nothing here ran, which says nothing about the change,
+		// where utest would fail the run for having no tests.
+		if (runner.only != null && runner.only != "" && runner.kept == 0) {
+			Sys.println("[BISECT] nothing in this suite was selected");
+			Sys.stdout().flush();
+			Sys.exit(0);
+		}
 		#end
 		#if test_trace
 		// Build with `-D test_trace` to print each test as it starts. utest runs
