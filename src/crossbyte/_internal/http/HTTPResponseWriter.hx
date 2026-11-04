@@ -114,4 +114,20 @@ interface HTTPResponseWriter {
 	 * the connection's other streams alone.
 	 */
 	function abort():Void;
+
+	/**
+	 * Stops the request body being read as it arrives
+	 * (`HTTPRequestHandler.streamRequestBody`), and lets it go on: the
+	 * socket's reading under HTTP/1.1, the stream's window under HTTP/2,
+	 * where what has arrived meanwhile is then handed over.
+	 */
+	function holdRequestBody(hold:Bool):Void;
+
+	/**
+	 * Gives up on that body, which will not be read to its end. Under HTTP/1.1
+	 * nothing: the connection closes after the response, and lingers. Under
+	 * HTTP/2 the client is asked to stop sending it, once the response has
+	 * gone.
+	 */
+	function stopRequestBody():Void;
 }

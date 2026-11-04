@@ -569,6 +569,7 @@ class TestSuites {
 		// A socket's kernel buffers, natively and on the jvm; elsewhere, that
 		// asking for one says it cannot be done. Also in PortableSuite, for Node.
 		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
+		runner.addCase(new crossbyte.net.SocketBindTest());
 		// What a peer can make a connection hold that its application has
 		// not read. Also in PortableSuite, for Node's pause and resume.
 		runner.addCase(new crossbyte.net.SocketInputLimitTest());

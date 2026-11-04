@@ -168,6 +168,21 @@ particular:
 Add listeners and routes before `listen()`. `close()` on a connection from any thread is handed to its runtime, as
 everywhere.
 
+A request can be answered from a thread of your own, as a framework that runs handlers on a worker pool does: the
+middleware hands the `HTTPRequestHandler` to a worker, and the worker calls `respond`, `respondBytes`,
+`beginResponse` and the stream's `write` and `end`, or `abort`. Each is handed to the connection's runtime and returns
+at once, and what one thread hands over together goes out in one write as the runtime's pass ends:
+
+```haxe
+// Given config:crossbyte.http.HTTPServerConfig, pool:sys.thread.FixedThreadPool, render:String->String.
+config.middleware.push((handler, ?next) -> pool.run(() -> {
+	handler.respond(200, "application/json", render(handler.requestPath));
+}));
+```
+
+A stream written from a worker answers `write` from what it has handed over and not yet sent, and calls `onDrain` on
+the connection's runtime, so a worker that waits for room is woken from there.
+
 ### One port per runtime on Linux
 
 On Linux, `reusePort` gives each runtime a listening socket of its own on the port (`SO_REUSEPORT`), and the kernel

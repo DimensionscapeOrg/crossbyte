@@ -55,9 +55,10 @@ class ServerSpread {
 	// not yet taken up; see ServerSocket.__publishPending.
 	@:noCompletion private var __inFlight:Int = 0;
 
-	// The servers that set their listener aside at maxPendingHandshakes, and
-	// so have to be told when there is room again: the front, or with
-	// reusePort the replicas, each of which listens for itself.
+	// The servers that set their listener aside at maxPendingHandshakes, or
+	// with every runtime MAX_WAITING behind, and so have to be told when
+	// there is room again: the front, or with reusePort the replicas, each
+	// of which listens for itself.
 	@:noCompletion private var __parked:Array<ServerSocket> = [];
 
 	// Connections an HTTPServer is serving, across every runtime.
@@ -81,9 +82,11 @@ class ServerSpread {
 		The most connections one runtime may have handed to it and not yet
 		taken up, past which the next in turn is tried: four wakes' worth of
 		`maxAcceptsPerTick`. A runtime takes up what it is handed at its
-		next pass, so only one that is stalled (a handler that blocks, a
-		long collection) comes near it. A variable only so a test can
-		make it small.
+		next pass, so one comes near it only when it is stalled (a handler
+		that blocks, a long collection) or busy serving a burst of
+		arrivals. Once every live runtime is this far behind, the front
+		takes no more from the listen queue until one catches up (see
+		`parkIfBehind`). A variable only so a test can make it small.
 	**/
 	@:noCompletion public static var MAX_WAITING:Int = 256;
 
@@ -118,8 +121,10 @@ class ServerSpread {
 		one with `MAX_WAITING` handed to it and not yet taken up. `HANDED`,
 		or why not (`NO_RUNTIME` when none is live, `ALL_FULL` when every
 		live one is that far behind), which leaves the socket to the caller
-		to close. A `selectRuntime` that throws refuses the connection, as
-		`admit` does, and answers `NO_RUNTIME`.
+		to close. The front asks `parkIfBehind` before it accepts, so
+		`ALL_FULL` comes only of a runtime with room exiting in between. A
+		`selectRuntime` that throws refuses the connection, as `admit` does,
+		and answers `NO_RUNTIME`.
 
 		Without the bound a runtime that stalled would be handed every
 		connection that came its way in turn, each a socket and its
@@ -203,13 +208,67 @@ class ServerSpread {
 		return NO_RUNTIME;
 	}
 
-	/** A hand-off to the runtime at `index` has run there, or never will. **/
+	/**
+		A hand-off to the runtime at `index` has run there, or never will.
+		Once that makes room there, a server that set its listener aside is
+		asked to put it back.
+	**/
 	@:noCompletion private function __arrived(index:Int):Void {
 		__lock.acquire();
+		var full:Bool = __waiting[index] >= MAX_WAITING;
 		if (__waiting[index] > 0) {
 			__waiting[index]--;
 		}
+		var woken:Array<ServerSocket> = null;
+		if (full && __parked.length > 0 && __waiting[index] < MAX_WAITING) {
+			woken = __parked;
+			__parked = [];
+		}
 		__lock.release();
+		__wake(woken);
+	}
+
+	/**
+		Whether every live runtime has `MAX_WAITING` handed to it and not yet
+		taken up, so a connection accepted now could only be closed. If so,
+		`server`, the front, is noted as having set its listener aside in the
+		same step, so the hand-off taken up that makes room cannot be missed;
+		meanwhile its connections wait in the kernel's listen queue, as at
+		`maxPendingHandshakes`. False with no runtime live, which `handOff`
+		refuses.
+	**/
+	public function parkIfBehind(server:ServerSocket):Bool {
+		__lock.acquire();
+		var live:Bool = false;
+		var room:Bool = false;
+		for (i in 0...runtimes.length) {
+			if (isLive(runtimes[i])) {
+				live = true;
+				if (__waiting[i] < MAX_WAITING) {
+					room = true;
+					break;
+				}
+			}
+		}
+		var behind:Bool = live && !room;
+		if (behind && __parked.indexOf(server) < 0) {
+			__parked.push(server);
+		}
+		__lock.release();
+		return behind;
+	}
+
+	/** Asks each of `servers` that set its listener aside, on its own runtime, to put it back. **/
+	@:noCompletion private function __wake(servers:Null<Array<ServerSocket>>):Void {
+		if (servers == null) {
+			return;
+		}
+		for (server in servers) {
+			var runtime:Null<CrossByte> = server.__cbInstance;
+			if (runtime != null) {
+				runtime.post(server.__syncListenerWatch);
+			}
+		}
 	}
 
 	/** Connections handed to the runtime at `index` and not yet taken up there. **/
@@ -226,7 +285,7 @@ class ServerSpread {
 		}
 		__fullSaid = true;
 		crossbyte.utils.Logger.warn("Every runtime the server on port " + front.localPort + " spreads its connections over has " + MAX_WAITING
-			+ " connections handed to it and not yet taken up, so each it accepts is closed, and counted in refusedConnections, until one catches up.");
+			+ " connections handed to it and not yet taken up, so a connection it had accepted was closed, and counted in refusedConnections.");
 	}
 
 	@:noCompletion private function __sayRefused():Void {
@@ -357,15 +416,7 @@ class ServerSpread {
 			__parked = [];
 		}
 		__lock.release();
-
-		if (woken != null) {
-			for (server in woken) {
-				var runtime:Null<CrossByte> = server.__cbInstance;
-				if (runtime != null) {
-					runtime.post(server.__syncListenerWatch);
-				}
-			}
-		}
+		__wake(woken);
 	}
 
 	/**

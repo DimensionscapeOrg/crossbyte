@@ -495,8 +495,8 @@ class HTTPServer extends ServerSocket {
 	/**
 	 * Watches a cleartext connection's first bytes, counted and timed while it
 	 * does. Counted against the same ceiling as a served connection, and held
-	 * to `requestTimeout`, since until it speaks it is a request that has not
-	 * arrived.
+	 * to `requestTimeout` and `requestIdleTimeout`, whichever comes first,
+	 * since until it speaks it is a request that has not arrived.
 	 */
 	@:noCompletion private function __sniff(socket:CBSocket):Void {
 		if (!__claimConnection()) {
@@ -508,7 +508,11 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		__sniffing.set(socket, __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0);
+		var limit:Float = __config.requestTimeout;
+		if (__config.requestIdleTimeout > 0 && (limit <= 0 || __config.requestIdleTimeout < limit)) {
+			limit = __config.requestIdleTimeout;
+		}
+		__sniffing.set(socket, limit > 0 ? haxe.Timer.stamp() + limit : 0);
 		__armReceiveSweep();
 
 		socket.addEventListener("close", (_) -> cleanupSocket(socket));
@@ -668,7 +672,7 @@ class HTTPServer extends ServerSocket {
 	 *
 	 * The sweep also reaps idle keep-alive connections (one walk, two
 	 * meanings of the same per-handler deadline), so it must arm when
-	 * either timeout is live, not only `requestTimeout`. And it holds every
+	 * any timeout is live, not only `requestTimeout`. And it holds every
 	 * body being pumped out to its stall deadline, whatever the timeouts
 	 * are, so it arms while one is: a download whose client stopped taking
 	 * it would otherwise hold its file and its connection for good.
@@ -688,9 +692,9 @@ class HTTPServer extends ServerSocket {
 		__sweepAccumulator = 0;
 	}
 
-	/** Whether either timeout sets a deadline, which the walk over every connection keeps. */
+	/** Whether any timeout sets a deadline, which the walk over every connection keeps. */
 	@:noCompletion private inline function __timeoutsLive():Bool {
-		return __config.requestTimeout > 0 || (__config.keepAlive && __config.keepAliveTimeout > 0);
+		return __config.requestTimeout > 0 || __config.requestIdleTimeout > 0 || (__config.keepAlive && __config.keepAliveTimeout > 0);
 	}
 
 	/**

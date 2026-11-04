@@ -17,15 +17,16 @@ import utest.Async;
 @:timeout(20000)
 class HTTPRequestFramingTest extends utest.Test {
 	/**
-		A `Content-Length` no `Int` can hold is refused rather than read as
-		some smaller number.
+		A `Content-Length` no `Int` can hold is refused as too large, rather
+		than read as some smaller number.
 
 		On Linux and macOS native, `Std.parseInt` is `strtol` cast to an
 		`int`, so 4294967296 reads as 0 and 4294967396 as 100. At 0 the server
 		would read no body and parse the body as the next request: a smuggled
 		request, unseen by anything that inspected the outer one. On the jvm
 		the same field throws, and would be answered 500. The request carried
-		in the body here must never reach the application.
+		in the body here must never reach the application, and the connection
+		closes, so it is never read as a request of its own.
 	**/
 	public function testALengthNoIntCanHoldIsRefused(async:Async):Void {
 		var seen:Array<String> = [];
@@ -41,12 +42,111 @@ class HTTPRequestFramingTest extends utest.Test {
 			try server.close() catch (_:Dynamic) {}
 
 			for (i in 0...responses.length) {
-				Assert.equals(400, responses[i].status, "request " + i + " was not refused as malformed");
+				Assert.equals(413, responses[i].status, "request " + i + " was not refused as too large");
 				Assert.equals(1, HTTPTestSupport.countResponses(responses[i].raw), "request " + i + " drew more than one response");
 			}
 			Assert.equals(0, seen.length, "a request reached the application: " + seen.join(", "));
 			async.done();
 		}, true);
+	}
+
+	/**
+		RFC 9110 8.6 sets `Content-Length` no upper bound, so digits past what
+		an `Int` holds are a length, and too large, not malformed. As for any
+		length, a list counts only when every value agrees, however they are
+		written; a list that disagrees, or anything but digits, stays `400`.
+	**/
+	public function testALengthPastAnIntIs413OnlyWhenItIsOneLength(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen);
+
+		HTTPTestSupport.exchangeEach(server, [
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 2147483648\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 0002147483648\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 05000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000\r\nContent-Length: 5000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 5000000001\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000, 5\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000x\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: +5000000000\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000000000,\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			for (i in 0...4) {
+				Assert.equals(413, responses[i].status, "request " + i + " was not refused as too large");
+			}
+			for (i in 4...responses.length) {
+				Assert.equals(400, responses[i].status, "request " + i + " was not refused as malformed");
+			}
+			Assert.equals(0, seen.length, "a request reached the application: " + seen.join(", "));
+			async.done();
+		}, true);
+	}
+
+	/**
+		`requestTarget` is what arrived, whatever `requestPath` made of it: an
+		encoded slash and a dot segment stay, a query stays with its path, and
+		the absolute form keeps its scheme and host.
+	**/
+	public function testTheRequestTargetIsAsItArrived(async:Async):Void {
+		var targets:Array<String> = [];
+		var paths:Array<String> = [];
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+			targets.push(handler.requestTarget);
+			paths.push(handler.requestPath);
+			handler.respond(200, "text/plain", "ok");
+		});
+		var server:HTTPServer = new HTTPServer(config);
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /a%2Fb/./c/../d//e?x=%20y HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /plain HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /empty? HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET http://example.com/abs%2Fsolute?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals("/a%2Fb/./c/../d//e?x=%20y", targets[0]);
+			Assert.equals("/a/b/d/e", paths[0]);
+			Assert.equals("/plain", targets[1]);
+			Assert.equals("/empty?", targets[2]);
+			Assert.equals("/empty", paths[2]);
+			Assert.equals("http://example.com/abs%2Fsolute?q=1", targets[3]);
+			Assert.equals("/abs/solute", paths[3]);
+			async.done();
+		});
+	}
+
+	/** `remotePort` is the port the client's connection comes from, and the client's own socket says the same. **/
+	public function testRemotePortIsTheClients(async:Async):Void {
+		var seen:Int = -1;
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+			seen = handler.remotePort;
+			handler.respond(200, "text/plain", "ok");
+		});
+		var server:HTTPServer = new HTTPServer(config);
+
+		var client:crossbyte.net.Socket = new crossbyte.net.Socket();
+		var own:Int = -2;
+		client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
+			own = client.localPort;
+			client.writeUtfBytes("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+			client.flush();
+		});
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> seen >= 0, 10, function(answered:Bool):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+				Assert.isTrue(answered, "the request never reached the application");
+				Assert.isTrue(seen > 0, "no port was read");
+				Assert.equals(own, seen, "the port read is not the client's");
+				async.done();
+			});
+		});
 	}
 
 	/** RFC 9112 6.3: repeated lengths that disagree are refused, equal ones read. **/
@@ -89,6 +189,71 @@ class HTTPRequestFramingTest extends utest.Test {
 			Assert.equals(0, seen.length, "an oversized request reached the application");
 			async.done();
 		}, true);
+	}
+
+	/**
+		A body refused as too large while the client is still sending it is
+		answered all the same, as an upload from curl or a browser is: the
+		client reads the `413`. Closed over the bytes still arriving, the
+		connection was reset, and a reset throws away what the client has
+		not read yet, the answer with it.
+	**/
+	public function testA413ReachesAClientStillSendingItsBody(async:Async):Void {
+		var server:HTTPServer = __serve([], config -> config.maxRequestBodySize = 1024);
+		var client:crossbyte.net.Socket = new crossbyte.net.Socket();
+		var total:Int = 4 * 1024 * 1024;
+		var piece:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+		for (_ in 0...64 * 1024) {
+			piece.writeByte("x".code);
+		}
+		var sent:Int = 0;
+		var raw:String = "";
+		var failure:Null<String> = null;
+		var closed:Bool = false;
+
+		// The body as fast as the connection takes it, as an uploader sends.
+		function feed():Void {
+			try {
+				while (sent < total && client.connected && client.bytesPending < 256 * 1024) {
+					client.writeBytes(piece, 0, piece.length);
+					sent += piece.length;
+				}
+				client.flush();
+			} catch (e:Dynamic) {
+				if (failure == null) {
+					failure = Std.string(e);
+				}
+			}
+		}
+
+		client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
+			client.writeUtfBytes('POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: $total\r\n\r\n');
+			feed();
+		});
+		client.addEventListener(crossbyte.events.OutputProgressEvent.OUTPUT_PROGRESS, _ -> feed());
+		client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
+			while (client.bytesAvailable > 0) {
+				raw += String.fromCharCode(client.readUnsignedByte());
+			}
+		});
+		client.addEventListener(crossbyte.events.IOErrorEvent.IO_ERROR, function(e:crossbyte.events.IOErrorEvent):Void {
+			if (failure == null) {
+				failure = e.text;
+			}
+		});
+		client.addEventListener(crossbyte.events.Event.CLOSE, _ -> closed = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> closed || raw.indexOf("\r\n\r\n") >= 0, 10.0, function(_):Void {
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+
+				var read:String = raw.length == 0 ? "nothing" : raw.split("\r\n")[0];
+				var failed:String = failure != null ? ", and failed: " + failure : "";
+				Assert.isTrue(StringTools.startsWith(raw, "HTTP/1.1 413"), 'the client read $read after sending $sent bytes$failed');
+				async.done();
+			});
+		});
 	}
 
 	/** The limit is the application's to set, both ways. **/

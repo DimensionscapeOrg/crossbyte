@@ -1023,19 +1023,33 @@ class Socket {
 		NativeSocket.socket_write(__s, haxe.io.Bytes.ofString(content).getData());
 	}
 
+	// 4 or 6 once bound to an address of that family: what a connect keeps to.
+	@:noCompletion private var __boundFamily:Int = 0;
+
 	public function connect(host:Host, port:Int):Void {
 		try {
 			if (host.ip == 0 && host.host != "0.0.0.0") {
 				var ipv6:haxe.io.BytesData = @:privateAccess host.ipv6;
 				if (ipv6 != null) {
-					close();
-					__s = __createSocket(true);
-					init();
+					if (__boundFamily == 4) {
+						throw "Bound to an IPv4 address, which cannot reach " + host.toString();
+					}
+					// Bound to an IPv6 address it is one already, and made anew
+					// it would let go of what it was bound to.
+					if (__boundFamily != 6) {
+						close();
+						__s = __createSocket(true);
+						init();
+					}
 					NativeSocket.socket_connect_ipv6(__s, ipv6, port);
 				} else
 					throw "Unresolved host";
-			} else
+			} else {
+				if (__boundFamily == 6) {
+					throw "Bound to an IPv6 address, which cannot reach " + host.toString();
+				}
 				NativeSocket.socket_connect(__s, host.ip, port);
+			}
 		} catch (s:String) {
 			if (s == "Invalid socket handle")
 				throw "Failed to connect on " + host.toString() + ":" + port;
@@ -1062,10 +1076,13 @@ class Socket {
 				__s = __createSocket(true);
 				init();
 				NativeSocket.socket_bind_ipv6(__s, ipv6, port);
+				__boundFamily = 6;
 			} else
 				throw "Unresolved host";
-		} else
+		} else {
 			NativeSocket.socket_bind(__s, host.ip, port);
+			__boundFamily = 4;
+		}
 	}
 
 	public function accept():Socket {
@@ -2379,6 +2396,15 @@ class Socket {
 		} catch (_:Dynamic) {
 			return -1;
 		}
+	}
+
+	/**
+		Binds this socket's own channel, for the connect to come. `bind` opens
+		a listener, which is what the name means everywhere else here but is
+		no use to a connection.
+	**/
+	@:noCompletion private function __bindForConnect(host:Host, port:Int):Void {
+		__sock().bind(cast new InetSocketAddress(host.wrapped, port));
 	}
 
 	public function bind(host:Host, port:Int):Void {

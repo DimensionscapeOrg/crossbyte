@@ -559,6 +559,10 @@ private class CountingWriter implements crossbyte._internal.http.HTTPResponseWri
 	}
 
 	public function abort():Void {}
+
+	public function holdRequestBody(hold:Bool):Void {}
+
+	public function stopRequestBody():Void {}
 }
 
 /**

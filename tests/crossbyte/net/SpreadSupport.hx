@@ -135,20 +135,28 @@ class SpreadSupport {
 		return buffer.sub(0, got).toString();
 	}
 
-	/** Whether the server closed `client`'s connection: its read ends. **/
-	public static function ended(client:sys.net.Socket):Bool {
+	/**
+		Whether the server closed `client`'s connection within `seconds`: its
+		read ends, or is reset.
+
+		Asked through select, and read only once there is something to read,
+		not by a read left to time out: natively on Windows a read's timeout
+		throws the same "EOF" a closed connection does, so a connection still
+		waiting read as one that had ended.
+	**/
+	public static function ended(client:sys.net.Socket, seconds:Float = WAIT_LONG):Bool {
+		if (sys.net.Socket.select([client], null, null, seconds).read.length == 0) {
+			return false;
+		}
 		var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 		try {
 			client.input.readBytes(one, 0, 1);
 			return false;
 		} catch (_:haxe.io.Eof) {
 			return true;
-		} catch (error:haxe.io.Error) {
-			// A reset is an end too; a timeout is not.
-			return !Std.string(error).toLowerCase().contains("timeout") && !Std.string(error).toLowerCase().contains("blocked");
-		} catch (error:Dynamic) {
-			var text:String = Std.string(error).toLowerCase();
-			return !text.contains("timeout") && !text.contains("blocked") && !text.contains("timed out");
+		} catch (_:Dynamic) {
+			// A reset is an end too.
+			return true;
 		}
 	}
 

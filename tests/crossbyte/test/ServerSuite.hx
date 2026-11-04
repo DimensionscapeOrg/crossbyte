@@ -48,8 +48,15 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPServerH2Test());
 		runner.addCase(new crossbyte.http.HTTPStaticPathTest());
 		runner.addCase(new crossbyte.http.HTTPRequestFramingTest());
+		runner.addCase(new crossbyte.http.HTTPRequestIdleTimeoutTest());
+		runner.addCase(new crossbyte.http.HTTPRequestHeadTest());
+		runner.addCase(new crossbyte.http.HTTPBodyReaderTest());
+		runner.addCase(new crossbyte.http.HTTPResponseFieldsTest());
 		runner.addCase(new crossbyte.http.HTTPRateLimitTest());
 		runner.addCase(new crossbyte.http.HTTPResponseStreamTest());
+		// A request answered from a worker thread; its cases are the threaded
+		// targets'.
+		runner.addCase(new crossbyte.http.HTTPAnswerFromAnotherThreadTest());
 		// What the server compresses, and what its answers say about it.
 		runner.addCase(new crossbyte.http.HTTPCompressionTest());
 		// The access log, written off the runtime.

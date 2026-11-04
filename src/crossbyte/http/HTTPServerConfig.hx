@@ -43,7 +43,9 @@ class HTTPServerConfig {
 
 		The limit counts the body alone; the header block has its own. Raise
 		it for uploads; the whole body is held in memory before middleware
-		runs.
+		runs, unless `onRequestHead` chooses to read it as it arrives
+		(`HTTPRequestHandler.streamRequestBody`), which is held to this all the
+		same.
 		An HTTP/1.1 connection reads one request at a time, so it holds one
 		such body; an HTTP/2 connection carries many at once, and
 		`http2MaxRequestBodyBuffer` is what all of them may hold together.
@@ -145,6 +147,52 @@ class HTTPServerConfig {
 		and going ahead sends an interim `100`.
 	**/
 	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
+
+	/**
+		Asked of every request once its head has arrived, its framing is known
+		to be sound and the rate limiter has let it by, and before any of its
+		body is read. Return `true` to let it go on; to refuse it, answer with
+		`handler.respond()` and return `false`. A `false` with no answer is
+		answered `403`, and what this throws is logged and answered `500`.
+
+		What a request can be turned away for without costing anything more
+		belongs here: a `Host` this server does not serve, credentials, a
+		route that takes no upload. It comes ahead of `maxRequestBodySize`
+		and `onExpectContinue`, so a request refused for what it is hears that,
+		and not that its body is too large. The method, the path and the
+		headers are here; the body is not.
+
+		It is also where a body can be chosen to be read as it arrives, with
+		`handler.streamRequestBody()`, rather than held whole before middleware
+		runs. The choice is per request, so a server can stream its uploads and
+		go on reading its forms the usual way:
+
+		```haxe
+		// Given config:crossbyte.http.HTTPServerConfig.
+		config.onRequestHead = handler -> {
+			if (handler.getHeader("host") != "example.com") {
+				handler.respond(421, "text/plain", "Misdirected Request");
+				return false;
+			}
+			if (handler.requestPath == "/upload") {
+				handler.streamRequestBody().onData = (data, offset, length) -> true;
+			}
+			return true;
+		};
+		```
+
+		It is called on the runtime's thread and answers there and then. A
+		decision that takes a while (a lookup, a connection being opened) goes
+		on from a body read as it arrives: return `true` and set `onData`, or
+		answer, when it is made, and the body waits meanwhile.
+
+		A request refused with a body still to come closes its connection
+		once the answer has gone, since what follows it is unread; one with no
+		body keeps it. Over HTTP/2 too, when the request's headers arrive: a
+		refusal answers its stream, and a body still to come is reset.
+		`null`, the default, asks nothing.
+	**/
+	public var onRequestHead:(handler:HTTPRequestHandler) -> Bool = null;
 
 	/**
 		The address to listen on. Defaults to `127.0.0.1`, which only this
@@ -553,6 +601,35 @@ class HTTPServerConfig {
 		connection closed when its own window is what holds them.
 	**/
 	public var requestTimeout:Float;
+
+	/**
+		Seconds a request still arriving may go without a byte, or `0` for no
+		such limit, the default. A connection that does is answered
+		`408 Request Timeout` and closed, as at `requestTimeout`, and it counts
+		from accept, from a request's first byte and from each one after. It
+		is `URLRequest.readTimeout` for a server, beside `requestTimeout`,
+		which is its `loadTimeout`: how long the whole request may take.
+
+		A deadline for the whole request is also a floor on the client's
+		speed: 100 MiB in 60 seconds is 14 Mbit/s, and a slower upload that
+		is making steady progress is cut off. To take those, set this and
+		raise `requestTimeout`.
+
+		An idle timeout alone does not bound a request: a client sending a
+		byte at a time moves it with every byte, and holds its connection for
+		as long as that takes. Keep a `requestTimeout` (an hour, say, for the
+		slowest upload you will take) rather than setting it to `0`, as Apache's
+		`mod_reqtimeout` and Kestrel's minimum data rate keep a floor, and
+		bound one address with `maxConnectionsPerAddress`.
+
+		Over HTTP/2 it is each stream's, counted from its HEADERS and from
+		each DATA after, and a stream past it is answered `408` on that stream
+		alone. A stream with no window left to send into is not counted: what
+		it waits for is this side's, and `http2MaxRequestBodyBuffer` says how
+		that ends. Enforced by the same sweep as `requestTimeout`, so
+		precision is roughly a quarter second.
+	**/
+	public var requestIdleTimeout:Float = 0;
 
 	/**
 		Offer HTTP/2 on this listener, alongside HTTP/1.1.

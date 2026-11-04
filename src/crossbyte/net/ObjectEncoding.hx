@@ -11,7 +11,9 @@ enum abstract ObjectEncoding(Int) from Int to Int from UInt to UInt {
 	/**
 		CrossByte's HXSF object encoding: Haxe's serialization format. Read
 		bounded, as every encoding is: 256 levels deep at most, and
-		`ByteArray.maxObjectValues` values.
+		`ByteArray.maxObjectValues` values. It makes instances only of the
+		classes and enums `ByteArray.allowObjectClass` and `allowObjectEnum`
+		allow.
 	**/
 	public var HXSF = 10;
 

@@ -27,6 +27,9 @@ import haxe.Unserializer;
 	read back by a negative string or bytes length, so a six-byte payload
 	would read the same value again for ever, adding it to an array until
 	memory ran out. Both are refused.
+
+	And a class or an enum is made only if the program allowed it (see
+	`ObjectTypes`), where the standard library makes any it can find.
 **/
 class BoundedUnserializer extends Unserializer {
 	/**
@@ -59,6 +62,7 @@ class BoundedUnserializer extends Unserializer {
 	**/
 	public function new(buffer:String, limit:Int = LIMIT, ?values:Int) {
 		super(buffer);
+		setResolver(ObjectTypes.resolver);
 		__limit = limit;
 		var most:Int = values != null ? values : maxValues;
 		__most = most > 0 ? most : 0x7FFFFFFF;

@@ -39,14 +39,14 @@ class ClockTest extends utest.Test {
 	}
 
 	public function testTheClockIsNotTheTimeOfDay():Void {
-		#if (cpp || java || jvm)
+		#if (cpp || java || jvm || eval || php)
 		// A monotonic clock counts from the first call or from boot; the time
 		// of day counts from 1970. If these agree, stamp() has become the time
 		// of day again, and a clock adjustment moves every deadline with it.
 		var gap = Math.abs(haxe.Timer.stamp() - Sys.time()); // time of day: what the stamp must not be
 		Assert.isTrue(gap > 1e6, 'stamp() is within ${gap}s of the time of day');
 		#else
-		// eval, hl and neko have no monotonic source and use Sys.time().
+		// hl and neko have no monotonic source and use Sys.time().
 		Assert.pass();
 		#end
 	}

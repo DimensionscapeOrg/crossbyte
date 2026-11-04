@@ -61,6 +61,75 @@ says how.
 
 ## 1.0.1 - Unreleased
 
+### Added
+
+#### HTTP
+
+- A request can be answered from a thread of the application's own, as
+  a framework that runs its handlers on a worker pool answers them:
+  `respond`, `respondBytes`, `beginResponse` and its stream's `write`,
+  `writeText` and `end` may be called from any thread. Called from
+  another, each is handed to the connection's runtime and returns at
+  once, and what is handed over together goes out in one write as the
+  runtime's pass ends. A stream written from another thread answers
+  `write` from what it has handed over and not yet sent, and calls
+  `onDrain` on the connection's runtime. A call that reaches the runtime
+  after its request was answered does nothing, rather than answering the
+  next request pipelined behind it. On two cores at 1,000 connections,
+  two workers answering with `respond` served about 130,000 requests a
+  second, where workers answering through three blocking round trips to
+  the runtime (head, body, end) served about 7,000, with 0.4 thread
+  switches a request against 4.5. See docs/runtime.md.
+- `HTTPRequestHandler.abort()` gives up on a response, from any thread:
+  the connection closes under HTTP/1.1, the stream is reset under HTTP/2.
+- `HTTPRequestHandler.getAllHeaders()` and `httpVersion`: every request
+  header by lower-case name, and the version the request came in.
+- `HTTPServerConfig.onRequestHead`, asked of each request once its head
+  has arrived and its framing is sound, before any of its body is read
+  and ahead of `maxRequestBodySize`: a request for a host this server
+  does not serve hears `421`, not that its body is too large. Over HTTP/1.1
+  and HTTP/2. See docs/limits.md.
+- `HTTPRequestHandler.streamRequestBody()`, chosen at the head, reads a
+  request's body as it arrives, through an `HTTPBodyReader`, rather than
+  holding it whole before middleware runs. The request goes to the
+  middleware at its head, and a reader's `onData` answering `false`
+  stops the body until `resume`: the connection stops reading, or under
+  HTTP/2 stops opening the stream's window, so a client is held back by
+  flow control and what the server holds for a stopped body stays near
+  one read. `maxRequestBodySize`, `requestTimeout` and
+  `requestIdleTimeout` still hold, and the deadlines stop while a reader
+  has it stopped. A coding is left as it was sent, which is what a proxy
+  passes on, so a coding this server could not undo is not refused.
+- `HTTPServerConfig.requestIdleTimeout`, the seconds a request still
+  arriving may go without a byte, off by default, beside
+  `requestTimeout`, which bounds the whole request and so also sets a
+  floor on a client's speed: 100 MiB in its 60 seconds is 14 Mbit/s. On
+  both protocols, and answered `408` as a deadline is. See docs/limits.md.
+- `HTTPRequestHandler.requestTarget`, the request target as it arrived,
+  beside `requestPath`, which is decoded and settled: a proxy forwards
+  this one, so what is behind it reads a `%2F` as one. And `remotePort`,
+  beside `remoteAddress`.
+- A response that says `Cache-Control: no-transform` is not compressed,
+  as Express's `compression` leaves one: how an application says, for
+  one response, that its body is to go as given.
+
+#### TCP
+
+- `Socket.bind(localPort, localAddress)` sets where the next `connect()`
+  leaves from, as `ServerSocket.bind` and `DatagramSocket.bind` do: a
+  connection from one of a machine's several addresses, or from one a
+  peer can tell apart. Natively, on the jvm, on Node, and on the
+  interpreter, HashLink and Neko for IPv4. A failure is an `ioError` from
+  `connect()`.
+
+#### Platform
+
+- `-D crossbyte_pgo=generate` and `-D crossbyte_pgo=use` build a native
+  program with profile-guided optimisation, which hxcpp has no option
+  for: built instrumented, run on its work, and built again from what
+  the run counted. It turns on link-time optimisation as well, and works
+  with MSVC, GCC and Clang. See docs/targets.md.
+
 ### Changed
 
 Entries marked "(Upgrading)" can need code changed; the Upgrading section
@@ -76,8 +145,64 @@ says how.
   Failures after startup are contained as before. `CrossByte.exit(code)`
   takes the program's exit code, and every runtime keeps it as
   `exitCode`. (Upgrading)
+- An HXSF object makes instances only of the classes and enums the
+  program allows with `ByteArray.allowObjectClass` and
+  `ByteArray.allowObjectEnum`, and one naming any other is refused with
+  an `IOError`. It made an instance of any class it named, without the
+  class's constructor and with the fields the sender chose, so a peer's
+  object, read through a socket, could make one of a class whose methods
+  trust what its constructor checked. This holds wherever HXSF is read:
+  `readObject`, a socket's too, `FileStream`, `SharedObject` and
+  `SharedChannel`. Arrays, structures, strings, numbers, `Date`, `Bytes`,
+  `List` and maps need nothing allowed, and AMF and JSON make no class
+  instances. (Upgrading)
 
 ### Fixed
+
+#### HTTP
+
+- A field a caller gives `respond` or `respondBytes` named `Date`,
+  `Server`, `X-Content-Type-Options` or `Content-Type` stands in place of
+  the server's own, where both went out, which a proxy passing on another
+  server's answer could not avoid; given empty, it takes the server's
+  out. A `contentType` of `null` sends none, where it sent an empty one.
+  A caller's `Content-Length` or `Transfer-Encoding` is left out, since
+  the server frames the response: both went out, two answers to where
+  it ends. Except that a `HEAD` answered with no body may name its
+  `Content-Length`, what its `GET` would say, where it could only say 0.
+- A `Content-Length` past what an `Int` holds is answered `413`, before
+  any of the body is read, when it is decimal digits and every value of
+  a list agrees. It was answered `400`, or under HTTP/2 the stream was
+  reset with `PROTOCOL_ERROR`, though RFC 9110 sets the field no upper
+  bound: a client declaring 2 GB to a server taking 100 MB heard that
+  its request was malformed, not that it was too large. A list that
+  disagrees, or anything but digits, is `400` as before, and the field
+  is never read as a smaller number.
+- A response given `Connection: close` closes the connection after it,
+  as Go's and Node's servers do. Over HTTP/1.1 the header went out beside
+  the server's own `Connection: keep-alive`, and the connection stayed
+  open.
+- A client still sending a request the server has answered already (an
+  upload refused `413` on its `Content-Length`, or requests pipelined
+  behind one the connection was closed after) reads the answer. The
+  connection was closed over the bytes still arriving, which resets it,
+  and a reset throws away what the client has not read: curl or a browser
+  reported a reset, not the `413`. Now the server ends its side (a TLS
+  connection leaves that to its client) and reads and drops what arrives
+  until the client closes, or five seconds pass, as Go's `net/http` and
+  nginx's lingering close do.
+
+#### TCP
+
+- A server spread over `runtimes` serves a burst of connections larger
+  than its runtimes can take up at once. Once every runtime had 256
+  connections handed to it and not yet taken up, the server accepted
+  each further connection and closed it at once, counted in
+  `refusedConnections`: of 1,000 HTTP clients connecting together to a
+  server with `runtimeCount = 1`, hundreds read an end of stream. Now it
+  takes nothing more from the listen queue until a runtime catches up,
+  so the rest wait in the kernel's queue, as at `maxPendingHandshakes`,
+  and are served late rather than refused.
 
 #### RPC
 
@@ -129,6 +254,13 @@ says how.
   `FileStream`: as on Node, the file can be moved and deleted, and a
   directory with one inside it is then refused as not empty until it is
   closed. `FileTest` runs in the PHP lane.
+- On the interpreter and PHP, `haxe.Timer.stamp()`, which everything in
+  CrossByte waits and measures by, reads a monotonic clock: libuv's on
+  the interpreter, `hrtime` on PHP. It read the time of day there, so
+  setting the clock, or a virtual machine resyncing it, moved every
+  deadline with it: a step forwards made timeouts fall due at once.
+  HashLink and Neko have no monotonic clock, and `docs/targets.md` says
+  so.
 
 ### Upgrading from 1.0.0
 
@@ -138,6 +270,11 @@ says how.
   and an application's process with it, where it was logged and the
   runtime ran on. To carry on past a failure in startup, catch it inside
   the listener.
+- A program that sends or stores instances of its own classes or enums as
+  HXSF objects allows each as it starts, before reading any:
+  `ByteArray.allowObjectClass(Point)`, `ByteArray.allowObjectEnum(Shape)`.
+  Allow only classes that are plain data, since an instance is made
+  without its constructor.
 
 #### Platform
 

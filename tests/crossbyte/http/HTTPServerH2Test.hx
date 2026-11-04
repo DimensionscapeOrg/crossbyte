@@ -2113,6 +2113,526 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testACallersFieldsStandInPlaceOfTheServersOverHttp2(async:Async):Void {
+		// One of each, and a HEAD's length, as over HTTP/1.1.
+		var session = new H2Session(config -> {
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				handler.respondBytes(200, null, new ByteArray(), [
+					new crossbyte.url.URLRequestHeader("Server", "origin"),
+					new crossbyte.url.URLRequestHeader("X-Content-Type-Options", ""),
+					new crossbyte.url.URLRequestHeader("Content-Length", "123")
+				]);
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "HEAD", "/a", true);
+			session.request(3, "GET", "/a", true);
+			session.until(() -> (session.finished(1) && session.finished(3)) || session.ended, () -> {
+				session.close();
+				Assert.equals("origin", session.header(1, "server"));
+				Assert.isNull(session.header(1, "x-content-type-options"));
+				Assert.isNull(session.header(1, "content-type"));
+				Assert.equals("123", session.header(1, "content-length"), "a HEAD's length was not taken");
+				Assert.equals(200, session.status(3));
+				Assert.notEquals("123", session.header(3, "content-length"), "a length the body does not have went out");
+				async.done();
+			});
+		});
+	}
+
+	public function testOnRequestHeadIsAskedAheadOfTheBodysLimit(async:Async):Void {
+		// As over HTTP/1.1, on each stream by itself: refused for what it is,
+		// a request hears that, not that its body is too large.
+		var routed:Array<String> = [];
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.onRequestHead = handler -> {
+				if (handler.requestPath == "/refused") {
+					handler.respond(421, "text/plain", "Misdirected Request");
+					return false;
+				}
+				return handler.requestPath != "/silent";
+			};
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				routed.push(handler.requestPath);
+				handler.respond(200, "text/plain", "got " + handler.requestBody.length);
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/refused", false, [new HpackHeader("content-length", "100")]);
+			session.request(3, "GET", "/refused", true);
+			session.request(5, "GET", "/silent", true);
+			session.request(7, "POST", "/fine", false, [new HpackHeader("content-length", "100")]);
+			session.request(9, "POST", "/fine", false, [new HpackHeader("content-length", "2")]);
+			session.data(9, "hi");
+			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5) && session.finished(7) && session.finished(9))
+				|| session.ended, () -> {
+				session.close();
+				Assert.equals(421, session.status(1), "a refused request heard about its length");
+				Assert.equals(421, session.status(3));
+				Assert.equals(403, session.status(5), "a false with no answer was not 403");
+				Assert.equals(413, session.status(7), "a body past the limit was let through");
+				Assert.equals(200, session.status(9));
+				Assert.equals("got 2", session.body(9));
+				Assert.equals("/fine", routed.join(","), "a refused request reached the chain");
+				async.done();
+			});
+		});
+	}
+
+	public function testABodyIsReadAsItArrivesOverHttp2(async:Async):Void {
+		// At its headers the request goes to the chain, and each DATA to the
+		// reader as it comes, with no window withheld, so a body past what
+		// could be held goes through.
+		var got:StringBuf = new StringBuf();
+		var total:Int = 0;
+		var ended:Int = 0;
+		var routedBefore:Int = -1;
+		var body:Bytes = Bytes.alloc(3 * 1024 * 1024);
+		for (i in 0...body.length) {
+			body.set(i, i & 0xFF);
+		}
+		var sum:Int = 0;
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = body.length;
+			config.http2MaxRequestBodyBuffer = body.length;
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (data, offset, length) -> {
+					for (i in 0...length) {
+						sum = (sum + data[offset + i]) & 0xFFFFFF;
+					}
+					total += length;
+					return true;
+				};
+				reader.onEnd = () -> {
+					ended++;
+					handler.respond(200, "text/plain", "got " + total);
+				};
+				return true;
+			};
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				routedBefore = total;
+			});
+		});
+		var expected:Int = 0;
+		for (i in 0...body.length) {
+			expected = (expected + (i & 0xFF)) & 0xFFFFFF;
+		}
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(body.length))]);
+			session.upload(1, body, sent -> {
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.equals(body.length, sent);
+					Assert.equals(200, session.status(1));
+					Assert.equals('got ${body.length}', session.body(1));
+					Assert.equals(body.length, total);
+					Assert.equals(expected, sum, "the bytes did not arrive as they were sent");
+					Assert.equals(1, ended);
+					Assert.equals(0, routedBefore, "the chain waited for the body");
+					async.done();
+				});
+			}, 15.0);
+		});
+	}
+
+	public function testAPausedBodyHoldsItsStreamToItsWindow(async:Async):Void {
+		// Stopped, a stream gets no more window: what the client can send is
+		// what was open, and it is held to deliver on resume. Another stream on
+		// the connection goes on, since the wait is this one's alone.
+		var reader:Null<HTTPBodyReader> = null;
+		var total:Int = 0;
+		var ended:Int = 0;
+		var body:Bytes = Bytes.alloc(4 * 1024 * 1024);
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = body.length;
+			config.onRequestHead = handler -> {
+				if (handler.requestPath == "/other") {
+					return true;
+				}
+				reader = handler.streamRequestBody();
+				reader.onData = (_, _, length) -> {
+					total += length;
+					return total < 100 * 1024;
+				};
+				reader.onEnd = () -> {
+					ended++;
+					handler.respond(200, "text/plain", "got " + total);
+				};
+				return true;
+			};
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				if (handler.requestPath == "/other") {
+					handler.respond(200, "text/plain", "other");
+				}
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(body.length))]);
+			session.upload(1, body, sent -> {
+				Assert.isTrue(sent < body.length, "a stopped stream took everything: " + sent);
+				Assert.isTrue(reader.paused, "the reader was not stopped");
+				var atPause:Int = total;
+
+				session.request(3, "GET", "/other", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					Assert.equals(200, session.status(3), "a stopped stream held up the connection");
+					Assert.equals(atPause, total, "a stopped reader was given more");
+
+					reader.onData = (_, _, length) -> {
+						total += length;
+						return true;
+					};
+					reader.resume();
+					session.upload(1, body.sub(sent, body.length - sent), _ -> {
+						session.until(() -> session.finished(1) || session.ended, () -> {
+							session.close();
+							Assert.equals(200, session.status(1));
+							Assert.equals(body.length, total, "bytes were lost across the stop");
+							Assert.equals(1, ended);
+							async.done();
+						});
+					}, 15.0);
+				});
+			}, 3.0);
+		});
+	}
+
+	public function testAnAnswerBeforeTheBodyEndsResetsItsStreamNoError(async:Async):Void {
+		// The response is complete, so the rest of the body is not wanted: a
+		// reset NO_ERROR, 8.1, after the answer rather than in place of it.
+		var aborted:Int = 0;
+		var session = new H2Session(config -> {
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (_, _, _) -> {
+					handler.respond(200, "text/plain", "enough");
+					return true;
+				};
+				reader.onAbort = () -> aborted++;
+				return true;
+			};
+			config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.trickle(1, "hi");
+			session.until(() -> session.resetCode(1) >= 0 || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(200, session.status(1), "the answer did not go out");
+					Assert.equals("enough", session.body(1));
+					Assert.equals(0, session.resetCode(1), "the stream was reset " + session.resetCode(1));
+					Assert.equals(1, aborted);
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAClientResetAbortsTheBody(async:Async):Void {
+		var aborted:Int = 0;
+		var heard:Int = 0;
+		var session = new H2Session(config -> {
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (_, _, length) -> {
+					heard += length;
+					return true;
+				};
+				reader.onAbort = () -> aborted++;
+				return true;
+			};
+			config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.trickle(1, "hi");
+			session.until(() -> heard == 2 || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> aborted > 0 || session.ended, () -> {
+					session.close();
+					Assert.equals(1, aborted, "a reset was not heard");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAStreamedBodyIsHeldToItsLimitAndLength(async:Async):Void {
+		// maxRequestBodySize holds for a body not held here, and so does
+		// content-length, which a proxy passing the bytes on is trusting.
+		var aborted:Int = 0;
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (_, _, _) -> true;
+				reader.onEnd = () -> handler.respond(200, "text/plain", "ok");
+				reader.onAbort = () -> aborted++;
+				return true;
+			};
+			config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			session.trickle(1, "more than ten bytes");
+			session.request(3, "POST", "/upload", false, [new HpackHeader("content-length", "5")]);
+			session.trickle(3, "toolong");
+			session.request(5, "POST", "/upload", false, [new HpackHeader("content-length", "5")]);
+			session.data(5, "shrt");
+			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5)) || session.ended, () -> {
+				session.close();
+				Assert.equals(413, session.status(1), "a body past the limit was taken");
+				Assert.equals(1, session.resetCode(3), "more than its content-length was taken: " + session.resetCode(3));
+				Assert.equals(1, session.resetCode(5), "less than its content-length ended it: " + session.resetCode(5));
+				Assert.equals(3, aborted);
+				async.done();
+			});
+		});
+	}
+
+	public function testAStreamedBodyHasItsDeadlinesExceptWhileStopped(async:Async):Void {
+		// A silent body is 408 on its stream. One its reader has stopped is
+		// not: the wait is not its client's.
+		var aborted:Array<String> = [];
+		var stopped:Null<HTTPBodyReader> = null;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.requestIdleTimeout = 0.3;
+			config.onRequestHead = handler -> {
+				var path:String = handler.requestPath;
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (_, _, _) -> path != "/stopped";
+				reader.onEnd = () -> handler.respond(200, "text/plain", "ok");
+				reader.onAbort = () -> aborted.push(path);
+				if (path == "/stopped") {
+					stopped = reader;
+				}
+				return true;
+			};
+			config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/silent", false, [new HpackHeader("content-length", "4")]);
+			session.request(3, "POST", "/stopped", false, [new HpackHeader("content-length", "4")]);
+			session.trickle(3, "hi");
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.pause(0.6, () -> {
+					Assert.equals(408, session.status(1), "a silent stream was not timed out");
+					Assert.equals("/silent", aborted.join(","), "a stopped stream was timed out");
+					Assert.isFalse(session.finished(3), "a stopped stream was answered");
+
+					session.data(3, "ya");
+					stopped.onData = (_, _, _) -> true;
+					stopped.resume();
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.equals(200, session.status(3));
+						async.done();
+					});
+				});
+			}, 5.0);
+		});
+	}
+
+	public function testARequestRefusedPastTheHookAbortsItsReaderOverHttp2(async:Async):Void {
+		// Nothing of it was read, so onEnd is not what hears. Its stream is
+		// reset once, by what refused it.
+		var ended:Int = 0;
+		var aborted:Int = 0;
+		var session = new H2Session(config -> {
+			config.maxRequestBodySize = 10;
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onEnd = () -> ended++;
+				reader.onAbort = () -> aborted++;
+				return true;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "100")]);
+			session.until(() -> session.resetCode(1) >= 0 || session.ended, () -> {
+				session.request(3, "GET", "/index.html", false);
+				session.data(3, "");
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(413, session.status(1));
+					Assert.equals(0, session.resetCode(1), "the stream was reset " + session.resetCode(1));
+					Assert.equals(0, ended, "a body that was never read ended");
+					Assert.equals(1, aborted);
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAReaderIsTheApplicationsToAnswerOverHttp2(async:Async):Void {
+		// No middleware: the hook and the reader are the whole application.
+		var session = new H2Session(config -> {
+			config.onRequestHead = handler -> {
+				var reader:HTTPBodyReader = handler.streamRequestBody();
+				reader.onData = (_, _, _) -> true;
+				reader.onEnd = () -> handler.respond(201, "text/plain", "stored");
+				return true;
+			};
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "4")]);
+			session.trickle(1, "hi");
+			session.pause(0.1, () -> {
+				session.data(1, "ya");
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.equals(201, session.status(1));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAHeldBodyGetsNoWindowFromASettingsAck(async:Async):Void {
+		// A first window smaller than the protocol's, so the client's
+		// acknowledgement has every stream's window opened again, where one
+		// held for its reader is to get none until it goes on.
+		var reader:Null<HTTPBodyReader> = null;
+		var session = new H2Session(config -> {
+			config.onRequestHead = handler -> {
+				reader = handler.streamRequestBody();
+				reader.onEnd = () -> handler.respond(200, "text/plain", "ok");
+				return true;
+			};
+		});
+		session.ackSettings = false;
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "500000")]);
+			session.until(() -> reader != null || session.ended, () -> {
+				var before:Int = session.streamWindow(1);
+				session.ackSettings = true;
+				session.until(() -> true, () -> {
+					// Answered once all that came before it has been read.
+					session.ping();
+					session.until(() -> session.pingAcks > 0 || session.ended, () -> {
+						var after:Int = session.streamWindow(1);
+						session.close();
+						Assert.equals(before, after, "a held stream was given window");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testABodilessRequestEndsItsReaderOverHttp2(async:Async):Void {
+		var ended:Int = 0;
+		var session = new H2Session(config -> {
+			config.onRequestHead = handler -> {
+				handler.streamRequestBody().onEnd = () -> {
+					ended++;
+					handler.respond(200, "text/plain", "ok");
+				};
+				return true;
+			};
+			config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/a", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.close();
+				Assert.equals(200, session.status(1));
+				Assert.equals(1, ended);
+				async.done();
+			});
+		});
+	}
+
+	public function testAStreamThatFallsSilentIs408AndTheOthersGoOn(async:Async):Void {
+		// requestIdleTimeout is each stream's, and answered on that stream.
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0;
+			config.requestIdleTimeout = 0.3;
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "4")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(408, session.status(1), "a silent stream was not timed out");
+					Assert.equals(200, session.status(3), "the connection did not carry on");
+					async.done();
+				});
+			}, 5.0);
+		});
+	}
+
+	public function testTheRequestTargetIsTheStreamsPath(async:Async):Void {
+		// :path as it came, with or without a body to come, on a handler a
+		// connection may keep from stream to stream.
+		var targets:Array<String> = [];
+		var ports:Array<Int> = [];
+		var session = new H2Session(config -> {
+			config.middleware.push(function(handler:HTTPRequestHandler, _:?Dynamic->Void):Void {
+				targets.push(handler.requestTarget);
+				ports.push(handler.remotePort);
+				handler.respond(200, "text/plain", "ok");
+			});
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/a%2Fb/../c?x=1", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/empty?", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals("/a%2Fb/../c?x=1", targets[0]);
+					Assert.equals("/empty?", targets[1]);
+					Assert.isTrue(ports[0] > 0, "no port was read");
+					Assert.equals(ports[0], ports[1], "one connection read two ports");
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testALengthPastAnIntIs413(async:Async):Void {
+		// As over HTTP/1.1: digits no Int can hold are a length, and too large.
+		// The stream was reset PROTOCOL_ERROR, as though the request were
+		// malformed. With no body to come it does not match the DATA it
+		// carried, which is malformed whatever the number.
+		var session = new H2Session(_ -> {});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", "5000000000")]);
+			session.request(3, "POST", "/upload", true, [new HpackHeader("content-length", "5000000000")]);
+			session.request(5, "POST", "/upload", false, [new HpackHeader("content-length", "5000000000x")]);
+			session.until(() -> (session.finished(1) && session.finished(3) && session.finished(5)) || session.ended, () -> {
+				session.close();
+				Assert.equals(413, session.status(1), "a length past an Int was not refused as too large");
+				Assert.equals(-1, session.status(3), "a length with no body behind it was answered");
+				Assert.equals(1, session.resetCode(3), "a length with no body behind it was reset " + session.resetCode(3));
+				Assert.equals(-1, session.status(5), "a field of more than digits was answered");
+				Assert.equals(1, session.resetCode(5), "a field of more than digits was reset " + session.resetCode(5));
+				async.done();
+			});
+		});
+	}
+
 	public function testARefusalIsCompleteBeforeItsStreamIsReset(async:Async):Void {
 		// A refusal at the headers asks the client to stop sending its body
 		// with a reset, NO_ERROR, which §8.1 allows after a complete response.
@@ -2891,6 +3411,9 @@ private class H2Session {
 	/** Whether the server's PINGs are answered: false for a case about a client that does not. */
 	public var answerPings:Bool = true;
 
+	/** Whether the server's SETTINGS are acknowledged, for a case about when that comes. */
+	public var ackSettings:Bool = true;
+
 	/**
 		PINGs the server has acknowledged. It answers one once it has read
 		everything sent before it, so this is how a case knows the server has
@@ -3238,6 +3761,11 @@ private class H2Session {
 		__send(out);
 	}
 
+	/** What the server has left open of `streamId`'s window, as this side counts it. */
+	public function streamWindow(streamId:Int):Int {
+		return __streamWindows.get(streamId);
+	}
+
 	/** Bytes of body the server has sent on `streamId` so far. */
 	public function received(streamId:Int):Int {
 		return __bodies.exists(streamId) ? __bodies.get(streamId).length : 0;
@@ -3301,7 +3829,7 @@ private class H2Session {
 
 	/** Acknowledges the server's SETTINGS (6.5.3) and PINGs (6.7), as a client keeping to the protocol does. */
 	private function __sendOwed():Void {
-		while (__acksOwed > 0 && !ended) {
+		while (ackSettings && __acksOwed > 0 && !ended) {
 			__acksOwed--;
 			var out = new BytesBuffer();
 			__writeFrame(out, H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));

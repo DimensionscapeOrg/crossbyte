@@ -725,12 +725,13 @@ class ServerSpreadTest extends utest.Test {
 	/**
 		A runtime that has stalled (a handler blocking it) is handed at most
 		`ServerSpread.MAX_WAITING` connections it has not taken up; the next go
-		to the runtime after it, and once every runtime is that far behind a
-		connection is closed as it is accepted, and counted. Once the runtimes
-		catch up, what they were handed is taken up. Without the bound a
-		stalled runtime would be handed every connection that came its way in
-		turn, each a socket held in its post queue, for as long as the stall
-		lasted.
+		to the runtime after it, and once every runtime is that far behind the
+		server takes no more from the listen queue, so a connection arriving
+		then waits there, neither closed nor counted as refused. Once the
+		runtimes catch up, what they were handed is taken up and what waited
+		is served. Without the bound a stalled runtime would be handed every
+		connection that came its way in turn, each a socket held in its post
+		queue, for as long as the stall lasted.
 	**/
 	@:timeout(30000)
 	public function testAStalledRuntimeIsHandedABoundedNumberOfConnections():Void {
@@ -772,46 +773,105 @@ class ServerSpreadTest extends utest.Test {
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.waitingAt(0) == 2, WAIT), "the stalled runtime was not handed its share");
 		Assert.equals(0, server.refusedConnections, "a connection was refused with a runtime free");
 
-		// Now both stall: two more wait on the second, and the next two are
-		// refused.
+		// Now both stall: two more wait on the second, and the next two wait
+		// in the kernel's listen queue, neither refused nor closed.
 		var secondStall:Lock = new Lock();
 		second.post(() -> secondStall.wait(10.0));
 		Assert.isTrue(SpreadSupport.waitFor(() -> second.postQueueDepth == 0, WAIT));
 		crossbyte.sys.System.sleep(0.05);
-		var refused:Array<sys.net.Socket> = [];
+		var queued:Array<sys.net.Socket> = [];
 		for (i in 0...4) {
 			var client = SpreadSupport.connect(server.localPort);
 			if (i < 2) {
 				clients.push(client);
+				SpreadSupport.waitFor(() -> server.__spread.waitingAt(1) > i, WAIT);
 			} else {
-				refused.push(client);
+				queued.push(client);
 			}
-			SpreadSupport.waitFor(() -> server.__spread.waitingAt(1) + server.refusedConnections > i, WAIT);
 		}
+		crossbyte.sys.System.sleep(0.2);
 		Assert.equals(2, server.__spread.waitingAt(0), "the first stalled runtime was handed past its bound");
 		Assert.equals(2, server.__spread.waitingAt(1), "the second stalled runtime was handed past its bound");
-		Assert.isTrue(SpreadSupport.waitFor(() -> server.refusedConnections == 2, WAIT), 'with every runtime behind, ${server.refusedConnections} were refused, not 2');
-		for (client in refused) {
-			Assert.isTrue(SpreadSupport.ended(client), "a connection refused with every runtime behind was left open");
+		Assert.equals(0, server.refusedConnections, "a connection was refused while the runtimes were only behind");
+		for (client in queued) {
+			Assert.isFalse(SpreadSupport.ended(client, 0.2), "a connection that arrived with every runtime behind was closed");
 		}
 
-		// Caught up: everything handed over is taken up.
+		// Caught up: everything handed over is taken up, and what waited in
+		// the listen queue is accepted and served.
 		firstStall.release();
 		secondStall.release();
-		for (_ in 0...4) {
+		for (_ in 0...6) {
 			var arrival:Null<Arrival> = SpreadSupport.pop(arrived, WAIT);
 			if (arrival != null) {
 				landed.push(arrival);
 			}
 		}
-		Assert.equals(6, landed.length, "what the stalled runtimes were handed was not taken up once they caught up");
+		Assert.equals(8, landed.length, "what the stalled runtimes were handed, or what waited for them, was not served once they caught up");
+		Assert.equals(0, server.refusedConnections, "a connection was refused while the runtimes caught up");
 		Assert.isTrue(SpreadSupport.waitFor(() -> server.__spread.waitingAt(0) == 0 && server.__spread.waitingAt(1) == 0, WAIT));
 
 		crossbyte.net._internal.ServerSpread.MAX_WAITING = limit;
-		SpreadSupport.closeAll(clients.concat(refused));
+		SpreadSupport.closeAll(clients.concat(queued));
 		SpreadSupport.closeArrivals(landed);
 		SpreadSupport.on(acceptor, () -> server.close());
 		SpreadSupport.stop([acceptor, first, second]);
+	}
+
+	/**
+		A burst of connections larger than the runtimes can hold waiting is
+		served in full: the server stops taking from the listen queue while
+		every runtime is behind and takes up again as soon as one has room,
+		so no connection is accepted only to be closed, and none is left
+		waiting for good. Under a load test of 1,000 connections opened at
+		once, closing the overflow had shown up as read errors.
+	**/
+	@:timeout(60000)
+	public function testABurstLargerThanTheRuntimesHoldIsServedInFull():Void {
+		var limit:Int = crossbyte.net._internal.ServerSpread.MAX_WAITING;
+		crossbyte.net._internal.ServerSpread.MAX_WAITING = 1;
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var arrived:Deque<Arrival> = new Deque();
+
+		var server:ServerSocket = SpreadSupport.on(acceptor, () -> {
+			var server = new ServerSocket();
+			server.runtimeCount = 2;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+				var socket = e.socket;
+				socket.writeUtfBytes("k");
+				socket.flush();
+				arrived.add(Arrival.of(socket));
+			});
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			return server;
+		});
+
+		var count:Int = 200;
+		var clients:Array<sys.net.Socket> = [for (_ in 0...count) SpreadSupport.connect(server.localPort)];
+		var served:Int = 0;
+		for (client in clients) {
+			if (SpreadSupport.read(client, 1) == "k") {
+				served++;
+			}
+		}
+		Assert.equals(count, served, 'of a burst of $count connections, $served were served');
+		Assert.equals(0, server.refusedConnections, "a connection in the burst was refused");
+
+		var landed:Array<Arrival> = [];
+		while (true) {
+			var arrival:Null<Arrival> = arrived.pop(false);
+			if (arrival == null) {
+				break;
+			}
+			landed.push(arrival);
+		}
+		crossbyte.net._internal.ServerSpread.MAX_WAITING = limit;
+		var made:Array<CrossByte> = server.runtimes;
+		SpreadSupport.closeAll(clients);
+		SpreadSupport.closeArrivals(landed);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop(made.concat([acceptor]));
 	}
 
 	/**

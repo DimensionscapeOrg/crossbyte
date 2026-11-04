@@ -50,7 +50,10 @@ import crossbyte._internal.http.TextBody;
  * The handler buffers incoming bytes until a complete request is available,
  * normalizes headers and request metadata, decodes supported request body
  * encodings before middleware/PHP routing, and dispatches
- * `HTTPStatusEvent.HTTP_RESPONSE_STATUS` whenever it sends a response.
+ * `HTTPStatusEvent.HTTP_RESPONSE_STATUS` whenever it sends a response. A
+ * request `HTTPServerConfig.onRequestHead` chose to read as it arrives
+ * (`streamRequestBody`) goes to the middleware at its head instead, its body
+ * following through an `HTTPBodyReader`.
  *
  * One handler serves a connection's whole life, not a single request.
  * Under HTTP/2, which carries many requests on a connection at once, a
@@ -82,6 +85,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/** The largest chunk-size read at all: seven hex digits' worth. */
 	@:noCompletion private static inline var MAX_CHUNK_SIZE:Int = 0xFFFFFFF;
+
+	// __chunkBytesRemaining, reading a chunked body as it arrives, where it is
+	// not a count: past a chunk's data, at the end of its line, and in the
+	// trailer section.
+	@:noCompletion private static inline var CHUNK_TAIL:Int = -2;
+	@:noCompletion private static inline var CHUNK_TRAILERS:Int = -3;
 
 	/** Content codings one request body may stack. */
 	@:noCompletion private static inline var MAX_REQUEST_CODINGS:Int = 2;
@@ -134,6 +143,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	@:noCompletion private static inline var STREAM_STALL_SECONDS:Float = 30;
 
+	/**
+	 * How long a connection closed over a request it did not read whole goes
+	 * on reading, and dropping, what its client still sends, before it is
+	 * closed all the same: see `__closeOrLinger`.
+	 */
+	@:noCompletion private static inline var LINGER_SECONDS:Float = 5;
+
 	@:noCompletion private var __origin:Socket;
 	@:noCompletion private var __writer:HTTPResponseWriter;
 	@:noCompletion private var __incomingBuffer:ByteArray;
@@ -145,6 +161,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __php:PHPBridge;
 	@:noCompletion private var __queryString:String = "";
 	@:noCompletion private var __requestPath:String = "/";
+	@:noCompletion private var __requestTarget:Null<String> = null;
 	@:noCompletion private var __requestContentEncodings:Array<CompressionAlgorithm> = null;
 	@:noCompletion private var __awaitingBody:Bool = false;
 	@:noCompletion private var __expectBody:Int = 0;
@@ -153,6 +170,40 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyIsChunked:Bool = false;
 	@:noCompletion private var __chunkBytesRemaining:Int = -1;
 	@:noCompletion private var __requestBody:ByteArray = null;
+	// The Content-Length was digits past what an Int holds: see __readFraming.
+	@:noCompletion private var __lengthPastInt:Bool = false;
+	// Set while HTTPServerConfig.onRequestHead is asked, which is when a
+	// body can still be chosen to be read as it arrives.
+	@:noCompletion private var __askingHead:Bool = false;
+	// The reader of a body read as it arrives (streamRequestBody), until it
+	// has ended or been given up. __awaitingBody says whether any of it is
+	// still to come, and __bodyRead counts what has gone to it.
+	@:noCompletion private var __bodyReader:Null<HTTPBodyReader> = null;
+	@:noCompletion private var __bodyRead:Int = 0;
+	// Its reader asked it to stop, until resume.
+	@:noCompletion private var __bodyPaused:Bool = false;
+	// Reading has stopped: its reader asked, or has no onData yet. From
+	// __bodyHeldAt, and its deadlines stop with it.
+	@:noCompletion private var __bodyHolding:Bool = false;
+	@:noCompletion private var __bodyHeldAt:Float = 0;
+	// The request was let through to be read: nothing has refused it, so a
+	// body not still arriving has all gone to its reader.
+	@:noCompletion private var __bodyBegun:Bool = false;
+	// The chain has been handed the request, so a body can go to its reader.
+	@:noCompletion private var __bodyStarted:Bool = false;
+	// Someone has set a callback on its reader, so the request is theirs to
+	// answer: see __serveUnrouted.
+	@:noCompletion private var __bodyTaken:Bool = false;
+	// Set while a piece of it is with its reader, or on its way there.
+	@:noCompletion private var __bodyPumping:Bool = false;
+	// Set during the call of onData itself: a reader stopped from inside it
+	// is told how the body came out once it has returned.
+	@:noCompletion private var __bodyInCallback:Bool = false;
+	// Bytes of a chunked body's trailer section read so far.
+	@:noCompletion private var __trailerBytes:Int = 0;
+	// Its reader was cut loose with some of it still to come, which its client
+	// may be sending: the connection lingers (__closeOrLinger).
+	@:noCompletion private var __bodyCutShort:Bool = false;
 	// __dispatchParsedRequest as a value, made once rather than per request:
 	// what a request's body read finishes into.
 	@:noCompletion private var __dispatchHook:Void->Void;
@@ -176,6 +227,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __scanC:Int = -1;
 	@:noCompletion private var __scanned:UInt = 0;
 	@:noCompletion private var __receiveDeadline:Float = 0;
+	// When this connection last delivered a byte, read only with
+	// requestIdleTimeout set: a request is given up when that was too long ago.
+	@:noCompletion private var __heardAt:Float = 0;
 	// Waiting between requests on a kept-alive connection. While set,
 	// __receiveDeadline means "how long may this connection sit idle".
 	@:noCompletion private var __idle:Bool = false;
@@ -250,6 +304,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __heldMark:Float = 0;
 	@:noCompletion private var __heldDeadline:Float = 0;
 
+	// Whether the connection, closed after its response, should linger
+	// (__closeOrLinger): set as the response settles, when part of a request
+	// it did not read whole had arrived, or pipelined requests were given up.
+	// Kept, since what arrives meanwhile is dropped as it is read.
+	@:noCompletion private var __lingerWanted:Bool = false;
+	// When a lingering close gives up waiting for the client to close; 0
+	// while the connection is not lingering.
+	@:noCompletion private var __lingerUntil:Float = 0;
+
 	// Set once requests pipelined behind the one being answered outgrew what
 	// the connection holds: they are dropped, and so is what arrives after,
 	// and it closes once the answer has gone. See __dropSurplus.
@@ -283,7 +346,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 	public var requestPath(get, null):String;
 	/** Raw query string without the leading `?`. */
 	public var queryString(get, null):String;
-	/** Fully buffered request body after supported content decoding. */
+	/**
+	 * The request target as it arrived, nothing decoded or settled: the
+	 * request line's second word under HTTP/1.1, whichever form it took
+	 * (`/a%2Fb/../c?x=1`, or `http://host/a` from a client that sends the
+	 * absolute form), and `:path` under HTTP/2. `null` before a request has
+	 * arrived.
+	 *
+	 * What a proxy forwards, so the server behind it reads the path the client
+	 * wrote: `requestPath` cannot give that back, since a `%2F` and a `/` read
+	 * the same there, and its `..` steps have been applied. Nothing checked
+	 * `requestPath` has checked this: a guard reads `requestPath`, and a file
+	 * is served under it. A byte past 0x7F reads as the code point of its
+	 * value, as in a header's value.
+	 */
+	public var requestTarget(get, never):Null<String>;
+	/**
+	 * Fully buffered request body after supported content decoding. Empty for
+	 * a request whose body is read as it arrives (`streamRequestBody`).
+	 */
 	public var requestBody(get, null):ByteArray;
 	/** Convenience UTF-8 string view of `requestBody`. */
 	public var requestText(get, null):String;
@@ -294,6 +375,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * limiter keys on unless `HTTPServerConfig.rateLimitKey` says otherwise.
 	 */
 	public var remoteAddress(get, never):String;
+
+	/**
+	 * The port the request came from, as the connection's socket reports it,
+	 * beside `remoteAddress`: for a proxy's `Forwarded`, and a log that tells
+	 * two clients behind one address apart.
+	 */
+	public var remotePort(get, never):Int;
 
 	/**
 	 * Creates a request handler for one accepted client socket.
@@ -327,6 +415,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__headers = new Map<String, String>();
 			__setup();
 			__requestStartedAt = haxe.Timer.stamp();
+			__heardAt = __requestStartedAt;
 			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
 		}
 	}
@@ -393,6 +482,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __origin.remoteAddress;
 	}
 
+	@:noCompletion private function get_remotePort():Int {
+		return __origin.remotePort;
+	}
+
 	public function get_method():String {
 		return __method;
 	}
@@ -403,6 +496,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	public function get_queryString():String {
 		return __queryString;
+	}
+
+	@:noCompletion private function get_requestTarget():Null<String> {
+		return __requestTarget;
 	}
 
 	public function get_requestBody():ByteArray {
@@ -477,6 +574,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __onRead():Void {
 		__receivedAny = true;
+		if (__config.requestIdleTimeout > 0) {
+			__heardAt = haxe.Timer.stamp();
+		}
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
@@ -485,6 +585,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 				// out, or the one being given will: what comes after it is not
 				// read.
 				__incomingBuffer.clear();
+				return;
+			}
+
+			// A body going to its reader as it arrives, which a response may
+			// be going out beside: these bytes are that body, whatever else is
+			// under way.
+			if (__bodyReader != null && __awaitingBody) {
+				__pumpBody();
 				return;
 			}
 
@@ -550,7 +658,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 					if (__incomingBuffer.length - __incomingBuffer.position > __bufferLimit()) {
 						__dropSurplus();
 					}
-				} else if (!__requestConsumed && __incomingBuffer.length > __bufferLimit()) {
+				} else if (!__requestConsumed && __bodyReader == null && __incomingBuffer.length > __bufferLimit()) {
 					__sendErrorResponse(413, "Payload Too Large");
 				}
 			}
@@ -651,8 +759,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/**
 	 * Enforces whichever deadline the connection's phase gave
-	 * `__receiveDeadline`: mid-request expiry answers `408 Request
-	 * Timeout`, idle expiry just closes.
+	 * `__receiveDeadline`, and `requestIdleTimeout` while a request is
+	 * arriving: mid-request expiry answers `408 Request Timeout`, idle
+	 * expiry just closes.
 	 *
 	 * Called from the owning server's sweep rather than from a data event,
 	 * because the clients this exists for are precisely the ones that stop
@@ -662,6 +771,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * timed out here.
 	 */
 	@:noCompletion private function __checkReceiveDeadline(now:Float):Void {
+		// A body read as it arrives keeps these deadlines, with a response
+		// going out beside it too, except while its reader has stopped it:
+		// that wait is the application's, not its client's.
+		if (__bodyReader != null && __awaitingBody) {
+			if (!__bodyHolding) {
+				var limit:Float = __config.requestIdleTimeout;
+				if ((limit > 0 && now - __heardAt >= limit) || (__receiveDeadline > 0 && now >= __receiveDeadline)) {
+					__failBody(408, "Request Timeout");
+				}
+			}
+			return;
+		}
+
 		// A streamed body must not reach the 408 below: that path writes a
 		// whole response, and the status line for this one left with the
 		// head, so a second one would land inside the body as though it were
@@ -686,7 +808,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		if (__receiveDeadline <= 0 || now < __receiveDeadline) {
+		// Silent for too long, on a request still arriving.
+		var quiet:Float = __config.requestIdleTimeout;
+		var silent:Bool = quiet > 0 && !__idle && !__requestConsumed && now - __heardAt >= quiet;
+
+		if (!silent && (__receiveDeadline <= 0 || now < __receiveDeadline)) {
 			return;
 		}
 
@@ -764,6 +890,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var rawTarget:String = __lineValue;
 		__lineValue = null;
+		__requestTarget = rawTarget;
 
 		if (!HttpSyntax.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
@@ -863,9 +990,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		__requestContentEncodings = __parseContentEncodingHeader();
-		if (__requestContentEncodings == null) {
-			return;
+		if (__config.onRequestHead == null) {
+			__requestContentEncodings = __parseContentEncodingHeader();
+			if (__requestContentEncodings == null || !__readFraming()) {
+				return;
+			}
+		} else {
+			// Framing first: a request whose framing is refused is not one the
+			// application is asked about, and whatever it is told comes from a
+			// head this server can read. Its codings after, since a body read
+			// as it arrives is not decoded here, and takes any.
+			if (!__readFraming() || !__admitHead(!__bodyIsChunked && __expectBody == 0 && !__lengthPastInt)) {
+				return;
+			}
+			__requestContentEncodings = __bodyReader != null ? NO_CODINGS : __parseContentEncodingHeader();
+			if (__requestContentEncodings == null) {
+				return;
+			}
 		}
 
 		if (__beginRequestBodyRead(__dispatchHook)) {
@@ -873,6 +1014,43 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__dispatchParsedRequest();
+	}
+
+	/**
+	 * Asks `HTTPServerConfig.onRequestHead` about a request whose head has
+	 * arrived.
+	 *
+	 * @param bodiless No body follows, so a refusal leaves nothing unread and
+	 *        the connection can stay.
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __admitHead(bodiless:Bool):Bool {
+		if (bodiless) {
+			__requestConsumed = true;
+		}
+
+		var proceed:Bool = false;
+		__askingHead = true;
+		try {
+			proceed = __config.onRequestHead(this);
+		} catch (error:Dynamic) {
+			__askingHead = false;
+			Logger.error("HTTPServerConfig.onRequestHead threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+			if (!__responded) {
+				__sendErrorResponse(500, "Internal Server Error");
+			}
+			return false;
+		}
+		__askingHead = false;
+
+		if (__responded || !__writer.connected) {
+			return false;
+		}
+		if (!proceed) {
+			__sendForbidden();
+			return false;
+		}
+		return true;
 	}
 
 	/**
@@ -895,6 +1073,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// be parsed as the next request.
 		__requestConsumed = true;
 
+		__dispatchRequest();
+	}
+
+	/**
+	 * The chain, then the server's own handling. A request whose body is read
+	 * as it arrives comes here at its head, its deadlines still running and
+	 * its framing not yet all read, and what it answers meanwhile closes the
+	 * connection after it (`__decideKeepAlive`).
+	 */
+	@:noCompletion private function __dispatchRequest():Void {
 		// Files and rewrites are resolved only once the chain lets the request
 		// through, so a request a route answers pays for no filesystem
 		// lookups on the runtime's own thread.
@@ -949,6 +1137,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		if (__bodyReader != null) {
+			__beginBodyStream(false);
+			return;
+		}
+
 		__continueDecodedRequest(body, tooLarge, timedOut);
 	}
 
@@ -964,10 +1157,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * follow, and then `__continueDecodedRequest` when it has, so any of
 	 * this can refuse a request before its body is sent.
 	 *
+	 * @param lengthPastInt The `content-length` was more than an `Int` holds,
+	 *        which no `declaredLength` can say.
 	 * @return Whether the request may go on; false once it has been answered.
 	 */
 	@:noCompletion private function __admitDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1):Bool {
+			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1, lengthPastInt:Bool = false):Bool {
 		__takeDecodedRequest(method, queryString, headers, startedAt);
 		__admitted = true;
 
@@ -984,20 +1179,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__filePath = null;
 
 		// What the HTTP/1.1 parser applies as it reads a request, applied here
-		// to one that arrived as frames, so the rate limiter and the content
-		// codings hold for both versions alike.
+		// to one that arrived as frames, so the rate limiter, the application's
+		// say on the head and the content codings hold for both versions alike.
 		if (__refusedByLimiter()) {
 			return false;
 		}
 
-		__requestContentEncodings = __parseContentEncodingHeader();
+		if (__config.onRequestHead != null && !__admitHead(!bodyToCome)) {
+			return false;
+		}
+
+		__requestContentEncodings = __bodyReader != null ? NO_CODINGS : __parseContentEncodingHeader();
 		if (__requestContentEncodings == null) {
 			return false;
 		}
 
 		// Too big is said before a byte of it is sent, as over HTTP/1.1. The
 		// frame layer read the field already, so it arrives a number.
-		if (bodyToCome && declaredLength > __config.maxRequestBodySize) {
+		if (bodyToCome && (lengthPastInt || declaredLength > __config.maxRequestBodySize)) {
 			__sendErrorResponse(413, "Payload Too Large");
 			return false;
 		}
@@ -1007,6 +1206,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/** The rest of a request `__admitDecodedRequest` let through: its body, decoded, then dispatch. */
 	@:noCompletion private function __continueDecodedRequest(body:Null<ByteArray>, tooLarge:Bool, timedOut:Bool):Void {
+		// A body read as it arrived is all here, or given up: the request
+		// went to the chain at its head. The frame layer stops the rest of one
+		// given up itself.
+		if (__bodyReader != null) {
+			if (timedOut) {
+				__failBody(408, "Request Timeout", false);
+			} else if (tooLarge) {
+				__failBody(413, "Payload Too Large", false);
+			} else {
+				__bodyArrived();
+				__pumpBody();
+			}
+			return;
+		}
+
 		// Null for none: requestBody makes an empty one if it is asked for.
 		__requestBody = body;
 
@@ -1201,6 +1415,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * every middleware has passed the request on.
 	 */
 	@:noCompletion private function __serveUnrouted():Void {
+		// Its body has a reader, so the application has it, and answers when
+		// it is ready: from onEnd, or once an upstream has. Answered here it
+		// would be turned away at its head.
+		if (__bodyTaken) {
+			return;
+		}
+
 		switch (__method) {
 			case "GET" | "HEAD" | "POST":
 			case "OPTIONS":
@@ -2093,7 +2314,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (handedOut) {
 			fields = [];
 			fields.push(new URLRequestHeader("Date", __formatHttpDate()));
-			fields.push(new URLRequestHeader("Content-Type", contentType));
+			if (contentType != null) {
+				fields.push(new URLRequestHeader("Content-Type", contentType));
+			}
 			fields.push(new URLRequestHeader("X-Content-Type-Options", "nosniff"));
 			fields.push(new URLRequestHeader("Server", "CrossByte"));
 		} else {
@@ -2104,7 +2327,35 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (headers != null) {
 			for (h in headers) {
-				fields.push(h);
+				// The connection's own header is the server's to write, once:
+				// a caller's `Connection: close` closes it after this
+				// response, as in Go's and Node's servers, rather than going
+				// out beside a `keep-alive` that says otherwise.
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Connection")) {
+					if (h.value != null && !__writer.ownsConnection && __hasToken(h.value, "close")) {
+						__responseKeepAlive = false;
+					}
+					continue;
+				}
+				// Framing is the server's too, as for a body written as it goes:
+				// a length beside the one it writes is two answers to where
+				// this response ends. A HEAD has no body to say it, so its
+				// caller may, as what its GET would send.
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Content-Length")) {
+					if (headOnly && contentLength == null && (data == null || data.length == 0)) {
+						var stated:Int = IntParse.decimal(StringTools.trim(h.value));
+						if (stated >= 0) {
+							contentLength = stated;
+						}
+					}
+					continue;
+				}
+				if (h != null && h.name != null && HttpSyntax.equalsIgnoreCase(h.name, "Transfer-Encoding")) {
+					continue;
+				}
+				if (h == null || h.name == null || !__replacesOwnField(fields, h)) {
+					fields.push(h);
+				}
 			}
 		}
 
@@ -2313,6 +2564,37 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 
 	/**
+		Puts a caller's field in the place of the server's own of that name,
+		or takes that out when the caller's is empty, and says whether it dealt
+		with the field. Each of these is said once: a proxy passing on another
+		server's `Date` and `Server` went out with two of each. Any other
+		field is the caller's to repeat, as `Set-Cookie` is, so the names decide
+		this and not where a field lies.
+	**/
+	@:noCompletion private static function __replacesOwnField(fields:Array<URLRequestHeader>, field:URLRequestHeader):Bool {
+		var name:String = field.name;
+		if (!HttpSyntax.equalsIgnoreCase(name, "Date") && !HttpSyntax.equalsIgnoreCase(name, "Server") && !HttpSyntax.equalsIgnoreCase(name, "Content-Type")
+			&& !HttpSyntax.equalsIgnoreCase(name, "X-Content-Type-Options")) {
+			return false;
+		}
+
+		var empty:Bool = field.value == null || field.value.length == 0;
+		for (i in 0...fields.length) {
+			var present:Null<URLRequestHeader> = fields[i];
+			if (present != null && present.name != null && HttpSyntax.equalsIgnoreCase(present.name, name)) {
+				if (empty) {
+					fields.splice(i, 1);
+				} else {
+					fields[i] = field;
+				}
+				return true;
+			}
+		}
+		// Not there, and an empty one takes nothing out.
+		return empty;
+	}
+
+	/**
 		`file`'s bytes, `total` of them, last modified at `modified`: from
 		`HTTPServerConfig.fileCacheSize`'s kept files while the file is as it
 		was, and read and kept otherwise. Not kept: a file modified in the last
@@ -2367,13 +2649,41 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * a second response on the same connection.
 	 *
 	 * @param statusCode HTTP status to send.
-	 * @param contentType Value for the `Content-Type` header.
+	 * @param contentType Value for the `Content-Type` header, or `null` for
+	 *        none, as a proxy passes on an answer that had none.
 	 * @param body Response body, sent as UTF-8. Suppressed for `HEAD`.
-	 * @param headers Optional additional response headers.
+	 * @param headers Optional additional response headers. One named `Date`,
+	 *        `Server`, `X-Content-Type-Options` or `Content-Type` stands in
+	 *        place of the server's own, and with an empty value takes it out.
+	 *        `Content-Length` and `Transfer-Encoding` are the server's to
+	 *        write, and left out, except that a `HEAD` answered with no body
+	 *        may name its `Content-Length`: what the `GET` would say.
 	 * @param statusMessage Reason phrase; defaults to the standard text
 	 *        for `statusCode`.
+	 *
+	 * A request may be answered from any thread: one a middleware handed to a
+	 * worker pool is answered by the worker, without a round trip of its own.
+	 * Called from a thread other than the runtime serving the connection,
+	 * this hands the response to that runtime and returns at once, the
+	 * response going out as that runtime's next pass ends; from the runtime's
+	 * own thread it goes out as before. The same holds for `respondBytes`,
+	 * `beginResponse` and the stream it returns, and `abort`. Such a call is
+	 * for the request being served when it is made: one that reaches the
+	 * runtime after that request was answered (or its client left) does
+	 * nothing, rather than going out ahead of the connection's next request.
+	 * A handler serves its connection's requests one after another, so a
+	 * call made once its request has been answered is for the next, as on
+	 * the runtime's own thread. Listeners
+	 * (`Event.CLOSE`) are added on the runtime's own thread, as with any
+	 * `EventDispatcher` here.
 	 */
 	public function respond(statusCode:Int, contentType:String, body:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			__hand(runtime, () -> respond(statusCode, contentType, body, fields, statusMessage));
+			return;
+		}
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
 		__dispatchResponse(statusCode, reason, headers, contentType, body, __method == "HEAD");
 	}
@@ -2384,12 +2694,612 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *
 	 * `body` is the caller's again once this returns, to change or reuse:
 	 * what is sent is its bytes as they were at the call, including a body
-	 * past `maxOutputBufferSize`, which goes out over later drains.
+	 * past `maxOutputBufferSize`, which goes out over later drains. From
+	 * another thread too, which copies them.
 	 */
 	public function respondBytes(statusCode:Int, contentType:String, body:ByteArray, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			var copy:Null<ByteArray> = body == null ? null : ByteArray.fromBytes((body : haxe.io.Bytes).sub(0, body.length));
+			__hand(runtime, () -> respondBytes(statusCode, contentType, copy, fields, statusMessage));
+			return;
+		}
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
 		__dispatchResponseBytes(statusCode, reason, headers, contentType, body != null ? body : new ByteArray(), __method == "HEAD", null, false, true, true);
 	}
+
+	/**
+	 * Gives up on this request's response: under HTTP/1.1 the connection is
+	 * closed, the only way left to tell the client a response is cut short,
+	 * and under HTTP/2 the request's stream is reset and the connection's
+	 * other streams go on. For a producer that fails partway through a body,
+	 * or a handler that cannot answer at all. Listeners hear `Event.CLOSE`.
+	 * A request answered in full already is left alone. From any thread, as
+	 * `respond` is.
+	 */
+	public function abort():Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			__hand(runtime, abort);
+			return;
+		}
+		if (__responded && __openStream == null && !__streamPending) {
+			return;
+		}
+		__detachOpenStream();
+		__abandonResponse();
+	}
+
+	/**
+	 * Reads this request's body as it arrives, rather than holding it whole in
+	 * `requestBody`. For a body too large to hold (an upload written out as
+	 * it comes), and for a proxy, which can pass a body on at the speed its
+	 * upstream takes it: see `HTTPBodyReader`.
+	 *
+	 * Chosen at the head, from `HTTPServerConfig.onRequestHead`, and throws an
+	 * `IllegalOperationError` from anywhere else unless it was: by then the body
+	 * has been read. Called again, it answers the same reader, which is how a
+	 * middleware gets it.
+	 *
+	 * A request so chosen goes to the middleware at once, with its body still
+	 * to come, and `requestBody` stays empty. Its answer may go out at any
+	 * time, and a response may be written as the body arrives. One begun
+	 * before the body has all been read says `Connection: close`, and the
+	 * connection closes after it, what was left of the body unread; under
+	 * HTTP/2 the client is asked to stop sending it.
+	 *
+	 * With a callback set on its reader the request is the application's to
+	 * answer, from the head, a middleware or the reader, and passing the end of
+	 * the chain does nothing: no static file or PHP script answers it. With
+	 * none set by then, nobody has taken the body, so the server answers as
+	 * it would any request, and gives the body up. To decide later, set
+	 * `onEnd` or `onAbort` now and `onData` then: the body waits for `onData`.
+	 *
+	 * Under HTTP/2 such a request is not among those that wait while the
+	 * connection holds `maxOutputBufferSize` for its client: it has gone to
+	 * the application at its headers, ahead of them.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError Called too late to choose.
+	 */
+	public function streamRequestBody():HTTPBodyReader {
+		if (__bodyReader == null) {
+			if (!__askingHead) {
+				throw new crossbyte.errors.IllegalOperationError("streamRequestBody chooses how a body is read before it arrives, so it is called from HTTPServerConfig.onRequestHead.");
+			}
+			var runtime:Null<crossbyte.core.CrossByte> = #if nodejs @:privateAccess __origin.__nodeRuntime #else @:privateAccess __origin.__cbInstance #end;
+			__bodyReader = @:privateAccess new HTTPBodyReader(this, runtime != null ? runtime : crossbyte.core.CrossByte.current());
+		}
+		return __bodyReader;
+	}
+
+	/**
+	 * Starts a body read as it arrives, its framing read and its expectation
+	 * answered: the request goes to the chain now, and what has arrived goes
+	 * to its reader once the chain has had its chance to set `onData`.
+	 *
+	 * @param bodyToCome False for a request that has none, which ends once
+	 *        the chain has run.
+	 */
+	@:noCompletion private function __beginBodyStream(bodyToCome:Bool):Void {
+		__bodyBegun = true;
+		__watchClient();
+		if (!bodyToCome) {
+			__dispatchParsedRequest();
+			__bodyStarted = true;
+			__pumpBody();
+			return;
+		}
+
+		__awaitingBody = true;
+		// Under HTTP/2 it begins held: see H2ServerConnection.streamRequestBody.
+		__bodyHolding = __writer.ownsConnection;
+		__bodyHeldAt = haxe.Timer.stamp();
+		__dispatchRequest();
+		__bodyStarted = true;
+		__pumpBody();
+	}
+
+	/** Every byte of a body read as it arrives has been read, so the request's framing is done with, and its deadlines. */
+	@:noCompletion private function __bodyArrived():Void {
+		__awaitingBody = false;
+		__requestConsumed = true;
+		__receiveDeadline = 0;
+	}
+
+	/** `HTTPBodyReader.onData` was set: what waited for it goes in a later turn, the setter having returned. */
+	@:noCompletion private function __bodyReaderSet(reader:HTTPBodyReader):Void {
+		if (!__bodyStarted) {
+			// From the head or the chain: delivered once the chain has run.
+			return;
+		}
+		var runtime:Null<crossbyte.core.CrossByte> = #if nodejs @:privateAccess __origin.__nodeRuntime #else @:privateAccess __origin.__cbInstance #end;
+		if (runtime == null || !__hand(runtime, __pumpBody)) {
+			__pumpBody();
+		}
+	}
+
+	/** `HTTPBodyReader.pause`. */
+	@:noCompletion private function __pauseBody(reader:HTTPBodyReader):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			__hand(runtime, () -> __pauseBody(reader));
+			return;
+		}
+		if (reader != __bodyReader) {
+			return;
+		}
+		__bodyPaused = true;
+		if (!__bodyPumping) {
+			__holdBodyAsAsked();
+		}
+	}
+
+	/** `HTTPBodyReader.resume`. */
+	@:noCompletion private function __resumeBody(reader:HTTPBodyReader):Void {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			__hand(runtime, () -> __resumeBody(reader));
+			return;
+		}
+		if (reader != __bodyReader) {
+			return;
+		}
+		__bodyPaused = false;
+		__pumpBody();
+	}
+
+	/**
+	 * Stops reading while a body's reader has stopped it or has no `onData`
+	 * yet, and goes on once it has neither. Its deadlines stop with it, so a
+	 * client is not billed for the wait.
+	 */
+	@:noCompletion private function __holdBodyAsAsked():Void {
+		var reader:Null<HTTPBodyReader> = __bodyReader;
+		var hold:Bool = reader != null && __awaitingBody && (__bodyPaused || reader.onData == null);
+		if (hold == __bodyHolding) {
+			return;
+		}
+		__bodyHolding = hold;
+		var now:Float = haxe.Timer.stamp();
+		if (hold) {
+			__bodyHeldAt = now;
+		} else {
+			if (__receiveDeadline > 0) {
+				__receiveDeadline += now - __bodyHeldAt;
+			}
+			__heardAt = now;
+		}
+		__writer.holdRequestBody(hold);
+	}
+
+	/**
+	 * Gives a body's reader what has arrived, for as long as it takes it,
+	 * and ends it once it has all gone. Under HTTP/2 the pieces come from the
+	 * frame layer instead (`__takeBodyData`), which this lets go on.
+	 */
+	@:noCompletion private function __pumpBody():Void {
+		if (__bodyReader == null || __bodyPumping || !__bodyStarted) {
+			return;
+		}
+		if (__writer.ownsConnection) {
+			__pumpReader(__bodyReader);
+			return;
+		}
+
+		// Driven as a parse is. An answer given from a reader's callback lets
+		// in the request pipelined behind it, which is parsed once this has
+		// unwound, by __processBuffer's loop, and not from inside that callback,
+		// where its body could not be pumped and its parse would stack on this
+		// one's: see __processBuffer.
+		var parsing:Bool = __processing;
+		__processing = true;
+		try {
+			__pumpReader(__bodyReader);
+		} catch (error:Dynamic) {
+			__processing = parsing;
+			throw error;
+		}
+		__processing = parsing;
+		if (!parsing && __reprocess) {
+			__processBuffer();
+		}
+	}
+
+	/** What `__pumpBody` does for `reader`, the one reading now. */
+	@:noCompletion private function __pumpReader(reader:HTTPBodyReader):Void {
+		if (!__writer.ownsConnection) {
+			__bodyPumping = true;
+			try {
+				while (__bodyReader == reader && __awaitingBody && !__bodyPaused && reader.onData != null
+					&& (__bodyIsChunked ? __pumpChunked(reader) : __pumpLength(reader))) {}
+			} catch (error:Dynamic) {
+				__bodyPumping = false;
+				throw error;
+			}
+			__bodyPumping = false;
+			if (__bodyReader != reader) {
+				return;
+			}
+			__compactIncoming();
+		}
+
+		__holdBodyAsAsked();
+
+		if (__bodyReader == reader && !__awaitingBody && !__bodyPaused) {
+			__bodyReader = null;
+			try {
+				@:privateAccess reader.__finish(true, true);
+			} catch (error:Dynamic) {
+				// As a route that failed: this is where it answers from.
+				__dispatchMiddlewareError(error, haxe.CallStack.exceptionStack());
+			}
+		}
+	}
+
+	/** The next piece of a body of known length, if any has arrived, and whether there was one. */
+	@:noCompletion private function __pumpLength(reader:HTTPBodyReader):Bool {
+		var buffer:ByteArray = __incomingBuffer;
+		var from:Int = buffer.position;
+		var take:Int = buffer.length - from;
+		var left:Int = __expectBody - __bodyRead;
+		if (take > left) {
+			take = left;
+		}
+		if (take <= 0) {
+			return false;
+		}
+		buffer.position = from + take;
+		__bodyRead += take;
+		if (take == left) {
+			__bodyArrived();
+		}
+		__deliverBody(reader, buffer, from, take);
+		return true;
+	}
+
+	/**
+	 * The next step of a chunked body, whether it took one. As
+	 * `__readChunkedBodyFromBuffer` reads one, but a chunk's data goes on as it
+	 * arrives rather than once it is all here: a chunk may be 256 MB, which
+	 * nothing here means to hold.
+	 */
+	@:noCompletion private function __pumpChunked(reader:HTTPBodyReader):Bool {
+		var buffer:ByteArray = __incomingBuffer;
+		var waiting:Int = buffer.length - buffer.position;
+		switch (__chunkBytesRemaining) {
+			case -1:
+				var sizeLine:Null<String> = __readLine(buffer);
+				if (sizeLine == null) {
+					return __lineStillComing(waiting);
+				}
+				var semi:Int = sizeLine.indexOf(";");
+				if (semi >= 0) {
+					sizeLine = sizeLine.substr(0, semi);
+				}
+				var parsed:Int = IntParse.hex(StringTools.trim(sizeLine), MAX_CHUNK_SIZE);
+				if (parsed < 0) {
+					__failBody(400, "Bad Request");
+					return false;
+				}
+				if (HttpSyntax.passes(__bodyRead, parsed, __config.maxRequestBodySize)) {
+					__failBody(413, "Payload Too Large");
+					return false;
+				}
+				__chunkBytesRemaining = parsed == 0 ? CHUNK_TRAILERS : parsed;
+				return true;
+
+			case CHUNK_TAIL:
+				if (waiting < 2) {
+					return false;
+				}
+				var cr:Int = buffer.readByte();
+				var lf:Int = buffer.readByte();
+				if (cr != 13 || lf != 10) {
+					__failBody(400, "Bad Request");
+					return false;
+				}
+				__chunkBytesRemaining = -1;
+				return true;
+
+			case CHUNK_TRAILERS:
+				var from:Int = buffer.position;
+				var trailer:Null<String> = __readLine(buffer);
+				if (trailer == null) {
+					return __lineStillComing(waiting);
+				}
+				__trailerBytes += buffer.position - from;
+				if (__trailerBytes > MAX_HEADER_BYTES) {
+					__failBody(431, "Request Header Fields Too Large");
+					return false;
+				}
+				if (StringTools.trim(trailer).length == 0) {
+					__bodyArrived();
+				}
+				return true;
+
+			default:
+				if (waiting <= 0) {
+					return false;
+				}
+				var from:Int = buffer.position;
+				var take:Int = waiting < __chunkBytesRemaining ? waiting : __chunkBytesRemaining;
+				buffer.position = from + take;
+				__bodyRead += take;
+				__chunkBytesRemaining -= take;
+				if (__chunkBytesRemaining == 0) {
+					__chunkBytesRemaining = CHUNK_TAIL;
+				}
+				__deliverBody(reader, buffer, from, take);
+				return true;
+		}
+	}
+
+	/** A chunk-size or trailer line with no end yet, of `waiting` bytes: held to a header block's limit, and refused past it. */
+	@:noCompletion private function __lineStillComing(waiting:Int):Bool {
+		if (waiting > MAX_HEADER_BYTES) {
+			__failBody(413, "Payload Too Large");
+		}
+		return false;
+	}
+
+	/** One piece to a body's reader, which may answer, stop it, or throw. */
+	@:noCompletion private function __deliverBody(reader:HTTPBodyReader, data:ByteArray, offset:Int, length:Int):Void {
+		var more:Bool = true;
+		__bodyInCallback = true;
+		try {
+			more = reader.onData(data, offset, length);
+		} catch (error:Dynamic) {
+			__bodyInCallback = false;
+			Logger.error("HTTPBodyReader.onData threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+			__failBody(500, "Internal Server Error", true, true);
+			__tellReader(reader);
+			return;
+		}
+		__bodyInCallback = false;
+
+		if (__bodyReader == reader) {
+			if (!more) {
+				__bodyPaused = true;
+			}
+			return;
+		}
+		// Stopped from inside the call, by the answer it gave, say: told now it
+		// has returned, before anything of the next request.
+		__tellReader(reader);
+	}
+
+	/** Tells a reader cut loose how its body came out, and keeps what it throws from whatever cut it loose. */
+	@:noCompletion private function __tellReader(reader:HTTPBodyReader):Void {
+		try {
+			@:privateAccess reader.__tell();
+		} catch (error:Dynamic) {
+			Logger.error("An HTTPBodyReader callback threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+		}
+	}
+
+	/** Under HTTP/2, the next piece of a body read as it arrives, and whether to go on: see `H2ServerConnection.onRequestBody`. */
+	@:noCompletion private function __takeBodyData(data:haxe.io.Bytes, offset:Int, length:Int):Bool {
+		var reader:Null<HTTPBodyReader> = __bodyReader;
+		if (reader == null) {
+			return true;
+		}
+		__bodyRead += length;
+		__bodyPumping = true;
+		__deliverBody(reader, ByteArray.fromBytes(data), offset, length);
+		__bodyPumping = false;
+		if (__bodyReader != reader) {
+			return true;
+		}
+		// Held by the answer, which says so to the frame layer, so its own
+		// record of it is only brought into line.
+		if (__bodyPaused) {
+			__bodyHolding = true;
+			__bodyHeldAt = haxe.Timer.stamp();
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Takes what a body's reader has had off the connection's buffer, which
+	 * otherwise grows by everything that arrives. What is left is the start
+	 * of a line, or of the request after this one, and small.
+	 */
+	@:noCompletion private function __compactIncoming():Void {
+		var left:Int = __incomingBuffer.length - __incomingBuffer.position;
+		if (left <= 0) {
+			__incomingBuffer.clear();
+		} else if (__incomingBuffer.position > 0 && __awaitingBody) {
+			var carried:ByteArray = new ByteArray();
+			carried.writeBytes(__incomingBuffer, __incomingBuffer.position, left);
+			carried.position = 0;
+			__incomingBuffer = carried;
+		}
+	}
+
+	/**
+	 * Cuts a body's reader loose, telling it how the body came out: its
+	 * response ended, or its client left, or it was given up.
+	 *
+	 * @param tellClient A client still there is told to stop sending what
+	 *        is left of it. Not one that has gone, or a stream the frame layer
+	 *        is ending itself.
+	 * @param failed It failed in its reader's hands, whatever had arrived.
+	 */
+	@:noCompletion private function __stopBodyReader(tellClient:Bool, failed:Bool = false):Void {
+		var reader:Null<HTTPBodyReader> = __bodyReader;
+		if (reader == null) {
+			return;
+		}
+		__bodyReader = null;
+		// Not begun, it was refused at its head: nothing of it was read.
+		var whole:Bool = !failed && __bodyBegun && !__awaitingBody;
+		__bodyCutShort = !whole && !__requestConsumed;
+		__awaitingBody = false;
+		if (__bodyHolding) {
+			__bodyHolding = false;
+			// Under HTTP/2 nothing is left to read it, so nothing is let go on.
+			if (!__writer.ownsConnection) {
+				__writer.holdRequestBody(false);
+			}
+		}
+		// A request refused at its head has its stream stopped by what
+		// refused it.
+		if (!whole && tellClient && __bodyBegun) {
+			__writer.stopRequestBody();
+		}
+		@:privateAccess reader.__finish(whole, false);
+		// Called from wherever the body ended, the socket's close or a sweep,
+		// where nothing is this reader's to fail. Inside onData it waits for
+		// the call to return: see __deliverBody.
+		if (!__bodyInCallback) {
+			__tellReader(reader);
+		}
+	}
+
+	/**
+	 * Gives up on a body read as it arrives, for a reason of the server's:
+	 * its reader is told, and the request is answered `status`, unless that
+	 * answered it, or a response had begun, which ends here too, since no
+	 * status can follow its head.
+	 *
+	 * @param failed It failed in its reader's hands, as `__stopBodyReader` says.
+	 */
+	@:noCompletion private function __failBody(status:Int, message:String, tellClient:Bool = true, failed:Bool = false):Void {
+		// Asked before its reader is told, who may answer: one that does has
+		// answered in full, and not begun something to cut short here.
+		var begun:Bool = __headOut;
+		var whole:Bool = !failed && !__awaitingBody;
+		__stopBodyReader(false, failed);
+		if (begun) {
+			__detachOpenStream();
+			__abandonResponse();
+		} else if (!__responded) {
+			__sendErrorResponse(status, message);
+		}
+		// After the answer: under HTTP/2 a stream told to stop with nothing
+		// answered is reset as an error, and the answer never goes.
+		if (tellClient && !whole) {
+			__writer.stopRequestBody();
+		}
+	}
+
+	/**
+	 * Every request header, by lower-case name, in a map of the caller's own:
+	 * a header sent more than once is there once, its values joined with
+	 * `", "`, as `getHeader` answers it. Taken while the request is being
+	 * served, as the other request fields are.
+	 */
+	public function getAllHeaders():StringMap<String> {
+		var all:StringMap<String> = new StringMap();
+		if (__headers != null) {
+			for (name => value in __headers) {
+				all.set(name, value);
+			}
+		}
+		return all;
+	}
+
+	/**
+	 * The version of HTTP the request came in: `"HTTP/1.0"`, `"HTTP/1.1"` or
+	 * `"HTTP/2"`. `null` before a request has arrived.
+	 */
+	public var httpVersion(get, never):Null<String>;
+
+	@:noCompletion private function get_httpVersion():Null<String> {
+		return __httpVersion;
+	}
+
+	/**
+		The runtime serving this request's connection when the caller is on
+		another thread, which a call is handed to; null on that runtime's own
+		thread, and where there is only one (Node).
+	**/
+	@:noCompletion private function __otherThreadsRuntime():Null<crossbyte.core.CrossByte> {
+		#if (target.threaded && !js)
+		var runtime:Null<crossbyte.core.CrossByte> = @:privateAccess __origin.__cbInstance;
+		return (runtime != null && !__onThreadOf(runtime)) ? runtime : null;
+		#else
+		return null;
+		#end
+	}
+
+	/**
+		Whether the caller is on `runtime`'s thread. Asked on every answer, so
+		by the runtime the thread is running, which costs a thread-local
+		read, rather than by the thread itself, which on hxcpp takes a lock
+		every thread shares; only a thread running no runtime (a worker, or a
+		host's thread between advances) is asked the long way.
+	**/
+	@:noCompletion private static function __onThreadOf(runtime:crossbyte.core.CrossByte):Bool {
+		#if (target.threaded && !js)
+		var here:Null<crossbyte.core.CrossByte> = @:privateAccess crossbyte.core.CrossByte.__threadLocalStorage.value;
+		if (here != null) {
+			return here == runtime;
+		}
+		return runtime.__isOwnThread();
+		#else
+		return true;
+		#end
+	}
+
+	/**
+		Runs `call` on `runtime` for the request being served now, and not for
+		a later one on the same connection: a call that arrives once this
+		request has been answered, or its connection reset for the next one,
+		is dropped. What it sends goes out as the pass ends, with whatever
+		else this thread handed over meanwhile.
+	**/
+	@:noCompletion private function __hand(runtime:crossbyte.core.CrossByte, call:Void->Void):Bool {
+		var slot:Int = __requestGeneration;
+		return runtime.post(() -> {
+			if (slot == __requestGeneration) {
+				__runHanded(call);
+			}
+		});
+	}
+
+	/**
+		On the runtime: `call`, handed over from another thread. What it
+		writes is held, as what a read is answered with is, and sent once as
+		the pass ends, so a head, a body and its end handed over together go
+		out in one write rather than one each.
+	**/
+	@:noCompletion private function __runHanded(call:Void->Void):Void {
+		var outer:Bool = __reading;
+		__reading = true;
+		try {
+			call();
+		} catch (error:Dynamic) {
+			__reading = outer;
+			__flushAsPassEnds();
+			throw error;
+		}
+		__reading = outer;
+		__flushAsPassEnds();
+	}
+
+	/** Sends what a handed-over call held, as the runtime's pass ends. **/
+	@:noCompletion private function __flushAsPassEnds():Void {
+		if (!__streamFlushHeld || __reading || __passFlushQueued) {
+			return;
+		}
+		var runtime:Null<crossbyte.core.CrossByte> = #if (target.threaded && !js) @:privateAccess __origin.__cbInstance #else null #end;
+		if (runtime == null) {
+			__flushHeldStream();
+			return;
+		}
+		if (__passFlush == null) {
+			__passFlush = new HandedFlush(this);
+		}
+		__passFlushQueued = true;
+		runtime.__queuePassFlush(__passFlush);
+	}
+
+	// Asked to flush as the pass ends; see __flushAsPassEnds.
+	@:noCompletion private var __passFlush:Null<HandedFlush> = null;
+	@:noCompletion private var __passFlushQueued:Bool = false;
 
 	/**
 	 * Whether the client can still be written to: false once it has gone,
@@ -2430,11 +3340,57 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * (see `HTTPServerConfig.requestTimeout`), and that is heard the same way.
 	 * A request already answered, or whose client has gone, gets a stream
 	 * that refuses writes from the start.
+	 *
+	 * From another thread (see `respond`) the stream is returned at once and
+	 * the head goes out on the connection's runtime, ahead of what is
+	 * written meanwhile; the stream is `connected` from the start, until it
+	 * turns out the request was answered already or the client has gone.
 	 */
 	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
+		var runtime:Null<crossbyte.core.CrossByte> = __otherThreadsRuntime();
+		if (runtime != null) {
+			var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(null, false);
+			@:privateAccess stream.__owner = runtime;
+			@:privateAccess stream.__pending = true;
+			var fields:Null<Array<URLRequestHeader>> = headers == null ? null : headers.copy();
+			var slot:Int = __requestGeneration;
+			var posted:Bool = runtime.post(() -> {
+				if (slot == __requestGeneration) {
+					__runHanded(() -> __beginResponse(statusCode, contentType, fields, statusMessage, stream));
+				} else {
+					__streamFor(stream, null, false);
+				}
+			});
+			if (!posted) {
+				__streamFor(stream, null, false);
+			}
+			return stream;
+		}
+		return __beginResponse(statusCode, contentType, headers, statusMessage, null);
+	}
+
+	/**
+		`stream`, or a new one when null, set to write through `handler` (null
+		for one that reaches no client) or to drop what it is given.
+	**/
+	@:noCompletion private function __streamFor(stream:Null<HTTPResponseStream>, handler:Null<HTTPRequestHandler>, discards:Bool):HTTPResponseStream {
+		if (stream == null) {
+			stream = @:privateAccess new HTTPResponseStream(handler, discards);
+		}
+		@:privateAccess {
+			stream.__handler = handler;
+			stream.__discards = discards;
+			stream.__owner = handler != null ? #if (target.threaded && !js) __origin.__cbInstance #else null #end : null;
+			stream.__pending = false;
+		}
+		return stream;
+	}
+
+	@:noCompletion private function __beginResponse(statusCode:Int, contentType:String, headers:Null<Array<URLRequestHeader>>, statusMessage:Null<String>,
+			into:Null<HTTPResponseStream>):HTTPResponseStream {
 		if (__responded || __openStream != null) {
 			// One response to a request, as respond() allows.
-			return @:privateAccess new HTTPResponseStream(null, false);
+			return __streamFor(into, null, false);
 		}
 
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
@@ -2471,15 +3427,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__dispatchResponseBytes(statusCode, reason, fields, contentType, null, bodiless, null, true);
 		if (!__responded) {
 			// Never went out: the client had already gone.
-			return @:privateAccess new HTTPResponseStream(null, false);
+			return __streamFor(into, null, false);
 		}
 		if (bodiless) {
 			// Complete already, and the connection settled with it; the
 			// stream only has to swallow what the producer sends.
-			return @:privateAccess new HTTPResponseStream(null, true);
+			return __streamFor(into, null, true);
 		}
 
-		var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(this, false);
+		var stream:HTTPResponseStream = __streamFor(into, this, false);
 		__openStream = stream;
 		__openEncoder = encoder;
 		__watchClient();
@@ -2584,10 +3540,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __onOpenStreamDrain():Void {
 		var stream:Null<HTTPResponseStream> = __openStream;
-		if (stream == null || !@:privateAccess stream.__blocked || __writer.bufferedBytes >= __openStreamWatermark()) {
+		// Counting what writes from another thread have handed over and not
+		// yet sent, so the producer is not told of room they will take.
+		if (stream == null || !@:privateAccess stream.__drainOwed(__writer.bufferedBytes)) {
 			return;
 		}
-		@:privateAccess stream.__blocked = false;
 		var callback:Null<Void->Void> = stream.onDrain;
 		if (callback != null) {
 			callback();
@@ -2690,6 +3647,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// A file going out to it, too: the pump would wait on a drain that is
 		// not coming, with the file open.
 		__stopStream();
+		__stopBodyReader(false);
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
@@ -2735,16 +3693,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 */
 	@:noCompletion private function __hasConnectionToken(token:String):Bool {
 		var header:String = __headers.exists("connection") ? __headers.get("connection") : null;
-		if (header == null) {
-			return false;
-		}
+		return header != null && __hasToken(header, token);
+	}
 
-		for (raw in header.split(",")) {
+	/** Whether the comma-separated `value` carries `token`, as a whole token, in any case. **/
+	@:noCompletion private static function __hasToken(value:String, token:String):Bool {
+		for (raw in value.split(",")) {
 			if (StringTools.trim(raw).toLowerCase() == token) {
 				return true;
 			}
 		}
-
 		return false;
 	}
 
@@ -2847,6 +3805,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// a later request's) is not this response's client going away.
 		__unwatchClient();
 
+		// Nor is anyone left for what remains of its body, if any does.
+		__stopBodyReader(true);
+
 		// Closed too once pipelined requests were given up (__dropSurplus): a
 		// streamed answer's head may already have said the connection stays.
 		if ((!__responseKeepAlive || __surplusDropped) && !__writer.ownsConnection) {
@@ -2855,6 +3816,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// dispatches Event.CLOSE even when locally initiated, so the
 			// server's cleanupSocket accounting fires as for any close.
 			if (__origin.connected) {
+				// The client may still be sending: see __closeOrLinger.
+				__lingerWanted = __surplusDropped || __bodyCutShort
+					|| (!__requestConsumed && __incomingBuffer != null && __incomingBuffer.length > 0);
 				// Once what the response sent has gone: closed now, the rest
 				// of it (whatever the system had not taken yet) would be
 				// thrown away, and a response larger than that, with
@@ -2865,8 +3829,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 					if (__holdOutput()) {
 						return;
 					}
+					__origin.close();
+					return;
 				}
-				__origin.close();
+				__closeOrLinger();
 			}
 			return;
 		}
@@ -2921,7 +3887,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	**/
 	@:noCompletion private function __recyclable():Bool {
 		return !__kept && __openStream == null && !__streamPending && __streamSource == null && __streamBytes == null && !__watchingClient
-			&& !__clientLeft && !__heldWatch;
+			&& !__clientLeft && !__heldWatch && __bodyReader == null;
 	}
 
 	/**
@@ -2977,6 +3943,52 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __heldWatch;
 	}
 
+	/**
+	 * Closes the connection, its response sent; or, when its client may
+	 * still be sending (the request was answered before it was read whole,
+	 * a `413` to an upload say, or requests pipelined behind it were given
+	 * up), lingers first: what keeps arriving is read and dropped until the
+	 * client closes, or `LINGER_SECONDS` pass. Closed over bytes still
+	 * arriving, the connection is reset, and a reset throws away what the
+	 * client has not read yet: the response with it. As Go's `net/http` and
+	 * nginx's lingering close, a plain connection's own side is ended first
+	 * (FIN), so a client reading to the end sees it; a TLS one, which would
+	 * end without TLS's own close, is left for its client to close, as the
+	 * response's `Connection: close` asks.
+	 */
+	@:noCompletion private function __closeOrLinger():Void {
+		if (!__origin.connected) {
+			return;
+		}
+		if (!__lingerWanted || __lingerUntil > 0 || __writer.ownsConnection) {
+			__origin.close();
+			return;
+		}
+		// What arrives from now on is dropped as it is read (__onData).
+		__closeWhenSent = true;
+		__lingerUntil = haxe.Timer.stamp() + LINGER_SECONDS;
+		if (!__writer.sweepWith(__checkLinger)) {
+			__origin.close();
+			return;
+		}
+		if (!__origin.secure) {
+			// Closes the socket itself when the peer has gone already.
+			__origin.shutdown(false, true);
+		}
+	}
+
+	/** The sweep's visit while a connection lingers (`__closeOrLinger`). **/
+	@:noCompletion private function __checkLinger(now:Float):Void {
+		if (!__origin.connected) {
+			__writer.sweepWith(null);
+			return;
+		}
+		if (now >= __lingerUntil) {
+			__writer.sweepWith(null);
+			__origin.close();
+		}
+	}
+
 	@:noCompletion private function __releaseHeldOutput():Void {
 		if (__heldWatch) {
 			__heldWatch = false;
@@ -3000,7 +4012,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__writer.bufferedBytes <= 0) {
 			__releaseHeldOutput();
 			if (__closeWhenSent || (__idle && __closeAfterResponse)) {
-				__origin.close();
+				__closeOrLinger();
 				return;
 			}
 			if (__idle) {
@@ -3048,6 +4060,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__httpVersion = null;
 		__queryString = "";
 		__requestPath = "/";
+		__requestTarget = null;
 		__requestContentEncodings = null;
 		__admitted = false;
 		__awaitingBody = false;
@@ -3056,6 +4069,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__bodyComplete = null;
 		__bodyIsChunked = false;
 		__chunkBytesRemaining = -1;
+		__lengthPastInt = false;
+		__bodyReader = null;
+		__bodyRead = 0;
+		__bodyPaused = false;
+		__bodyHolding = false;
+		__bodyBegun = false;
+		__bodyStarted = false;
+		__bodyTaken = false;
+		__bodyCutShort = false;
+		__trailerBytes = 0;
 		// Let go of rather than clear()ed: the old body must become
 		// collectable now, not stay referenced through a five-second idle
 		// window per megabyte a client happened to POST. The next one is made
@@ -3071,7 +4094,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// A pipelined request already sits in the buffer: straight
 			// back to receiving, request clock armed immediately.
 			__idle = false;
-			__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
+			__heardAt = haxe.Timer.stamp();
+			__receiveDeadline = __config.requestTimeout > 0 ? __heardAt + __config.requestTimeout : 0;
 		} else {
 			// Between requests. The same deadline field now bounds idle
 			// time; zero when idle reaping is disabled.
@@ -3246,7 +4270,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (statusCode < 200 || statusCode >= 400 || statusCode == 204 || statusCode == 206 || statusCode == 304) {
 			return false;
 		}
-		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding") || __forbidsTransform(headers)) {
 			return false;
 		}
 		return policy.compresses(contentType);
@@ -3263,7 +4287,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (length <= 0 || length < policy.minimumSize) {
 			return false;
 		}
-		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding") || __forbidsTransform(headers)) {
 			return false;
 		}
 		return policy.compresses(contentType);
@@ -3315,7 +4339,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__keptType.value = contentType;
 		fields.resize(0);
 		fields.push(__keptDate);
-		fields.push(__keptType);
+		if (contentType != null) {
+			fields.push(__keptType);
+		}
 		fields.push(__NOSNIFF_FIELD);
 		fields.push(__SERVER_FIELD);
 		return fields;
@@ -3445,6 +4471,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case CompressionAlgorithm.LZ4: HTTPContentCoding.LZ4;
 			default: null;
 		}
+	}
+
+	/**
+		Whether the response says `Cache-Control: no-transform`, which leaves
+		its body as the caller gave it: not compressed here, as Express's
+		`compression` leaves such a response. How an application that encodes
+		its own bodies, or must not have one encoded, says so for one response.
+	**/
+	@:noCompletion private function __forbidsTransform(headers:Array<URLRequestHeader>):Bool {
+		if (headers == null) {
+			return false;
+		}
+		for (header in headers) {
+			if (header != null && header.name != null && header.value != null && HttpSyntax.equalsIgnoreCase(header.name, "Cache-Control")
+				&& __hasToken(header.value, "no-transform")) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	@:noCompletion private function __hasResponseHeader(headers:Array<URLRequestHeader>, name:String):Bool {
@@ -4513,15 +5558,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __beginRequestBodyRead(onComplete:Void->Void):Bool {
-
+	/**
+	 * Reads how the body is framed into `__bodyIsChunked` and `__expectBody`,
+	 * and answers a request whose framing cannot be trusted: nothing after
+	 * this reads the framing headers again.
+	 *
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __readFraming():Bool {
 		var transferEncoding:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
 
 		// RFC 7230 3.3.3: a message with both Transfer-Encoding and Content-Length is
 		// ambiguous and a vector for request smuggling. Reject it outright.
 		if (HttpSyntax.hasConflictingFraming(transferEncoding != null, __headers.exists("content-length"))) {
 			__sendErrorResponse(400, "Bad Request");
-			return true;
+			return false;
 		}
 
 		var chunked:Bool = false;
@@ -4529,7 +5580,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			var encodings = transferEncoding.toLowerCase().split(",");
 			if (encodings.length == 0 || StringTools.trim(encodings[encodings.length - 1]) != "chunked") {
 				__sendError(501, "Not Implemented", "Transfer-Encoding not supported");
-				return true;
+				return false;
 			}
 			chunked = true;
 		}
@@ -4540,20 +5591,41 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (contentLengthHeader != null) {
 				contentLength = __parseContentLength(contentLengthHeader);
 				if (contentLength < 0) {
-					__sendErrorResponse(400, "Bad Request");
-					return true;
-				}
-				// Too big is not malformed: 413, and before a byte of the body
-				// is read.
-				if (contentLength > __config.maxRequestBodySize) {
-					__sendErrorResponse(413, "Payload Too Large");
-					return true;
+					// A length past what an Int holds is still a length: too big,
+					// not malformed, which __beginRequestBodyRead says.
+					if (!HttpSyntax.isLengthPastInt(contentLengthHeader)) {
+						__sendErrorResponse(400, "Bad Request");
+						return false;
+					}
+					__lengthPastInt = true;
+					contentLength = 0;
 				}
 			}
 		}
 
+		__bodyIsChunked = chunked;
+		__expectBody = contentLength;
+		return true;
+	}
+
+	@:noCompletion private function __beginRequestBodyRead(onComplete:Void->Void):Bool {
+		var chunked:Bool = __bodyIsChunked;
+		var contentLength:Int = __expectBody;
+
+		// Too big is not malformed: 413, and before a byte of the body is
+		// read.
+		if (__lengthPastInt || contentLength > __config.maxRequestBodySize) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return true;
+		}
+
 		// The interim 100 goes out whatever the length.
 		if (!__admitExpectation(true)) {
+			return true;
+		}
+
+		if (__bodyReader != null) {
+			__beginBodyStream(chunked || contentLength > 0);
 			return true;
 		}
 
@@ -4796,7 +5868,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * request, so a request carried inside another would reach the
 	 * application unseen by whatever inspected the outer one (the reason a
 	 * request with both framings is refused). On the jvm the same field
-	 * throws. A value too large for an `Int` is simply not a length.
+	 * throws. A value too large for an `Int` answers `-1` here too, and
+	 * `HttpSyntax.isLengthPastInt` says whether it was a length all the same,
+	 * which is `413`, or not one at all, which is `400`.
 	 */
 	@:noCompletion private static function __parseContentLength(header:String):Int {
 		if (header == null) {
@@ -4974,6 +6048,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return buf;
 		}
 		return buf + safeName + ": " + __sanitizeHeaderValue(value) + "\r\n";
+	}
+}
+
+/** Sends what calls handed over from another thread held, as the runtime's pass ends. */
+private final class HandedFlush implements crossbyte.core._internal.PassFlush {
+	private final handler:HTTPRequestHandler;
+
+	public function new(handler:HTTPRequestHandler) {
+		this.handler = handler;
+	}
+
+	public function __flushPass():Void {
+		@:privateAccess handler.__passFlushQueued = false;
+		@:privateAccess handler.__flushHeldStream();
 	}
 }
 

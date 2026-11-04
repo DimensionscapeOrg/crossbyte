@@ -116,8 +116,10 @@ interface IDataInput {
 		`objectEncoding` names: `HXSF` unless changed, not AMF.
 		@returns	The deserialized object
 		@throws	EOFError	There is not sufficient data available to read.
-		@throws	IOError	The object is refused unread: it nests too deep, or holds more
-		values than `ByteArray.maxObjectValues` allows. See `ByteArray.readObject`.
+		@throws	IOError	The object is refused unread: it nests too deep, holds more
+		values than `ByteArray.maxObjectValues` allows, or names a class or an enum
+		`ByteArray.allowObjectClass` or `allowObjectEnum` has not allowed. See
+		`ByteArray.readObject`.
 	**/
 	public function readObject():Dynamic;
 

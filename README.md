@@ -183,6 +183,27 @@ config.middleware.push(router.middleware());
 var server = new HTTPServer(config);
 ```
 
+A request's body is read whole before middleware runs, up to `maxRequestBodySize`. `onRequestHead` is asked first, at
+the request's head: it can refuse a request before its body is read, or choose to read that body as it arrives, as a
+large upload or a proxy wants, with the client held back while the application cannot take more:
+
+```haxe
+// Given config:crossbyte.http.HTTPServerConfig, store:crossbyte.net.Socket.
+config.onRequestHead = handler -> {
+	if (handler.getHeader("host") != "example.com") {
+		handler.respond(421, "text/plain", "Misdirected Request");
+		return false;
+	}
+	var body = handler.streamRequestBody();
+	body.onData = (data, offset, length) -> {
+		store.writeBytes(data, offset, length);
+		return store.bytesPending < 256 * 1024; // false stops the body until body.resume()
+	};
+	body.onEnd = () -> handler.respond(201, "text/plain", "stored");
+	return true;
+};
+```
+
 `URLLoader` and `URLRequest` are the client, over HTTP/1.1 or HTTP/2. Each request carries its own limits and
 deadlines:
 

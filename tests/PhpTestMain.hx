@@ -7,8 +7,9 @@
 	those are what this runs, and RPC: its
 	contracts, its codec and its sessions over in-process connections, the
 	ByteArray reads and writes its bytes go through, BitWriter and
-	BitReader, whose layout its bit fields share, and the spatial grids a
-	server picks each observer's entries with; and the rest of crossbyte.io
+	BitReader, whose layout its bit fields share, the spatial grids a
+	server picks each observer's entries with, and the clock all of it waits
+	and measures by; and the rest of crossbyte.io
 	that needs neither a thread nor a socket: ByteArray's other classes,
 	ByteDelta, Store, FileStream (which opens a file asynchronously only to
 	read there, as on Node), and File and its path arithmetic. PHP
@@ -68,6 +69,7 @@ class PhpTestMain {
 			runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 			runner.addCase(new crossbyte.ds.SpatialGridTest());
 			runner.addCase(new crossbyte.ds.SparseSpatialGridTest());
+			runner.addCase(new crossbyte.timer.ClockTest());
 			addRPC(runner);
 		});
 	}

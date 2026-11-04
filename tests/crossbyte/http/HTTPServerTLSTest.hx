@@ -230,6 +230,103 @@ class HTTPServerTLSTest extends utest.Test {
 			Assert.equals(versions[i] + ": COMPLETED got 65536", outcomes[i]);
 		}
 	}
+
+	/**
+		A body read as it arrives, stopped partway and let go on, arrives
+		whole over TLS. What a stopped socket has read and decrypted stays in
+		the TLS session, where no poll can see it, so going on has to look
+		there and not only at the kernel.
+	**/
+	public function testABodyStoppedAndResumedOverTlsArrivesWhole():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		// On HashLink no more than the system takes at once: a write that has
+		// to wait is not marked blocking, as a read is (see HlTlsSocket), so a
+		// client thread waiting in one here would hold the collector, and with
+		// it the server on this thread that it is waiting for.
+		var size:Int = #if hl 48 * 1024 #else 4 * 1024 * 1024 #end;
+		var stopEvery:Int = #if hl 16 * 1024 #else 1024 * 1024 #end;
+		var reader:Null<HTTPBodyReader> = null;
+		var received:Int = 0;
+		var stops:Int = 0;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.tlsCertificatePath = fixture.certificatePath;
+		config.tlsKeyPath = fixture.keyPath;
+		config.http2Enabled = FlexSocket.alpnSupported;
+		config.maxRequestBodySize = size;
+		config.onRequestHead = handler -> {
+			reader = handler.streamRequestBody();
+			reader.onData = (_, _, length) -> {
+				received += length;
+				// Stopped now and again, and let go on from the pump below.
+				if (Std.int(received / stopEvery) > stops) {
+					stops++;
+					return false;
+				}
+				return true;
+			};
+			reader.onEnd = () -> handler.respond(200, "text/plain", "got " + received);
+			return true;
+		};
+		config.middleware.push(function(_:HTTPRequestHandler, _:?Dynamic->Void):Void {});
+		var server = new HTTPServer(config);
+		var port:Int = server.localPort;
+
+		var versions:Array<HTTPVersion> = [HTTPVersion.HTTP_1_1];
+		if (FlexSocket.alpnSupported) {
+			versions.push(HTTPVersion.HTTP_2);
+		}
+
+		var body = Bytes.alloc(size);
+		body.fill(0, body.length, "x".code);
+		var outcomes:Array<String> = [];
+		var trusted = FlexSocket.DEFAULT_CA;
+		FlexSocket.DEFAULT_CA = @:privateAccess fixture.certificate.__native;
+
+		for (version in versions) {
+			received = 0;
+			stops = 0;
+			var outcome:String = null;
+			var handoff = new sys.thread.Lock();
+			sys.thread.Thread.create(() -> {
+				try {
+					var http = new Http('https://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", body, version, 15.0);
+					http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+					http.onError = (message, ?data) -> outcome = message;
+					http.load();
+				} catch (e:Dynamic) {
+					outcome = "threw " + Std.string(e);
+				}
+				handoff.release();
+			});
+
+			var finished:Bool = false;
+			var deadline:Float = haxe.Timer.stamp() + 30;
+			while (!finished && haxe.Timer.stamp() < deadline) {
+				crossbyte.core.CrossByte.current().pump(1 / 60, 0);
+				if (reader != null && reader.paused) {
+					reader.resume();
+				}
+				finished = handoff.wait(0.002);
+			}
+			outcomes.push(version + ": " + (finished ? outcome : "never returned"));
+		}
+
+		FlexSocket.DEFAULT_CA = trusted;
+		HttpConnectionPool.clear();
+		H2ConnectionPool.closeAll();
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+
+		for (i in 0...versions.length) {
+			Assert.equals(versions[i] + ': COMPLETED got $size', outcomes[i]);
+		}
+	}
 	#end
 
 	#if (cpp || hl || neko || java || jvm)

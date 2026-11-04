@@ -1,5 +1,6 @@
 package crossbyte._internal.http.h2;
 
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.utils.IntParse;
 import haxe.io.Bytes;
@@ -76,6 +77,12 @@ class H2ServerRequest {
 	}
 
 	/**
+		Whether a body still to come declared more than an `Int` holds, which
+		`declaredLength` then reads as the largest: too large, not malformed.
+	**/
+	public var lengthPastInt(default, null):Bool = false;
+
+	/**
 		Gives a request read at its headers the body that has since arrived,
 		or throws `H2StreamError` if that is not the length its
 		`content-length` said (RFC 9113 8.1.1).
@@ -86,6 +93,23 @@ class H2ServerRequest {
 			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length $__declaredLength does not match the $length bytes of DATA received');
 		}
 		body = received == null ? NO_BODY : received;
+	}
+
+	/**
+		Whether its body went to `H2ServerConnection.onRequestBody` as it
+		arrived, so that delivering this request says only that it has ended.
+	**/
+	public var bodyStreamed:Bool = false;
+
+	/**
+		As `attachBody`, for a body handed over as it arrived, of which there
+		has been `received` so far: throws `H2StreamError` for more than its
+		`content-length` said, or, with `whole` set, for any other length.
+	**/
+	public function holdToLength(received:Int, whole:Bool):Void {
+		if (__declaredLength >= 0 && (received > __declaredLength || (whole && received != __declaredLength))) {
+			throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'content-length $__declaredLength does not match the $received bytes of DATA received');
+		}
 	}
 
 	/**
@@ -157,6 +181,7 @@ class H2ServerRequest {
 		var regular:Int = 0;
 		var seenRegular:Bool = false;
 		var declaredLength:Int = -1;
+		var lengthPastInt:Bool = false;
 
 		for (index in 0...decoded.length) {
 			var field:HpackHeader = decoded[index];
@@ -227,6 +252,12 @@ class H2ServerRequest {
 					// on Linux native.
 					var declared:Int = IntParse.decimal(field.value);
 					var received:Int = body == null ? 0 : body.length;
+					// Past what an Int holds, with the body still to come, it is
+					// too large to take rather than malformed, as over HTTP/1.1.
+					if (declared < 0 && partial && HttpSyntax.isLengthPastInt(field.value)) {
+						declared = 0x7FFFFFFF;
+						lengthPastInt = true;
+					}
 					if (declared < 0 || (!partial && declared != received)) {
 						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR,
 							'content-length "${field.value}" does not match the $received bytes of DATA received');
@@ -267,6 +298,7 @@ class H2ServerRequest {
 		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority == null ? "" : authority, path, decoded,
 			body == null ? NO_BODY : body);
 		request.__declaredLength = declaredLength;
+		request.lengthPastInt = lengthPastInt;
 		return request;
 	}
 
