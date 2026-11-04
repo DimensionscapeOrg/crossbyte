@@ -282,6 +282,11 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 	// a retry of its pending output is queued there.
 	private var __registered:Bool = false;
 	private var __writeQueued:Bool = false;
+	// What waits for the socket is waiting in the poll: see __queueWritable.
+	private var __waitingForRoom:Bool = false;
+	// The poll reported room and the socket took nothing, so what waits is
+	// asked after once a pass until it takes something: see __flushReported.
+	private var __roomNotReported:Bool = false;
 
 	// Whether the runtime is to flush this session's output when its pass
 	// ends; see __queueOutput.
@@ -727,6 +732,10 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 			__onTickSSLHandshake(null);
 			return;
 		}
+		if (__waitingForRoom) {
+			__flushReported();
+			return;
+		}
 		#end
 		__flushPendingOutput();
 	}
@@ -910,11 +919,57 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 		}
 	}
 
-	/** Asks the registry to retry the pending output on its next pass. **/
-	private inline function __queueWritable():Void {
-		if (!__writeQueued && __registered && __runtime != null) {
-			__writeQueued = true;
+	/**
+	 * Asks the registry to say when the pending output can go: the poll, which
+	 * wakes the runtime for it, as `crossbyte.net.Socket.__waitForRoom` says.
+	 * On the queue alone it went at the next pass, and a session with nothing
+	 * to read moved what the system held once a frame however fast its peer
+	 * read.
+	 *
+	 * The queue for a send from another thread, since the poll's sets are the
+	 * runtime's own.
+	 */
+	private function __queueWritable():Void {
+		if (__writeQueued || !__registered || __runtime == null) {
+			return;
+		}
+		__writeQueued = true;
+		if (__waitingForRoom) {
+			return;
+		}
+		if (__roomNotReported || !__onRuntime()) {
 			@:privateAccess __runtime.queueWritable(__socket);
+			return;
+		}
+		__waitingForRoom = true;
+		@:privateAccess __runtime.watchWritable(__socket);
+	}
+
+	/**
+	 * The poll said there is room. Written, and nothing taken, the report
+	 * would be made again at once, and the runtime would never sleep, so what
+	 * waits goes back to being asked after once a pass until something is
+	 * taken. Nothing waiting, a socket left watched would be reported for good.
+	 */
+	private function __flushReported():Void {
+		var sent:Float = bytesSent;
+		__flushPendingOutput();
+		if (!__waitingForRoom) {
+			return;
+		}
+		if (!__writeQueued) {
+			__stopWaitingForRoom();
+		} else if (bytesSent == sent) {
+			__stopWaitingForRoom();
+			__roomNotReported = true;
+			@:privateAccess __runtime.queueWritable(__socket);
+		}
+	}
+
+	private function __stopWaitingForRoom():Void {
+		__waitingForRoom = false;
+		if (__registered && __runtime != null) {
+			@:privateAccess __runtime.unwatchWritable(__socket);
 		}
 	}
 	#end
@@ -933,17 +988,22 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 		if (runtime == null || @:privateAccess runtime.__didExit) {
 			return false;
 		}
-		var current:CrossByte = null;
-		try {
-			// Throws on a thread no runtime is attached to.
-			current = CrossByte.current();
-		} catch (_:Dynamic) {}
-		if (current != runtime) {
+		if (!__onRuntime()) {
 			return false;
 		}
 		__passFlushQueued = true;
 		runtime.__queuePassFlush(this);
 		return true;
+	}
+
+	/** Whether this is the thread of the runtime the session runs on. **/
+	private function __onRuntime():Bool {
+		var current:CrossByte = null;
+		try {
+			// Throws on a thread no runtime is attached to.
+			current = CrossByte.current();
+		} catch (_:Dynamic) {}
+		return current == __runtime;
 	}
 
 	/** The runtime's call at the end of a pass: what the pass sent goes now. **/
@@ -1244,13 +1304,50 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 			}
 		}
 		if (accepted > 0) {
+			__roomNotReported = false;
 			bytesSent += accepted;
 			if (onprogress != null) {
 				onprogress();
 			}
 		}
+		#if ((java || jvm) && !macro)
+		if (accepted >= length) {
+			__sendHeldRecord();
+		}
+		#end
 		return accepted;
 	}
+
+	#if ((java || jvm) && !macro)
+	/**
+		A TLS record the system took part of is finished by the TLS socket, and
+		what it was made from has left the pending buffer, so nothing here would
+		write again to send the rest: `crossbyte.net.Socket.__sendHeldRecord`
+		says so of a socket. Left alone, the end of what was sent stayed behind
+		until something more was sent or read.
+	**/
+	private function __sendHeldRecord():Void {
+		if (!__tls || __socket == null) {
+			return;
+		}
+
+		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return;
+		}
+
+		var sent:Bool = try {
+			@:privateAccess tls.__flush();
+		} catch (e:Dynamic) {
+			__close(1006, null);
+			return;
+		}
+
+		if (!sent) {
+			__queueWritable();
+		}
+	}
+	#end
 	#end
 
 	/**
@@ -1259,8 +1356,8 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 	 * A non-blocking socket signals "no room right now" by accepting fewer
 	 * bytes than offered or by raising a blocked error. Neither is fatal
 	 * and neither may discard data: the unsent remainder is kept and
-	 * retried from the registry's writable queue. Only a genuine I/O failure
-	 * closes the session.
+	 * retried when the registry says there is room. Only a genuine I/O
+	 * failure closes the session.
 	 *
 	 * What the socket took is stepped over rather than cut off, so a peer
 	 * reading slowly behind a large backlog does not cost a copy of the
@@ -1272,6 +1369,9 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 	private function __flushPendingOutput():Void {
 		var pending:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
 		if (__socket == null || pending <= 0) {
+			#if ((java || jvm) && !macro)
+			__sendHeldRecord();
+			#end
 			return;
 		}
 
@@ -2352,7 +2452,9 @@ class WebSocket extends Session implements crossbyte.core._internal.PassFlush #i
 				__offer(__pendingOutput, __pendingSent, __pendingOutput.length - __pendingSent);
 			}
 
-			// Out of the registry before the socket goes, as `Socket` does it.
+			// Out of the registry before the socket goes, as `Socket` does it,
+			// which takes it out of the poll's writes too.
+			__waitingForRoom = false;
 			if (__registered) {
 				__registered = false;
 				if (__runtime != null) {
