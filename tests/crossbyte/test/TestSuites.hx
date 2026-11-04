@@ -571,6 +571,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketBufferSizeTest());
 		runner.addCase(new crossbyte.net.SocketBindTest());
 		runner.addCase(new crossbyte.net.SocketWriteRoomTest());
+		runner.addCase(new crossbyte.net.SocketSecureWriteTest());
 		// What a peer can make a connection hold that its application has
 		// not read. Also in PortableSuite, for Node's pause and resume.
 		runner.addCase(new crossbyte.net.SocketInputLimitTest());

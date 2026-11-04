@@ -916,6 +916,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// The poll reported room and the system took nothing, so what waits is
 	// asked after once a pass until it takes something: see __flushReported.
 	@:noCompletion private var __roomNotReported:Bool = false;
+	// How much a write on a secure socket was refused for; 0 for none: see
+	// flush.
+	@:noCompletion private var __refusedLength:Int = 0;
 	// Whether the close underway throws unsent output away rather than
 	// sending it first: set when the output limit closes a peer that is not
 	// reading, which is the case the limit exists to reclaim memory from.
@@ -1213,6 +1216,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		flushFull = false;
 		__waitingForRoom = false;
 		__roomNotReported = false;
+		__refusedLength = 0;
 		__discardOnClose = false;
 		__tlsHandshaking = false;
 		// A new connection, which has neither ended nor been announced as
@@ -1713,11 +1717,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				var bytesWritten:Int = 0;
 				var refused:Bool = false;
 				while (bytesWritten < pendingLength) {
-					var took:Int = __tryWrite(__output, __outputSent + bytesWritten, pendingLength - bytesWritten);
+					var asked:Int = pendingLength - bytesWritten;
+					// A refused TLS write is finished from the record it made,
+					// and answers the length it is given then, so it is given
+					// the one it was refused for. Given more, because more has
+					// been written since, the bytes past that record would be
+					// counted as sent, and dropped, without a word.
+					if (__refusedLength > 0 && __refusedLength < asked) {
+						asked = __refusedLength;
+					}
+					var took:Int = __tryWrite(__output, __outputSent + bytesWritten, asked);
 					if (took < 0) {
 						refused = true;
+						if (secure) {
+							__refusedLength = asked;
+						}
 						break;
 					}
+					__refusedLength = 0;
 					if (took == 0) {
 						break;
 					}
@@ -1759,7 +1776,44 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 			__enforceOutputLimit();
 		}
+
+		#if ((java || jvm) && !macro)
+		__sendHeldRecord();
+		#end
 	}
+
+	#if ((java || jvm) && !macro)
+	/**
+		A TLS record the system took part of is finished by the TLS socket, and
+		what it was made from has left the output buffer, so nothing here would
+		write again to send the rest. It waits for room as what is written
+		does: left alone, the end of what was written stayed behind until
+		something more was written or read.
+	**/
+	@:noCompletion private function __sendHeldRecord():Void {
+		if (!secure || __socket == null) {
+			return;
+		}
+
+		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return;
+		}
+
+		var sent:Bool = try {
+			@:privateAccess tls.__flush();
+		} catch (e:Dynamic) {
+			__flushFailed(Std.string(e));
+			return;
+		}
+
+		if (!sent) {
+			__waitForRoom();
+		} else if (__output.length <= __outputSent) {
+			__stopWaitingForRoom();
+		}
+	}
+	#end
 
 	/**
 		Applies `maxOutputBufferSize` once a flush has moved whatever the

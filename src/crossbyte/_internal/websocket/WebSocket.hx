@@ -294,6 +294,9 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// see __flushPendingOutput.
 	private var __pendingSent:Int = 0;
 
+	// How much a write over TLS was refused for; 0 for none: see __offer.
+	private var __refusedLength:Int = 0;
+
 	/**
 	 * What the network has taken from this session since it opened (on
 	 * Node, what was handed to Node's queue, which `outputBufferLength`
@@ -1474,7 +1477,20 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var accepted:Int = 0;
 		try {
 			while (accepted < length) {
-				var took:Int = __socket.output.writeBytes(buffer, offset + accepted, length - accepted);
+				var asked:Int = length - accepted;
+				// A refused TLS write is finished from the record it made, and
+				// answers the length it is given then, so it is given the one
+				// it was refused for. Given more, because more has been queued
+				// since, the bytes past that record would be counted as sent,
+				// and dropped, which cuts a frame for the peer to fail on.
+				if (__refusedLength > 0 && __refusedLength < asked) {
+					asked = __refusedLength;
+				}
+				if (__tls) {
+					__refusedLength = asked;
+				}
+				var took:Int = __socket.output.writeBytes(buffer, offset + accepted, asked);
+				__refusedLength = 0;
 				if (took <= 0) {
 					break;
 				}
