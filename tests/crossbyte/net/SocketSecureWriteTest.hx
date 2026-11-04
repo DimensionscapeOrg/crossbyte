@@ -127,6 +127,104 @@ class SocketSecureWriteTest extends utest.Test {
 		Assert.equals(-1, wrong, 'message $wrong was not as it was sent');
 	}
 
+	/**
+		A peer reading a little at a time leaves room a little at a time, so
+		a record is often taken in part, and the last one with it. On the jvm
+		the rest of that record stayed in the TLS socket with nothing to send
+		it, and a session's last message never finished arriving.
+	**/
+	public function testAWebSocketSessionReadSlowlyGetsItsEnd():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			return;
+		}
+
+		var writer:CrossByte = SpreadSupport.runtime(60);
+		var reader:CrossByte = SpreadSupport.runtime(60);
+		var session:Null<WebSocket> = null;
+		var server:ServerWebSocket = SpreadSupport.on(writer, () -> {
+			var listener:ServerWebSocket = new ServerWebSocket(true);
+			listener.cert = {certificate: fixture.certificate, key: fixture.key};
+			listener.addEventListener(ServerSocketConnectEvent.CONNECT, e -> session = cast e.socket);
+			listener.bind(0, "127.0.0.1");
+			listener.listen();
+			return listener;
+		});
+
+		var client:Socket = SpreadSupport.on(reader, () -> {
+			var socket:Socket = new Socket();
+			socket.secure = true;
+			socket.verifyCert = false;
+			socket.maxInputBufferSize = 32 * 1024;
+			socket.addEventListener(Event.CONNECT, function(_):Void {
+				socket.writeUtfBytes("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+					+ "Sec-WebSocket-Key: MDEyMzQ1Njc4OWFiY2RlZg==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+				socket.flush();
+			});
+			socket.connect("127.0.0.1", server.localPort);
+			return socket;
+		});
+		Assert.isTrue(SpreadSupport.waitFor(() -> session != null, 10.0), "no session opened");
+
+		// Less than a frame's worth each, so each is one frame of four bytes and itself.
+		var messages:Int = 16;
+		var size:Int = 60 * 1024;
+		SpreadSupport.on(writer, () -> {
+			var message:ByteArray = new ByteArray();
+			for (i in 0...size) {
+				message.writeByte(0x5A);
+			}
+			for (i in 0...messages) {
+				session.sendBinary(message);
+			}
+			return true;
+		});
+
+		var received:ByteArray = new ByteArray();
+		var wanted:Int = -1;
+		var seen:Int = -1;
+		var quietSince:Float = haxe.Timer.stamp();
+		SpreadSupport.waitFor(() -> {
+			SpreadSupport.on(reader, () -> {
+				var take:Int = client.bytesAvailable < 8 * 1024 ? client.bytesAvailable : 8 * 1024;
+				if (take > 0) {
+					client.readBytes(received, received.length, take);
+				}
+				return true;
+			});
+			if (wanted < 0) {
+				var head:Int = received.toString().indexOf("\r\n\r\n");
+				if (head >= 0) {
+					wanted = head + 4 + messages * (4 + size);
+				}
+			}
+			if (received.length != seen) {
+				seen = received.length;
+				quietSince = haxe.Timer.stamp();
+			}
+			return (wanted > 0 && received.length >= wanted) || haxe.Timer.stamp() - quietSince > 4.0;
+		}, 30.0);
+
+		SpreadSupport.on(writer, () -> {
+			server.close();
+			if (session.connected) {
+				session.close();
+			}
+			return true;
+		});
+		SpreadSupport.on(reader, () -> {
+			if (client.connected) {
+				client.close();
+			}
+			return true;
+		});
+		SpreadSupport.stop([writer, reader]);
+
+		Assert.isTrue(wanted > 0, "the upgrade was never answered");
+		Assert.equals(wanted, received.length, "the end of a message read slowly never came");
+	}
+
 	private function __stream(fixture:TLSTestFixture.TLSFixtureData, slice:Int):Void {
 		var writer:CrossByte = SpreadSupport.runtime(60);
 		var reader:CrossByte = SpreadSupport.runtime(60);

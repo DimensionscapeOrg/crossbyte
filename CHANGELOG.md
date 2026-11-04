@@ -147,6 +147,13 @@ says how.
   While it waits, a socket is reported by the poll and off the writable
   queue, so a peer that has stopped reading costs no passes, where it was
   retried once a pass for nothing.
+- A WebSocket session sends what the system refused as soon as it has
+  room, as a socket now does. It waited for the next pass: a session
+  sending to a peer reading as fast as it could moved 162 MiB/s at 60
+  ticks a second, 12 at 12 and 3 at 2, and now moves several thousand at
+  each. On the jvm the end of what a `wss://` session sent stayed in the
+  TLS socket when the system took part of its last record, until
+  something more was sent or read.
 - What a secure socket writes is no longer lost when the system refuses
   part of it. A refused TLS write is finished from the record it made, and
   answers the length it is given then, and the retry asked for everything
