@@ -112,7 +112,6 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 
 		var client:sys.net.Socket = null;
 		var attempts:Int = -1;
-		var failures:Float = -1;
 		var cpu:Float = 0;
 		var waited:Float = -1;
 		var taken:Int = 0;
@@ -125,7 +124,6 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 			crossbyte.sys.System.sleep(1.0);
 			attempts = server.failedAttempts() - counted;
 			cpu = Sys.cpuTime() - cpuBefore;
-			failures = (cast server : ServerSocket).acceptFailures;
 
 			// Descriptors again: the connection waiting is taken.
 			child.post(() -> server.stopFailing());
@@ -137,7 +135,10 @@ class ServerSocketAcceptBackoffTest extends utest.Test {
 			taken = server.takenConnections();
 		}
 
+		// Read together, with accepts working again: while they fail, one can
+		// land between the two.
 		var total:Int = server == null ? 0 : server.failedAttempts();
+		var failures:Float = server == null ? -1 : (cast server : ServerSocket).acceptFailures;
 		__stop(child, () -> {
 			if (server != null) {
 				try (cast server : ServerSocket).close() catch (_:Dynamic) {}
