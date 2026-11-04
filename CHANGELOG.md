@@ -137,6 +137,16 @@ says how.
 
 #### TCP
 
+- What is written and the system will not take yet goes as soon as the
+  system has room. It was retried when the runtime next woke for
+  something else, since nothing watched the socket for room: on a `POLL`
+  runtime with nothing to read that is the next frame, and a proxy
+  stopped reading until a write goes through has nothing to read. One
+  writer to a reader over loopback moved 2,094 MiB/s at 60 ticks a second,
+  585 at 12 and 127 at 2, and now moves about 10,000 at each, with no stall.
+  While it waits, a socket is reported by the poll and off the writable
+  queue, so a peer that has stopped reading costs no passes, where it was
+  retried once a pass for nothing.
 - A server spread over `runtimes` serves a burst of connections larger
   than its runtimes can take up at once. Once every runtime had 256
   connections handed to it and not yet taken up, the server accepted

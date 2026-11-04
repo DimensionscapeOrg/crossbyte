@@ -15,6 +15,9 @@ final class SocketRegistry {
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
 	@:noCompletion private var __deregisterPending:DenseSet<Socket>;
+	// Set while the poll's writable sockets are told, which the writable queue's
+	// are told by the same call: see Socket.registryOnWritable.
+	@:noCompletion public var __reportingWritable:Bool = false;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
 	@:noCompletion private var __writableSwap:Stack<Socket>;
 
@@ -510,11 +513,13 @@ final class SocketRegistry {
 		if (__writeSet.contains(s)) {
 			var cb:IPollableSocket = cast s.custom;
 			if (cb != null && !cb.registryClosed) {
+				__reportingWritable = true;
 				try {
 					cb.registryOnWritable();
 				} catch (error:Dynamic) {
 					__handlerThrew(error, cb);
 				}
+				__reportingWritable = false;
 			}
 		}
 	}

@@ -910,6 +910,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __connectingTick:TickEvent->Void = null;
 	@:noCompletion private var __isDirty = false;
 	@:noCompletion private var flushFull:Bool = false;
+	// What was written is waiting for the system to take it, and the poll is
+	// watching for when it can: see __waitForRoom.
+	@:noCompletion private var __waitingForRoom:Bool = false;
+	// The poll reported room and the system took nothing, so what waits is
+	// asked after once a pass until it takes something: see __flushReported.
+	@:noCompletion private var __roomNotReported:Bool = false;
 	// Whether the close underway throws unsent output away rather than
 	// sending it first: set when the output limit closes a peer that is not
 	// reading, which is the case the limit exists to reclaim memory from.
@@ -1205,6 +1211,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closed = false;
 		__isDirty = false;
 		flushFull = false;
+		__waitingForRoom = false;
+		__roomNotReported = false;
 		__discardOnClose = false;
 		__tlsHandshaking = false;
 		// A new connection, which has neither ended nor been announced as
@@ -1716,10 +1724,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					bytesWritten += took;
 				}
 				if (refused && bytesWritten == 0) {
-					// Nothing taken: the retry waits for room in the writable
-					// queue, as the catch below arranges for the other targets.
+					// Nothing taken: it waits for room, as the catch below
+					// arranges for the other targets.
 					flushFull = true;
-					__queueWrite();
+					__waitForRoom();
 				} else {
 					// A refusal after some was taken is the kernel filling up:
 					// what was taken is kept and the rest waits.
@@ -1734,12 +1742,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				var throwError = false;
 				if (__isBlockedError(e)) {
 					flushFull = true;
-					// The same queue a partial write uses: per-socket work stays
-					// with the registry, which drains a writable queue every
-					// pump, rather than going through the global timer, where an
-					// exception would unwind through the tick dispatch instead
+					// As a partial write waits: per-socket work stays with the
+					// registry rather than going through the global timer, where
+					// an exception would unwind through the tick dispatch instead
 					// of failing the one connection.
-					__queueWrite();
+					__waitForRoom();
 				} else {
 					throwError = true;
 				}
@@ -2515,6 +2522,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__isDirty = false;
 		flushFull = false;
+		__waitingForRoom = false;
+		__roomNotReported = false;
 		__releaseCount();
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
@@ -2689,7 +2698,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		than the writes that emptied the front.
 	**/
 	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
+		if (bytesWritten > 0) {
+			__roomNotReported = false;
+		}
 		if (bytesWritten >= pendingLength) {
+			var waited:Bool = __waitingForRoom;
+			__stopWaitingForRoom();
 			__isDirty = false;
 			if (@:privateAccess (__output : ByteArrayData).__length > KEEP_WHILE_BUSY) {
 				#if ((cpp || jvm) && !macro)
@@ -2712,6 +2726,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__output.clear();
 			}
 			__outputSent = 0;
+			// Taken by a flush that was not the poll's, whoever waits on the
+			// drain is told by the queue, as it was before it waited.
+			if (waited) {
+				__queueWrite();
+			}
 			return;
 		}
 
@@ -2739,8 +2758,68 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__outputSent = 0;
 			}
 		}
-		__isDirty = false;
+		// Left alone while it waits, or each write made meanwhile would add
+		// another retry to the queue, for a socket with no room.
+		if (!__waitingForRoom) {
+			__isDirty = false;
+		}
+		__waitForRoom();
+	}
+
+	/**
+		What is written and the system will not take yet waits for the system
+		to have room, watched in the poll, which is what wakes the runtime for
+		it. On the writable queue alone it would be retried when the runtime
+		next woke for something else: on a `POLL` runtime with nothing to read,
+		the next frame, which with a body's reader stopped behind this write is
+		all there is. A connection then moved what the system held once a
+		frame however fast its peer read.
+
+		Off the queue meanwhile, so a peer that has stopped reading costs
+		nothing: the poll does not report a socket with no room. A write made
+		meanwhile still goes on the queue, which is what holds it to
+		`maxOutputBufferSize`.
+	**/
+	@:noCompletion private function __waitForRoom():Void {
+		#if !js
+		if (__cbInstance != null && __socket != null && !__roomNotReported) {
+			if (!__waitingForRoom) {
+				__waitingForRoom = true;
+				@:privateAccess __cbInstance.watchWritable(__socket);
+			}
+			return;
+		}
+		#end
 		__queueWrite();
+	}
+
+	/** Nothing is left waiting for room, or nothing that could use it: reported writable, this would wake the poll for good. **/
+	@:noCompletion private inline function __stopWaitingForRoom():Void {
+		#if !js
+		if (__waitingForRoom) {
+			__waitingForRoom = false;
+			if (__cbInstance != null && __socket != null) {
+				@:privateAccess __cbInstance.unwatchWritable(__socket);
+			}
+		}
+		#end
+	}
+
+	/**
+		The poll said there is room. Written, and nothing taken, the report
+		will be made again at once, and the runtime would never sleep: a TLS
+		session waiting to read before it can write is one such socket. What
+		waits goes back to being asked after once a pass until something is
+		taken, which is slower and cannot spin.
+	**/
+	@:noCompletion private function __flushReported():Void {
+		var sent:Float = __bytesSent;
+		__tryFlush();
+		if (__waitingForRoom && __bytesSent == sent) {
+			__stopWaitingForRoom();
+			__roomNotReported = true;
+			__queueWrite();
+		}
 	}
 
 	@:noCompletion private inline function __queueWrite():Void {
@@ -2774,6 +2853,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	public inline function registryOnWritable():Void {
+		#if !js
+		// The poll's report rather than the queue's retry, which a write made
+		// meanwhile, or one left from before the wait, can still bring here.
+		var reported:Bool = __waitingForRoom && __cbInstance != null && @:privateAccess __cbInstance.__socketRegistry.__reportingWritable;
+		#end
+
 		// `__isDirty` means "a writable retry is queued", so it is cleared
 		// as the queue dispatches. Without this a socket that blocks twice
 		// in a row never re-queues (__queueWrite() would see itself as
@@ -2794,6 +2879,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// __tryFlush rather than flush: flush() returns early while
 		// `flushFull` is set, so calling it here could never recover a
 		// fully blocked socket; only clearing that flag first does.
+		#if !js
+		if (reported) {
+			__flushReported();
+			return;
+		}
+		#end
 		__tryFlush();
 	}
 
@@ -3523,6 +3614,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__cbInstance != null && __socket != null) {
 			@:privateAccess
 			__cbInstance.deregisterSocket(__socket);
+			// Out of the poll altogether, and only its reads are to go: what
+			// was written still waits for room, whether or not this reads.
+			if (__waitingForRoom) {
+				@:privateAccess __cbInstance.watchWritable(__socket);
+			}
 		}
 	}
 	#end
@@ -3780,6 +3876,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		again at every chance, and held for good.
 	**/
 	@:noCompletion private function __flushFailed(message:String):Void {
+		// Nothing more goes, and the poll reports a dead socket as writable.
+		__stopWaitingForRoom();
 		__dispatchPooledIOError(message);
 
 		if (__socket == null || !__peerShutdown) {

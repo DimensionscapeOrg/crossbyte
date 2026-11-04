@@ -133,7 +133,8 @@ server.addEventListener(ServerSocketConnectEvent.CONNECT, e -> {
 ### What waits for a peer that does not read
 
 What is written and that the kernel will not take yet waits in the socket's output buffer, and `bytesPending` says
-how much. Past `maxOutputBufferSize` the connection is closed (`outputOverflowPolicy = CLOSE`) with an `ioError` whose
+how much. The poll watches the socket until the kernel has room, so what waits goes as soon as it can whatever else
+the runtime is doing, and a peer that has stopped reading costs no passes. Past `maxOutputBufferSize` the connection is closed (`outputOverflowPolicy = CLOSE`) with an `ioError` whose
 `errorId` is `IOErrorEvent.OVERFLOW_ERROR_ID`, which a `NetConnection` reports as `Reason.Overflow`; a WebSocket
 session's limit, a reliable UDP session's queue for its window and a local connection's `maxQueuedBytes` end the same
 way.
