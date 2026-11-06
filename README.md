@@ -182,7 +182,8 @@ config.middleware.push(router.middleware());
 var server = new HTTPServer(config);
 ```
 
-A request's body is read whole before middleware runs, up to `maxRequestBodySize`. `onRequestHead` is asked first, at
+A request's body is read whole before middleware runs, up to `maxRequestBodySize`, and every connection's together up
+to `maxRequestBodyMemory`, past which a body waits for room. `onRequestHead` is asked first, at
 the request's head: it can refuse a request before its body is read, or choose to read that body as it arrives, as a
 large upload or a proxy wants, with the client held back while the application cannot take more:
 

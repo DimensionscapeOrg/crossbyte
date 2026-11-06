@@ -296,6 +296,7 @@ request as it arrives:
 | `HTTPServerConfig` | Default | Bounds |
 | --- | --- | --- |
 | `maxRequestBodySize` | 1 MiB | one body, refused `413` on its `Content-Length`, or as it passes the limit |
+| `maxRequestBodyMemory` | 256 MiB | every connection's bodies together; past it a body waits for room |
 | `requestTimeout` | 60 s | the whole request, from its first byte; answered `408` |
 | `requestIdleTimeout` | none | time with nothing arriving on a request still arriving; answered `408` |
 | `keepAliveTimeout` | 5 s | a connection between requests |
@@ -304,6 +305,28 @@ request as it arrives:
 `requestIdleTimeout` and raise `requestTimeout`. As for an HTTP client, an idle timeout alone does not bound a
 request: a client sending a byte at a time resets it with every byte, so keep a `requestTimeout` of some length
 rather than setting it to `0`.
+
+**Bodies across connections.** Each limit above bounds one connection, so without one across them 10,000 connections
+each sending a 1 MiB body would have 10 GB held. `maxRequestBodyMemory` bounds what every connection holds together, on
+every runtime the server runs on, and is never less than `maxRequestBodySize`. A body counts as it arrives, not as its
+`Content-Length` declares, so declaring a large body and sending nothing holds nothing; it counts until its request is
+answered, as decoded once it is. Past the limit, a body waits for room, given in the order bodies came to need it as
+others are answered:
+
+- an HTTP/1.1 connection stops reading, and the client waits on TCP's window; one that sent `Expect: 100-continue` is
+  sent its `100` once there is room;
+- an HTTP/2 connection's window is opened only as its streams need it, and not past the 64 KB the protocol gives it
+  while there is no room, so a client keeping to it sends nothing more;
+- `requestTimeout` goes on counting, and `requestIdleTimeout` stops. A request whose deadline passes while it waits is
+  answered `503` with `Retry-After: 1`, not `408`, since the wait was the server's. Under HTTP/1.1 the connection then
+  closes; under HTTP/2 a body not yet handed to the application is reset with `REFUSED_STREAM`, which tells the client
+  it may send it again.
+
+What had already arrived when the limit was reached can take the count past it: one pass of the socket (a megabyte at
+most) on each HTTP/1.1 connection reading a body, and 64 KB on each HTTP/2 connection. A body read as it arrives
+counts only while its reader has it stopped. `HTTPServer.heldRequestBodyBytes` says what is held now, and a server with
+`metrics` reports `<prefix>_request_body_bytes_held`, `<prefix>_request_body_waits_total` and
+`<prefix>_request_body_refusals_total`.
 
 **A request refused on its head.** `onRequestHead` is asked once a request's head has arrived and its framing is
 sound, before any of its body is read, and ahead of `maxRequestBodySize`, so refusing a request costs what its head

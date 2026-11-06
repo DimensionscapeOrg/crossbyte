@@ -86,8 +86,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/** The largest chunk-size read at all: seven hex digits' worth. */
 	@:noCompletion private static inline var MAX_CHUNK_SIZE:Int = 0xFFFFFFF;
 
-	// __chunkBytesRemaining, reading a chunked body as it arrives, where it is
-	// not a count: past a chunk's data, at the end of its line, and in the
+	/**
+	 * Room asked for ahead of the body a `100 Continue` invites, under
+	 * HTTP/1.1 with `maxRequestBodyMemory` set: a read's worth, or the body
+	 * when it is smaller. See `__roomForContinue`.
+	 */
+	@:noCompletion private static inline var CONTINUE_ROOM:Int = 64 * 1024;
+
+	// __chunkBytesRemaining, reading a chunked body, where it is not a count:
+	// past a chunk's data, at the end of its line, and in the
 	// trailer section.
 	@:noCompletion private static inline var CHUNK_TAIL:Int = -2;
 	@:noCompletion private static inline var CHUNK_TRAILERS:Int = -3;
@@ -204,6 +211,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// Its reader was cut loose with some of it still to come, which its client
 	// may be sending: the connection lingers (__closeOrLinger).
 	@:noCompletion private var __bodyCutShort:Bool = false;
+	// What this request holds of HTTPServerConfig.maxRequestBodyMemory, given
+	// back as a whole once it is answered (__releaseBodyMemory); and of that,
+	// room given and not filled yet, which __bodyRoom spends first.
+	@:noCompletion private var __bodyCharge:Int = 0;
+	@:noCompletion private var __bodyCredit:Int = 0;
+	// Waiting for room, with reading stopped: see __starveBody.
+	@:noCompletion private var __bodyStarved:Bool = false;
+	@:noCompletion private var __bodyWaiter:Null<crossbyte._internal.http.RequestBodyMemory.BodyRoomWaiter> = null;
+	// A 100 Continue held back until there is room for the body it invites.
+	@:noCompletion private var __continueOwed:Bool = false;
+	// What a body read as it arrives holds while its reader has it stopped,
+	// counted until it goes on.
+	@:noCompletion private var __pausedCharge:Int = 0;
+	// Told when this handler first holds room, and when it has let all of it
+	// go: an HTTP/2 connection keeps the handlers that hold some, to give it
+	// back if it closes with them unanswered.
+	@:noCompletion private var __onBodyCharged:Null<(HTTPRequestHandler, Bool) -> Void> = null;
 	// __dispatchParsedRequest as a value, made once rather than per request:
 	// what a request's body read finishes into.
 	@:noCompletion private var __dispatchHook:Void->Void;
@@ -808,6 +832,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		// Waiting for room for its body: silent because the server stopped
+		// reading, so not idle, and late because of the server, so not a 408.
+		if (__bodyStarved) {
+			if (__receiveDeadline > 0 && now >= __receiveDeadline) {
+				__receiveDeadline = 0;
+				__refuseForRoom();
+			}
+			return;
+		}
+
 		// Silent for too long, on a request still arriving.
 		var quiet:Float = __config.requestIdleTimeout;
 		var silent:Bool = quiet > 0 && !__idle && !__requestConsumed && now - __heardAt >= quiet;
@@ -1205,12 +1239,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/** The rest of a request `__admitDecodedRequest` let through: its body, decoded, then dispatch. */
-	@:noCompletion private function __continueDecodedRequest(body:Null<ByteArray>, tooLarge:Bool, timedOut:Bool):Void {
+	@:noCompletion private function __continueDecodedRequest(body:Null<ByteArray>, tooLarge:Bool, timedOut:Bool, waitedForRoom:Bool = false):Void {
 		// A body read as it arrived is all here, or given up: the request
 		// went to the chain at its head. The frame layer stops the rest of one
 		// given up itself.
 		if (__bodyReader != null) {
-			if (timedOut) {
+			if (timedOut && waitedForRoom) {
+				// Late while the connection waited for room for bodies: the
+				// server's wait, not its client's (maxRequestBodyMemory).
+				__failBody(503, "Service Unavailable", false, false, [new URLRequestHeader("Retry-After", "1")]);
+			} else if (timedOut) {
 				__failBody(408, "Request Timeout", false);
 			} else if (tooLarge) {
 				__failBody(413, "Payload Too Large", false);
@@ -1311,7 +1349,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
-		if (bodyToCome) {
+		// Held back, with no room for the body it would invite, until there is.
+		if (bodyToCome && __roomForContinue()) {
 			__writer.writeContinue();
 			__writer.flush();
 		}
@@ -2864,7 +2903,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var now:Float = haxe.Timer.stamp();
 		if (hold) {
 			__bodyHeldAt = now;
+			// What waits in the connection's buffer for it is held by the
+			// server until it goes on, and counted with the bodies held whole.
+			// Under HTTP/2 the frame layer counts it.
+			if (!__writer.ownsConnection && __incomingBuffer != null) {
+				var waiting:Int = __incomingBuffer.length - __incomingBuffer.position;
+				if (waiting > 0) {
+					__pausedCharge = waiting;
+					__bodyMemory().charge(waiting);
+				}
+			}
 		} else {
+			if (__pausedCharge > 0) {
+				__bodyMemory().release(__pausedCharge);
+				__pausedCharge = 0;
+			}
 			if (__receiveDeadline > 0) {
 				__receiveDeadline += now - __bodyHeldAt;
 			}
@@ -3166,7 +3219,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *
 	 * @param failed It failed in its reader's hands, as `__stopBodyReader` says.
 	 */
-	@:noCompletion private function __failBody(status:Int, message:String, tellClient:Bool = true, failed:Bool = false):Void {
+	@:noCompletion private function __failBody(status:Int, message:String, tellClient:Bool = true, failed:Bool = false, ?headers:Array<URLRequestHeader>):Void {
 		// Asked before its reader is told, who may answer: one that does has
 		// answered in full, and not begun something to cut short here.
 		var begun:Bool = __headOut;
@@ -3176,7 +3229,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__detachOpenStream();
 			__abandonResponse();
 		} else if (!__responded) {
-			__sendErrorResponse(status, message);
+			__sendError(status, message, message, headers);
 		}
 		// After the answer: under HTTP/2 a stream told to stop with nothing
 		// answered is reset as an error, and the answer never goes.
@@ -4079,6 +4132,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__bodyTaken = false;
 		__bodyCutShort = false;
 		__trailerBytes = 0;
+		// Answered: what its body held goes to the bodies waiting for room.
+		__releaseBodyMemory();
 		// Let go of rather than clear()ed: the old body must become
 		// collectable now, not stay referenced through a five-second idle
 		// window per megabyte a client happened to POST. The next one is made
@@ -5660,6 +5715,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var need:UInt = __expectBody - __bodyBuf.length;
 		var take:UInt = (avail < need) ? avail : need;
 		if (take > 0) {
+			// As far as there is room: what is left waits in the buffer, the
+			// connection's reading stopped until room is given.
+			take = __bodyRoom(take);
+		}
+		if (take > 0) {
 			// Grown as it arrives, by half again, but never past the length
 			// the request declared (grown by writing, a 4,096-byte body would
 			// be held in 6,177). Room is made only for what has come, so a
@@ -5685,73 +5745,86 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return !__awaitingBody;
 	}
 
+	/**
+	 * Reads what has arrived of a chunked body into `__bodyBuf`, and says
+	 * whether it has all arrived. A chunk's data is taken as it arrives, as
+	 * `__pumpChunked` takes it, rather than once the whole chunk is here: a
+	 * chunk may be as large as the body, which would then be held twice, once
+	 * in the connection's buffer, uncounted.
+	 */
 	@:noCompletion private function __readChunkedBodyFromBuffer():Bool {
+		var buffer:ByteArray = __incomingBuffer;
 		while (true) {
-			if (__chunkBytesRemaining < 0) {
-				var sizeLine:String = __readLine(__incomingBuffer);
-				if (sizeLine == null) {
-					return false;
-				}
-
-				var semi:Int = sizeLine.indexOf(";");
-				if (semi >= 0) {
-					sizeLine = sizeLine.substr(0, semi);
-				}
-
-				// Hex digits only, leading zeros allowed, and nothing past the
-				// bound, answered the same on every target. Std.parseInt gives
-				// four answers past seven digits (-1 on eval and cpp, a throw on
-				// the jvm, and on Node a number too large for an Int, which would
-				// expect a four gigabyte chunk for 0xFFFFFFFF). The bound is far
-				// above any body this server holds.
-				var parsed:Int = IntParse.hex(StringTools.trim(sizeLine), MAX_CHUNK_SIZE);
-				if (parsed < 0) {
-					__sendErrorResponse(400, "Bad Request");
-					return false;
-				}
-				__chunkBytesRemaining = parsed;
-
-				// A chunk that would take the body past its limit is refused on
-				// its size line, rather than once it has been buffered whole.
-				if (HttpSyntax.passes(__bodyBuf.length, parsed, __config.maxRequestBodySize)) {
-					__sendErrorResponse(413, "Payload Too Large");
-					return false;
-				}
-
-				if (__chunkBytesRemaining == 0) {
-					while (true) {
-						var trailer:String = __readLine(__incomingBuffer);
-						if (trailer == null) {
-							return false;
-						}
-						if (StringTools.trim(trailer).length == 0) {
-							return true;
-						}
+			switch (__chunkBytesRemaining) {
+				case -1:
+					var sizeLine:String = __readLine(buffer);
+					if (sizeLine == null) {
+						return false;
 					}
-				}
+
+					var semi:Int = sizeLine.indexOf(";");
+					if (semi >= 0) {
+						sizeLine = sizeLine.substr(0, semi);
+					}
+
+					// Hex digits only, leading zeros allowed, and nothing past the
+					// bound, answered the same on every target. Std.parseInt gives
+					// four answers past seven digits (-1 on eval and cpp, a throw on
+					// the jvm, and on Node a number too large for an Int, which would
+					// expect a four gigabyte chunk for 0xFFFFFFFF). The bound is far
+					// above any body this server holds.
+					var parsed:Int = IntParse.hex(StringTools.trim(sizeLine), MAX_CHUNK_SIZE);
+					if (parsed < 0) {
+						__sendErrorResponse(400, "Bad Request");
+						return false;
+					}
+
+					// A chunk that would take the body past its limit is refused on
+					// its size line, rather than once it has been read.
+					if (HttpSyntax.passes(__bodyBuf.length, parsed, __config.maxRequestBodySize)) {
+						__sendErrorResponse(413, "Payload Too Large");
+						return false;
+					}
+					__chunkBytesRemaining = parsed == 0 ? CHUNK_TRAILERS : parsed;
+
+				case CHUNK_TAIL:
+					if (buffer.length - buffer.position < 2) {
+						return false;
+					}
+					var cr:Int = buffer.readByte();
+					var lf:Int = buffer.readByte();
+					if (cr != 13 || lf != 10) {
+						__sendErrorResponse(400, "Bad Request");
+						return false;
+					}
+					__chunkBytesRemaining = -1;
+
+				case CHUNK_TRAILERS:
+					var trailer:String = __readLine(buffer);
+					if (trailer == null) {
+						return false;
+					}
+					if (StringTools.trim(trailer).length == 0) {
+						__chunkBytesRemaining = -1;
+						return true;
+					}
+
+				default:
+					var waiting:Int = buffer.length - buffer.position;
+					var take:Int = waiting < __chunkBytesRemaining ? waiting : __chunkBytesRemaining;
+					if (take > 0) {
+						take = __bodyRoom(take);
+					}
+					if (take <= 0) {
+						return false;
+					}
+					__bodyBuf.writeBytes(buffer, buffer.position, take);
+					buffer.position += take;
+					__chunkBytesRemaining -= take;
+					if (__chunkBytesRemaining == 0) {
+						__chunkBytesRemaining = CHUNK_TAIL;
+					}
 			}
-
-			var available:UInt = __incomingBuffer.length - __incomingBuffer.position;
-			if (available < __chunkBytesRemaining + 2) {
-				return false;
-			}
-
-			__bodyBuf.writeBytes(__incomingBuffer, __incomingBuffer.position, __chunkBytesRemaining);
-			__incomingBuffer.position += __chunkBytesRemaining;
-
-			var cr:Int = __incomingBuffer.readByte();
-			var lf:Int = __incomingBuffer.readByte();
-			if (cr != 13 || lf != 10) {
-				__sendErrorResponse(400, "Bad Request");
-				return false;
-			}
-
-			if (__bodyBuf.length > __config.maxRequestBodySize) {
-				__sendErrorResponse(413, "Payload Too Large");
-				return false;
-			}
-
-			__chunkBytesRemaining = -1;
 		}
 	}
 
@@ -5774,10 +5847,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return true;
 		}
 
+		var sent:Int = __requestBody.length;
 		try {
 			for (i in 0...__requestContentEncodings.length) {
 				var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
 				__requestBody.uncompress(HTTPContentCoding.codecFor(algorithm, __requestBody), __config.maxRequestBodySize);
+			}
+			// What it grew by is held as well, whatever room there is: it is
+			// held already.
+			if (__requestBody.length > sent) {
+				__chargeBody(__requestBody.length - sent);
 			}
 		} catch (_:crossbyte.errors.RangeError) {
 			// Grew past the ceiling: every codec says so with a RangeError.
@@ -5807,6 +5886,192 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (onComplete != null) {
 			onComplete();
+		}
+	}
+
+	/** The count `HTTPServerConfig.maxRequestBodyMemory` keeps, shared by every connection of the configuration. */
+	@:noCompletion private inline function __bodyMemory():crossbyte._internal.http.RequestBodyMemory {
+		return @:privateAccess __config.__bodyMemory;
+	}
+
+	/**
+	 * Room for up to `want` more bytes of a body held whole, from room given
+	 * before and then from `maxRequestBodyMemory`, and how much there was.
+	 * Less than `want` stops the connection's reading until more is given
+	 * (`__starveBody`).
+	 */
+	@:noCompletion private function __bodyRoom(want:Int):Int {
+		var given:Int = __bodyCredit < want ? __bodyCredit : want;
+		__bodyCredit -= given;
+		if (given < want && !__bodyStarved) {
+			var taken:Int = __bodyMemory().take(want - given, __roomWaiter());
+			__noteBodyCharge(taken);
+			given += taken;
+			if (given < want) {
+				__starveBody();
+			}
+		}
+		return given;
+	}
+
+	/** Counts `bytes` this request holds whatever room there is, until it ends. */
+	@:noCompletion private function __chargeBody(bytes:Int):Void {
+		if (bytes > 0) {
+			__bodyMemory().charge(bytes);
+			__noteBodyCharge(bytes);
+		}
+	}
+
+	/** Takes over `bytes` counted for this request before it reached it: an HTTP/2 body, counted as it was handed over. */
+	@:noCompletion private function __adoptBodyCharge(bytes:Int):Void {
+		__noteBodyCharge(bytes);
+	}
+
+	@:noCompletion private function __noteBodyCharge(bytes:Int):Void {
+		if (bytes <= 0) {
+			return;
+		}
+		var was:Int = __bodyCharge;
+		__bodyCharge += bytes;
+		if (was == 0 && __onBodyCharged != null) {
+			__onBodyCharged(this, true);
+		}
+	}
+
+	@:noCompletion private function __roomWaiter():crossbyte._internal.http.RequestBodyMemory.BodyRoomWaiter {
+		var waiter = __bodyWaiter;
+		if (waiter == null) {
+			var runtime:Null<crossbyte.core.CrossByte> = #if nodejs @:privateAccess __origin.__nodeRuntime #else @:privateAccess __origin.__cbInstance #end;
+			waiter = __bodyWaiter = new crossbyte._internal.http.RequestBodyMemory.BodyRoomWaiter(runtime, __onBodyRoom);
+		}
+		return waiter;
+	}
+
+	/**
+	 * Waits for room for the body: the connection stops reading, so what its
+	 * client sends waits in the kernel, and the client is held back by TCP's
+	 * window. `requestIdleTimeout` stops while it waits, the silence being
+	 * the server's; `requestTimeout` does not, and passing while it waits is
+	 * answered `503` (`__refuseForRoom`).
+	 */
+	@:noCompletion private function __starveBody():Void {
+		if (__bodyStarved) {
+			return;
+		}
+		__bodyStarved = true;
+		__writer.holdRequestBody(true);
+	}
+
+	/** Room was given to this connection, on its runtime: reading goes on, and what waited in its buffer is taken. */
+	@:noCompletion private function __onBodyRoom():Void {
+		var waiter = __bodyWaiter;
+		if (waiter == null) {
+			return;
+		}
+		var given:Int = __bodyMemory().collect(waiter);
+		if (!__bodyStarved || !__origin.connected) {
+			// Its request ended while the room was on its way.
+			__bodyMemory().release(given);
+			return;
+		}
+		if (given <= 0) {
+			// Told twice for one gift, the first having taken it.
+			return;
+		}
+		__noteBodyCharge(given);
+		__bodyCredit += given;
+		__bodyStarved = false;
+		__heardAt = haxe.Timer.stamp();
+		if (__continueOwed) {
+			__continueOwed = false;
+			__writer.writeContinue();
+			__writer.flush();
+		}
+		__writer.holdRequestBody(false);
+		if (!__awaitingBody || __bodyBuf == null) {
+			return;
+		}
+		try {
+			if (__readRequestBodyFromBuffer()) {
+				__finishRequestBody();
+			}
+		} catch (error:Dynamic) {
+			Logger.error("Error reading data: " + error);
+			__sendErrorResponse(500, "Internal Server Error");
+		}
+	}
+
+	/**
+	 * Answers a request whose `requestTimeout` passed while it waited for
+	 * room: `503` with `Retry-After`, since the wait was the server's and not
+	 * its client's, and the connection closed after it, lingering for a client
+	 * still sending.
+	 */
+	@:noCompletion private function __refuseForRoom():Void {
+		var refusals:Null<crossbyte.metrics.Counter> = __bodyMemory().refusals;
+		if (refusals != null) {
+			refusals.inc();
+		}
+		__releaseBodyMemory();
+		__bodyCutShort = true;
+		__closeAfterResponse = true;
+		__sendError(503, "Service Unavailable", "Service Unavailable", [new URLRequestHeader("Retry-After", "1")]);
+	}
+
+	/**
+	 * Under HTTP/1.1, with `maxRequestBodyMemory` set, whether a `100
+	 * Continue` may go now: room is asked for the first of the body it
+	 * invites, and with none the `100` is held until some is given
+	 * (`__onBodyRoom`), the connection's reading stopped meanwhile.
+	 */
+	@:noCompletion private function __roomForContinue():Bool {
+		// Not for a body read as it arrives, which the server does not hold.
+		if (__writer.ownsConnection || __bodyReader != null || !__bodyMemory().active || (!__bodyIsChunked && __expectBody <= 0)) {
+			return true;
+		}
+		var want:Int = __bodyIsChunked || __expectBody > CONTINUE_ROOM ? CONTINUE_ROOM : __expectBody;
+		var taken:Int = __bodyMemory().take(want, __roomWaiter());
+		__noteBodyCharge(taken);
+		__bodyCredit += taken;
+		if (taken < want) {
+			__starveBody();
+		}
+		if (taken > 0) {
+			return true;
+		}
+		__continueOwed = true;
+		return false;
+	}
+
+	/**
+	 * Gives back all this request holds of `maxRequestBodyMemory`, and stops
+	 * waiting for more: it has been answered, refused, or its connection has
+	 * gone.
+	 */
+	@:noCompletion private function __releaseBodyMemory():Void {
+		// Asked under the count's lock, whatever this side last saw: room may
+		// be on its way to it from another runtime.
+		if (__bodyWaiter != null) {
+			__bodyMemory().cancel(__bodyWaiter);
+		}
+		if (__bodyStarved) {
+			__bodyStarved = false;
+			if (__origin.connected && !__bodyHolding) {
+				__writer.holdRequestBody(false);
+			}
+		}
+		__continueOwed = false;
+		__bodyCredit = 0;
+		var held:Int = __bodyCharge + __pausedCharge;
+		__pausedCharge = 0;
+		if (held > 0) {
+			__bodyMemory().release(held);
+		}
+		if (__bodyCharge > 0) {
+			__bodyCharge = 0;
+			if (__onBodyCharged != null) {
+				__onBodyCharged(this, false);
+			}
 		}
 	}
 

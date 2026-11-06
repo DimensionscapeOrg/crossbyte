@@ -234,6 +234,19 @@ class HTTPServer extends ServerSocket {
 	public var draining(default, null):Bool = false;
 
 	/**
+		Bytes of request body held now, across every connection of the
+		servers started with this server's configuration, on every runtime:
+		the count `HTTPServerConfig.maxRequestBodyMemory` is held to, and
+		kept whether or not it is set. A `Float`, as across many connections
+		it can pass 2^31.
+	**/
+	public var heldRequestBodyBytes(get, never):Float;
+
+	@:noCompletion private function get_heldRequestBodyBytes():Float {
+		return @:privateAccess __config.__bodyMemory.held;
+	}
+
+	/**
 		Reads `tlsCertificatePath` and `tlsKeyPath` again, and presents what
 		they hold from now on: each handshake from then on gets that
 		certificate, and each connection already up keeps its own. How a
@@ -418,6 +431,12 @@ class HTTPServer extends ServerSocket {
 			} catch (_:Dynamic) {}
 		}
 
+		// Any whose close did not come back through cleanupSocket: what they
+		// held would otherwise stay counted for whatever else shares the
+		// configuration.
+		for (handler in __active) {
+			handler.__releaseBodyMemory();
+		}
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
 		__sniffing = new ObjectMap();
@@ -832,8 +851,12 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		if (__active.exists(sock)) {
+		var handler:Null<HTTPRequestHandler> = __active.get(sock);
+		if (handler != null) {
 			__active.remove(sock);
+			// What its request held of maxRequestBodyMemory, unanswered, goes
+			// to the bodies waiting for room.
+			handler.__releaseBodyMemory();
 			__releaseConnection();
 			return;
 		}
@@ -894,6 +917,13 @@ class HTTPServer extends ServerSocket {
 			"Largest amount of undrained response data held for any one connection.");
 		registry.gaugeFn(prefix + "_output_buffer_bytes_total", () -> __totalOutputBuffer(), null,
 			"Undrained response data held across all connections.");
+
+		// The count maxRequestBodyMemory is held to, and what reaching it costs.
+		var bodies:crossbyte._internal.http.RequestBodyMemory = @:privateAccess __config.__bodyMemory;
+		registry.gaugeFn(prefix + "_request_body_bytes_held", () -> bodies.held, null, "Request body held across all connections.");
+		bodies.waits = registry.counter(prefix + "_request_body_waits_total", null, "Request bodies that waited for room under maxRequestBodyMemory.");
+		bodies.refusals = registry.counter(prefix + "_request_body_refusals_total", null,
+			"Requests refused, 503 or REFUSED_STREAM, as their deadline passed while they waited for room.");
 	}
 
 	/**

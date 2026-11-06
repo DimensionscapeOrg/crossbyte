@@ -573,6 +573,67 @@ class HTTPServerSpreadTest extends utest.Test {
 		SpreadSupport.stop([acceptor, first, second]);
 	}
 
+	/**
+		`maxRequestBodyMemory` is the server's, across its runtimes: a body on
+		one runtime waits for room a request on another holds, and goes on
+		once that one is answered there.
+	**/
+	@:timeout(30000)
+	public function testRequestBodyMemoryIsSharedByTheRuntimes():Void {
+		var acceptor:CrossByte = SpreadSupport.runtime();
+		var first:CrossByte = SpreadSupport.runtime();
+		var second:CrossByte = SpreadSupport.runtime();
+		var held:Deque<HTTPRequestHandler> = new Deque();
+		var limit:Int = 64 * 1024;
+
+		var server:HTTPServer = SpreadSupport.on(acceptor, () -> {
+			var config = new HTTPServerConfig("127.0.0.1", 0);
+			config.rateLimiter = new RateLimiter(1000000, 1.0);
+			config.maxRequestBodySize = limit;
+			config.maxRequestBodyMemory = limit;
+			config.runtimes = [first, second];
+			// Held unanswered, their bodies counted, until the case answers.
+			config.middleware.push(function(handler:HTTPRequestHandler, ?next:Dynamic->Void):Void {
+				held.add(handler);
+			});
+			return new HTTPServer(config);
+		});
+
+		var body:String = StringTools.lpad("", "x", limit);
+		function post(client:sys.net.Socket, path:String):Void {
+			client.output.writeString('POST $path HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: $limit\r\n\r\n' + body);
+			client.output.flush();
+		}
+
+		// The first connection goes to the first runtime, the second to the second.
+		var clientA:sys.net.Socket = SpreadSupport.connect(server.localPort);
+		post(clientA, "/a");
+		var heldFirst:Null<HTTPRequestHandler> = SpreadSupport.pop(held, WAIT);
+		var clientB:sys.net.Socket = SpreadSupport.connect(server.localPort);
+		post(clientB, "/b");
+		var early:Null<HTTPRequestHandler> = SpreadSupport.pop(held, 0.5);
+		var heldWhileWaiting:Float = server.heldRequestBodyBytes;
+
+		Assert.notNull(heldFirst, "the first body never arrived");
+		Assert.isNull(early, "a body arrived with the room taken on another runtime");
+		Assert.isTrue(heldWhileWaiting <= limit, 'the runtimes held $heldWhileWaiting bytes of body together');
+		heldFirst.respond(200, "text/plain", "got " + heldFirst.requestBody.length);
+		var firstAnswer = HttpWire.getReply(clientA);
+		var heldSecond:Null<HTTPRequestHandler> = SpreadSupport.pop(held, WAIT);
+		Assert.notNull(heldSecond, "the body that waited never arrived once there was room");
+		if (heldSecond != null) {
+			heldSecond.respond(200, "text/plain", "got " + heldSecond.requestBody.length);
+		}
+		var secondAnswer = HttpWire.getReply(clientB);
+		Assert.equals('got $limit', firstAnswer.body);
+		Assert.equals('got $limit', secondAnswer.body);
+		Assert.isTrue(SpreadSupport.waitFor(() -> server.heldRequestBodyBytes == 0, WAIT), 'what was answered stayed counted: ${server.heldRequestBodyBytes}');
+
+		SpreadSupport.closeAll([clientA, clientB]);
+		SpreadSupport.on(acceptor, () -> server.close());
+		SpreadSupport.stop([acceptor, first, second]);
+	}
+
 	#if (cpp || java || jvm)
 	/** HTTPS: the TLS handshake and the request both on the connection's runtime. **/
 	@:timeout(30000)

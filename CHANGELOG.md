@@ -43,6 +43,21 @@ All notable changes to CrossByte will be documented in this file.
   `requestIdleTimeout` still hold, and the deadlines stop while a reader
   has it stopped. A coding is left as it was sent, which is what a proxy
   passes on, so a coding this server could not undo is not refused.
+- `HTTPServerConfig.maxRequestBodyMemory`, the request body held at once
+  across every connection, on every runtime: 256 MiB by default, and
+  never less than `maxRequestBodySize`. Without it what the server held
+  was bounded per connection only, so 10,000 connections each sending a
+  1 MiB body had 10 GB held. A body counts as it arrives, not as its
+  `Content-Length` declares, until its request is answered. Past the
+  limit, a body waits for room in the order bodies came to need it: an
+  HTTP/1.1 connection stops reading, and sends a `100 Continue` once
+  there is room; an HTTP/2 connection stops opening its window. A request
+  whose `requestTimeout` passes while it waits is answered `503` with
+  `Retry-After: 1`, or under HTTP/2 a body not yet handed to the
+  application is reset `REFUSED_STREAM`, since the wait was the
+  server's. `HTTPServer.heldRequestBodyBytes` says what is held, and a
+  server with `metrics` reports it, with the waits and the refusals. See
+  docs/limits.md.
 - `HTTPServerConfig.requestIdleTimeout`, the seconds a request still
   arriving may go without a byte, off by default, beside
   `requestTimeout`, which bounds the whole request and so also sets a
@@ -99,6 +114,16 @@ says how.
   `SharedChannel`. Arrays, structures, strings, numbers, `Date`, `Bytes`,
   `List` and maps need nothing allowed, and AMF and JSON make no class
   instances. (Upgrading)
+
+#### HTTP
+
+- An HTTP/2 connection's window is opened as its streams need it, rather
+  than to `http2MaxRequestBodyBuffer` as the connection opens, so a
+  connection that sends no body is given nothing past the protocol's
+  64 KB, and the room it is given counts in `maxRequestBodyMemory`.
+- A chunked body held whole is read as its chunks arrive, rather than
+  each chunk being kept in the connection's buffer until it had all
+  arrived, where it was held twice and counted nowhere.
 
 ### Fixed
 

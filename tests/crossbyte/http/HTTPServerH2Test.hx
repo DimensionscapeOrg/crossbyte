@@ -2998,6 +2998,140 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2UploadWaitsForRoomEveryConnectionShares(async:Async):Void {
+		// maxRequestBodyMemory is every connection's together. With it taken
+		// (by other connections; here, charged directly), an upload's
+		// connection window is not opened past the 64 KB the protocol gives it,
+		// so a client keeping to its windows stops there and the server holds
+		// no more of it. Once room comes back, the window opens and the upload
+		// arrives whole, and nothing of it stays counted once it is answered.
+		var size:Int = 200 * 1024;
+		var config:Null<HTTPServerConfig> = null;
+		var session = new H2Session(c -> {
+			config = c;
+			c.maxRequestBodySize = 256 * 1024;
+			c.maxRequestBodyMemory = 256 * 1024;
+			c.requestTimeout = 0;
+			c.keepAliveTimeout = 0;
+			c.middleware = [(handler, next) -> handler.respond(200, "text/plain", "got " + handler.requestBody.length)];
+		});
+		var memory = @:privateAccess config.__bodyMemory;
+		memory.charge(256 * 1024);
+
+		session.start(() -> {
+			var bodies:Map<Int, Bytes> = [1 => Bytes.alloc(size)];
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(size))]);
+			session.uploadAll(bodies, 0, () -> {
+				var heldWhileFull:Int = __requestBodyHeldBy(session.server);
+				var finishedWhileFull:Bool = session.finished(1);
+				var starved:Bool = Lambda.exists([for (h in @:privateAccess session.server.__activeHttp2) h], h -> @:privateAccess h.__connection.starved);
+				memory.release(256 * 1024);
+				session.uploadAll(bodies, 0, () -> {
+					session.until(() -> memory.held == 0, () -> {
+						var heldAfter:Float = memory.held;
+						session.close();
+						Assert.isFalse(finishedWhileFull, "the upload finished with no room for it");
+						Assert.isTrue(starved, "the connection did not wait for room");
+						Assert.isTrue(heldWhileFull <= 65535, 'the connection held $heldWhileFull bytes with no room');
+						Assert.equals(200, session.status(1));
+						Assert.equals('got $size', session.body(1));
+						Assert.equals(0.0, heldAfter, "what was answered stayed counted");
+						async.done();
+					});
+				}, 10.0);
+			});
+		});
+	}
+
+	public function testAnHttp2UploadLateWhileWaitingForRoomIsRefusedToBeSentAgain(async:Async):Void {
+		// requestTimeout passing while the connection's window waited for room
+		// is the server's wait: a body not yet handed to the application is
+		// reset REFUSED_STREAM, which tells the client it may send it again,
+		// rather than answered 408. The connection carries on.
+		var size:Int = 200 * 1024;
+		var config:Null<HTTPServerConfig> = null;
+		var session = new H2Session(c -> {
+			config = c;
+			c.maxRequestBodySize = 256 * 1024;
+			c.maxRequestBodyMemory = 256 * 1024;
+			c.requestTimeout = 1;
+			c.middleware = [(handler, next) -> handler.respond(200, "text/plain", "got " + handler.requestBody.length)];
+		});
+		var memory = @:privateAccess config.__bodyMemory;
+		memory.charge(256 * 1024);
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(size))]);
+			session.uploadAll([1 => Bytes.alloc(size)], 0, () -> {
+				@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 2);
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					memory.release(256 * 1024);
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						var heldAfter:Float = memory.held;
+						session.close();
+						Assert.equals(7, session.resetCode(1), "an upload late from waiting for room was not refused to be sent again");
+						Assert.equals(-1, session.status(1), "it was answered");
+						Assert.equals(200, session.status(3), "the connection went with the stream");
+						Assert.equals(0.0, heldAfter, "what the refused stream held stayed counted");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testAStreamedHttp2BodyLateWhileWaitingForRoomIs503(async:Async):Void {
+		// A body read as it arrives holds nothing once its reader has it, so
+		// it waits for room only when the connection's window is spent on
+		// another: here a buffered upload holding the 64 KB the protocol gives
+		// the connection, with no room for more. Both are late. The buffered
+		// one, never handed to the application, is refused to be sent again;
+		// the streamed one, which the application has seen, is answered 503
+		// with Retry-After, and its reader told the body will not finish.
+		var size:Int = 200 * 1024;
+		var config:Null<HTTPServerConfig> = null;
+		var aborted:Int = 0;
+		var session = new H2Session(c -> {
+			config = c;
+			c.maxRequestBodySize = 256 * 1024;
+			c.maxRequestBodyMemory = 256 * 1024;
+			c.requestTimeout = 1;
+			c.onRequestHead = handler -> {
+				if (handler.requestPath == "/streamed") {
+					var body:HTTPBodyReader = handler.streamRequestBody();
+					body.onData = (_, _, _) -> true;
+					body.onAbort = () -> aborted++;
+				}
+				return true;
+			};
+			c.middleware = [(handler, next) -> {}];
+		});
+		var memory = @:privateAccess config.__bodyMemory;
+		memory.charge(256 * 1024);
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-length", Std.string(size))]);
+			session.uploadAll([1 => Bytes.alloc(size)], 0, () -> {
+				session.request(3, "POST", "/streamed", false, [new HpackHeader("content-length", "1000")]);
+				session.uploadAll([3 => Bytes.alloc(1000)], 0, () -> {
+					var streamedBeforeSweep:Bool = session.finished(3);
+					@:privateAccess session.server.__sweep(haxe.Timer.stamp() + 2);
+					session.until(() -> (session.finished(1) && session.finished(3)) || session.ended, () -> {
+						memory.release(256 * 1024);
+						session.close();
+						Assert.isFalse(streamedBeforeSweep, "the streamed body did not wait, so this shows nothing");
+						Assert.equals(7, session.resetCode(1), "the buffered upload was not refused to be sent again");
+						Assert.equals(503, session.status(3), "a streamed body late from waiting for room was not answered 503");
+						Assert.equals("1", session.header(3, "retry-after"));
+						Assert.equals(1, aborted, "its reader was not told");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	/** Request body the server's HTTP/2 connections hold in streams still receiving one. **/
 	private static function __requestBodyHeldBy(server:HTTPServer):Int {
 		var total:Int = 0;

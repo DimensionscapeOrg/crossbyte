@@ -5,6 +5,8 @@ import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte._internal.http.h2.hpack.HpackStaticTable;
+import crossbyte._internal.http.RequestBodyMemory;
+import crossbyte._internal.http.RequestBodyMemory.BodyRoomWaiter;
 import crossbyte.http.HTTP2Settings;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -171,7 +173,8 @@ class H2ServerConnection {
 		as the preface ends.
 
 		Held to it by flow control, not by refusing what arrives. The
-		connection's window is opened to the budget and given back only for
+		connection's window is opened to the budget (with `sharedBodies`, as
+		far as its streams need, and no further) and given back only for
 		bytes let go (a body handed over, dropped or reset), so a client
 		that keeps to its windows never sends more, and one that does not
 		is a FLOW_CONTROL_ERROR. Each stream's first window, which a client
@@ -195,6 +198,27 @@ class H2ServerConnection {
 		way as it arrives (see `__headerAllowance`).
 	**/
 	public var requestBodyBudget:Int = 0;
+
+	/**
+		The count of request body every connection of the server shares
+		(`HTTPServerConfig.maxRequestBodyMemory`), or null for none, with
+		the waiter that is told when room is given to this connection
+		(`roomGiven`). Read as the preface ends.
+
+		With one, the connection's window is opened as its streams need it,
+		to every stream's open window or the protocol's 64 KB, whichever is
+		more, rather than to `requestBodyBudget` up front; and what it then
+		holds and has open past the protocol's 64 KB is taken from the
+		count, and given back as it is let go. With no room, the window is
+		not opened, so a client that keeps to it sends nothing more until
+		there is (`starved`).
+	**/
+	public var sharedBodies:Null<RequestBodyMemory> = null;
+
+	public var sharedWaiter:Null<BodyRoomWaiter> = null;
+
+	/** Whether the connection's window waits for room in `sharedBodies`. */
+	public var starved(get, never):Bool;
 
 	/**
 		Called when a stream starts waiting for window its connection has no
@@ -375,6 +399,11 @@ class H2ServerConnection {
 	// Set once the client has acknowledged this side's SETTINGS: until then
 	// it may still be using the protocol's first window on every stream.
 	private var __settingsAcked:Bool = false;
+	// sharedBodies, from the preface on, what has been taken from it, and
+	// whether the window waits for more: see __topUpConnection.
+	private var __shared:Null<RequestBodyMemory> = null;
+	private var __borrowed:Int = 0;
+	private var __starved:Bool = false;
 	// The header sections of streams still receiving a body, by HPACK's
 	// accounting, and what they are held to. A quarter of the budget, and
 	// never less than one section at the list limit, fixed with it.
@@ -482,6 +511,10 @@ class H2ServerConnection {
 
 	private inline function get_heldRequestBytes():Int {
 		return __bodyHeld;
+	}
+
+	private inline function get_starved():Bool {
+		return __starved;
 	}
 
 	/** Marks a stream's request handed over, before the handler can answer it. */
@@ -1079,7 +1112,7 @@ class H2ServerConnection {
 		var late:Null<Array<H2Stream>> = null;
 		for (target in __streams) {
 			if (!target.delivered && !target.holding
-				&& (target.openedAt <= cutoff || (quietCutoff > 0 && target.heardAt <= quietCutoff && target.recvWindow > 0))) {
+				&& (target.openedAt <= cutoff || (quietCutoff > 0 && target.heardAt <= quietCutoff && target.recvWindow > 0 && !__starved))) {
 				if (late == null) {
 					late = [];
 				}
@@ -1108,6 +1141,20 @@ class H2ServerConnection {
 	}
 
 	private function __refuseLate(target:H2Stream):Void {
+		// Late because the connection's window waited for room every
+		// connection shares: the server's wait, not the client's. A body not
+		// yet handed to the application is refused, REFUSED_STREAM, which
+		// tells the client it may send it again; one it has seen is answered
+		// 503 (H2ServerRequest.waitedForRoom).
+		var waited:Bool = __starved;
+		if (waited && __shared.refusals != null) {
+			__shared.refusals.inc();
+		}
+		if (waited && !target.streamed) {
+			resetStream(target.id, H2ErrorCode.REFUSED_STREAM);
+			return;
+		}
+
 		__release(target);
 		target.overflowed = true;
 		target.takeBody();
@@ -1124,6 +1171,7 @@ class H2ServerConnection {
 		}
 
 		request.timedOut = true;
+		request.waitedForRoom = waited;
 		request.body = Bytes.alloc(0);
 		__markDelivered(target);
 		onRequest(request);
@@ -1415,7 +1463,10 @@ class H2ServerConnection {
 			// the SETTINGS carries.
 			__fixBudget();
 			__writeFrame(H2FrameType.SETTINGS, 0, 0, localSettings.toPayload());
-			if (__budget > __recvWindow) {
+			// Shared, the window is opened as streams need it instead
+			// (__topUpConnection).
+			__shared = sharedWaiter != null ? sharedBodies : null;
+			if (__shared == null && __budget > __recvWindow) {
 				// Opened to the budget with the SETTINGS, so the client has the
 				// room before its first DATA: the protocol's 64 KB would hold
 				// every body arriving at once to that.
@@ -1985,6 +2036,9 @@ class H2ServerConnection {
 
 		__markDelivered(target);
 		onRequest(request);
+		// What it held is the request's now, counted as it was handed over:
+		// the connection's share goes back.
+		__returnBorrowed();
 	}
 
 	private function __onRstStream(frame:H2Frame):Void {
@@ -2326,6 +2380,10 @@ class H2ServerConnection {
 
 	/** Gives the connection's window back what is no longer held, a few kilobytes at a time unless it is running low. */
 	private function __topUpConnection():Void {
+		if (__shared != null) {
+			__topUpShared();
+			return;
+		}
 		var returnable:Int = __budget - __bodyHeld - __recvWindow;
 		if (returnable <= 0) {
 			return;
@@ -2335,6 +2393,97 @@ class H2ServerConnection {
 		}
 		__recvWindow += returnable;
 		__writeWindowUpdate(0, returnable);
+	}
+
+	/**
+		`__topUpConnection` with `sharedBodies`: the window is opened to what
+		the streams have open (`__promised`), or the protocol's own 64 KB when
+		that is more, as far as `requestBodyBudget` goes. What the connection
+		then holds and has open past the protocol's 64 KB, which the client
+		was given unasked, is taken from the shared count; without room for
+		all of it the window opens as far as there is, and the rest waits for
+		`roomGiven`. What it no longer needs goes back.
+	**/
+	private function __topUpShared():Void {
+		var target:Int = __promised > HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE ? __promised : HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		var room:Int = __budget - __bodyHeld;
+		if (target > room) {
+			target = room;
+		}
+		var increment:Int = target - __recvWindow;
+		if (increment > 0 && !(increment < CONNECTION_REFRESH && __recvWindow >= CONNECTION_REFRESH)) {
+			var need:Int = __bodyHeld + __recvWindow + increment - HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE - __borrowed;
+			if (need > 0) {
+				var taken:Int = __starved ? 0 : __shared.take(need, sharedWaiter);
+				__borrowed += taken;
+				if (taken < need) {
+					// Queued for the rest by take, unless it was already.
+					__starved = true;
+					increment -= need - taken;
+				}
+			}
+			if (increment > 0) {
+				__recvWindow += increment;
+				__writeWindowUpdate(0, increment);
+			}
+		}
+		__returnBorrowed();
+	}
+
+	/** Gives back to `sharedBodies` what the connection has taken past what it holds and has open. */
+	private function __returnBorrowed():Void {
+		if (__shared == null) {
+			return;
+		}
+		var owed:Int = __bodyHeld + __recvWindow - HTTP2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		if (owed < 0) {
+			owed = 0;
+		}
+		if (__borrowed > owed) {
+			var excess:Int = __borrowed - owed;
+			__borrowed = owed;
+			__shared.release(excess);
+		}
+	}
+
+	/**
+		Room was given to this connection in `sharedBodies`, which its owner
+		says on the connection's runtime: the window is opened with it, and
+		what waited on it goes on.
+	**/
+	public function roomGiven():Void {
+		if (__shared == null || sharedWaiter == null) {
+			return;
+		}
+		var given:Int = __shared.collect(sharedWaiter);
+		if (closed) {
+			__shared.release(given);
+			return;
+		}
+		if (given <= 0) {
+			// Told twice for one gift, the first having taken it.
+			return;
+		}
+		__borrowed += given;
+		__starved = false;
+		__released = true;
+		__settle();
+		__returnBorrowed();
+	}
+
+	/** Gives back all the connection has of `sharedBodies`, as it closes: what its streams held goes with them. */
+	public function releaseShared():Void {
+		var shared:Null<RequestBodyMemory> = __shared != null ? __shared : sharedBodies;
+		if (shared == null) {
+			return;
+		}
+		if (sharedWaiter != null) {
+			shared.cancel(sharedWaiter);
+		}
+		__starved = false;
+		var borrowed:Int = __borrowed;
+		__borrowed = 0;
+		shared.release(borrowed);
 	}
 
 	/**
@@ -2453,6 +2602,10 @@ class H2ServerConnection {
 		target.recvWindow += given;
 		__promised += given;
 		__writeWindowUpdate(target.id, given);
+		if (__shared != null) {
+			// The connection's window, opened only as streams need it, with it.
+			__topUpShared();
+		}
 		return given;
 	}
 
@@ -2540,6 +2693,11 @@ class H2ServerConnection {
 		// A header block still arriving holds every other frame back (6.10);
 		// once it ends this is asked again.
 		if (__continuationStreamId >= 0 || !__settingsAcked) {
+			return;
+		}
+		// The connection's window waits for room every connection shares:
+		// nothing a stream here gives up would open it.
+		if (__starved && __recvWindow <= 0) {
 			return;
 		}
 		while (!closed) {
