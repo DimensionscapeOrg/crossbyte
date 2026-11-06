@@ -649,6 +649,20 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	public function testMediaFilesNameTheirType():Void {
+		// A browser decides from Content-Type whether it can play a file, so
+		// octet-stream could leave Ogg and WebM unplayed
+		Assert.equals("audio/ogg", HTTPRequestHandler.__getMimeType("/music/theme.ogg"));
+		Assert.equals("audio/ogg", HTTPRequestHandler.__getMimeType("/voice.OPUS"));
+		Assert.equals("audio/mp4", HTTPRequestHandler.__getMimeType("/sound.m4a"));
+		Assert.equals("audio/aac", HTTPRequestHandler.__getMimeType("/sound.aac"));
+		Assert.equals("audio/flac", HTTPRequestHandler.__getMimeType("/sound.flac"));
+		Assert.equals("video/webm", HTTPRequestHandler.__getMimeType("/clip.webm"));
+		Assert.equals("video/ogg", HTTPRequestHandler.__getMimeType("/clip.ogv"));
+		Assert.equals("video/mp4", HTTPRequestHandler.__getMimeType("/clip.m4v"));
+		Assert.equals("application/wasm", HTTPRequestHandler.__getMimeType("/app.wasm"));
+	}
+
 	public function testRootContainmentRejectsSiblingPrefix():Void {
 		#if windows
 		var root = "C:\\www";

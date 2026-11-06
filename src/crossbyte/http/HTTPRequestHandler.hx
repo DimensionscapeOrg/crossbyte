@@ -4874,7 +4874,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__scanned = 0;
 	}
 
-	@:noCompletion private function __getMimeType(filePath:String):String {
+	@:noCompletion private static function __getMimeType(filePath:String):String {
 		var dot:Int = filePath.lastIndexOf(".");
 		final ext = HttpSyntax.lowerAscii(dot < 0 ? filePath : filePath.substr(dot + 1));
 		var mimeType:String = switch (ext) {
@@ -4902,7 +4902,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case "wasm": "application/wasm";
 			case "mp3": "audio/mpeg";
 			case "wav": "audio/wav";
-			case "mp4": "video/mp4";
+			case "ogg", "oga", "opus": "audio/ogg";
+			case "m4a": "audio/mp4";
+			case "aac": "audio/aac";
+			case "flac": "audio/flac";
+			case "mp4", "m4v": "video/mp4";
+			case "webm": "video/webm";
+			case "ogv": "video/ogg";
 			case "pdf": "application/pdf";
 
 			default: "application/octet-stream";

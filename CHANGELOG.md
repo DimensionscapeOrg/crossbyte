@@ -129,6 +129,9 @@ says how.
 
 #### HTTP
 
+- Static files in Ogg, Opus, M4A, AAC, FLAC, WebM, OGV and M4V go out
+  with their media type, where they went out as
+  `application/octet-stream`, which a browser may refuse to play.
 - A field a caller gives `respond` or `respondBytes` named `Date`,
   `Server`, `X-Content-Type-Options` or `Content-Type` stands in place of
   the server's own, where both went out, which a proxy passing on another
