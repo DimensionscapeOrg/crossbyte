@@ -12,7 +12,7 @@ class Aedifex {
 		.version("1.0.1")
 		.github("dimensionscapeorg/crossbyte")
 		.license("Apache")
-		.releaseNote("1.0.1, fixes to 1.0.0: a runtime whose startup fails exits with code 1.")
+		.releaseNote("1.0.1: HTTP requests answered from any thread, request bodies streamed or held to a memory limit, Socket.bind before connect, media types for audio and video, and fixes across HTTP, TCP, RPC, data and the platforms.")
 		.contributor("Dimensionscape")
 		.classPath("src")
 		.source("src")

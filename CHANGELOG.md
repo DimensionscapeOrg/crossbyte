@@ -2,7 +2,9 @@
 
 All notable changes to CrossByte will be documented in this file.
 
-## 1.0.1 - Unreleased
+## Unreleased
+
+## 1.0.1 - 2026-11-06
 
 ### Added
 

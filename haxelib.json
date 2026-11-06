@@ -19,7 +19,7 @@
 	"contributors": [
 		"Dimensionscape"
 	],
-	"releasenote": "1.0.1, fixes to 1.0.0: a runtime whose startup fails exits with code 1.",
+	"releasenote": "1.0.1: HTTP requests answered from any thread, request bodies streamed or held to a memory limit, Socket.bind before connect, media types for audio and video, and fixes across HTTP, TCP, RPC, data and the platforms.",
 	"version": "1.0.1",
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
 	"dependencies": {
