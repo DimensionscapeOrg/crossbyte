@@ -24,7 +24,8 @@ Two options make a native release build faster to run and slower to build. Neith
 `-D HXCPP_OPTIMIZE_LINK` turns on link-time optimisation. hxcpp writes each class to a file of its own, and without
 it the compiler cannot inline one class's code into another's. On Windows it cut the dense spatial grid's step by a
 third and the replication codecs by 12 to 16%, and the build took about three times as long. With Clang on Linux
-it does not link yet, since hxcpp leaves `-flto` off the link line; `crossbyte_pgo` adds it.
+it needs a libhxcpp newer than 6.0.0-rc.1: hxcpp 4.3 and earlier libhxcpp leave `-flto` off the link line, so the
+build does not link. `crossbyte_pgo` adds it either way.
 
 `-D crossbyte_pgo` adds profile-guided optimisation on top, with MSVC, GCC or Clang, for the machine it builds on.
 Build the program instrumented, run it on the work it is for, and build it again from what that run counted:
