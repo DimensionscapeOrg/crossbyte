@@ -272,6 +272,21 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 	public var maxConnectionsPerAddress:Int = 0;
 
 	/**
+		The proxies in front of this server (Caddy, nginx, a load balancer,
+		or the machine's own processes), or `null` for none. Set before
+		`listen()`.
+
+		A connection from a trusted proxy speaks for others, so it is never
+		counted under the proxy's own address for `maxConnectionsPerAddress`:
+		a raw connection from one is held only by `maxConnections`, and a
+		`ServerWebSocket` counts the session under the client's address its
+		upgrade request was forwarded from (see
+		`ServerWebSocket.trustedProxies`). A connection from any other
+		address is counted as it is accepted.
+	**/
+	public var trustedProxies:Null<TrustedProxies> = null;
+
+	/**
 		Connections this server closed for its own limits: past
 		`maxPendingHandshakesPerAddress` as they were accepted, and past
 		`maxConnections`: as they were accepted, as a TLS handshake
@@ -1558,6 +1573,10 @@ class ServerSocket extends EventDispatcher implements crossbyte._internal.socket
 		var front:ServerSocket = __front != null ? __front : this;
 		var limit:Int = front.maxConnectionsPerAddress;
 		if (limit <= 0 || address == null) {
+			return false;
+		}
+		if (front.trustedProxies != null && front.trustedProxies.trusts(address)) {
+			// Speaks for others: not counted under its own address.
 			return false;
 		}
 		var key:String = RateLimiter.addressKey(address);

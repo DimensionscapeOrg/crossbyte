@@ -93,6 +93,27 @@ class ServerSocketAddressLimitTest extends utest.Test {
 		});
 	}
 
+	/** A raw connection from a trusted proxy speaks for others: never counted under the proxy's own address. **/
+	@:timeout(20000)
+	public function testARawServerDoesNotCountATrustedProxy(async:Async):Void {
+		var server = new ServerSocket();
+		server.maxConnectionsPerAddress = 1;
+		server.trustedProxies = new TrustedProxies(["loopback"]);
+		var announced:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> announced.push(e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var peers = [new WirePeer(server.localPort), new WirePeer(server.localPort), new WirePeer(server.localPort)];
+			NetPump.until(() -> announced.length >= 3, 5.0, function(_) {
+				Assert.equals(3, announced.length, "a trusted proxy was held to one address's limit");
+				Assert.equals(0, server.refusedConnections);
+				Assert.equals(0, server.__connectionCounts.count("127.0.0.1"));
+				__finish(server, announced, peers, async);
+			});
+		});
+	}
+
 	#if (cpp || java || jvm || nodejs)
 	/**
 		A TLS server holds a connection's place from accept, through its
@@ -193,6 +214,100 @@ class ServerSocketAddressLimitTest extends utest.Test {
 							async.done();
 						});
 					});
+				});
+			});
+		});
+	}
+
+	/**
+		Behind a trusted proxy, a session is counted under the address the
+		proxy says it forwarded, from its upgrade: two clients of one proxy
+		are two addresses, and a second session from one forwarded address
+		past its limit is refused with 429. The proxy's own address holds
+		nothing.
+	**/
+	@:timeout(20000)
+	public function testBehindATrustedProxyASessionIsCountedByItsClient(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.maxConnectionsPerAddress = 1;
+		server.trustedProxies = new TrustedProxies(["loopback"]);
+		var clients:Array<String> = [];
+		server.upgrade = request -> {
+			clients.push(request.clientAddress);
+			return true;
+		};
+		var opened:Array<WebSocket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> opened.push(cast e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var first = new WirePeer(server.localPort);
+			first.upgrade("/", ["X-Forwarded-For: 203.0.113.5"]);
+			var other = new WirePeer(server.localPort);
+			other.upgrade("/", ["X-Forwarded-For: 198.51.100.7, 127.0.0.1"]);
+			NetPump.until(() -> opened.length >= 2, 5.0, function(_) {
+				Assert.equals(2, opened.length, "two clients of one proxy were held to one address's limit");
+				clients.sort(Reflect.compare);
+				Assert.same(["198.51.100.7", "203.0.113.5"], clients);
+				Assert.equals(0, server.__connectionCounts.count("127.0.0.1"), "the proxy's address held a place");
+				Assert.equals(1, server.__connectionCounts.count("203.0.113.5"));
+				var again = new WirePeer(server.localPort);
+				again.upgrade("/", ["X-Forwarded-For: 203.0.113.5"]);
+				NetPump.until(() -> __ended([again]) > 0 || again.head() != null, 5.0, function(_) {
+					var head = again.head();
+					Assert.isTrue(head != null && head.indexOf(" 429 ") > 0, "a second session from one client was not refused with 429: " + head);
+					Assert.equals(1, server.refusedConnections);
+					Assert.equals(2, clients.length, "the upgrade hook was asked about a session past its limit");
+					[for (session in opened) if (session.request.clientAddress == "203.0.113.5") session][0].close();
+					NetPump.until(() -> server.__connectionCounts.count("203.0.113.5") == 0, 5.0, function(_) {
+						Assert.equals(0, server.__connectionCounts.count("203.0.113.5"), "a closed session kept its client's place");
+						for (session in opened) {
+							try session.close() catch (_:Dynamic) {}
+						}
+						first.close();
+						other.close();
+						again.close();
+						try server.close() catch (_:Dynamic) {}
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	/** A peer that is not a trusted proxy is its own client: what it says it forwarded is not believed. **/
+	@:timeout(20000)
+	public function testAnUntrustedPeerCannotNameAnotherClient(async:Async):Void {
+		var server = new ServerWebSocket();
+		server.maxConnectionsPerAddress = 1;
+		server.trustedProxies = new TrustedProxies(["203.0.113.9"]);
+		var clients:Array<String> = [];
+		server.upgrade = request -> {
+			clients.push(request.clientAddress);
+			return true;
+		};
+		var opened:Array<WebSocket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, (e:ServerSocketConnectEvent) -> opened.push(cast e.socket));
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var first = new WirePeer(server.localPort);
+			first.upgrade("/", ["X-Forwarded-For: 198.51.100.1"]);
+			NetPump.until(() -> opened.length >= 1, 5.0, function(_) {
+				Assert.same(["127.0.0.1"], clients);
+				Assert.equals(1, server.__connectionCounts.count("127.0.0.1"));
+				var second = new WirePeer(server.localPort);
+				second.upgrade("/", ["X-Forwarded-For: 198.51.100.2"]);
+				NetPump.until(() -> __ended([second]) > 0, 5.0, function(_) {
+					Assert.isTrue(second.ended, "a forwarded address from an untrusted peer was believed");
+					Assert.equals(1, opened.length);
+					for (session in opened) {
+						try session.close() catch (_:Dynamic) {}
+					}
+					first.close();
+					second.close();
+					try server.close() catch (_:Dynamic) {}
+					async.done();
 				});
 			});
 		});

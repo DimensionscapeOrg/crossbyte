@@ -265,6 +265,14 @@ class ServerWebSocket extends ServerSocket {
 	// The address `admit` was last asked about and agreed to.
 	@:noCompletion private var __admittedAddress:String = null;
 
+	// `trustedProxies` is ServerSocket's. Behind a trusted HTTP proxy a
+	// connection is not counted as it is accepted, under
+	// maxConnectionsPerAddress or maxPendingHandshakesPerAddress: once its
+	// upgrade request has arrived, the client's address is read through the
+	// proxies from its Forwarded or X-Forwarded-For header, given as the
+	// request's clientAddress, and the session counted under it until it
+	// closes, refused with 429 past the limit before `upgrade` is asked.
+
 	/**
 		Decides, once a client's upgrade request has arrived and before the
 		`101` answers it, whether the session is opened, and with which
@@ -709,6 +717,10 @@ class ServerWebSocket extends ServerSocket {
 		if (address == null) {
 			return true;
 		}
+		if (__fromProxy(address)) {
+			// Every client of the proxy arrives from its address: counted, not held to the limit.
+			return __addressCounts.claim(address, 0);
+		}
 		var limit:Int = maxPendingHandshakesPerAddress;
 		if (limit > 0) {
 			// The front's limit and count: a replica accepting for itself,
@@ -721,6 +733,39 @@ class ServerWebSocket extends ServerSocket {
 			}
 		}
 		return __addressCounts.claim(address, limit);
+	}
+
+	/** Whether `address` is one of `trustedProxies`. **/
+	@:noCompletion private function __fromProxy(address:Null<String>):Bool {
+		var front:ServerSocket = __front != null ? __front : this;
+		return address != null && front.trustedProxies != null && front.trustedProxies.trusts(address);
+	}
+
+	/**
+		For a session whose upgrade request came through a trusted proxy:
+		reads the client's address into `request.clientAddress` and counts
+		the session under it, to `maxConnectionsPerAddress`, with the hold
+		`session` lets go of as it closes. False when that address has its
+		limit open already. True for any other session, counted as it was
+		accepted.
+	**/
+	@:noCompletion private function __admitClient(request:WebSocketRequest, session:WebSocket):Bool {
+		if (!__fromProxy(request.remoteAddress)) {
+			return true;
+		}
+		var front:ServerSocket = __front != null ? __front : this;
+		var client:String = front.trustedProxies.clientAddress(request.remoteAddress, request.header("forwarded"), request.header("x-forwarded-for"));
+		@:privateAccess request.clientAddress = client;
+		var limit:Int = front.maxConnectionsPerAddress;
+		if (limit <= 0) {
+			return true;
+		}
+		var key:String = RateLimiter.addressKey(client);
+		if (!__connectionCounts.claim(key, limit)) {
+			return false;
+		}
+		@:privateAccess session.__addressHold = new crossbyte._internal.websocket.AddressHold(__connectionCounts, key);
+		return true;
 	}
 
 	/** Connections upgrading on every runtime this server's listener feeds. **/

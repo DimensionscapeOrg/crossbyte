@@ -94,6 +94,9 @@ server.listen();
 
 Behind a proxy that forwards connections before their client has spoken, every connection has the proxy's address:
 set `maxPendingHandshakesPerAddress` and `maxConnectionsPerAddress` to 0 there, and bound each client at the proxy.
+A `ServerWebSocket` behind an HTTP proxy can count each client itself: give it the proxy in `trustedProxies`, and a
+connection from the proxy is counted under the address its upgrade request says it was forwarded from
+(`WebSocketRequest.clientAddress`), refused with 429 past `maxConnectionsPerAddress`.
 
 ### Out of descriptors
 

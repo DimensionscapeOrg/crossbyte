@@ -4,6 +4,23 @@ All notable changes to CrossByte will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+#### Networking
+
+- `ServerSocket.trustedProxies`: behind a proxy (Caddy, nginx, a load
+  balancer) every connection came from the proxy's address, so
+  `maxConnectionsPerAddress` held all its clients to one address's
+  share. A connection from a trusted proxy is no longer counted under
+  the proxy's own address: a raw one is held only by `maxConnections`,
+  and a `ServerWebSocket` session is counted, from its upgrade until it
+  closes, under the client's address read through the proxies from
+  `Forwarded` or `X-Forwarded-For` (given as the new
+  `WebSocketRequest.clientAddress`), refused with 429 past the limit
+  before the `upgrade` hook is asked; its arrival is not held to
+  `maxPendingHandshakesPerAddress` either. A peer that is not trusted is
+  counted as it is accepted, its forwarded headers not believed.
+
 ## 1.0.1 - 2026-11-06
 
 ### Added
