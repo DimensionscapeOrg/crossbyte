@@ -8,6 +8,7 @@
 # Paired with ci/js-build.hxml. The two differ only in -lib hxnodejs, which is
 # what defines `nodejs` and so decides every `js && !nodejs` gate in the tree.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib wsproto
 -lib hxnodejs

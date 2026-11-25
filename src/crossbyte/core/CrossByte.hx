@@ -39,6 +39,15 @@ import crossbyte.net.Socket as CBSocket;
 import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.Timer as CBTimer;
 
+// CrossByte's own haxe.Timer is not under src: StdOverrides puts it ahead of
+// the standard library's, except in a build for Lime's native backend, which
+// has Lime's. With neither, timers would be the standard library's, which a
+// runtime's loop never runs. A macro is not asked: what StdOverrides defines
+// does not reach the macro context.
+#if (!lime_cffi && !macro && !crossbyte_std_overrides)
+#error "CrossByte's build setup has not run: add CrossByte with -lib crossbyte, or put --macro crossbyte._internal.macro.StdOverrides.use() beside -cp src. It adds std/timer, CrossByte's haxe.Timer."
+#end
+
 /**
  * The core CrossByte runtime.
  *
@@ -1620,9 +1629,10 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// Timers made before any runtime existed (by a library's static
-	// initializer, which runs before main) start on this one's ticks.
+	// initializer, which runs before main) start on this one's ticks. Only
+	// CrossByte's own haxe.Timer keeps them: see GlobalTimer.__running.
 	@:noCompletion private function __adoptEarlyTimers():Void {
-		#if !lime_cffi
+		#if (!lime_cffi && !macro)
 		@:privateAccess haxe.Timer.__primordialReady(this);
 		#end
 	}

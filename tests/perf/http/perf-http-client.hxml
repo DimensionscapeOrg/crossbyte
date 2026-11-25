@@ -2,6 +2,7 @@
 # haxe tests/perf/http/perf-http-client.hxml --cpp export/perf-http/client
 -cp tests/perf/http
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib wsproto
 -D windows

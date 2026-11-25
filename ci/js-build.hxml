@@ -10,6 +10,7 @@
 # browser build is skipped rather than failing, which is what makes the pass
 # meaningful: everything not excluded has to compile.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib wsproto
 --macro include('crossbyte')

@@ -8,6 +8,7 @@
 #
 # Run it with `node ci/relay/run.js` once built.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib wsproto
 -cp tests

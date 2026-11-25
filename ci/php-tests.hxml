@@ -1,6 +1,7 @@
 # The suite classes that claim PHP, run on PHP 8 with sqlite3 and sodium enabled:
 #   php export/php-tests/index.php
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib wsproto
 -cp tests
