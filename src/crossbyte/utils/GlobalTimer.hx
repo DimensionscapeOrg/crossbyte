@@ -107,9 +107,14 @@ final class GlobalTimer {
 		timer is handed to its runtime: given after, a runtime on another
 		thread could run the timer before it had one. See
 		`haxe.Timer.__given`.
+
+		That is CrossByte's own `haxe.Timer`, which `StdOverrides` adds.
+		Where the class is another's, only its public members are used: in a
+		build for Lime's native backend, where it is Lime's and Lime's loop
+		runs it, and in a macro, which has the standard library's.
 	**/
 	@:noCompletion private static inline function __running(interval:Float, run:Void->Void):HxTimer {
-		#if lime_cffi
+		#if (lime_cffi || macro)
 		var timer = new HxTimer(crossbyte._internal.Millis.of(interval));
 		timer.run = run;
 		return timer;
@@ -120,7 +125,7 @@ final class GlobalTimer {
 
 	/** A `haxe.Timer` that stops itself and runs `run` once, `delay` seconds from now. **/
 	@:noCompletion private static inline function __once(delay:Float, run:Void->Void):HxTimer {
-		#if lime_cffi
+		#if (lime_cffi || macro)
 		return HxTimer.delay(run, crossbyte._internal.Millis.of(delay));
 		#else
 		return @:privateAccess HxTimer.__givenSeconds(delay, timer -> {
@@ -233,7 +238,7 @@ final class GlobalTimer {
 	**/
 	@:allow(crossbyte.core.CrossByte)
 	@:noCompletion private static function __runtimeExited(runtime:crossbyte.core.CrossByte):Void {
-		#if !lime_cffi
+		#if (!lime_cffi && !macro)
 		__lock();
 		var gone:Array<UInt> = null;
 		for (id => timer in __timers) {

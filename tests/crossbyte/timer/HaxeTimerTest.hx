@@ -232,6 +232,43 @@ class HaxeTimerTest extends utest.Test {
 		});
 	}
 
+	#if eval
+	/**
+		A host that has its own `haxe.Timer` keeps it. Lime's native backend
+		is one: its application loop runs the timers out of the class's
+		private fields, so in a build for it (`lime_cffi`) CrossByte's own
+		class stays out, and CrossByte uses only what the host's has in
+		public. CrossByte once carried a copy of Lime's class for those
+		builds instead, which took the place of Lime's whenever CrossByte
+		came later on the class path, and fell behind it.
+
+		tests/fixtures/hosttimer is built as a Lime project is, a stand-in
+		host's `haxe.Timer` ahead of CrossByte's source, and run: it does
+		not compile unless the host's class is the one in the build, and
+		`GlobalTimer` runs on the host's loop while the runtime's own timers
+		run on the runtime. Once, on the interpreter: which class a build
+		gets is the compiler's doing, the same on every target.
+	**/
+	public function testAHostsOwnTimerIsLeftInPlace():Void {
+		// tests/TestMain.hx, on the interpreter: the repository is above it.
+		var root:String = haxe.io.Path.directory(haxe.io.Path.directory(Sys.programPath()));
+		var args:Array<String> = [
+			"--cwd", root, "-D", "lime_cffi", "-cp", "tests/fixtures/hosttimer", "-cp", "src", "--macro",
+			"crossbyte._internal.macro.StdOverrides.use()", "-lib", "emitter", "-main", "HostTimerProgram", "--interp"
+		];
+		var process = new sys.io.Process("haxe", args);
+		var output:String = process.stdout.readAll().toString() + process.stderr.readAll().toString();
+		var code:Int = process.exitCode();
+		process.close();
+
+		Assert.equals(0, code, output);
+		// Ten 10 ms frames of the host's loop: a 50 ms timeout, a 20 ms
+		// interval, a cleared timeout and a 10 ms haxe.Timer on the host's
+		// class, a 50 ms timer on the runtime, and the host's clock.
+		Assert.isTrue(output.indexOf("once=1 every=5 cleared=0 direct=10 runtime=1 stamp=0.2") >= 0, output);
+	}
+	#end
+
 	// Runs `body` as if no runtime existed, restoring the one there is after
 	// and arming, on it, whatever was made to wait meanwhile.
 	private static function __withNoRuntime(body:Void->Void):Void {

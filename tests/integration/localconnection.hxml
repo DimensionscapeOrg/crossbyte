@@ -1,4 +1,5 @@
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -cp tests/integration
 -D windows

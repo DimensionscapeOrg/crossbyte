@@ -11,6 +11,7 @@
 # The exit status is the result. CI does not run this: it is a long
 # experiment, not a gate.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -cp tests/soak
 -D windows

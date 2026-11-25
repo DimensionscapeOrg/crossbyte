@@ -4,6 +4,7 @@
 --cwd ../..
 --each
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -cp tests/scaling
 -D HXCPP_M64

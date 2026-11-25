@@ -11,6 +11,7 @@
 # drives itself cannot be tested from inside a harness already driving a
 # runtime of its own.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -cp tests
 -lib hxnodejs

@@ -1,6 +1,7 @@
 # The Node end of the encrypted reliable UDP interoperability check; see
 # ci/rudp-interop.hxml.
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -cp tests/rudp-interop
 -lib hxnodejs

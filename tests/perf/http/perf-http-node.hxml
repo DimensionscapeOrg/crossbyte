@@ -4,6 +4,7 @@
 # time there.
 -cp tests/perf/http
 -cp src
+--macro crossbyte._internal.macro.StdOverrides.use()
 -lib emitter
 -lib hxnodejs
 -main PerfHttpServer

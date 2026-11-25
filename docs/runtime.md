@@ -67,6 +67,18 @@ tick. It is never early.
 In short: use the wheel when the scheduler shows up in a profile and your timers are many and short. Otherwise the
 heap is already the right answer.
 
+### `haxe.Timer`
+
+`haxe.Timer`, and `GlobalTimer`, which is built on it, run on the runtime as well. The standard library's timers
+wait for an event loop of Haxe's own, which a runtime's loop never returns to, so CrossByte puts its own
+`haxe.Timer` ahead of it. `-lib crossbyte` does that; a build that adds CrossByte with `-cp` adds
+`--macro crossbyte._internal.macro.StdOverrides.use()`.
+
+A Lime project is the exception. Lime's native backend has a `haxe.Timer` of its own, run by Lime's application
+loop, and there it stays: a `haxe.Timer` or a `GlobalTimer` call runs from Lime's loop whether or not CrossByte is
+advanced, and `haxe.Timer.stamp()` is Lime's clock, to the millisecond. The runtime's own timers (`crossbyte.Timer`)
+run as `HostApplication.advance` is called.
+
 ## Using more than one core
 
 A server on one runtime uses one core, however many the machine has. A server can spread its connections over

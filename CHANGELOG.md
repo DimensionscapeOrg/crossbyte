@@ -21,6 +21,34 @@ All notable changes to CrossByte will be documented in this file.
   `maxPendingHandshakesPerAddress` either. A peer that is not trusted is
   counted as it is accepted, its forwarded headers not believed.
 
+### Fixed
+
+#### Platform
+
+- In a Lime project, `haxe.Timer` is Lime's own again. CrossByte carried a
+  copy of the class Lime's native backend has, for the builds that define
+  `lime_cffi`, and a project that listed CrossByte after Lime got the copy
+  in place of Lime's. The copy had fallen behind: its constructor took an
+  `Int` where Lime's takes a `Float`, and it read Lime's clock as an `Int`
+  of milliseconds, which wraps after 24.8 days of uptime, from when
+  `haxe.Timer.stamp()`, by which everything in CrossByte waits and
+  measures, answered 0. CrossByte's own `haxe.Timer` is now in
+  `std/timer`, which the build setup puts ahead of the standard library's
+  and leaves out of a build for Lime's native backend; there CrossByte
+  uses the public members of Lime's class, and `GlobalTimer` runs on
+  Lime's loop as before.
+
+### Upgrading from 1.0.1
+
+#### Platform
+
+- A build that adds CrossByte with `-cp` rather than `-lib crossbyte` adds
+  `--macro crossbyte._internal.macro.StdOverrides.use()` on every target,
+  where only a jvm build needed it: it puts `std/timer`, CrossByte's
+  `haxe.Timer`, on the class path, and a build without it stops with an
+  error that says so. A macro that reaches CrossByte's classes has the
+  standard `haxe.Timer`, where it had CrossByte's.
+
 ## 1.0.1 - 2026-11-06
 
 ### Added
