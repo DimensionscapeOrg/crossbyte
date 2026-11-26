@@ -65,7 +65,12 @@ class Package {
 			FileSystem.createDirectory("dist");
 		}
 		var zip:String = 'dist/crossbyte-$version.zip';
-		var code:Int = Sys.command("git", ["-c", "core.autocrlf=false", "archive", "--format=zip", "-9", "-o", zip, "HEAD", "--"].concat(PATHS));
+		// core.eol as well as core.autocrlf: .gitattributes marks the text
+		// (`* text=auto`), and text so marked is written with the platform's
+		// line ending whatever autocrlf says, CRLF on Windows.
+		var code:Int = Sys.command("git", [
+			"-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=zip", "-9", "-o", zip, "HEAD", "--"
+		].concat(PATHS));
 		if (code != 0) {
 			Sys.println("git archive failed");
 			Sys.exit(code);
