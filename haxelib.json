@@ -19,8 +19,8 @@
 	"contributors": [
 		"Dimensionscape"
 	],
-	"releasenote": "1.0.1: HTTP requests answered from any thread, request bodies streamed or held to a memory limit, Socket.bind before connect, media types for audio and video, and fixes across HTTP, TCP, RPC, data and the platforms.",
-	"version": "1.0.1",
+	"releasenote": "1.0.2: in a Lime project haxe.Timer is Lime's own again, a server behind trusted proxies counts its clients by their own addresses, and a build that adds CrossByte with -cp runs the StdOverrides macro on every target.",
+	"version": "1.0.2",
 	"url": "https://github.com/dimensionscapeorg/crossbyte",
 	"dependencies": {
 		"emitter": "2.0.0"

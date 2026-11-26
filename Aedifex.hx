@@ -9,10 +9,10 @@ class Aedifex {
 		.library("crossbyte")
 		.tags(["crossbyte", "networking", "http", "rpc", "server", "ipc", "tools"])
 		.description("Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.")
-		.version("1.0.1")
+		.version("1.0.2")
 		.github("dimensionscapeorg/crossbyte")
 		.license("Apache")
-		.releaseNote("1.0.1: HTTP requests answered from any thread, request bodies streamed or held to a memory limit, Socket.bind before connect, media types for audio and video, and fixes across HTTP, TCP, RPC, data and the platforms.")
+		.releaseNote("1.0.2: in a Lime project haxe.Timer is Lime's own again, a server behind trusted proxies counts its clients by their own addresses, and a build that adds CrossByte with -cp runs the StdOverrides macro on every target.")
 		.contributor("Dimensionscape")
 		.classPath("src")
 		.source("src")
@@ -40,7 +40,7 @@ class Aedifex {
 			"\\._internal(\\.|$)",
 			"-D",
 			"version",
-			"1.0.1",
+			"1.0.2",
 			"-D",
 			"source-path",
 			"https://github.com/dimensionscapeorg/crossbyte/blob/main/src/",
