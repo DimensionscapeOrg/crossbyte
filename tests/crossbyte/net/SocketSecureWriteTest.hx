@@ -241,6 +241,10 @@ class SocketSecureWriteTest extends utest.Test {
 		var total:Int = #if (cpp || java || jvm) 8 * 1024 * 1024 #else 2 * 1024 * 1024 #end;
 		var got:Int = 0;
 		var firstWrong:Int = -1;
+		// How often each end was told to go on: what __stalled has to say of a
+		// stream that stopped.
+		var reads:Int = 0;
+		var drains:Int = 0;
 		var client:Socket = SpreadSupport.on(reader, () -> {
 			var socket:Socket = new Socket();
 			socket.secure = true;
@@ -256,6 +260,7 @@ class SocketSecureWriteTest extends utest.Test {
 					}
 				}
 				got += arrived;
+				reads++;
 			});
 			socket.connect("127.0.0.1", server.localPort);
 			return socket;
@@ -269,6 +274,7 @@ class SocketSecureWriteTest extends utest.Test {
 				piece.writeByte(i & 0xFF);
 			}
 			function more():Void {
+				drains++;
 				while (left > 0 && accepted.connected && accepted.bytesPending < 256 * 1024) {
 					accepted.writeBytes(piece, 0, slice);
 					accepted.flush();
@@ -281,8 +287,9 @@ class SocketSecureWriteTest extends utest.Test {
 		});
 
 		// Until it has all come, or nothing has for a while.
+		var begun:Float = haxe.Timer.stamp();
 		var seen:Int = -1;
-		var quietSince:Float = haxe.Timer.stamp();
+		var quietSince:Float = begun;
 		SpreadSupport.waitFor(() -> {
 			if (got != seen) {
 				seen = got;
@@ -290,6 +297,19 @@ class SocketSecureWriteTest extends utest.Test {
 			}
 			return got >= total || haxe.Timer.stamp() - quietSince > 4.0;
 		}, 30.0);
+
+		// Short of its length: said with what each end holds, and before
+		// anything is closed, since closing waits on both runtimes and one
+		// that is stuck would leave only that to report.
+		var stoppedAt:Int = got;
+		var stopped:Bool = stoppedAt < total;
+		if (stopped) {
+			var now:Float = haxe.Timer.stamp();
+			var facts:String = 'stopped at $stoppedAt of $total after ${__ms(now - begun)} ms, quiet for the last ${__ms(now - quietSince)} ms, '
+				+ '$left left to write, the writer told to go on $drains times and the reader $reads';
+			Assert.equals(total, stoppedAt,
+				'a stream written $slice bytes at a time lost bytes on the way\n' + facts + __stalled(writer, reader, accepted, client, () -> got));
+		}
 
 		SpreadSupport.on(writer, () -> {
 			accepted.__onWritableDrain = null;
@@ -307,8 +327,90 @@ class SocketSecureWriteTest extends utest.Test {
 		});
 		SpreadSupport.stop([writer, reader]);
 
-		Assert.equals(total, got, 'a stream written $slice bytes at a time lost bytes on the way');
+		if (!stopped) {
+			Assert.equals(total, got, 'a stream written $slice bytes at a time lost bytes on the way');
+		}
 		Assert.equals(-1, firstWrong, 'a stream written $slice bytes at a time was wrong from byte $firstWrong');
+	}
+
+	/**
+		What a stream that stopped short holds at each end, for the failure's
+		message: on a macOS runner the stream stops now and then with every
+		byte that came right and nothing logged, which says only that it did.
+
+		Each socket is asked on its own runtime, with how long the runtime took
+		to answer. Then each end is made to go on by hand, the reader first, to
+		see which of them moves the stream. A reader that takes bytes held what
+		it was never told of; a writer that sends was waiting for room it was
+		never told of. Neither, with nothing left to write and nothing unsent,
+		is bytes counted as sent that never went, and neither with something
+		unsent is the system not taking them.
+
+		A runtime that runs nothing it is handed for two seconds is stuck, and
+		is not asked again, so that all of this fits inside the case's timeout.
+	**/
+	private function __stalled(writer:CrossByte, reader:CrossByte, accepted:Socket, client:Socket, got:Void->Int):String {
+		var stuck:Array<CrossByte> = [];
+		function asked(name:String, runtime:CrossByte, work:Void->String):String {
+			if (stuck.indexOf(runtime) >= 0) {
+				return '$name: not asked, its runtime is stuck';
+			}
+			var done:sys.thread.Lock = new sys.thread.Lock();
+			var answer:String = "";
+			var began:Float = haxe.Timer.stamp();
+			var posted:Bool = runtime.post(() -> {
+				answer = try work() catch (error:Dynamic) "threw " + Std.string(error);
+				done.release();
+			});
+			if (!posted || !done.wait(2.0)) {
+				stuck.push(runtime);
+				return '$name: its runtime ran nothing it was handed for two seconds';
+			}
+			return '$name, answering in ${__ms(haxe.Timer.stamp() - began)} ms: $answer';
+		}
+		function nudged(what:String, runtime:CrossByte, work:Void->Void):String {
+			var before:Int = got();
+			var said:String = asked(what, runtime, () -> {
+				work();
+				return "done";
+			});
+			// A whole second, not until the first byte: a stream that goes
+			// on by itself once moved brings far more than one that was
+			// only handed what waited.
+			crossbyte.sys.System.sleep(1.0);
+			return '$said, and ${got() - before} bytes came in the second after';
+		}
+
+		var report:Array<String> = [];
+		report.push(asked("writer", writer, () -> __held(writer, accepted)));
+		report.push(asked("reader", reader, () -> __held(reader, client)));
+		report.push(nudged("reader made to read", reader, () -> client.registryOnReadable()));
+		report.push(nudged("writer made to flush", writer, () -> accepted.registryOnWritable()));
+		report.push(asked("writer then", writer, () -> __held(writer, accepted)));
+		report.push(asked("reader then", reader, () -> __held(reader, client)));
+		return "\n" + report.join("\n");
+	}
+
+	/** One socket's own account of what it holds and what it waits for; read on its runtime. **/
+	private function __held(runtime:CrossByte, socket:Socket):String {
+		var held:String = 'connected ${socket.__connected}, flushFull ${socket.flushFull}, waiting for room ${socket.__waitingForRoom}, '
+			+ 'room not reported ${socket.__roomNotReported}, retry queued ${socket.__isDirty}, refused length ${socket.__refusedLength}, '
+			+ 'unsent ${socket.outputBufferLength}, sent ${Std.int(socket.__bytesSent)}, unread ${socket.bytesAvailable}, '
+			+ 'input paused ${socket.__inputPaused}, peer shut down ${socket.__peerShutdown}';
+		#if cpp
+		var system:Null<sys.net.Socket> = socket.__socket;
+		if (system != null) {
+			@:privateAccess {
+				var registry = runtime.__socketRegistry;
+				held += ', polled for reading ${registry.__set.contains(system)} and for writing ${registry.__writeSet.contains(system)}';
+			}
+		}
+		#end
+		return held;
+	}
+
+	private static inline function __ms(seconds:Float):Int {
+		return Math.round(seconds * 1000);
 	}
 	#end
 }
