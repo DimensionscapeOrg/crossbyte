@@ -382,6 +382,7 @@ private class FakeFastCGI {
 
 	private var listener:ServerSocket;
 	private var peer:Socket;
+	private var accepted:Array<Socket> = [];
 
 	public function new() {
 		listener = new ServerSocket();
@@ -392,6 +393,7 @@ private class FakeFastCGI {
 			// the connection, which is a different scenario than either of
 			// these two.
 			peer = e.socket;
+			accepted.push(peer);
 
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 				if (peer.bytesAvailable > 0) {
@@ -444,7 +446,19 @@ private class FakeFastCGI {
 		}
 	}
 
+	/**
+	 * Closes the listener and every connection the bridge opened, as a
+	 * backend that goes away does: an exchange it never answered ends there
+	 * rather than at the bridge's deadline. Until it ends the bridge keeps
+	 * its deadline sweep on the runtime's tick, and that runtime is the one
+	 * every other case in the suite runs on.
+	 */
 	public function close():Void {
+		for (socket in accepted) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
 		try {
 			listener.close();
 		} catch (_:Dynamic) {}
@@ -559,6 +573,9 @@ private class PhpWorld {
 	}
 
 	public function close():Void {
+		// Read before the server lets go of it.
+		var bridge = @:privateAccess server.php;
+
 		hangUp();
 
 		for (view in extras) {
@@ -571,6 +588,13 @@ private class PhpWorld {
 		try {
 			backend.close();
 		} catch (_:Dynamic) {}
+		// An exchange the backend never answered ends as the bridge hears it
+		// close, a frame or two on. Waited for here, so nothing of this world
+		// is still on the runtime when the next case starts.
+		if (bridge != null) {
+			HTTPTestSupport.pumpUntil(() -> @:privateAccess bridge.__pending.length == 0, 2.0);
+			Assert.equals(0, @:privateAccess bridge.__pending.length, "the bridge still holds an exchange whose backend has closed");
+		}
 		try {
 			root.deleteDirectory(true);
 		} catch (_:Dynamic) {}
