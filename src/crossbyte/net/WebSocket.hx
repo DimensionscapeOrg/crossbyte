@@ -1390,6 +1390,13 @@ class WebSocket extends Socket {
 					request.status = 503;
 					return false;
 				}
+				// Behind a trusted proxy, counted under the client's address from here.
+				if (!@:privateAccess server.__admitClient(request, this)) {
+					@:privateAccess server.__releaseSession();
+					@:privateAccess server.__refusedConnections++;
+					request.status = 429;
+					return false;
+				}
 				var accepted:Bool = false;
 				try {
 					accepted = server.upgrade(request);

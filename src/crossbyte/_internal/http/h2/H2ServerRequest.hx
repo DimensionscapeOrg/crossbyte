@@ -53,6 +53,20 @@ class H2ServerRequest {
 	public var timedOut:Bool = false;
 
 	/**
+		Set with `timedOut` when the time ran out while the connection's
+		window waited for room in `H2ServerConnection.sharedBodies`: the wait
+		was the server's, so it is answered `503` rather than `408`.
+	**/
+	public var waitedForRoom:Bool = false;
+
+	/**
+		What this request's body was counted at in
+		`H2ServerConnection.sharedBodies` as it was handed over, until the
+		handler that answers it takes the count over.
+	**/
+	public var bodyCharge:Int = 0;
+
+	/**
 		`haxe.Timer.stamp()` when the request's HEADERS arrived, or `0` when
 		it was built some other way.
 	**/

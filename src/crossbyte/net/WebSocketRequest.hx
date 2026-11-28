@@ -66,6 +66,13 @@ final class WebSocketRequest {
 	/** The address the connection came from. **/
 	public var remoteAddress(default, null):String;
 
+	/**
+		The client's address: `remoteAddress`, or, for a request through one
+		of the server's `trustedProxies`, the address they say they
+		forwarded it from.
+	**/
+	public var clientAddress(default, null):String;
+
 	/** The port the connection came from. **/
 	public var remotePort(default, null):Int;
 
@@ -103,6 +110,7 @@ final class WebSocketRequest {
 		__headers = headers;
 		__head = head;
 		this.remoteAddress = remoteAddress;
+		this.clientAddress = remoteAddress;
 		this.remotePort = remotePort;
 
 		// "GET /path?query HTTP/1.1"

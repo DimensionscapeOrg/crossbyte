@@ -49,8 +49,74 @@ class HTTPServerConfig {
 		An HTTP/1.1 connection reads one request at a time, so it holds one
 		such body; an HTTP/2 connection carries many at once, and
 		`http2MaxRequestBodyBuffer` is what all of them may hold together.
+		`maxRequestBodyMemory` is what every connection holds together.
 	**/
-	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY_SIZE;
+	public var maxRequestBodySize(default, set):Int = DEFAULT_MAX_REQUEST_BODY_SIZE;
+
+	@:noCompletion private function set_maxRequestBodySize(value:Int):Int {
+		maxRequestBodySize = value;
+		__bodyMemory.configure(maxRequestBodyMemory, value);
+		return value;
+	}
+
+	/** What every connection holds of request bodies by default: 256 megabytes. **/
+	public static inline var DEFAULT_MAX_REQUEST_BODY_MEMORY:Int = 256 * 1024 * 1024;
+
+	/**
+		Bytes of request body held at once, across every connection of the
+		servers started with this configuration, on every runtime they run
+		on, or `0` and below for no limit. Defaults to
+		`DEFAULT_MAX_REQUEST_BODY_MEMORY`, and is never less than
+		`maxRequestBodySize`: one body of the largest size always fits.
+
+		Without it, what the server holds is bounded per connection only:
+		10,000 connections each sending a body of `maxRequestBodySize` would
+		have 10 GB held at the defaults.
+
+		A body counts as it arrives, not as its `Content-Length` declares,
+		so a client that declares a large body and sends nothing holds
+		nothing. It counts until its request has been answered and the
+		server lets go of `requestBody`, and as decoded once it is. A body
+		read as it arrives (`HTTPRequestHandler.streamRequestBody`) counts
+		only what the server holds of it while its reader has it stopped.
+
+		Once the limit is reached, a body that needs more waits for room,
+		given in the order bodies came to need it, as others are answered:
+
+		- an HTTP/1.1 connection stops reading, and what its client sends
+		  waits in the kernel until TCP's window holds the client back; a
+		  request carrying `Expect: 100-continue` is sent its `100` once
+		  there is room;
+		- an HTTP/2 connection stops opening its window, so a client that
+		  keeps to it sends nothing more. A connection's window is opened as
+		  its streams need it, not to `http2MaxRequestBodyBuffer` up front;
+		- `requestTimeout` goes on counting, and `requestIdleTimeout` stops,
+		  since the silence is the server's. A request whose deadline passes
+		  while it waits is answered `503 Service Unavailable` with
+		  `Retry-After: 1` rather than `408`, the wait having been the
+		  server's: under HTTP/1.1 the connection then closes, and under
+		  HTTP/2 a body not yet handed to the application is reset with
+		  `REFUSED_STREAM` instead, which tells the client it may send it
+		  again.
+
+		The limit can be passed by what had already arrived when it was
+		reached: on each HTTP/1.1 connection reading a body, one pass of the
+		socket (a megabyte at most), and on each HTTP/2 connection the
+		64 KB window the protocol gives every connection unasked.
+		`HTTPServer.heldRequestBodyBytes` says what is held now.
+	**/
+	public var maxRequestBodyMemory(default, set):Int = DEFAULT_MAX_REQUEST_BODY_MEMORY;
+
+	@:noCompletion private function set_maxRequestBodyMemory(value:Int):Int {
+		maxRequestBodyMemory = value;
+		__bodyMemory.configure(value, maxRequestBodySize);
+		return value;
+	}
+
+	// The count maxRequestBodyMemory keeps: shared by the servers this
+	// configuration starts, on whatever runtimes they run, and locked per call.
+	@:noCompletion private final __bodyMemory:crossbyte._internal.http.RequestBodyMemory = new crossbyte._internal.http.RequestBodyMemory(DEFAULT_MAX_REQUEST_BODY_MEMORY,
+		DEFAULT_MAX_REQUEST_BODY_SIZE);
 
 	/**
 		Bytes of request body one HTTP/2 connection holds at once, across

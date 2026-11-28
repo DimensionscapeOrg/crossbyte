@@ -14,13 +14,13 @@ import utest.Assert;
 class RateLimitStoreTest extends utest.Test {
 	public function testLimitersOnOneStoreLimitTogether():Void {
 		var now:Float = 1000.0;
-		var store = new KVRateLimitStore(new MemoryKVStore());
+		var store = __sweeping(new MemoryKVStore({clock: () -> now}), () -> now);
 		__limitTogether(new RateLimiter(3, 60.0, () -> now, store), new RateLimiter(3, 60.0, () -> now, store), () -> now += 20);
 	}
 
 	public function testConsumeSaysWhatAResponseSays():Void {
 		var now:Float = 1000.0;
-		var limiter = new RateLimiter(3, 60.0, () -> now, new KVRateLimitStore(new MemoryKVStore()));
+		var limiter = new RateLimiter(3, 60.0, () -> now, __sweeping(new MemoryKVStore({clock: () -> now}), () -> now));
 		var first = limiter.consume("a");
 		Assert.isTrue(first.allowed);
 		Assert.equals(3, first.limit);
@@ -72,11 +72,11 @@ class RateLimitStoreTest extends utest.Test {
 		}
 		var path:String = haxe.io.Path.join([directory, "ratelimit-" + Std.random(0x7FFFFFF) + ".db"]);
 		var now:Float = 1000.0;
-		var first = crossbyte.db.kv.SQLiteKVStore.open(path, {table: "rate_limits"});
-		var second = crossbyte.db.kv.SQLiteKVStore.open(path, {table: "rate_limits"});
+		var first = crossbyte.db.kv.SQLiteKVStore.open(path, {table: "rate_limits", clock: () -> now});
+		var second = crossbyte.db.kv.SQLiteKVStore.open(path, {table: "rate_limits", clock: () -> now});
 		try {
-			__limitTogether(new RateLimiter(3, 60.0, () -> now, new KVRateLimitStore(first)),
-				new RateLimiter(3, 60.0, () -> now, new KVRateLimitStore(second)), () -> now += 20);
+			__limitTogether(new RateLimiter(3, 60.0, () -> now, __sweeping(first, () -> now)),
+				new RateLimiter(3, 60.0, () -> now, __sweeping(second, () -> now)), () -> now += 20);
 		} catch (e:Dynamic) {
 			first.close();
 			second.close();
@@ -93,6 +93,14 @@ class RateLimitStoreTest extends utest.Test {
 		}
 	}
 	#end
+
+	/**
+		A store on `kv` that sweeps at every write, on the limiters' clock: a
+		sweep on any other clock finds every bucket full and removes it.
+	**/
+	private static function __sweeping(kv:crossbyte.db.kv.KVStore, clock:() -> Float):KVRateLimitStore {
+		return new KVRateLimitStore(kv, KVRateLimitStore.DEFAULT_PREFIX, 1, clock);
+	}
 
 	/** Two limiters spend one bucket between them, and it refills for both. **/
 	private static function __limitTogether(a:RateLimiter, b:RateLimiter, wait:Void->Void):Void {

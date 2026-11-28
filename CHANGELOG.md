@@ -40,6 +40,52 @@ says how.
   transport, buffers and pooling, so a message costs what it did.
   (Upgrading)
 
+### Upgrading from 1.0
+
+#### Platform
+
+- Install the native-ipc haxelib, which CrossByte's native IPC is compiled
+  from: `haxelib install native-ipc`.
+- Install the wsproto haxelib, which CrossByte's WebSocket is built on:
+  `haxelib install wsproto`. A build that adds CrossByte's `src` to its
+  class path rather than `-lib crossbyte` adds `-lib wsproto` beside
+  `-lib emitter`.
+- Coming from 1.0.0 or 1.0.1, a build that adds CrossByte with `-cp`
+  rather than `-lib crossbyte` adds
+  `--macro crossbyte._internal.macro.StdOverrides.use()` on every target,
+  where only a jvm build needed it: it puts `std/timer`, CrossByte's
+  `haxe.Timer`, on the class path, and a build without it stops with an
+  error that says so. A macro that reaches CrossByte's classes has the
+  standard `haxe.Timer`, where it had CrossByte's. 1.0.2 made the
+  change, so a build that already runs on it has nothing to add here.
+- A program built with CrossByte 2.0.0 and one built with 1.0 cannot
+  meet over a local name: their names differ, and 1.0 sends no hello.
+  Rebuild both ends.
+- A program of your own that opened a local name's pipe or socket
+  directly must follow the new names, and send and answer the hello
+  (native-ipc's `PROTOCOL.md`).
+- Handle a `connect` that throws `IOError` for a listener of another
+  protocol version as you would one that found nothing listening.
+
+## 1.0.2 - 2026-11-26
+
+### Added
+
+#### Networking
+
+- `ServerSocket.trustedProxies`: behind a proxy (Caddy, nginx, a load
+  balancer) every connection came from the proxy's address, so
+  `maxConnectionsPerAddress` held all its clients to one address's
+  share. A connection from a trusted proxy is no longer counted under
+  the proxy's own address: a raw one is held only by `maxConnections`,
+  and a `ServerWebSocket` session is counted, from its upgrade until it
+  closes, under the client's address read through the proxies from
+  `Forwarded` or `X-Forwarded-For` (given as the new
+  `WebSocketRequest.clientAddress`), refused with 429 past the limit
+  before the `upgrade` hook is asked; its arrival is not held to
+  `maxPendingHandshakesPerAddress` either. A peer that is not trusted is
+  counted as it is accepted, its forwarded headers not believed.
+
 ### Fixed
 
 #### Platform
@@ -57,32 +103,18 @@ says how.
   uses the public members of Lime's class, and `GlobalTimer` runs on
   Lime's loop as before.
 
-### Upgrading from 1.0
+### Upgrading from 1.0.1
 
 #### Platform
 
-- Install the native-ipc haxelib, which CrossByte's native IPC is compiled
-  from: `haxelib install native-ipc`.
-- Install the wsproto haxelib, which CrossByte's WebSocket is built on:
-  `haxelib install wsproto`. A build that adds CrossByte's `src` to its
-  class path rather than `-lib crossbyte` adds `-lib wsproto` beside
-  `-lib emitter`.
 - A build that adds CrossByte with `-cp` rather than `-lib crossbyte` adds
   `--macro crossbyte._internal.macro.StdOverrides.use()` on every target,
   where only a jvm build needed it: it puts `std/timer`, CrossByte's
   `haxe.Timer`, on the class path, and a build without it stops with an
   error that says so. A macro that reaches CrossByte's classes has the
   standard `haxe.Timer`, where it had CrossByte's.
-- A program built with CrossByte 2.0.0 and one built with 1.0 cannot
-  meet over a local name: their names differ, and 1.0 sends no hello.
-  Rebuild both ends.
-- A program of your own that opened a local name's pipe or socket
-  directly must follow the new names, and send and answer the hello
-  (native-ipc's `PROTOCOL.md`).
-- Handle a `connect` that throws `IOError` for a listener of another
-  protocol version as you would one that found nothing listening.
 
-## 1.0.1 - Unreleased
+## 1.0.1 - 2026-11-06
 
 ### Added
 
@@ -123,6 +155,21 @@ says how.
   `requestIdleTimeout` still hold, and the deadlines stop while a reader
   has it stopped. A coding is left as it was sent, which is what a proxy
   passes on, so a coding this server could not undo is not refused.
+- `HTTPServerConfig.maxRequestBodyMemory`, the request body held at once
+  across every connection, on every runtime: 256 MiB by default, and
+  never less than `maxRequestBodySize`. Without it what the server held
+  was bounded per connection only, so 10,000 connections each sending a
+  1 MiB body had 10 GB held. A body counts as it arrives, not as its
+  `Content-Length` declares, until its request is answered. Past the
+  limit, a body waits for room in the order bodies came to need it: an
+  HTTP/1.1 connection stops reading, and sends a `100 Continue` once
+  there is room; an HTTP/2 connection stops opening its window. A request
+  whose `requestTimeout` passes while it waits is answered `503` with
+  `Retry-After: 1`, or under HTTP/2 a body not yet handed to the
+  application is reset `REFUSED_STREAM`, since the wait was the
+  server's. `HTTPServer.heldRequestBodyBytes` says what is held, and a
+  server with `metrics` reports it, with the waits and the refusals. See
+  docs/limits.md.
 - `HTTPServerConfig.requestIdleTimeout`, the seconds a request still
   arriving may go without a byte, off by default, beside
   `requestTimeout`, which bounds the whole request and so also sets a
@@ -144,14 +191,6 @@ says how.
   peer can tell apart. Natively, on the jvm, on Node, and on the
   interpreter, HashLink and Neko for IPv4. A failure is an `ioError` from
   `connect()`.
-
-#### Platform
-
-- `-D crossbyte_pgo=generate` and `-D crossbyte_pgo=use` build a native
-  program with profile-guided optimisation, which hxcpp has no option
-  for: built instrumented, run on its work, and built again from what
-  the run counted. It turns on link-time optimisation as well, and works
-  with MSVC, GCC and Clang. See docs/targets.md.
 
 ### Changed
 
@@ -180,10 +219,23 @@ says how.
   `List` and maps need nothing allowed, and AMF and JSON make no class
   instances. (Upgrading)
 
+#### HTTP
+
+- An HTTP/2 connection's window is opened as its streams need it, rather
+  than to `http2MaxRequestBodyBuffer` as the connection opens, so a
+  connection that sends no body is given nothing past the protocol's
+  64 KB, and the room it is given counts in `maxRequestBodyMemory`.
+- A chunked body held whole is read as its chunks arrive, rather than
+  each chunk being kept in the connection's buffer until it had all
+  arrived, where it was held twice and counted nowhere.
+
 ### Fixed
 
 #### HTTP
 
+- Static files in Ogg, Opus, M4A, AAC, FLAC, WebM, OGV and M4V go out
+  with their media type, where they went out as
+  `application/octet-stream`, which a browser may refuse to play.
 - A field a caller gives `respond` or `respondBytes` named `Date`,
   `Server`, `X-Content-Type-Options` or `Content-Type` stands in place of
   the server's own, where both went out, which a proxy passing on another

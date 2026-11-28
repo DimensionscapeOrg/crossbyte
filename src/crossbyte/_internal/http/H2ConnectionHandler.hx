@@ -8,6 +8,8 @@ import crossbyte.http.HTTPServerConfig;
 import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.H2ServerRequest;
+import crossbyte._internal.http.RequestBodyMemory;
+import crossbyte._internal.http.RequestBodyMemory.BodyRoomWaiter;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte.core.CrossByte;
 import crossbyte.core._internal.PassFlush;
@@ -119,6 +121,12 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		__connection.onWaiting = __hold;
 		__connection.onRetiring = __hold;
 		__connection.stallSeconds = HTTPRequestHandler.STREAM_STALL_SECONDS;
+		// The request body every connection holds together, which this one's
+		// window is opened from (HTTPServerConfig.maxRequestBodyMemory).
+		__bodies = @:privateAccess config.__bodyMemory;
+		var runtime:Null<CrossByte> = #if nodejs @:privateAccess socket.__nodeRuntime #else @:privateAccess socket.__cbInstance #end;
+		__connection.sharedBodies = __bodies;
+		__connection.sharedWaiter = new BodyRoomWaiter(runtime, __onBodyRoom);
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClosed);
@@ -130,6 +138,64 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 
 		if (buffered != null && buffered.length > 0) {
 			__receive(buffered);
+		}
+	}
+
+	// The configuration's count of request body held, and the handlers whose
+	// requests hold some of it, unanswered: given back if the connection
+	// closes first.
+	private final __bodies:RequestBodyMemory;
+	private var __charged:Null<Array<HTTPRequestHandler>> = null;
+	private var __chargeHook:Null<(HTTPRequestHandler, Bool) -> Void> = null;
+
+	/** Room was given to this connection's window, on its runtime: opened, and what that answers sent. */
+	private function __onBodyRoom():Void {
+		__receiving = true;
+		try {
+			__connection.roomGiven();
+		} catch (error:Dynamic) {
+			__receiving = false;
+			__flushOut();
+			throw error;
+		}
+		__receiving = false;
+		__flushOut();
+	}
+
+	/** A handler's request first holds room, or has let all of it go. */
+	private function __noteCharged(handler:HTTPRequestHandler, charged:Bool):Void {
+		if (charged) {
+			if (__charged == null) {
+				__charged = [];
+			}
+			__charged.push(handler);
+		} else if (__charged != null) {
+			__charged.remove(handler);
+		}
+	}
+
+	/** Gives back what every request on this connection held, and what the connection had taken: it has closed. */
+	private function __releaseBodies():Void {
+		__connection.releaseShared();
+		var charged:Null<Array<HTTPRequestHandler>> = __charged;
+		__charged = null;
+		if (charged != null) {
+			for (handler in charged) {
+				handler.__releaseBodyMemory();
+			}
+		}
+		var parked:Null<Array<H2ServerRequest>> = __parked;
+		if (parked != null) {
+			for (request in parked) {
+				__releaseRequestCharge(request);
+			}
+		}
+	}
+
+	private inline function __releaseRequestCharge(request:H2ServerRequest):Void {
+		if (request.bodyCharge > 0) {
+			__bodies.release(request.bodyCharge);
+			request.bodyCharge = 0;
 		}
 	}
 
@@ -364,6 +430,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			__parked = null;
 			if (refused != null) {
 				for (request in refused) {
+					__releaseRequestCharge(request);
 					if (__connection.hasStream(request.streamId)) {
 						__connection.resetStream(request.streamId, H2ErrorCode.REFUSED_STREAM);
 					}
@@ -607,6 +674,12 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	 * `408` or `431`) is a few bytes, answered at once.
 	 */
 	private function __serve(request:H2ServerRequest):Void {
+		// Counted from here until it is answered, the frame layer having let
+		// it go (HTTPServerConfig.maxRequestBodyMemory).
+		if (!request.bodyStreamed && request.body != null && request.body.length > 0) {
+			__bodies.charge(request.body.length);
+			request.bodyCharge = request.body.length;
+		}
 		// A body read as it arrived has been the application's from its head.
 		if (!request.bodyStreamed && !request.tooLarge && !request.timedOut && !request.headersTooLarge && (__parked != null || __overBudget())) {
 			if (__parked == null) {
@@ -633,6 +706,8 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			// to answer.
 			if (__connection.hasStream(request.streamId)) {
 				__serveNow(request);
+			} else {
+				__releaseRequestCharge(request);
 			}
 		}
 	}
@@ -651,8 +726,9 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 			if (request.bodyStreamed && admitted.__bodyReader == null) {
 				return;
 			}
+			__handOverCharge(request, admitted);
 			try {
-				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut);
+				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut, request.waitedForRoom);
 			} catch (error:Dynamic) {
 				__serveFailed(admitted, request.streamId, error);
 			}
@@ -671,11 +747,20 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 
 		var handler:HTTPRequestHandler = __handlerFor(request);
 		handler.__requestTarget = request.path;
+		__handOverCharge(request, handler);
 		try {
 			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request, handler), body, request.tooLarge, request.headersTooLarge,
 				request.timedOut, request.startedAt);
 		} catch (error:Dynamic) {
 			__serveFailed(handler, request.streamId, error);
+		}
+	}
+
+	/** What `request`'s body was counted at, now `handler`'s to give back once it has answered. */
+	private inline function __handOverCharge(request:H2ServerRequest, handler:HTTPRequestHandler):Void {
+		if (request.bodyCharge > 0) {
+			handler.__adoptBodyCharge(request.bodyCharge);
+			request.bodyCharge = 0;
 		}
 	}
 
@@ -725,6 +810,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		if (__flushHook == null) {
 			__flushHook = __flushUnlessReceiving;
 			__settledHook = __recycle;
+			__chargeHook = __noteCharged;
 		}
 		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushHook, __sweepWith);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
@@ -732,6 +818,7 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 		// a closure made for every stream.
 		handler.__onResponded = __onResponse;
 		handler.__onSettled = __settledHook;
+		handler.__onBodyCharged = __chargeHook;
 		return handler;
 	}
 
@@ -818,7 +905,9 @@ class H2ConnectionHandler implements PassFlush implements H2ServerConnection.H2F
 	private function __onClosed(_:Event):Void {
 		__socket.removeEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.removeEventListener(Event.CLOSE, __onClosed);
-		// No one is left to answer what waited.
+		// No one is left to answer what waited, and what it all held of the
+		// request body every connection shares goes back.
+		__releaseBodies();
 		__parked = null;
 		__release();
 	}

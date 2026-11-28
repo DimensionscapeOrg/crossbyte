@@ -10,7 +10,8 @@ package crossbyte.db;
 	Linux only, through a socket filter (`SO_ATTACH_FILTER`, no privilege
 	needed) that drops every segment for the socket before TCP sees it, so
 	the system sends nothing back: no acknowledgement, no reset. Elsewhere
-	`isSupported` is false, and the tests that need it pass over it.
+	`isSupported` is false, and the tests that need it pass over it; so do
+	they where the system refuses the filter (`passOver`).
 
 	A file of its own because the C below has preprocessor lines, and the
 	suite's coverage check, which reads a test class's conditionals off the
@@ -73,6 +74,17 @@ class DeadPeerProbe {
 		refused = "not native";
 		#end
 		return refused == null;
+	}
+
+	/**
+		For a case whose `silence` was refused: some Linux systems refuse
+		the filter (GitHub's Ubuntu runners, on most runs, with EPERM), and
+		with no silent peer there is nothing to time. Passes, and prints why
+		the case did not run, since a utest warning would fail the suite.
+	**/
+	public static function passOver():Void {
+		Sys.println("DeadPeerProbe: the case did not run: " + refused);
+		utest.Assert.pass("this system refused the socket filter: " + refused);
 	}
 
 	private static function get_isSupported():Bool {
