@@ -125,11 +125,22 @@ class ServerSocketAcceptTest extends utest.Test {
 			server.close();
 		}
 
-		// Some frames, for a tick left behind to show itself in.
+		// Counted now, before the runtime runs again: nothing but the lines
+		// above has touched its listeners since `before` was read, so any
+		// difference is these two servers'. After the frames below it need
+		// not be. This runtime is the whole suite's, and what an earlier
+		// case left on its tick comes off whenever that ends, as the PHP
+		// bridge's deadline sweep does at the deadline of an exchange
+		// nobody answered. Counted after the wait, this failed whenever one
+		// ended during it.
+		Assert.equals(before, __tickListeners(runtime), "a closed server left its tick on the runtime");
+
+		// Some frames, for a tick left behind to show itself in: each server
+		// counts the ticks it is given once it is closed.
 		NetPump.wait(0.3, function() {
 			Assert.equals(0, plain.ticksAfterClose, "a closed server's accept tick still ran");
+			Assert.equals(0, web.ticksAfterClose, "a closed WebSocket server's tick still ran");
 			Assert.equals(0, web.acceptsAfterClose, "a closed WebSocket server still called accept()");
-			Assert.equals(before, __tickListeners(runtime), "a closed server left its tick on the runtime");
 			async.done();
 		});
 	}
@@ -238,12 +249,23 @@ private class ClosingCountServerSocket extends ServerSocket {
 	}
 }
 
-/** Counts the accepts a WebSocket server still attempts once it is closed. **/
+/**
+	Counts the ticks a WebSocket server is still given once it is closed, and
+	the accepts it still attempts.
+**/
 private class ClosingCountServerWebSocket extends ServerWebSocket {
+	public var ticksAfterClose:Int = 0;
 	public var acceptsAfterClose:Int = 0;
 
 	public function new() {
 		super();
+	}
+
+	override private function this_onTick(e:crossbyte.events.TickEvent):Void {
+		if (__closed) {
+			ticksAfterClose++;
+		}
+		super.this_onTick(e);
 	}
 
 	override private function __acceptPending():crossbyte._internal.websocket.FlexSocket {
